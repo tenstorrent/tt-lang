@@ -127,10 +127,10 @@ std::optional<llvm::APInt> evaluateActivePipeNetRecordValue(
   if (!maybeRecordIndex) {
     return std::nullopt;
   }
-  ArrayRef<PipeRecordAttr> records = maybeRecords->records.getPipes();
-  assert(*maybeRecordIndex < records.size() &&
-         "active PipeNet record index must be in bounds");
-  return evaluateSelectedPipeRecordValue(value, records[*maybeRecordIndex]);
+  FailureOr<PipeRecordAttr> record =
+      getPipeRecord(maybeRecords->records, *maybeRecordIndex);
+  assert(succeeded(record) && "active PipeNet record index must be in bounds");
+  return evaluateSelectedPipeRecordValue(value, *record);
 }
 
 namespace {
@@ -151,8 +151,8 @@ static SmallVector<std::uint64_t>
 getMatchingRecordIndices(const PipeNetRecordLoop &recordLoop,
                          LaunchNodeCoord coord) {
   SmallVector<std::uint64_t> matchingRecordIndices;
-  for (auto [recordIndex, record] :
-       llvm::enumerate(recordLoop.records.getPipes())) {
+  forEachPipeRecord(recordLoop.records, [&](std::uint64_t recordIndex,
+                                            PipeRecordAttr record) {
     PipeRole role = recordLoop.selection == PipeNetRecordSelection::Source
                         ? PipeRole::Source
                         : PipeRole::Destination;
@@ -161,7 +161,7 @@ getMatchingRecordIndices(const PipeNetRecordLoop &recordLoop,
     if (knownLaunchNodeDomainContains(recordDomain, coord)) {
       matchingRecordIndices.push_back(recordIndex);
     }
-  }
+  });
   return matchingRecordIndices;
 }
 
@@ -172,13 +172,19 @@ getMatchingRecordCount(const PipeNetRecordLoop &recordLoop,
                       ? PipeRole::Source
                       : PipeRole::Destination;
   std::uint64_t matchingRecordCount = 0;
-  for (PipeRecordAttr record : recordLoop.records.getPipes()) {
-    std::optional<bool> matches =
-        pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
-    if (!matches) {
-      return std::nullopt;
-    }
-    matchingRecordCount += *matches;
+  bool hasUnknownMatch = false;
+  forEachPipeRecord(
+      recordLoop.records, [&](std::uint64_t, PipeRecordAttr record) {
+        std::optional<bool> matches =
+            pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
+        if (!matches) {
+          hasUnknownMatch = true;
+          return;
+        }
+        matchingRecordCount += *matches;
+      });
+  if (hasUnknownMatch) {
+    return std::nullopt;
   }
   return matchingRecordCount;
 }
@@ -252,15 +258,15 @@ ActivePipeNetExecution evaluateActivePipeNetExecution(
       execution.countDivisor = std::nullopt;
       continue;
     }
-    assert(activeRecord.recordIndex < recordLoop->records.getPipes().size() &&
+    FailureOr<PipeRecordAttr> record =
+        getPipeRecord(recordLoop->records, activeRecord.recordIndex);
+    assert(succeeded(record) &&
            "active PipeNet record index must be in bounds");
     PipeRole role = recordLoop->selection == PipeNetRecordSelection::Source
                         ? PipeRole::Source
                         : PipeRole::Destination;
     std::optional<bool> selectedRecordMatches =
-        pipeRecordRoleMatchesAtLaunchLocation(
-            recordLoop->records.getPipes()[activeRecord.recordIndex], role,
-            location);
+        pipeRecordRoleMatchesAtLaunchLocation(*record, role, location);
     if (selectedRecordMatches && !*selectedRecordMatches) {
       execution.mayExecute = false;
       return execution;

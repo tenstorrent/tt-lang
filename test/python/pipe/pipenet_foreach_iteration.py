@@ -11,7 +11,7 @@
 # RUN: %python %s --report-kernel-size < %t.output | FileCheck %s --check-prefix=CHECK-SIZE
 # RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
 
-"""Compile-only coverage for large table-driven PipeNet callback lowering."""
+"""Compile-only coverage for scalable PipeNet callback lowering."""
 
 import re
 import sys
@@ -29,6 +29,7 @@ ALL_TO_ALL_EDGE_COUNT = NODE_COUNT * PEER_COUNT
 SINGLE_RECEIVER_COLLECTIVE_COUNT = 7
 MAX_LOCAL_PIPE_KERNEL_SOURCE_BYTES = 24 * 1024
 MAX_DEVICE_PIPE_KERNEL_SOURCE_BYTES = 32 * 1024
+MAX_DEVICE_PIPE_CONSTANT_TABLE_WORDS = 8
 
 
 class BFloat16Tensor:
@@ -164,6 +165,19 @@ def report_table_driven_kernel_size(output):
     )
     assert local_kernel_bytes < MAX_LOCAL_PIPE_KERNEL_SOURCE_BYTES
     assert device_kernel_bytes < MAX_DEVICE_PIPE_KERNEL_SOURCE_BYTES
+    device_constant_table_words = max(
+        (
+            int(match.group("words"))
+            for kernel_source in pipe_kernel_sources[4:]
+            for match in re.finditer(
+                r"static const uint64_t __ttlang_constant_table_[A-F0-9]+"
+                r"\[(?P<words>[0-9]+)\]",
+                kernel_source,
+            )
+        ),
+        default=0,
+    )
+    assert device_constant_table_words <= MAX_DEVICE_PIPE_CONSTANT_TABLE_WORDS
     print(
         "LOCAL-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: "
         f"{local_kernel_bytes} / {MAX_LOCAL_PIPE_KERNEL_SOURCE_BYTES}"
@@ -171,6 +185,10 @@ def report_table_driven_kernel_size(output):
     print(
         "DEVICE-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: "
         f"{device_kernel_bytes} / {MAX_DEVICE_PIPE_KERNEL_SOURCE_BYTES}"
+    )
+    print(
+        "DEVICE-PIPE-MAX-CONSTANT-TABLE-WORDS: "
+        f"{device_constant_table_words} / {MAX_DEVICE_PIPE_CONSTANT_TABLE_WORDS}"
     )
 
 
@@ -197,12 +215,16 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.create_pipe
 # CHECK-INITIAL: ttl.pipenet_foreach_src
 # CHECK-INITIAL-SAME: name "DEVICE_ALL_TO_ALL_NET"
-# CHECK-INITIAL-SAME: deviceTransfer
+# CHECK-INITIAL-SAME: kind = all_to_all
+# CHECK-INITIAL-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0
+# CHECK-INITIAL-NOT: deviceTransfer
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_src):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL: ttl.pipenet_foreach_dst
 # CHECK-INITIAL-SAME: name "DEVICE_ALL_TO_ALL_NET"
-# CHECK-INITIAL-SAME: deviceTransfer
+# CHECK-INITIAL-SAME: kind = all_to_all
+# CHECK-INITIAL-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0
+# CHECK-INITIAL-NOT: deviceTransfer
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_dst):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL-NOT: ttl.if_src
@@ -225,6 +247,7 @@ if __name__ == "__main__":
 
 # CHECK-SIZE: LOCAL-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 24576
 # CHECK-SIZE: DEVICE-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 32768
+# CHECK-SIZE: DEVICE-PIPE-MAX-CONSTANT-TABLE-WORDS: {{[0-8]}} / 8
 
 # Pipe-record fields must remain compile-time tables; only mutable progress
 # state requires local arrays.

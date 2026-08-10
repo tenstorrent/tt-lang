@@ -565,11 +565,12 @@ class TransferGraph:
         return len(self.transfer_edges) if self.is_explicit else None
 
     def metadata_cost(self) -> GraphMetadataCost:
-        compile_time = (
-            "O(E * (C + R)) explicit user edges"
-            if self.is_explicit
-            else "O(1 + C + R) structured descriptor"
-        )
+        if self.is_explicit:
+            compile_time = "O(E * (C + R)) explicit user edges"
+        elif isinstance(self.structured, StencilTransfer):
+            compile_time = "O(K + C + R) structured stencil descriptor"
+        else:
+            compile_time = "O(1 + C + R) structured descriptor"
         return GraphMetadataCost(
             storage_class="compile-time metadata",
             compile_time=compile_time,
@@ -611,8 +612,8 @@ class TransferGraph:
         if isinstance(self.structured, StencilTransfer):
             component = self.domain.components[component_index]
             emitted_edges = set()
-            for source in devices:
-                for offset in self.structured.offsets:
+            for offset in self.structured.offsets:
+                for source in devices:
                     destination_coordinates = [
                         list(coordinates) for coordinates in source.coordinates
                     ]
@@ -808,11 +809,25 @@ class TransferGraph:
         if isinstance(structured, StencilTransfer):
             if not isinstance(structured.wrap, bool):
                 raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
+            offsets = _normalize_stencil_offsets(
+                structured.offsets, len(component.extent)
+            )
+            if structured.wrap:
+                effective_offsets = []
+                seen_offsets = set()
+                for offset in offsets:
+                    effective_offset = tuple(
+                        delta % extent
+                        for delta, extent in zip(offset, component.extent)
+                    )
+                    if not any(effective_offset) or effective_offset in seen_offsets:
+                        continue
+                    seen_offsets.add(effective_offset)
+                    effective_offsets.append(effective_offset)
+                offsets = tuple(effective_offsets)
             return StencilTransfer(
                 component_name=structured.component_name,
-                offsets=_normalize_stencil_offsets(
-                    structured.offsets, len(component.extent)
-                ),
+                offsets=offsets,
                 wrap=structured.wrap,
             )
 

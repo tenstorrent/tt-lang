@@ -381,15 +381,6 @@ FailureOr<PipeReference>
 getPipeReferenceForProtocolOp(Operation *protocolOp,
                               const PipeTransferIndex &transferIndex);
 
-/// Enumerate the static pipe types represented by a pipe reference.
-SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
-                                                const PipeReference &ref);
-
-/// Return the logical-device transfer associated with one pipe record.
-DeviceTransferAttr
-getPipeRecordDeviceTransfer(const PipeReference &ref, std::size_t recordIndex,
-                            DeviceTransferAttr staticDeviceTransfer);
-
 /// Return the number of original DFB blocks delivered by one transfer.
 inline int64_t getPipeTransferBlockSpan(PipeTransferCreateOp op) {
   return static_cast<int64_t>(op.getBlockSpan());
