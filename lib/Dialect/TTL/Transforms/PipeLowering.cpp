@@ -27,6 +27,7 @@
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttlang/Dialect/Utils/UnionFind.h"
 #include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
@@ -38,7 +39,6 @@
 #include <cstddef>
 #include <functional>
 #include <limits>
-#include <numeric>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -1405,9 +1405,12 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                               const PipeResourcePlan &pipeResourcePlan,
                               ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
-  ArrayRef<PipeResourceInfo> resources = transferPlan.getSelectedResources();
+  ArrayRef<PipeResourceInfo> resources =
+      resourceAccessPlan.getSelectedResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
 
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -1505,7 +1508,9 @@ LogicalResult lowerPipeTransferSend(
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
          "inactive sender must not use an active transfer plan");
   assert(transferPlan.isSend() && "sender operation has a non-send plan");
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   if (pipeRef.isSelected()) {
     return lowerSelectedPipeTransferSend(op, srcCB, transferPlan,
                                          pipeResourcePlan, rewriter);
@@ -1513,7 +1518,7 @@ LogicalResult lowerPipeTransferSend(
   const PipeTransportStream &transportStream =
       pipeTransportPlan.getStreamForOperation(op);
   PipeType pipeType = pipeRef.getStaticPipeType();
-  const PipeResourceInfo &pipeResource = transferPlan.getResources();
+  const PipeResourceInfo &pipeResource = resourceAccessPlan.getResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
   const PipeTransportPacketization &packetization =
       transportStream.getPacketization();
@@ -1681,9 +1686,12 @@ static LogicalResult lowerSelectedPipeTransferPost(
     const PipeResourcePlan &pipeResourcePlan,
     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
-  ArrayRef<PipeResourceInfo> resources = transferPlan.getSelectedResources();
+  ArrayRef<PipeResourceInfo> resources =
+      resourceAccessPlan.getSelectedResources();
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer post must be inside a function");
   auto sequenceIt = selectedPostSequenceCounters.find(func);
@@ -1745,14 +1753,16 @@ LogicalResult lowerPipeTransferPost(
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
          "inactive receiver post must not use an active transfer plan");
   assert(transferPlan.isPost() && "receiver post has another operation plan");
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   if (pipeRef.isSelected()) {
     return lowerSelectedPipeTransferPost(op, dst, transferPlan,
                                          selectedPostSequenceCounters,
                                          pipeResourcePlan, rewriter);
   }
   PipeType pipeType = pipeRef.getStaticPipeType();
-  const PipeResourceInfo &pipeResource = transferPlan.getResources();
+  const PipeResourceInfo &pipeResource = resourceAccessPlan.getResources();
   const PipePostPlan &postPlan = transferPlan.getPost();
   auto func = op->getParentOfType<func::FuncOp>();
   assert(func && "pipe transfer post must be inside a function");
@@ -1893,12 +1903,14 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
   auto loc = op.getLoc();
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer wait must be inside a function");
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
   Value receiverCompletionCounterAddress;
-  if (transferPlan.isSelected()) {
+  if (resourceAccessPlan.isSelected()) {
     SelectedPipeFields fields =
-        getSelectedPipeFields(transferPlan.getPipeReference());
+        getSelectedPipeFields(resourceAccessPlan.getPipeReference());
     SmallVector<PipeCounterInfo> completionCounters =
-        llvm::map_to_vector(transferPlan.getSelectedResources(),
+        llvm::map_to_vector(resourceAccessPlan.getSelectedResources(),
                             [](const PipeResourceInfo &resource) {
                               return resource.completion.counter;
                             });
@@ -1906,7 +1918,8 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
         op, loc, completionCounters, fields.recordIndex, pipeResourcePlan,
         rewriter);
   } else {
-    PipeCompletionInfo completionInfo = transferPlan.getResources().completion;
+    PipeCompletionInfo completionInfo =
+        resourceAccessPlan.getResources().completion;
     receiverCompletionCounterAddress = buildPipeCounterAddress(
         loc, func, completionInfo.counter, pipeResourcePlan, rewriter);
   }
@@ -1924,7 +1937,7 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
 }
 
 static Value buildWaitAnyCompletionAddress(
-    PipeTransferWaitAnyOp op, const PipeWaitAnyCandidatePlan &candidate,
+    PipeTransferWaitAnyOp op, const PipeResourceAccessPlan &candidate,
     const PipeResourcePlan &pipeResourcePlan, OpBuilder &builder) {
   Location loc = op.getLoc();
   FuncOp function = op->getParentOfType<FuncOp>();
@@ -1959,8 +1972,7 @@ static Value buildWaitAnyCandidateReached(
   auto switchOp =
       scf::IndexSwitchOp::create(builder, loc, TypeRange{builder.getI1Type()},
                                  candidateIndex, cases, cases.size());
-  ArrayRef<PipeWaitAnyCandidatePlan> candidatePlans =
-      waitAnyPlan.getCandidates();
+  ArrayRef<PipeResourceAccessPlan> candidatePlans = waitAnyPlan.getCandidates();
   for (auto [ordinal, region] : llvm::enumerate(switchOp.getCaseRegions())) {
     assert(region.empty() && "new index switch case must be empty");
     Block *block = new Block();
@@ -2597,37 +2609,11 @@ static int64_t allocateCompletionCounterColor(
   return static_cast<int64_t>(pipesByCounterColor.size() - 1);
 }
 
-static std::size_t
-findCompletionGroupRoot(SmallVectorImpl<std::size_t> &parents,
-                        std::size_t unitIndex) {
-  std::size_t rootIndex = unitIndex;
-  while (parents[rootIndex] != rootIndex) {
-    rootIndex = parents[rootIndex];
-  }
-  while (parents[unitIndex] != unitIndex) {
-    std::size_t parentIndex = parents[unitIndex];
-    parents[unitIndex] = rootIndex;
-    unitIndex = parentIndex;
-  }
-  return rootIndex;
-}
-
-static void mergeCompletionGroups(SmallVectorImpl<std::size_t> &parents,
-                                  std::size_t lhsUnitIndex,
-                                  std::size_t rhsUnitIndex) {
-  std::size_t lhsRoot = findCompletionGroupRoot(parents, lhsUnitIndex);
-  std::size_t rhsRoot = findCompletionGroupRoot(parents, rhsUnitIndex);
-  if (lhsRoot != rhsRoot) {
-    parents[rhsRoot] = lhsRoot;
-  }
-}
-
 static FailureOr<SmallVector<std::size_t>>
 buildWaitAnyCompletionGroups(ModuleOp module,
                              ArrayRef<PipeTransferAllocationUnit> units,
                              const PipeTransferIndex &transferIndex) {
-  SmallVector<std::size_t> parents(units.size());
-  std::iota(parents.begin(), parents.end(), 0);
+  mlir::tt::utils::IndexUnionFind completionGroups(units.size());
   using RecordUnit = std::pair<unsigned, std::size_t>;
   llvm::DenseMap<Operation *, SmallVector<RecordUnit>> unitsByPostRecord;
   for (auto indexedUnit : llvm::enumerate(units)) {
@@ -2687,7 +2673,7 @@ buildWaitAnyCompletionGroups(ModuleOp module,
                    "logical receive channel and destination DFB stream";
             return WalkResult::interrupt();
           }
-          mergeCompletionGroups(parents, commonUnitIndex, matchingUnit->second);
+          completionGroups.merge(commonUnitIndex, matchingUnit->second);
         }
       }
     }
@@ -2696,10 +2682,7 @@ buildWaitAnyCompletionGroups(ModuleOp module,
   if (walkResult.wasInterrupted()) {
     return failure();
   }
-  for (std::size_t unitIndex = 0; unitIndex < parents.size(); ++unitIndex) {
-    parents[unitIndex] = findCompletionGroupRoot(parents, unitIndex);
-  }
-  return parents;
+  return completionGroups.getRepresentatives();
 }
 
 static bool usesSenderReadyCounter(

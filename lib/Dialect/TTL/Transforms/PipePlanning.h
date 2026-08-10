@@ -172,13 +172,14 @@ struct PipePostPlan {
 /// Receiver-wait lowering has no operation-specific decisions.
 struct PipeWaitPlan {};
 
-/// Completion resource and pipe reference for one wait-any candidate.
-class PipeWaitAnyCandidatePlan {
+/// Static or record-selected pipe resources shared by protocol operations and
+/// wait-any candidates.
+class PipeResourceAccessPlan {
 public:
   using Resources =
       std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
 
-  PipeWaitAnyCandidatePlan(PipeReference pipeReference, Resources resources)
+  PipeResourceAccessPlan(PipeReference pipeReference, Resources resources)
       : pipeReference(std::move(pipeReference)),
         resources(std::move(resources)) {}
 
@@ -190,12 +191,13 @@ public:
 
   const PipeResourceInfo &getResources() const {
     assert(!isSelected() &&
-           "static resources requested for selected candidate");
+           "static resources requested for a record-selected pipe");
     return std::get<PipeResourceInfo>(resources);
   }
 
   ArrayRef<PipeResourceInfo> getSelectedResources() const {
-    assert(isSelected() && "selected resources requested for static candidate");
+    assert(isSelected() &&
+           "record-selected resources requested for a static pipe");
     return std::get<SmallVector<PipeResourceInfo>>(resources);
   }
 
@@ -207,9 +209,7 @@ private:
 /// Immutable candidate decisions for one wait-any operation.
 class PipeWaitAnyPlan {
 public:
-  ArrayRef<PipeWaitAnyCandidatePlan> getCandidates() const {
-    return candidates;
-  }
+  ArrayRef<PipeResourceAccessPlan> getCandidates() const { return candidates; }
 
 private:
   friend FailureOr<PipeModulePlan>
@@ -217,32 +217,15 @@ private:
                       const PipeTransferIndex &, const PipeGraph &,
                       const PipePlanningOptions &);
 
-  SmallVector<PipeWaitAnyCandidatePlan, 0> candidates;
+  SmallVector<PipeResourceAccessPlan, 0> candidates;
 };
 
 /// Complete lowering decisions for one active pipe protocol operation.
 class PipeTransferPlan {
 public:
-  /// Return the static or record-selected pipe represented by this operation.
-  const PipeReference &getPipeReference() const { return pipeReference; }
-
-  /// Return whether runtime record selection determines the transfer.
-  bool isSelected() const {
-    return std::holds_alternative<SmallVector<PipeResourceInfo>>(resources);
-  }
-
-  /// Return resources for a statically known transfer.
-  const PipeResourceInfo &getResources() const {
-    assert(!isSelected() &&
-           "static resources requested for a selected transfer");
-    return std::get<PipeResourceInfo>(resources);
-  }
-
-  /// Return the record-indexed resources for a selected transfer.
-  ArrayRef<PipeResourceInfo> getSelectedResources() const {
-    assert(isSelected() &&
-           "selected resources requested for a static transfer");
-    return std::get<SmallVector<PipeResourceInfo>>(resources);
+  /// Return pipe and resource decisions shared with wait-any candidates.
+  const PipeResourceAccessPlan &getResourceAccessPlan() const {
+    return resourceAccessPlan;
   }
 
   /// Return the selected sender-readiness protocol.
@@ -283,20 +266,17 @@ private:
                       const PipeTransferIndex &, const PipeGraph &,
                       const PipePlanningOptions &);
 
-  using Resources =
-      std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
   using OperationPlan = std::variant<PipeSendPlan, PipePostPlan, PipeWaitPlan>;
 
-  PipeTransferPlan(PipeReference pipeReference, Resources resources,
+  PipeTransferPlan(PipeReference pipeReference,
+                   PipeResourceAccessPlan::Resources resources,
                    PipeSynchronizationProtocol synchronizationProtocol,
                    OperationPlan operationPlan)
-      : pipeReference(std::move(pipeReference)),
-        resources(std::move(resources)),
+      : resourceAccessPlan(std::move(pipeReference), std::move(resources)),
         synchronizationProtocol(synchronizationProtocol),
         operationPlan(std::move(operationPlan)) {}
 
-  PipeReference pipeReference;
-  Resources resources;
+  PipeResourceAccessPlan resourceAccessPlan;
   PipeSynchronizationProtocol synchronizationProtocol;
   OperationPlan operationPlan;
 };

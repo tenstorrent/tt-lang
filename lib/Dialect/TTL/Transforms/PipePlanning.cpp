@@ -442,7 +442,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   DominanceInfo dominanceInfo(module);
   auto addTransferPlan =
       [&](Operation *operation, PipeReference pipeReference,
-          PipeTransferPlan::Resources resources) -> LogicalResult {
+          PipeResourceAccessPlan::Resources resources) -> LogicalResult {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     auto postOp = dyn_cast<PipeTransferPostOp>(operation);
     auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
@@ -520,78 +520,19 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     }
   }
 
-  auto getWaitAnyResources = [&](Operation *post)
-      -> std::optional<PipeWaitAnyCandidatePlan::Resources> {
-    auto staticResources = plan.resourcePlan.resources.find(post);
-    if (staticResources != plan.resourcePlan.resources.end()) {
-      return staticResources->second;
-    }
-    auto selectedResources = plan.resourcePlan.selectedResources.find(post);
-    if (selectedResources != plan.resourcePlan.selectedResources.end()) {
-      return SmallVector<PipeResourceInfo>(selectedResources->second);
-    }
-    return std::nullopt;
-  };
-  auto haveSameCompletionResources =
-      [](const PipeWaitAnyCandidatePlan::Resources &lhs,
-         const PipeWaitAnyCandidatePlan::Resources &rhs) {
-        if (lhs.index() != rhs.index()) {
-          return false;
-        }
-        if (std::holds_alternative<PipeResourceInfo>(lhs)) {
-          return std::get<PipeResourceInfo>(lhs).completion.counter ==
-                 std::get<PipeResourceInfo>(rhs).completion.counter;
-        }
-        ArrayRef<PipeResourceInfo> lhsResources =
-            std::get<SmallVector<PipeResourceInfo>>(lhs);
-        ArrayRef<PipeResourceInfo> rhsResources =
-            std::get<SmallVector<PipeResourceInfo>>(rhs);
-        return lhsResources.size() == rhsResources.size() &&
-               llvm::all_of(
-                   llvm::zip_equal(lhsResources, rhsResources),
-                   [](const auto &resources) {
-                     return std::get<0>(resources).completion.counter ==
-                            std::get<1>(resources).completion.counter;
-                   });
-      };
-
-  WalkResult waitAnyResult = module.walk([&](PipeTransferWaitAnyOp waitOp) {
+  module.walk([&](PipeTransferWaitAnyOp waitOp) {
     PipeWaitAnyPlan waitPlan;
     for (ArrayRef<Operation *> possiblePosts :
          transferIndex.getWaitAnyCandidatePosts(waitOp)) {
       assert(!possiblePosts.empty() && "candidate must have a receiver post");
-      PipeTransferCreateOp commonCreate =
-          transferIndex.getTransferCreate(possiblePosts.front());
-      auto firstPost = cast<PipeTransferPostOp>(possiblePosts.front());
-      std::optional<int64_t> commonDFBIndex =
-          getCBIndex(getAttachedCB(firstPost.getDst()));
-      FailureOr<PipeReference> maybePipeReference =
-          getPipeReferenceForProtocolOp(possiblePosts.front(), transferIndex);
-      std::optional<PipeWaitAnyCandidatePlan::Resources> candidateResources =
-          getWaitAnyResources(possiblePosts.front());
-      assert(succeeded(maybePipeReference) && commonDFBIndex &&
-             candidateResources &&
+      auto transferPlanIt = plan.transferPlans.find(possiblePosts.front());
+      assert(transferPlanIt != plan.transferPlans.end() &&
              "validated wait-any post is missing planned resources");
-      for (Operation *post : possiblePosts.drop_front()) {
-        auto postOp = cast<PipeTransferPostOp>(post);
-        std::optional<int64_t> dfbIndex =
-            getCBIndex(getAttachedCB(postOp.getDst()));
-        std::optional<PipeWaitAnyCandidatePlan::Resources> resources =
-            getWaitAnyResources(post);
-        assert(transferIndex.getTransferCreate(post) == commonCreate &&
-               dfbIndex == commonDFBIndex && resources &&
-               haveSameCompletionResources(*candidateResources, *resources) &&
-               "wait-any completion groups must share planned resources");
-      }
-      waitPlan.candidates.emplace_back(std::move(*maybePipeReference),
-                                       std::move(*candidateResources));
+      waitPlan.candidates.push_back(
+          transferPlanIt->second.getResourceAccessPlan());
     }
     plan.waitAnyPlans.insert({waitOp.getOperation(), std::move(waitPlan)});
-    return WalkResult::advance();
   });
-  if (waitAnyResult.wasInterrupted()) {
-    return failure();
-  }
 
   return plan;
 }
