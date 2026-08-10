@@ -1087,7 +1087,7 @@ The `ttl.copy` function expresses a variety of data movements that always have t
 
 ### Selecting among completed receives
 
-A receiver may service several producers whose transfers complete independently. Waiting on one particular receive can block the receiver even when another receive has completed and could be processed. Posting every receive before waiting allows `ttl.wait_any` to wait until at least one candidate completes and select one without imposing a fixed blocking order.
+A receiver can have several outstanding PipeNet transfers. Waiting for one specific transfer delays work when another completes first. The receiver needs to process whichever transfer completes and rotate priority when several are complete.
 
 The caller supplies a nonempty ordered tuple of distinct receive requests and a starting index. The starting index is normalized modulo the tuple length. Candidates are inspected in cyclic tuple order beginning at that index, and the first completed candidate in that order is selected. If no candidate has completed, `ttl.wait_any` blocks and repeats the inspection. `ReadyReceive.index()` returns the selected tuple index.
 
