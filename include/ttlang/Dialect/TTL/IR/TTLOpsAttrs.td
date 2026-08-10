@@ -177,6 +177,35 @@ def TTL_DeviceTransferAttr : TTL_Attr<"DeviceTransfer", "device_transfer"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
+  let summary = "Structured logical-device transfer relation";
+  let description = [{
+    Defines a logical transfer relation without binding it to launch-node
+    endpoints. `kind` selects the relation semantics. `componentName`
+    identifies the affected domain component for structured relations.
+    `properties` contains only parameters specific to that relation:
+
+    - `explicit`: `edges` as an array of `#ttl.transfer_edge` attributes;
+    - `axis_neighbor`: `axis`, positive `offset`, and `wrap`;
+    - `stencil`: `offsets` and `wrap`;
+    - `gather`: component-local `root`;
+    - `scatter`: component-local `source`;
+    - `all_to_all`: no additional properties.
+
+    Domain extents are fixed for one compiled operation instance. A source
+    operation factory may construct the same relation for any supported
+    domain extents.
+  }];
+  let parameters = (ins
+    "DeviceDomainAttr":$domain,
+    "TransferGraphKind":$kind,
+    OptionalParameter<"StringAttr">:$componentName,
+    "DictionaryAttr":$properties
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_TileExecutionStrategyAttr
     : TTL_Attr<"TileExecutionStrategy", "tile_execution_strategy"> {
   let summary = "Selected tile execution strategy";
@@ -266,27 +295,47 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
   let genVerifyDecl = 1;
 }
 
-def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
-  let summary = "Identifies a PipeNet and contains its static pipe records";
+def TTL_PipeMappingAttr : TTL_Attr<"PipeMapping", "pipe_mapping"> {
+  let summary = "Factorized device graph and launch-node pipe relation";
   let description = [{
-    Identifies a PipeNet by id and contains the ordered list of
-    `#ttl.pipe_record` attributes that make up the net. PipeNet foreach ops use
-    this attribute to represent callback iteration without creating one
-    source-level operation per record.
+    Combines every logical device edge in `graph` with every node-level pipe
+    in `pipes`. The ordered mappings of one PipeNet form a union. The graph
+    and node-pipe relation remain separate so compiler metadata does not
+    contain their Cartesian product.
+  }];
+  let parameters = (ins
+    "TransferGraphAttr":$graph,
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+  );
+  let assemblyFormat = "`<` `graph` `=` $graph `,` `pipes` `[` $pipes `]` `>`";
+  let genVerifyDecl = 1;
+}
 
-    `pipes` is in user PipeNet construction order. A launch node that matches
-    multiple records executes them in this order. Duplicate records are
-    distinct entries and execute as separate callback invocations.
+def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
+  let summary = "Identifies a PipeNet and contains its pipe relation";
+  let description = [{
+    Identifies a PipeNet by id. A local PipeNet uses `pipes` as its ordered
+    list of `#ttl.pipe_record` attributes. A graph PipeNet uses `mappings` as
+    an ordered union of factorized logical-device graphs and node-level pipe
+    lists. Exactly one representation is nonempty.
+
+    PipeNet foreach operations use this attribute to represent callback
+    iteration without cloning a source-level callback body. Local records are
+    ordered by pipe construction. Graph records are ordered by mapping, graph
+    edge, then node pipe. A launch node that matches multiple records executes
+    them in this order.
   }];
 
   let parameters = (ins
     "int64_t":$pipeNetId,
     OptionalParameter<"::mlir::StringAttr">:$pipeNetName,
-    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes,
+    OptionalParameter<"::mlir::ArrayAttr">:$mappings
   );
 
   let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
-                       "`pipes` `[` $pipes `]` `>`";
+                       "`pipes` `[` $pipes `]` "
+                       "(`mappings` $mappings^)? `>`";
   let genVerifyDecl = 1;
 }
 

@@ -220,6 +220,23 @@ transfers = ttl.TransferGraph.edges(
 net = ttl.PipeNet(graph=transfers)
 ```
 
+Graph-only construction applies the transfer relation to an identity pipe on
+every launch node. A transfer between distinct worker coordinates declares the
+node relation separately:
+
+```python
+net = ttl.PipeNet(
+    graph=transfers,
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+The complete logical transfer is `(source device, source node) ->
+(destination device, destination node)`. `ttl.PipeMapping` permits an ordered
+union when different graph relations require different node pipes. PipeNet
+guards restrict which declared endpoints execute protocol operations; they do
+not infer or modify the relation.
+
 The graph does not state whether the target uses a line, ring, torus, mesh, or
 another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
@@ -357,21 +374,30 @@ The TTL dialect defines:
 - `DeviceRangeAttr` for a logical device range;
 - `TransferEdgeAttr` for one logical transfer relation;
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
-  pipe.
+  pipe;
+- `TransferGraphAttr` for explicit or structured logical-device relations;
+- `PipeMappingAttr` for a factorized graph and node-pipe relation;
+- `PipeNetRecordsAttr` for a local record list or an ordered union of graph
+  mappings;
 - `CurrentDeviceIndexOp` for the current member's row-major logical index.
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
 
-A graph PipeNet lowers to one ordered `PipeNetRecordsAttr` and one callback
-region for each source or destination role. The callback receives a selected
-record whose coordinate and logical-device fields come from immutable tables.
-This keeps callback code independent of the global edge count; it does not
-clone the callback for every transfer edge. The current representation still
-stores one metadata row per edge and launch node combination and scans the
-table on each logical device. Per-device record indices can reduce the scan
-cost, while target-level structured descriptors can reduce metadata, without
-changing the domain or callback semantics.
+A graph PipeNet lowers to one `PipeNetRecordsAttr` containing factorized graph
+mappings and one callback region for each source or destination role. The
+callback receives a selected record containing node coordinates, logical
+device indices, and distinct source- and destination-incident ordinals.
+Structured `TransferGraph` specializations lower edge enumeration and indexing
+with compact arithmetic. Explicit graphs use indexed adjacency. Each logical
+device iterates only its incident edges, and generated immutable resource
+tables contain only local-degree entries. The compiler does not emit the
+device-edge by node-pipe product as IR operations or global device tables.
+
+One compiled operation fixes its logical domain extents. Source-level CCL
+factories remain extent-parameterized and construct the same structured graph
+for any supported device count. Transfer graphs remain logical; host target
+binding resolves physical placement, routes, and forwarding links.
 
 ### Pipe lowering
 
