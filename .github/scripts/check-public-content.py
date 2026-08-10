@@ -173,7 +173,20 @@ def check_push(signatures: dict[int, frozenset[str]]) -> None:
     commit_messages = run_git(
         ["log", "--format=%B%x00", f"{source_ref}..{target_ref}"]
     ).stdout
-    check_content("pushed commit metadata", commit_messages, signatures)
+    check_content("pushed commit-message data", commit_messages, signatures)
+
+    commit_patches = run_git(
+        [
+            "log",
+            "--format=",
+            "--patch",
+            "--diff-merges=separate",
+            "--no-ext-diff",
+            "--no-color",
+            f"{source_ref}..{target_ref}",
+        ]
+    ).stdout
+    check_content("pushed commit-patch data", commit_patches, signatures)
 
 
 def parse_arguments() -> argparse.Namespace:

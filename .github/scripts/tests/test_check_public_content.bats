@@ -175,7 +175,25 @@ run_check() {
         bash -c 'cd "$1" && exec "$2" push' _ "$TEST_REPO" "$CHECK_SCRIPT"
 
     assert_failure
-    assert_output --partial "pushed commit metadata contains restricted public content"
+    assert_output --partial "pushed commit-message data contains restricted public content"
+}
+
+@test "rejects restricted content removed by a later pushed commit" {
+    source_ref=$(git -C "$TEST_REPO" rev-parse HEAD)
+    git -C "$TEST_REPO" switch -q -c feature/row-fusion
+    printf '%s\n' "$RESTRICTED_TEXT" > "$TEST_REPO/change.txt"
+    commit_all "$TEST_REPO" "add temporary content"
+    printf '%s\n' "ordinary change" > "$TEST_REPO/change.txt"
+    commit_all "$TEST_REPO" "replace temporary content"
+    target_ref=$(git -C "$TEST_REPO" rev-parse HEAD)
+
+    run_check env PRE_COMMIT_FROM_REF="$source_ref" PRE_COMMIT_TO_REF="$target_ref" \
+        PRE_COMMIT_LOCAL_BRANCH=refs/heads/feature/row-fusion \
+        PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/row-fusion \
+        bash -c 'cd "$1" && exec "$2" push' _ "$TEST_REPO" "$CHECK_SCRIPT"
+
+    assert_failure
+    assert_output --partial "pushed commit-patch data contains restricted public content"
 }
 
 @test "rejects restricted commit metadata on a new branch push" {
@@ -191,7 +209,7 @@ run_check() {
         bash -c 'cd "$1" && exec "$2" push' _ "$TEST_REPO" "$CHECK_SCRIPT"
 
     assert_failure
-    assert_output --partial "pushed commit metadata contains restricted public content"
+    assert_output --partial "pushed commit-message data contains restricted public content"
 }
 
 @test "permits deletion of a restricted remote branch" {
