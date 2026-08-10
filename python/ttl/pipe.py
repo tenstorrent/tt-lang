@@ -15,6 +15,7 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
@@ -222,6 +223,39 @@ def _pipe_to_pipe_use(pipe: Pipe):
     return PipeUse(src=src, dst=dst)
 
 
+@dataclass(frozen=True)
+class PipeMapping:
+    """Factorized device and launch-node relations for a graph PipeNet.
+
+    Every logical device edge in ``graph`` is combined with every node-level
+    pipe in ``pipes``. Multiple mappings in one PipeNet form an ordered union.
+    """
+
+    graph: object
+    pipes: Tuple[Pipe, ...]
+
+    def __init__(self, *, graph, pipes):
+        from .domains import TransferGraph
+
+        if not isinstance(graph, TransferGraph):
+            raise TypeError(
+                f"PipeMapping graph must be a TransferGraph, "
+                f"got {type(graph).__name__}"
+            )
+        normalized_pipes = tuple(pipes)
+        if not normalized_pipes:
+            raise ValueError("PipeMapping requires at least one pipe")
+        if any(not isinstance(pipe, Pipe) for pipe in normalized_pipes):
+            raise TypeError("PipeMapping pipes must contain only Pipe values")
+        if any(pipe.is_collective for pipe in normalized_pipes):
+            raise ValueError(
+                "graph PipeNet node pipes must be point-to-point; "
+                "node collective destinations require graph multicast lowering"
+            )
+        object.__setattr__(self, "graph", graph)
+        object.__setattr__(self, "pipes", normalized_pipes)
+
+
 class PipeNet:
     """
     A network of pipes for multi-core communication patterns.
@@ -259,7 +293,13 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
-    def __init__(self, pipes: Optional[List[Pipe]] = None, *, graph=None):
+    def __init__(
+        self,
+        pipes: Optional[List[Pipe]] = None,
+        *,
+        graph=None,
+        mappings=None,
+    ):
         # Validate at construction time by building a one-net graph and
         # delegating to OperationPipeNets.validate(). Single source of
         # truth for empty/overlap/mixed-kind rules; the same graph is
@@ -267,21 +307,48 @@ class PipeNet:
         from ._pipenets import OperationPipeNets
         from .domains import TransferGraph
 
-        if (pipes is None) == (graph is None):
-            raise ValueError("PipeNet requires exactly one of pipes or graph")
-        # Operation-local id assigned by the OperationPipeNets builder
-        # before AST emission (see _build_operation_pipenets).
-        self.pipe_net_id = 0
-        self.pipes: List[Pipe] = []
-        self.graph: Optional[TransferGraph] = None
-        self._graph_edges = ()
-        if graph is not None:
+        if mappings is not None:
+            if graph is not None or pipes is not None:
+                raise ValueError(
+                    "PipeNet mappings cannot be combined with graph or pipes"
+                )
+            normalized_mappings = tuple(mappings)
+            if not normalized_mappings:
+                raise ValueError("PipeNet mappings requires at least one mapping")
+            if any(
+                not isinstance(mapping, PipeMapping) for mapping in normalized_mappings
+            ):
+                raise TypeError("PipeNet mappings must contain only PipeMapping values")
+        elif graph is not None:
             if not isinstance(graph, TransferGraph):
                 raise TypeError(
                     f"PipeNet graph must be a TransferGraph, "
                     f"got {type(graph).__name__}"
                 )
+            normalized_mappings = (
+                (PipeMapping(graph=graph, pipes=pipes),) if pipes is not None else ()
+            )
+        else:
+            normalized_mappings = ()
+            if pipes is None:
+                raise ValueError("PipeNet requires pipes, graph, or mappings")
+        # Operation-local id assigned by the OperationPipeNets builder
+        # before AST emission (see _build_operation_pipenets).
+        self.pipe_net_id = 0
+        self.pipes: List[Pipe] = []
+        self.graph: Optional[TransferGraph] = None
+        self.mappings: Tuple[PipeMapping, ...] = ()
+        self._uses_grid_identity = graph is not None and pipes is None
+        if mappings is not None:
+            self.mappings = normalized_mappings
+            if len(normalized_mappings) == 1:
+                self.graph = normalized_mappings[0].graph
+                self.pipes = list(normalized_mappings[0].pipes)
+        elif graph is not None:
             self.graph = graph
+            self.mappings = normalized_mappings
+            if normalized_mappings:
+                self.pipes = list(normalized_mappings[0].pipes)
         else:
             assert pipes is not None
             if not pipes:
@@ -303,7 +370,7 @@ class PipeNet:
 
     @property
     def is_graph(self) -> bool:
-        return self.graph is not None
+        return self.graph is not None or bool(self.mappings)
 
     def _operation_identity_capture(self) -> tuple:
         if self.graph is None:

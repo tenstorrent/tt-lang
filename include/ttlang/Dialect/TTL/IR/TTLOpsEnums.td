@@ -49,6 +49,20 @@ def TTL_PipeTransferKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_TransferGraphKind : I32EnumAttr<
+    "TransferGraphKind", "Logical device transfer relation kind",
+    [
+      I32EnumAttrCase<"Explicit", 0, "explicit">,
+      I32EnumAttrCase<"AxisNeighbor", 1, "axis_neighbor">,
+      I32EnumAttrCase<"Stencil", 2, "stencil">,
+      I32EnumAttrCase<"Gather", 3, "gather">,
+      I32EnumAttrCase<"Scatter", 4, "scatter">,
+      I32EnumAttrCase<"AllToAll", 5, "all_to_all">,
+    ]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_ExternalTemplateArgKind_SignedInteger :
     I32EnumAttrCase<"SignedInteger", 0, "signed_integer">;
 def TTL_ExternalTemplateArgKind_Boolean :

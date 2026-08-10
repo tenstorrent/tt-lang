@@ -787,11 +787,14 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
 }
 
 class TTL_SelectPipeOp<string mnemonic, string role, Type pipeType>
-    : TTL_Op<mnemonic, [Pure]> {
+    : TTL_Op<mnemonic, [Pure, AttrSizedOperandSegments]> {
   let summary = "Represent a record selected by " # role # " iteration";
   let description = "Represents a PipeNet record selected for " # role #
       " iteration. The operands contain the selected record fields. "
-      "`$recordIndex` identifies the record in `$records`; the remaining "
+      "`$recordIndex` identifies the record in `$records`; "
+      "The optional `$sourceRecordIndex` and `$destinationRecordIndex` "
+      "identify the record in the source- and destination-incident edge "
+      "orderings. An omitted endpoint-local index equals `$recordIndex`. The remaining "
       "operands contain its coordinates and receiver count. "
       "`$srcInDstRange` is true when the source coordinate belongs to the "
       "destination range. `$records` identifies the PipeNet and transfer "
@@ -801,6 +804,8 @@ class TTL_SelectPipeOp<string mnemonic, string role, Type pipeType>
       "device-index accessors separately require graph records.";
   let arguments = (ins
     Index:$recordIndex,
+    Optional<Index>:$sourceRecordIndex,
+    Optional<Index>:$destinationRecordIndex,
     Index:$srcX,
     Index:$srcY,
     Index:$dstStartX,
@@ -815,7 +820,7 @@ class TTL_SelectPipeOp<string mnemonic, string role, Type pipeType>
   );
   let results = (outs pipeType:$pipe);
   let assemblyFormat = [{
-    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `record` `(` $recordIndex (`,` $sourceRecordIndex^ `,` $destinationRecordIndex)? `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
     `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)`
     `devices` `(` $sourceDeviceIndex `,` $destinationDeviceIndex `)` attr-dict `:` type($pipe)
   }];

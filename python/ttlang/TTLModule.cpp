@@ -60,6 +60,14 @@ void populateTTLModule(nb::module_ &m) {
       .value("Compute", LogicalKernelKind::Compute)
       .value("DataMovement", LogicalKernelKind::DataMovement);
 
+  nb::enum_<TransferGraphKind>(m, "TransferGraphKind")
+      .value("Explicit", TransferGraphKind::Explicit)
+      .value("AxisNeighbor", TransferGraphKind::AxisNeighbor)
+      .value("Stencil", TransferGraphKind::Stencil)
+      .value("Gather", TransferGraphKind::Gather)
+      .value("Scatter", TransferGraphKind::Scatter)
+      .value("AllToAll", TransferGraphKind::AllToAll);
+
   tt_attribute_class<LogicalKernelAttr>(m, "LogicalKernelAttr")
       .def_static(
           "get",
@@ -466,6 +474,24 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("dependency_index",
                    &DFBNonTransactionalAccessAttr::getDependencyIndex);
 
+  tt_attribute_class<TransferGraphAttr>(m, "TransferGraphAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, MlirAttribute domain, TransferGraphKind kind,
+             std::optional<std::string> componentName,
+             MlirAttribute properties) {
+            StringAttr componentNameAttr;
+            if (componentName) {
+              componentNameAttr = StringAttr::get(unwrap(ctx), *componentName);
+            }
+            return wrap(TransferGraphAttr::get(
+                unwrap(ctx), mlir::cast<DeviceDomainAttr>(unwrap(domain)), kind,
+                componentNameAttr,
+                mlir::cast<DictionaryAttr>(unwrap(properties))));
+          },
+          nb::arg("context"), nb::arg("domain"), nb::arg("kind"),
+          nb::arg("component_name").none() = nb::none(), nb::arg("properties"));
+
   //===--------------------------------------------------------------------===//
   // SliceAttr
   //===--------------------------------------------------------------------===//
@@ -537,6 +563,22 @@ void populateTTLModule(nb::module_ &m) {
         return nb::none();
       });
 
+  tt_attribute_class<PipeMappingAttr>(m, "PipeMappingAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, MlirAttribute graph,
+             std::vector<MlirAttribute> pipes) {
+            SmallVector<PipeRecordAttr> records;
+            records.reserve(pipes.size());
+            for (MlirAttribute pipe : pipes) {
+              records.push_back(mlir::cast<PipeRecordAttr>(unwrap(pipe)));
+            }
+            return wrap(PipeMappingAttr::get(
+                unwrap(ctx), mlir::cast<TransferGraphAttr>(unwrap(graph)),
+                records));
+          },
+          nb::arg("context"), nb::arg("graph"), nb::arg("pipes"));
+
   //===--------------------------------------------------------------------===//
   // PipeNetRecordsAttr
   //===--------------------------------------------------------------------===//
@@ -546,7 +588,8 @@ void populateTTLModule(nb::module_ &m) {
           "get",
           [](MlirContext ctx, int64_t pipeNetId,
              std::optional<std::string> pipeNetName,
-             std::vector<MlirAttribute> pipes) {
+             std::vector<MlirAttribute> pipes,
+             std::optional<MlirAttribute> mappings) {
             SmallVector<PipeRecordAttr> records;
             records.reserve(pipes.size());
             for (MlirAttribute attr : pipes) {
@@ -556,11 +599,16 @@ void populateTTLModule(nb::module_ &m) {
             if (pipeNetName.has_value()) {
               nameAttr = StringAttr::get(unwrap(ctx), *pipeNetName);
             }
-            return wrap(PipeNetRecordsAttr::get(unwrap(ctx), pipeNetId,
-                                                nameAttr, records));
+            ArrayAttr mappingsAttr;
+            if (mappings) {
+              mappingsAttr = mlir::cast<ArrayAttr>(unwrap(*mappings));
+            }
+            return wrap(PipeNetRecordsAttr::get(
+                unwrap(ctx), pipeNetId, nameAttr, records, mappingsAttr));
           },
           nb::arg("context"), nb::arg("pipe_net_id"),
-          nb::arg("pipe_net_name").none() = nb::none(), nb::arg("pipes"))
+          nb::arg("pipe_net_name").none() = nb::none(), nb::arg("pipes"),
+          nb::arg("mappings").none() = nb::none())
       .def_prop_ro("pipe_net_id", &PipeNetRecordsAttr::getPipeNetId)
       .def_prop_ro("pipe_net_name",
                    [](PipeNetRecordsAttr &self) -> std::optional<std::string> {
@@ -569,13 +617,20 @@ void populateTTLModule(nb::module_ &m) {
                      }
                      return std::nullopt;
                    })
-      .def_prop_ro("pipes", [](PipeNetRecordsAttr &self) {
-        std::vector<MlirAttribute> out;
-        out.reserve(self.getPipes().size());
-        for (PipeRecordAttr record : self.getPipes()) {
-          out.push_back(wrap(record));
+      .def_prop_ro("pipes",
+                   [](PipeNetRecordsAttr &self) {
+                     std::vector<MlirAttribute> out;
+                     out.reserve(self.getPipes().size());
+                     for (PipeRecordAttr record : self.getPipes()) {
+                       out.push_back(wrap(record));
+                     }
+                     return out;
+                   })
+      .def_prop_ro("mappings", [](PipeNetRecordsAttr &self) -> nb::object {
+        if (ArrayAttr mappings = self.getMappings()) {
+          return nb::cast(wrap(mappings));
         }
-        return out;
+        return nb::none();
       });
 
   //===--------------------------------------------------------------------===//

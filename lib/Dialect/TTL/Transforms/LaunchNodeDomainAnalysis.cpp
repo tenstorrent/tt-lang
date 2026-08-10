@@ -334,11 +334,11 @@ LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(PipeRecordAttr record,
 LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
                                                     PipeRole role) {
   LaunchNodeDomain result;
-  for (PipeRecordAttr record : records.getPipes()) {
+  forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
     LaunchNodeDomain recordDomain =
         getPipeRecordRoleLaunchNodeDomain(record, role);
     result = result.unionWith(recordDomain);
-  }
+  });
   return result;
 }
 
@@ -428,7 +428,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
     name = attr.getValue();
   }
   int64_t pipeNetId = records.getPipeNetId();
-  for (PipeRecordAttr record : records.getPipes()) {
+  forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
     PipeType pipeType =
         PipeType::get(records.getContext(), record.getSrcX(), record.getSrcY(),
                       record.getDstStartX(), record.getDstStartY(),
@@ -442,7 +442,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
     netDestinationDomains[pipeNetId] =
         netDestinationDomains[pipeNetId].unionWith(
             getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
-  }
+  });
   // One location identifies the declaration; recording it per row would
   // duplicate every diagnostic note for the same PipeNet.
   pipeNetLocs[pipeNetId].push_back(loc);
@@ -550,15 +550,17 @@ static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
     return std::nullopt;
   }
   bool selected = false;
-  for (PipeRecordAttr record : records.getPipes()) {
+  bool unknown = false;
+  forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
     std::optional<bool> recordMatches = pipeRecordRoleMatchesAtLaunchLocation(
         record, predicate.getReferencedRole(), location);
     if (!recordMatches) {
-      return std::nullopt;
+      unknown = true;
+      return;
     }
     selected |= *recordMatches;
-  }
-  return selected;
+  });
+  return unknown ? std::nullopt : std::optional<bool>(selected);
 }
 
 static std::optional<llvm::APInt>
@@ -692,27 +694,33 @@ evaluateRegionInvocationCountAtLaunchLocation(
   }
   if (auto foreachSrcOp = dyn_cast<PipeNetForeachSrcOp>(parent)) {
     std::uint64_t count = 0;
-    for (PipeRecordAttr record : foreachSrcOp.getRecords().getPipes()) {
-      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
-          record, PipeRole::Source, location);
-      if (!matches) {
-        return std::nullopt;
-      }
-      count += *matches;
-    }
-    return count;
+    bool unknown = false;
+    forEachPipeRecord(
+        foreachSrcOp.getRecords(), [&](std::uint64_t, PipeRecordAttr record) {
+          std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
+              record, PipeRole::Source, location);
+          if (!matches) {
+            unknown = true;
+            return;
+          }
+          count += *matches;
+        });
+    return unknown ? std::nullopt : std::optional<std::uint64_t>(count);
   }
   if (auto foreachDstOp = dyn_cast<PipeNetForeachDstOp>(parent)) {
     std::uint64_t count = 0;
-    for (PipeRecordAttr record : foreachDstOp.getRecords().getPipes()) {
-      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
-          record, PipeRole::Destination, location);
-      if (!matches) {
-        return std::nullopt;
-      }
-      count += *matches;
-    }
-    return count;
+    bool unknown = false;
+    forEachPipeRecord(
+        foreachDstOp.getRecords(), [&](std::uint64_t, PipeRecordAttr record) {
+          std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
+              record, PipeRole::Destination, location);
+          if (!matches) {
+            unknown = true;
+            return;
+          }
+          count += *matches;
+        });
+    return unknown ? std::nullopt : std::optional<std::uint64_t>(count);
   }
   if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent)) {
     LaunchNodeDomainResult trueDomain =

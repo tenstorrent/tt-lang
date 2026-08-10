@@ -209,13 +209,112 @@ buildPipePostPlan(PipeTransferPostOp postOp,
       std::move(addressModes), SmallVector<std::size_t>(fabricRouteIndices)};
 }
 
+static bool
+haveEquivalentComputedAddresses(const PipeComputedAddressInfo &lhs,
+                                const PipeComputedAddressInfo &rhs) {
+  return lhs.receiverDFBIndex == rhs.receiverDFBIndex &&
+         lhs.baseRuntimeCommonArgIndex == rhs.baseRuntimeCommonArgIndex &&
+         lhs.baseByteOffset == rhs.baseByteOffset &&
+         lhs.initialSlot == rhs.initialSlot &&
+         lhs.repeatStride == rhs.repeatStride &&
+         lhs.blockCount == rhs.blockCount &&
+         lhs.blockStrideBytes == rhs.blockStrideBytes &&
+         lhs.staticTileByteOffset == rhs.staticTileByteOffset &&
+         lhs.dynamicSlotCounterIndex == rhs.dynamicSlotCounterIndex;
+}
+
+static bool haveEquivalentAddressStorage(const PipeAddressStorageInfo &lhs,
+                                         const PipeAddressStorageInfo &rhs,
+                                         PipeRole role) {
+  if (lhs.mode != rhs.mode) {
+    return false;
+  }
+  if (lhs.mode == PipeAddressMode::ReceiverPublishedAddressTable) {
+    if (role == PipeRole::Destination) {
+      return true;
+    }
+    return lhs.sramAddressTable && rhs.sramAddressTable &&
+           lhs.sramAddressTable->byteOffset == rhs.sramAddressTable->byteOffset;
+  }
+  if (role == PipeRole::Source) {
+    return true;
+  }
+  return lhs.computedAddress && rhs.computedAddress &&
+         haveEquivalentComputedAddresses(*lhs.computedAddress,
+                                         *rhs.computedAddress);
+}
+
+static bool haveEquivalentProjectedResources(const PipeResourceInfo &lhs,
+                                             const PipeResourceInfo &rhs,
+                                             PipeRole role) {
+  if (!(lhs.pipe == rhs.pipe) || lhs.transferContract != rhs.transferContract ||
+      !haveEquivalentAddressStorage(lhs.addressStorage, rhs.addressStorage,
+                                    role)) {
+    return false;
+  }
+  return role == PipeRole::Source
+             ? lhs.readyCounter == rhs.readyCounter
+             : lhs.completion.counter == rhs.completion.counter;
+}
+
+static FailureOr<SmallVector<PipeResourceInfo>>
+projectSelectedResources(Operation *operation, PipeNetRecordsAttr records,
+                         ArrayRef<PipeResourceInfo> resources, PipeRole role) {
+  FailureOr<SmallVector<PipeRecordLocalIndex>> localRecords =
+      getPipeRecordLocalIndices(records, role);
+  if (failed(localRecords) || localRecords->size() != resources.size()) {
+    operation->emitError(
+        "cannot derive device-local selected-resource indices");
+    return failure();
+  }
+  SmallVector<std::optional<PipeResourceInfo>> projected;
+  for (auto [localRecord, resource] :
+       llvm::zip_equal(*localRecords, resources)) {
+    if (localRecord.index >= projected.size()) {
+      projected.resize(localRecord.index + 1);
+    }
+    std::optional<PipeResourceInfo> &slot = projected[localRecord.index];
+    if (slot && !haveEquivalentProjectedResources(*slot, resource, role)) {
+      operation->emitError()
+          << (role == PipeRole::Source ? "source" : "destination")
+          << "-incident records require inconsistent resource assignments";
+      return failure();
+    }
+    slot = resource;
+  }
+  auto first = llvm::find_if(
+      projected, [](const auto &resource) { return resource.has_value(); });
+  assert(first != projected.end() &&
+         "selected resource projection must contain one active row");
+  SmallVector<PipeResourceInfo> result;
+  result.reserve(projected.size());
+  for (const std::optional<PipeResourceInfo> &resource : projected) {
+    result.push_back(resource.value_or(**first));
+  }
+  return result;
+}
+
+static FailureOr<SelectedPipeResources>
+buildSelectedResources(Operation *operation, PipeNetRecordsAttr records,
+                       ArrayRef<PipeResourceInfo> resources) {
+  FailureOr<SmallVector<PipeResourceInfo>> source =
+      projectSelectedResources(operation, records, resources, PipeRole::Source);
+  FailureOr<SmallVector<PipeResourceInfo>> destination =
+      projectSelectedResources(operation, records, resources,
+                               PipeRole::Destination);
+  if (failed(source) || failed(destination)) {
+    return failure();
+  }
+  return SelectedPipeResources{std::move(*source), std::move(*destination)};
+}
+
 template <typename Resources>
 static bool allUseComputedReceiverDFB(const Resources &resources) {
   if (const auto *staticResources = std::get_if<PipeResourceInfo>(&resources)) {
     return staticResources->addressStorage.usesComputedReceiverDFB();
   }
   return llvm::all_of(
-      std::get<SmallVector<PipeResourceInfo>>(resources),
+      std::get<SelectedPipeResources>(resources).destination,
       [](const PipeResourceInfo &resource) {
         return resource.addressStorage.usesComputedReceiverDFB();
       });
@@ -642,7 +741,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
               fabricRoutePlan);
         }
         return buildPipePostPlan(
-            postOp, std::get<SmallVector<PipeResourceInfo>>(resources),
+            postOp, std::get<SelectedPipeResources>(resources).destination,
             fabricRoutePlan);
       }();
       if (failed(maybePostPlan)) {
@@ -671,8 +770,14 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         }
         assert(maybePipeReference->isSelected() &&
                "selected resources require a selected pipe reference");
+        FailureOr<SelectedPipeResources> selectedResources =
+            buildSelectedResources(operation, maybePipeReference->getRecords(),
+                                   resources);
+        if (failed(selectedResources)) {
+          return failure();
+        }
         return addTransferPlan(operation, std::move(*maybePipeReference),
-                               SmallVector<PipeResourceInfo>(resources));
+                               std::move(*selectedResources));
       });
   if (failed(traversalResult)) {
     return failure();

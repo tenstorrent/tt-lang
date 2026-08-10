@@ -32,7 +32,8 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
 
 static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
-  return !records.getPipes().front().getDeviceTransfer() &&
+  return !records.getMappings() &&
+         !records.getPipes().front().getDeviceTransfer() &&
          records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
 }
 
@@ -175,29 +176,26 @@ buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
 template <typename SelectOp, typename SelectedType>
 static SelectOp
 buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
-                  const PipeRecordTables &tables, Value recordIndex) {
+                  const PipeRecordTables &tables, Value recordIndex,
+                  Value sourceRecordIndex, Value destinationRecordIndex,
+                  Value pipeIndex, Value sourceDeviceIndex,
+                  Value destinationDeviceIndex) {
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value srcInDstRangeIndex = buildConstantIndexTableLookup(
-      builder, loc, tables.srcInDstRange, recordIndex);
+      builder, loc, tables.srcInDstRange, pipeIndex);
   Value srcInDstRange = arith::CmpIOp::create(
       builder, loc, arith::CmpIPredicate::ne, srcInDstRangeIndex, zero);
   return SelectOp::create(
       builder, loc, SelectedType::get(builder.getContext()), recordIndex,
-      buildConstantIndexTableLookup(builder, loc, tables.srcX, recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.srcY, recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.dstStartX,
-                                    recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.dstStartY,
-                                    recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.dstEndX, recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.dstEndY, recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.numDests, recordIndex),
-      srcInDstRange,
-      buildConstantIndexTableLookup(builder, loc, tables.sourceDeviceIndex,
-                                    recordIndex),
-      buildConstantIndexTableLookup(builder, loc, tables.destinationDeviceIndex,
-                                    recordIndex),
-      records);
+      sourceRecordIndex, destinationRecordIndex,
+      buildConstantIndexTableLookup(builder, loc, tables.srcX, pipeIndex),
+      buildConstantIndexTableLookup(builder, loc, tables.srcY, pipeIndex),
+      buildConstantIndexTableLookup(builder, loc, tables.dstStartX, pipeIndex),
+      buildConstantIndexTableLookup(builder, loc, tables.dstStartY, pipeIndex),
+      buildConstantIndexTableLookup(builder, loc, tables.dstEndX, pipeIndex),
+      buildConstantIndexTableLookup(builder, loc, tables.dstEndY, pipeIndex),
+      buildConstantIndexTableLookup(builder, loc, tables.numDests, pipeIndex),
+      srcInDstRange, sourceDeviceIndex, destinationDeviceIndex, records);
 }
 
 template <typename SelectOp, typename SelectedType>
@@ -212,9 +210,9 @@ static SelectOp buildGridMajorSelectedPipe(
       builder, loc, tables.destinationDeviceIndices, edgeBlock);
   Value srcInDstRange = arith::ConstantIntOp::create(builder, loc, 1, 1);
   return SelectOp::create(builder, loc, SelectedType::get(builder.getContext()),
-                          recordIndex, nodeX, nodeY, nodeX, nodeY, nodeX, nodeY,
-                          one, srcInDstRange, sourceDeviceIndex,
-                          destinationDeviceIndex, records);
+                          recordIndex, Value(), Value(), nodeX, nodeY, nodeX,
+                          nodeY, nodeX, nodeY, one, srcInDstRange,
+                          sourceDeviceIndex, destinationDeviceIndex, records);
 }
 
 static void collectOutermostPipeNetForeachOps(
@@ -368,24 +366,146 @@ lowerPipeNetForeachDirect(ForeachOp op, RewriterBase &rewriter, PipeRole role,
   rewriter.eraseOp(op);
 }
 
+static FailureOr<SmallVector<GraphPipeMappingForeachPlan, 0>>
+buildGraphPipeMappingForeachPlans(PipeNetRecordsAttr records,
+                                  Operation *diagnosticAnchor) {
+  SmallVector<GraphPipeMappingForeachPlan, 0> plans;
+  plans.reserve(records.getMappings().size());
+  for (Attribute mappingAttribute : records.getMappings()) {
+    auto mapping = mlir::cast<PipeMappingAttr>(mappingAttribute);
+    std::unique_ptr<TransferGraph> graph =
+        createTransferGraph(mapping.getGraph());
+    FailureOr<std::uint64_t> edgeCount = graph->getEdgeCount();
+    std::uint64_t nodePipeCount = mapping.getPipes().size();
+    std::optional<std::uint64_t> concreteRecordCount =
+        succeeded(edgeCount)
+            ? llvm::checkedMulUnsigned(*edgeCount, nodePipeCount)
+            : std::nullopt;
+    if (!concreteRecordCount ||
+        *concreteRecordCount >
+            static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+      diagnosticAnchor->emitOpError(
+          "graph PipeNet record count exceeds the supported index range");
+      return failure();
+    }
+
+    ArrayAttr singleMapping =
+        ArrayAttr::get(records.getContext(), ArrayRef<Attribute>{mapping});
+    PipeNetRecordsAttr mappingRecords = PipeNetRecordsAttr::get(
+        records.getContext(), records.getPipeNetId(), records.getPipeNetName(),
+        ArrayRef<PipeRecordAttr>(), singleMapping);
+    plans.push_back(GraphPipeMappingForeachPlan{
+        mappingRecords, buildPipeRecordTables(mapping.getPipes()),
+        std::move(graph), static_cast<int64_t>(nodePipeCount)});
+  }
+  return plans;
+}
+
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
-static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
-                                PipeForeachLoweringInfo &foreachLoweringInfo,
-                                PipeRole role,
-                                PipeNetRecordSelection recordSelection,
-                                SmallVectorImpl<Operation *> &foreachWorklist) {
+static LogicalResult
+lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
+                         PipeForeachLoweringInfo &foreachLoweringInfo,
+                         PipeRole role, PipeNetRecordSelection recordSelection,
+                         const GraphPipeNetForeachPlans &plansByRecords,
+                         SmallVectorImpl<Operation *> &foreachWorklist) {
+  auto plansIt = plansByRecords.find(op.getRecords());
+  assert(plansIt != plansByRecords.end() &&
+         "preflight must plan every graph PipeNet foreach operation");
+
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+  for (const GraphPipeMappingForeachPlan &plan : plansIt->second) {
+    Value currentDevice = CurrentDeviceIndexOp::create(
+        rewriter, loc, rewriter.getIndexType(), plan.graph->getDomain());
+    Value incidentEdgeCount =
+        plan.graph->buildIncidentEdgeCount(rewriter, loc, currentDevice, role);
+    Value nodePipeCount =
+        arith::ConstantIndexOp::create(rewriter, loc, plan.nodePipeCount);
+    Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value upper =
+        arith::MulIOp::create(rewriter, loc, incidentEdgeCount, nodePipeCount);
+    Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+    foreachLoweringInfo.recordLoops[forOp] = {plan.records, recordSelection};
+
+    rewriter.setInsertionPointToStart(forOp.getBody());
+    Value localRecordIndex = forOp.getInductionVar();
+    Value incidentEdgeIndex =
+        arith::DivSIOp::create(rewriter, loc, localRecordIndex, nodePipeCount);
+    Value nodePipeIndex =
+        arith::RemSIOp::create(rewriter, loc, localRecordIndex, nodePipeCount);
+    TransferGraphIncidentEdgeIndexValues edgeIndices =
+        plan.graph->buildIncidentEdgeIndexValues(rewriter, loc, currentDevice,
+                                                 incidentEdgeIndex, role);
+    Value edgeRecordBase = arith::MulIOp::create(
+        rewriter, loc, edgeIndices.edgeOrdinal, nodePipeCount);
+    Value recordIndex =
+        arith::AddIOp::create(rewriter, loc, edgeRecordBase, nodePipeIndex);
+    Value sourceRecordBase = arith::MulIOp::create(
+        rewriter, loc, edgeIndices.sourceIncidentOrdinal, nodePipeCount);
+    Value sourceRecordIndex =
+        arith::AddIOp::create(rewriter, loc, sourceRecordBase, nodePipeIndex);
+    Value destinationRecordBase = arith::MulIOp::create(
+        rewriter, loc, edgeIndices.destinationIncidentOrdinal, nodePipeCount);
+    Value destinationRecordIndex = arith::AddIOp::create(
+        rewriter, loc, destinationRecordBase, nodePipeIndex);
+    auto selectedPipe = buildSelectedPipe<SelectOp, SelectedPipeType>(
+        rewriter, loc, plan.records, plan.nodePipeTables, recordIndex,
+        sourceRecordIndex, destinationRecordIndex, nodePipeIndex,
+        edgeIndices.source, edgeIndices.destination);
+    Value nodeX =
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+    Value nodeY =
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+    Value roleMatches;
+    if (role == PipeRole::Source) {
+      roleMatches =
+          buildNodePointMatch(rewriter, loc, nodeX, nodeY,
+                              selectedPipe.getSrcX(), selectedPipe.getSrcY());
+    } else {
+      roleMatches = buildNodeRangeMatch(
+          rewriter, loc, nodeX, nodeY, selectedPipe.getDstStartX(),
+          selectedPipe.getDstStartY(), selectedPipe.getDstEndX(),
+          selectedPipe.getDstEndY());
+    }
+    auto ifOp = scf::IfOp::create(rewriter, loc, roleMatches,
+                                  /*withElseRegion=*/false);
+    foreachLoweringInfo.controlOps.push_back(forOp);
+    foreachLoweringInfo.controlOps.push_back(ifOp);
+    foreachLoweringInfo.ifThenDomains[ifOp] =
+        getPipeRecordsRoleLaunchNodeDomain(plan.records, role);
+    rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
+    rewriter.setInsertionPointAfter(forOp);
+  }
+  rewriter.eraseOp(op);
+  return success();
+}
+
+template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
+static LogicalResult
+lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
+                    PipeForeachLoweringInfo &foreachLoweringInfo, PipeRole role,
+                    PipeNetRecordSelection recordSelection,
+                    const GraphPipeNetForeachPlans &plansByRecords,
+                    SmallVectorImpl<Operation *> &foreachWorklist) {
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
+  if (records.getMappings()) {
+    return lowerGraphPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
+        op, rewriter, foreachLoweringInfo, role, recordSelection,
+        plansByRecords, foreachWorklist);
+  }
   if (shouldLowerPipeNetForeachDirect(records)) {
     lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
                               foreachWorklist);
-    return;
+    return success();
   }
   if (tryLowerGridMajorPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
           op, rewriter, foreachLoweringInfo, role, recordSelection,
           foreachWorklist)) {
-    return;
+    return success();
   }
 
   PipeRecordTables tables = buildPipeRecordTables(records);
@@ -398,8 +518,13 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = forOp.getInductionVar();
+  Value sourceDeviceIndex = buildConstantIndexTableLookup(
+      rewriter, loc, tables.sourceDeviceIndex, recordIndex);
+  Value destinationDeviceIndex = buildConstantIndexTableLookup(
+      rewriter, loc, tables.destinationDeviceIndex, recordIndex);
   auto selectedPipe = buildSelectedPipe<SelectOp, SelectedPipeType>(
-      rewriter, loc, records, tables, recordIndex);
+      rewriter, loc, records, tables, recordIndex, recordIndex, recordIndex,
+      recordIndex, sourceDeviceIndex, destinationDeviceIndex);
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
   Value nodeY =
@@ -436,32 +561,66 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
   clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
   rewriter.eraseOp(op);
+  return success();
 }
 
-static void
+static LogicalResult
 lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
                        PipeForeachLoweringInfo &foreachLoweringInfo,
+                       const GraphPipeNetForeachPlans &plansByRecords,
                        SmallVectorImpl<Operation *> &foreachWorklist) {
-  lowerPipeNetForeach<PipeNetForeachSrcOp, SelectPipeSrcOp,
-                      SelectedPipeSrcType>(
+  return lowerPipeNetForeach<PipeNetForeachSrcOp, SelectPipeSrcOp,
+                             SelectedPipeSrcType>(
       op, rewriter, foreachLoweringInfo, PipeRole::Source,
-      PipeNetRecordSelection::Source, foreachWorklist);
+      PipeNetRecordSelection::Source, plansByRecords, foreachWorklist);
 }
 
-static void
+static LogicalResult
 lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
                        PipeForeachLoweringInfo &foreachLoweringInfo,
+                       const GraphPipeNetForeachPlans &plansByRecords,
                        SmallVectorImpl<Operation *> &foreachWorklist) {
-  lowerPipeNetForeach<PipeNetForeachDstOp, SelectPipeDstOp,
-                      SelectedPipeDstType>(
+  return lowerPipeNetForeach<PipeNetForeachDstOp, SelectPipeDstOp,
+                             SelectedPipeDstType>(
       op, rewriter, foreachLoweringInfo, PipeRole::Destination,
-      PipeNetRecordSelection::Destination, foreachWorklist);
+      PipeNetRecordSelection::Destination, plansByRecords, foreachWorklist);
 }
 
 } // namespace
 
-void lowerPipeNetForeachOps(ModuleOp module,
-                            PipeForeachLoweringInfo &foreachLoweringInfo) {
+FailureOr<GraphPipeNetForeachPlans>
+buildGraphPipeNetForeachPlans(ModuleOp module) {
+  GraphPipeNetForeachPlans plansByRecords;
+  WalkResult result = module.walk([&](Operation *operation) {
+    PipeNetRecordsAttr records;
+    if (auto foreachSrc = dyn_cast<PipeNetForeachSrcOp>(operation)) {
+      records = foreachSrc.getRecords();
+    } else if (auto foreachDst = dyn_cast<PipeNetForeachDstOp>(operation)) {
+      records = foreachDst.getRecords();
+    } else {
+      return WalkResult::advance();
+    }
+    if (!records.getMappings() || plansByRecords.count(records)) {
+      return WalkResult::advance();
+    }
+    FailureOr<SmallVector<GraphPipeMappingForeachPlan, 0>> plans =
+        buildGraphPipeMappingForeachPlans(records, operation);
+    if (failed(plans)) {
+      return WalkResult::interrupt();
+    }
+    plansByRecords.insert({records, std::move(*plans)});
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+  return plansByRecords;
+}
+
+LogicalResult
+lowerPipeNetForeachOps(ModuleOp module,
+                       PipeForeachLoweringInfo &foreachLoweringInfo,
+                       const GraphPipeNetForeachPlans &plansByRecords) {
   // A module-wide greedy rewrite also deletes unrelated unused pure reads.
   // Rewrite only foreach operations so this expansion cannot change other IR.
   IRRewriter rewriter(module.getContext());
@@ -474,13 +633,20 @@ void lowerPipeNetForeachOps(ModuleOp module,
     // Lower an outer callback before its nested callbacks. The outer rewrite
     // queues only the outermost callbacks cloned from its body.
     if (auto foreachSrcOp = mlir::dyn_cast<PipeNetForeachSrcOp>(foreachOp)) {
-      lowerPipeNetForeachSrc(foreachSrcOp, rewriter, foreachLoweringInfo,
-                             foreachWorklist);
+      if (failed(lowerPipeNetForeachSrc(foreachSrcOp, rewriter,
+                                        foreachLoweringInfo, plansByRecords,
+                                        foreachWorklist))) {
+        return failure();
+      }
       continue;
     }
-    lowerPipeNetForeachDst(mlir::cast<PipeNetForeachDstOp>(foreachOp), rewriter,
-                           foreachLoweringInfo, foreachWorklist);
+    if (failed(lowerPipeNetForeachDst(
+            mlir::cast<PipeNetForeachDstOp>(foreachOp), rewriter,
+            foreachLoweringInfo, plansByRecords, foreachWorklist))) {
+      return failure();
+    }
   }
+  return success();
 }
 
 } // namespace mlir::tt::ttl

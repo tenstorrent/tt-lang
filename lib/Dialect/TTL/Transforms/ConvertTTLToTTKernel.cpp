@@ -2226,10 +2226,13 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 //===----------------------------------------------------------------------===//
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
-static LogicalResult lowerTTLOpsToTTKernel(
-    ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
-    StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
-    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
+static LogicalResult
+lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
+                      TTLToTTKernelTypeConverter &typeConverter,
+                      StringRef passName, bool pipeComputedAddresses,
+                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly,
+                      const GraphPipeNetForeachPlans &graphForeachPlans,
+                      std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2286,7 +2289,10 @@ static LogicalResult lowerTTLOpsToTTKernel(
   // Preserve the generated record-selection regions so pipe graph ordering
   // does not mistake them for independent user control flow.
   PipeForeachLoweringInfo foreachLoweringInfo;
-  lowerPipeNetForeachOps(mod, foreachLoweringInfo);
+  if (failed(lowerPipeNetForeachOps(mod, foreachLoweringInfo,
+                                    graphForeachPlans))) {
+    return failure();
+  }
 
   // Validate explicit transfer IR and resolve every high-level pipe copy before
   // expansion mutates the values used by the analysis.
@@ -2741,6 +2747,13 @@ struct TTLConvertTTLToTTKernelPass
       return;
     }
 
+    FailureOr<GraphPipeNetForeachPlans> graphForeachPlans =
+        buildGraphPipeNetForeachPlans(mod);
+    if (failed(graphForeachPlans)) {
+      signalPassFailure();
+      return;
+    }
+
     // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
     // DstSectionOp body and inserts acquire/commit/wait/release around it,
     // with stores reordered to the pack phase (after wait).
@@ -2749,7 +2762,7 @@ struct TTLConvertTTLToTTKernelPass
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(
             mod, ctx, typeConverter, getName(), pipeComputedAddresses,
-            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly, *graphForeachPlans,
             l1BudgetOverride == 0
                 ? std::nullopt
                 : std::optional<uint64_t>(l1BudgetOverride)))) {

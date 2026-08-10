@@ -189,6 +189,12 @@ struct PipePostPlan {
 /// Receiver-wait lowering has no operation-specific decisions.
 struct PipeWaitPlan {};
 
+/// Selected resources projected into each endpoint's incident-edge ordering.
+struct SelectedPipeResources {
+  SmallVector<PipeResourceInfo> source;
+  SmallVector<PipeResourceInfo> destination;
+};
+
 /// Complete lowering decisions for one active pipe protocol operation.
 class PipeTransferPlan {
 public:
@@ -197,7 +203,7 @@ public:
 
   /// Return whether runtime record selection determines the transfer.
   bool isSelected() const {
-    return std::holds_alternative<SmallVector<PipeResourceInfo>>(resources);
+    return std::holds_alternative<SelectedPipeResources>(resources);
   }
 
   /// Return resources for a statically known transfer.
@@ -207,11 +213,18 @@ public:
     return std::get<PipeResourceInfo>(resources);
   }
 
-  /// Return the record-indexed resources for a selected transfer.
-  ArrayRef<PipeResourceInfo> getSelectedResources() const {
+  /// Return source-incident resources for a selected transfer.
+  ArrayRef<PipeResourceInfo> getSelectedSourceResources() const {
     assert(isSelected() &&
            "selected resources requested for a static transfer");
-    return std::get<SmallVector<PipeResourceInfo>>(resources);
+    return std::get<SelectedPipeResources>(resources).source;
+  }
+
+  /// Return destination-incident resources for a selected transfer.
+  ArrayRef<PipeResourceInfo> getSelectedDestinationResources() const {
+    assert(isSelected() &&
+           "selected resources requested for a static transfer");
+    return std::get<SelectedPipeResources>(resources).destination;
   }
 
   /// Return the selected sender-readiness protocol.
@@ -252,8 +265,7 @@ private:
                       const PipeTransferIndex &, const PipeGraph &,
                       const PipeNetIndex &, const PipePlanningOptions &);
 
-  using Resources =
-      std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
+  using Resources = std::variant<PipeResourceInfo, SelectedPipeResources>;
   using OperationPlan = std::variant<PipeSendPlan, PipePostPlan, PipeWaitPlan>;
 
   PipeTransferPlan(PipeReference pipeReference, Resources resources,
