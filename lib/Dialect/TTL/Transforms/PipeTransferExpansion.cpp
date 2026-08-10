@@ -46,12 +46,18 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
           return getPipeTransferContract(createPipe);
         }
         if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
-          return getPipeTransferContract(
-              selectedSrc.getRecords().getPipes().front());
+          FailureOr<PipeRecordAttr> record =
+              getFirstPipeRecord(selectedSrc.getRecords());
+          return succeeded(record) ? FailureOr<PipeTransferContract>(
+                                         getPipeTransferContract(*record))
+                                   : FailureOr<PipeTransferContract>(failure());
         }
         if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
-          return getPipeTransferContract(
-              selectedDst.getRecords().getPipes().front());
+          FailureOr<PipeRecordAttr> record =
+              getFirstPipeRecord(selectedDst.getRecords());
+          return succeeded(record) ? FailureOr<PipeTransferContract>(
+                                         getPipeTransferContract(*record))
+                                   : FailureOr<PipeTransferContract>(failure());
         }
         if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
           return cast<PipeType>(origin.getType()).hasMultipleReceivers()
@@ -171,10 +177,10 @@ collectSelectedPipeKeys(ModuleOp module) {
       result = failure();
       return;
     }
-    for (PipeRecordAttr record : maybeRecords->records.getPipes()) {
+    forEachNodePipeRecord(maybeRecords->records, [&](PipeRecordAttr record) {
       selectedPipeKeys.insert(
           getPipeKey(record, maybeRecords->records.getPipeNetId()));
-    }
+    });
   });
   if (failed(result)) {
     return failure();

@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -44,6 +45,144 @@ struct SelectedPipeRecords {
 /// `ttl.select_pipe_dst`, and the pipe block argument of
 /// `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst`.
 FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
+
+/// Dynamic logical-device indices for one transfer-graph edge.
+struct TransferGraphEdgeIndexValues {
+  Value edgeOrdinal;
+  Value source;
+  Value destination;
+};
+
+/// Dynamic indices for one edge in both endpoint-local orderings.
+struct TransferGraphIncidentEdgeIndexValues {
+  Value edgeOrdinal;
+  Value source;
+  Value destination;
+  Value sourceIncidentOrdinal;
+  Value destinationIncidentOrdinal;
+};
+
+/// Verify one component coordinate against its declared extent.
+LogicalResult
+verifyComponentCoordinates(DeviceDomainComponentAttr component,
+                           DenseI64ArrayAttr coordinate,
+                           llvm::function_ref<InFlightDiagnostic()> emitError,
+                           StringRef context, bool allowUpperBound = false);
+
+/// Verify that every coordinate in `deviceRef` belongs to `domain`.
+LogicalResult
+verifyDeviceRefInDomain(DeviceDomainAttr domain, DeviceRefAttr deviceRef,
+                        llvm::function_ref<InFlightDiagnostic()> emitError,
+                        StringRef context, bool allowUpperBound = false);
+
+/// Verify a transfer edge and its source/destination relation in `domain`.
+LogicalResult
+verifyTransferEdgeInDomain(DeviceDomainAttr domain, TransferEdgeAttr edge,
+                           llvm::function_ref<InFlightDiagnostic()> emitError,
+                           StringRef context);
+
+/// Abstract semantics for one verified transfer graph.
+class TransferGraph {
+public:
+  TransferGraph(DeviceDomainAttr domain, TransferGraphKind kind,
+                StringAttr componentName, DictionaryAttr properties)
+      : domain(domain), kind(kind), componentName(componentName),
+        properties(properties) {}
+  virtual ~TransferGraph() = default;
+
+  DeviceDomainAttr getDomain() const { return domain; }
+  TransferGraphKind getKind() const { return kind; }
+  StringAttr getComponentName() const { return componentName; }
+  DictionaryAttr getProperties() const { return properties; }
+
+  /// Verify the properties and nonempty relation owned by this graph kind.
+  virtual LogicalResult
+  verify(llvm::function_ref<InFlightDiagnostic()> emitError) const = 0;
+
+  /// Enumerate graph edges in deterministic callback iteration order.
+  virtual void
+  forEachEdge(llvm::function_ref<void(TransferEdgeAttr)> callback) const = 0;
+
+  /// Return the number of graph edges without constructing node-pipe records.
+  virtual FailureOr<std::uint64_t> getEdgeCount() const = 0;
+
+  /// Build compact source and destination indices for one edge ordinal.
+  virtual TransferGraphEdgeIndexValues
+  buildEdgeIndexValues(OpBuilder &builder, Location loc,
+                       Value edgeIndex) const = 0;
+
+  /// Build the number of edges incident to one dynamic logical device.
+  virtual Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
+                                       Value deviceIndex,
+                                       PipeRole role) const = 0;
+
+  /// Build one incident edge and its global graph ordinal.
+  virtual TransferGraphIncidentEdgeIndexValues
+  buildIncidentEdgeIndexValues(OpBuilder &builder, Location loc,
+                               Value deviceIndex, Value incidentEdgeIndex,
+                               PipeRole role) const = 0;
+
+  /// Append edges incident to `device` in global callback iteration order.
+  virtual void
+  appendIncidentEdges(DeviceRefAttr device, PipeRole role,
+                      SmallVectorImpl<TransferEdgeAttr> &edges) const = 0;
+
+  SmallVector<TransferEdgeAttr> getEdges() const;
+  SmallVector<TransferEdgeAttr> getIncidentEdges(DeviceRefAttr device,
+                                                 PipeRole role) const;
+
+protected:
+  LogicalResult verifyNonemptyEdgeCount(
+      llvm::function_ref<InFlightDiagnostic()> emitError) const;
+
+private:
+  DeviceDomainAttr domain;
+  TransferGraphKind kind;
+  StringAttr componentName;
+  DictionaryAttr properties;
+};
+
+/// Create the graph specialization selected by `graph.kind`.
+std::unique_ptr<TransferGraph> createTransferGraph(TransferGraphAttr graph);
+
+/// Create a graph specialization while an attribute is being verified.
+std::unique_ptr<TransferGraph> createTransferGraph(DeviceDomainAttr domain,
+                                                   TransferGraphKind kind,
+                                                   StringAttr componentName,
+                                                   DictionaryAttr properties);
+
+/// Return the number of concrete transfers without constructing their product.
+FailureOr<std::uint64_t> getPipeRecordCount(PipeNetRecordsAttr records);
+
+/// Enumerate declared node-pipe records without repeating them per graph edge.
+void forEachNodePipeRecord(PipeNetRecordsAttr records,
+                           llvm::function_ref<void(PipeRecordAttr)> callback);
+
+/// Return the first declared node-pipe record without enumerating graph edges.
+FailureOr<PipeRecordAttr> getFirstNodePipeRecord(PipeNetRecordsAttr records);
+
+/// Enumerate concrete transfers without storing the graph/node-pipe product.
+void forEachPipeRecord(
+    PipeNetRecordsAttr records,
+    llvm::function_ref<void(std::uint64_t, PipeRecordAttr)> callback);
+
+/// Return one concrete transfer by its deterministic record ordinal.
+FailureOr<PipeRecordAttr> getPipeRecord(PipeNetRecordsAttr records,
+                                        std::uint64_t recordIndex);
+
+/// Return the first concrete transfer from a verified nonempty record set.
+FailureOr<PipeRecordAttr> getFirstPipeRecord(PipeNetRecordsAttr records);
+
+/// Device-local selected-record ordinal and count for one endpoint role.
+struct PipeRecordLocalIndex {
+  std::uint64_t index;
+  std::uint64_t count;
+};
+
+/// Translate every graph/node record ordinal to incident-edge order in one
+/// graph traversal.
+FailureOr<SmallVector<PipeRecordLocalIndex>>
+getPipeRecordLocalIndices(PipeNetRecordsAttr records, PipeRole role);
 
 /// Return the row-major index of `device` in `domain`.
 inline int64_t getLogicalDeviceIndex(DeviceDomainAttr domain,
