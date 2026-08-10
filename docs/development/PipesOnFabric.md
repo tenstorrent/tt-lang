@@ -634,8 +634,13 @@ run shortens the edit-test cycle but is not sufficient evidence of correctness.
 
 The collective suite derives its domain from the control-plane mesh extent and
 requests mesh routing so arbitrary physical turns remain one packet route.
-This target selection occurs when opening the runtime mesh, not in TTL domain
-or transfer attributes.
+Dedicated route tests request mesh, torus-X, torus-Y, and torus-XY modes. The
+torus cases send across each configured boundary and require every tested
+extent to exceed two, because a two-device extent cannot distinguish a wrap
+link from its ordinary neighbor link. A dedicated Galaxy CI fabric phase
+exposes the complete discovered mesh so these cases exercise the system
+topology. Target selection occurs when opening the runtime mesh, not in TTL
+domain or transfer attributes.
 
 Validation also includes the complete existing `test/python/pipe` suite and
 the affected MLIR tests. A source-level C++ match or a smaller-system hardware

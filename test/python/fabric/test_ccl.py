@@ -37,6 +37,12 @@ FABRIC_REDUCTION_DTYPES = [
     pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
     pytest.param(torch.float32, ttnn.float32, 5e-3, 5e-2, id="fp32"),
 ]
+TWO_DIMENSIONAL_ROUTE_CASES = [
+    pytest.param(ttnn.FabricConfig.FABRIC_2D, (0, 1), 2, id="mesh-turn"),
+    pytest.param(ttnn.FabricConfig.FABRIC_2D_TORUS_X, (1,), 3, id="torus-x"),
+    pytest.param(ttnn.FabricConfig.FABRIC_2D_TORUS_Y, (0,), 3, id="torus-y"),
+    pytest.param(ttnn.FabricConfig.FABRIC_2D_TORUS_XY, (0, 1), 3, id="torus-xy"),
+]
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,57 @@ def _make_bidirectional_exchange_operation(mesh_shape):
     return bidirectional_exchange
 
 
+def _make_point_to_point_operation(
+    mesh_shape: tuple[int, ...],
+    source_device: tuple[int, ...],
+    destination_device: tuple[int, ...],
+):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    point_to_point_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain, edges=[(source_device, destination_device)]
+        )
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def point_to_point(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            point_to_point_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[0, 0]).wait()
+
+            point_to_point_net.if_dst(receive)
+
+    return point_to_point
+
+
+def _flatten_device_index(coordinates, mesh_shape: tuple[int, ...]) -> int:
+    device_index = 0
+    for coordinate, extent in zip(coordinates, mesh_shape):
+        device_index = device_index * extent + coordinate
+    return device_index
+
+
 def _make_fabric_operations(
     mesh_shape: tuple[int, ...],
 ) -> FabricOperations:
@@ -166,8 +223,8 @@ def _make_fabric_operations(
             offset[axis] = delta
             stencil_offsets.append(tuple(offset))
 
-    point_to_point_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.edges(device_domain, edges=[(root_device, last_device)])
+    point_to_point = _make_point_to_point_operation(
+        mesh_shape, root_device, last_device
     )
     product_components = {
         f"axis_{axis}": (extent,) for axis, extent in enumerate(mesh_shape)
@@ -212,35 +269,6 @@ def _make_fabric_operations(
     all_to_all_net = ttl.PipeNet(
         graph=ttl.TransferGraph.edges(device_domain, edges=ring_edges)
     )
-
-    @ttl.operation(grid=(1, 1), device_domain=device_domain)
-    def point_to_point(inp, out):
-        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-
-        @ttl.compute()
-        def idle_compute():
-            pass
-
-        @ttl.datamovement()
-        def sender_node():
-            def send(pipe):
-                with send_dfb.reserve() as send_block:
-                    ttl.copy(inp[0, 0], send_block).wait()
-                with send_dfb.wait() as send_block:
-                    ttl.copy(send_block, pipe).wait()
-
-            point_to_point_net.if_src(send)
-
-        @ttl.datamovement()
-        def receiver_node():
-            def receive(pipe):
-                with receive_dfb.reserve() as receive_block:
-                    ttl.copy(pipe, receive_block).wait()
-                with receive_dfb.wait() as receive_block:
-                    ttl.copy(receive_block, out[0, 0]).wait()
-
-            point_to_point_net.if_dst(receive)
 
     @ttl.operation(grid=(1, 1), device_domain=product_domain)
     def product_point_to_point(inp, out):
@@ -868,6 +896,60 @@ def test_product_domain_point_to_point(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+# Validate a mesh route that turns across axes and transfers that cross each
+# configured torus boundary.
+@pytest.mark.parametrize(
+    "fabric_config,route_axes,minimum_extent", TWO_DIMENSIONAL_ROUTE_CASES
+)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_two_dimensional_route(
+    fabric_mesh_shape,
+    fabric_config,
+    route_axes,
+    minimum_extent,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    if len(fabric_mesh_shape) != 2 or any(
+        fabric_mesh_shape[axis] < minimum_extent for axis in route_axes
+    ):
+        pytest.skip("requires a full 2D mesh with the requested routing topology")
+
+    source_device = (0, 0)
+    destination_device = tuple(
+        extent - 1 if axis in route_axes else 0
+        for axis, extent in enumerate(fabric_mesh_shape)
+    )
+    point_to_point = _make_point_to_point_operation(
+        fabric_mesh_shape, source_device, destination_device
+    )
+    device_count = prod(fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with open_fabric_mesh(
+        requested_mesh_shape=fabric_mesh_shape,
+        fabric_config=fabric_config,
+    ) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        point_to_point(inp, out)
+
+        result = _compose(mesh, out)
+
+    source_index = _flatten_device_index(source_device, fabric_mesh_shape)
+    destination_index = _flatten_device_index(destination_device, fabric_mesh_shape)
+    expected = torch.zeros_like(inp_torch)
+    expected[destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE, :] = (
+        inp_torch[source_index * TILE_SIZE : (source_index + 1) * TILE_SIZE, :]
+    )
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
 # Verify that an axis-neighbor relation transfers from each logical device to
 # its successor without crossing the domain boundary.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
@@ -936,18 +1018,16 @@ def test_stencil_nearest_neighbors(
         device_count, device_count, TILE_SIZE, TILE_SIZE
     )
     for source in product(*(range(extent) for extent in fabric_mesh_shape)):
-        source_index = 0
-        for coordinate, extent in zip(source, fabric_mesh_shape):
-            source_index = source_index * extent + coordinate
+        source_index = _flatten_device_index(source, fabric_mesh_shape)
         for axis in range(len(fabric_mesh_shape)):
             for delta in (-1, 1):
                 destination = list(source)
                 destination[axis] += delta
                 if not 0 <= destination[axis] < fabric_mesh_shape[axis]:
                     continue
-                destination_index = 0
-                for coordinate, extent in zip(destination, fabric_mesh_shape):
-                    destination_index = destination_index * extent + coordinate
+                destination_index = _flatten_device_index(
+                    destination, fabric_mesh_shape
+                )
                 expected[destination_index, source_index] = input_shards[source_index]
     assert_allclose(
         result.float(),
@@ -1098,7 +1178,6 @@ def test_all_reduce(
 
 # Verify that each destination receives and reduces its corresponding tile
 # from every source device.
-@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_REDUCTION_DTYPES)
 def test_reduce_scatter(
     fabric_mesh_shape,
@@ -1126,7 +1205,6 @@ def test_reduce_scatter(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
-@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_gather(
     fabric_mesh_shape,
@@ -1154,7 +1232,6 @@ def test_all_gather(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
-@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_to_all(
     fabric_mesh_shape,
