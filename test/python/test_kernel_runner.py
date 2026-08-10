@@ -1148,7 +1148,7 @@ def test_plan_runtime_resources_rejects_fabric_route_count_mismatch():
     )
 
 
-def test_plan_runtime_resources_rejects_fabric_runtime_arg_collision():
+def test_plan_runtime_resources_accepts_caller_args_with_fabric_routes():
     route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
     resources = ProgramRuntimeResources(
         kernel_resources=(
@@ -1159,17 +1159,15 @@ def test_plan_runtime_resources_rejects_fabric_runtime_arg_collision():
         )
     )
 
-    with pytest.raises(ValueError) as exception_info:
-        _plan_runtime_resources(
-            resources,
-            [_kernel_spec(KernelKind.COMPUTE)],
-            kernel_fabric_routes=((route,),),
-        )
-    assert str(exception_info.value) == (
-        "@ttl.operation 'planned_operation': caller runtime arguments for "
-        "canonical compute kernel descriptor 0 conflict with compiler-managed "
-        "fabric routes"
+    plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(KernelKind.COMPUTE)],
+        kernel_fabric_routes=((route,),),
     )
+
+    runtime_arg = plan.kernel_descriptors[0].runtime_args[0]
+    assert runtime_arg.coordinate == (0, 0)
+    assert runtime_arg.values == (7,)
 
 
 def test_plan_runtime_resources_allows_defines_on_fabric_kernel():
@@ -1641,9 +1639,7 @@ def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
     assert committed_lifetimes == [(owner,)]
 
 
-def test_run_kernel_rejects_fabric_runtime_arg_collision_before_materialization(
-    monkeypatch,
-):
+def test_run_kernel_materializes_caller_args_with_fabric_routes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     materialized_descriptors = []
@@ -1669,22 +1665,18 @@ def test_run_kernel_rejects_fabric_runtime_arg_collision_before_materialization(
         )
 
     route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
-    with pytest.raises(
-        ValueError,
-        match="conflict with compiler-managed fabric routes",
-    ):
-        kernel_runner.run_kernel_on_device(
-            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
-            tensors=[_FakeTensorWithoutDevice()],
-            cb_configs=[],
-            core_ranges=_FakeCoreRanges(),
-            kernel_fabric_routes=[[route]],
-            runtime_resource_factory=make_resources,
-            operation_name="routed_collision",
-        )
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        kernel_fabric_routes=[[route]],
+        runtime_resource_factory=make_resources,
+        operation_name="routed_composition",
+    )
 
-    assert materialized_descriptors == []
-    assert fake_ttnn.generic_op_calls == []
+    assert materialized_descriptors == [True]
+    assert result["program"].kernels == []
 
 
 def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
@@ -2091,6 +2083,7 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         config=object(),
     )
     program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    kernel.runtime_args[1][0] = [0x55]
     routes = [
         kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0),
         kernel_runner.FabricRouteSpec((0, 1), (0, 0), ((1, 0),), 0),
@@ -2107,7 +2100,7 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     )
 
     assert kernel.runtime_args[0][0] == [1, 0, 1, 0, 0xA0, 0xB0]
-    assert kernel.runtime_args[1][0] == [0] * 4
+    assert kernel.runtime_args[1][0] == [0, 0, 0, 0, 0x55]
     assert fake_ttnn.fabric_setup_calls == [
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (0, 0)),
     ]
@@ -2348,28 +2341,28 @@ def test_routing_plane_rejects_link_overcommit_before_mutation(monkeypatch):
     assert all(not kernel.runtime_args for kernel in program.kernels)
 
 
-def test_routing_plane_rejects_existing_runtime_args_before_setup(monkeypatch):
+def test_routing_plane_appends_existing_runtime_args_after_fabric_args(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     program = _make_fake_fabric_program(2)
     program.kernels[1].runtime_args[0][0] = [0x44]
     route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
 
-    with pytest.raises(
-        ValueError, match="compiler-managed fabric routes require an empty"
-    ):
-        kernel_runner.configure_routing_plane_runtime_args(
-            program_descriptor=program,
-            kernel_fabric_routes=[[route], [route]],
-            mesh_device=_FakeMeshDevice(),
-            device_coordinates=(0, 0),
-            grid_cols=1,
-            grid_rows=1,
-        )
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
 
-    assert fake_ttnn.fabric_setup_calls == []
-    assert program.kernels[0].runtime_args[0][0] == []
-    assert program.kernels[1].runtime_args[0][0] == [0x44]
+    assert program.kernels[0].runtime_args[0][0] == [
+        1, 0, 1, 0, 0xA0, 0xB0
+    ]
+    assert program.kernels[1].runtime_args[0][0] == [
+        1, 0, 1, 0, 0xA0, 0xB0, 0x44
+    ]
 
 
 def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):

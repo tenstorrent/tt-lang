@@ -34,6 +34,9 @@ kernels with `kernel=`. `KernelKind.COMPUTE` and
 kind. `PIPE_SOURCE_KERNEL` selects the compiler-owned data-movement kernel
 that executes PipeNet source callbacks. External transport work and its typed
 runtime resources use this selector when they must share that kernel.
+When the shared kernel also has compiler-managed fabric routes, its generated
+route metadata and connection records precede the operation-owned per-core
+runtime arguments.
 
 ```python
 @ttl.operation(grid=(1, 1))
