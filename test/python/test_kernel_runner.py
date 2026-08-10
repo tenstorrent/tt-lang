@@ -22,6 +22,7 @@ from ttl import (
     Kernel,
     KernelKind,
     KernelRuntimeResources,
+    PIPE_SOURCE_KERNEL,
     ProgramRuntimeResources,
     kernel_runner,
 )
@@ -523,6 +524,26 @@ def test_plan_runtime_resources_resolves_explicit_kernel_identity():
         "fabric_kernel",
         "test.operation",
         None,
+    )
+
+
+def test_plan_runtime_resources_resolves_pipe_source_kernel():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(kernel=PIPE_SOURCE_KERNEL),
+        )
+    )
+
+    plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(PIPE_SOURCE_KERNEL)],
+    )
+
+    assert plan.kernel_descriptors[0].logical_kernel == kernel_runner.LogicalKernelId(
+        KernelKind.DATA_MOVEMENT,
+        "<pipe_source>",
+        None,
+        "pipe_source",
     )
 
 
