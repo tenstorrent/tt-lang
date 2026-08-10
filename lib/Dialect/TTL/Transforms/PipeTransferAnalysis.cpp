@@ -36,6 +36,24 @@ LogicalResult PipeTransferIndex::build(ModuleOp module,
       return WalkResult::advance();
     }
 
+    if (auto waitOp = mlir::dyn_cast<WaitAnyOp>(operation)) {
+      SmallVector<SmallVector<Operation *>> candidatePosts;
+      candidatePosts.reserve(waitOp.getRequests().size());
+      for (Value request : waitOp.getRequests()) {
+        FailureOr<SmallVector<CopyOp>> maybePosts =
+            findPipeReceiveCopies(valueOrigins, request);
+        if (failed(maybePosts)) {
+          waitOp.emitOpError()
+              << "requires every request origin to be a pipe receive ttl.copy";
+          return WalkResult::interrupt();
+        }
+        candidatePosts.push_back(llvm::map_to_vector(
+            *maybePosts, [](CopyOp copyOp) { return copyOp.getOperation(); }));
+      }
+      receivePostsByHighWaitAny[operation] = std::move(candidatePosts);
+      return WalkResult::advance();
+    }
+
     if (auto waitOp = mlir::dyn_cast<PipeTransferWaitOp>(operation)) {
       FailureOr<SmallVector<PipeTransferPostOp>> maybePosts =
           findPipeTransferPostsForToken(valueOrigins, waitOp.getToken());
@@ -57,6 +75,28 @@ LogicalResult PipeTransferIndex::build(ModuleOp module,
         return WalkResult::interrupt();
       }
       transferCreateByProtocolOp[operation] = maybeCreate->getOperation();
+      return WalkResult::advance();
+    }
+
+    if (auto waitOp = mlir::dyn_cast<PipeTransferWaitAnyOp>(operation)) {
+      SmallVector<SmallVector<Operation *>> candidatePosts;
+      candidatePosts.reserve(waitOp.getTokens().size());
+      for (Value token : waitOp.getTokens()) {
+        FailureOr<SmallVector<PipeTransferPostOp>> maybePosts =
+            findPipeTransferPostsForToken(valueOrigins, token);
+        if (failed(maybePosts)) {
+          waitOp.emitOpError() << "requires every token value to derive from a "
+                                  "ttl.pipe_transfer.post";
+          return WalkResult::interrupt();
+        }
+        SmallVector<Operation *> posts;
+        posts.reserve(maybePosts->size());
+        for (PipeTransferPostOp postOp : *maybePosts) {
+          posts.push_back(postOp.getOperation());
+        }
+        candidatePosts.push_back(std::move(posts));
+      }
+      receivePostsByWaitAny[operation] = std::move(candidatePosts);
       return WalkResult::advance();
     }
 
@@ -90,11 +130,27 @@ std::optional<CopyOp> PipeTransferIndex::getReceivePost(WaitOp waitOp) const {
   return mlir::cast<CopyOp>(postIt->second);
 }
 
+ArrayRef<SmallVector<Operation *>>
+PipeTransferIndex::getReceivePosts(WaitAnyOp waitOp) const {
+  auto postsIt = receivePostsByHighWaitAny.find(waitOp.getOperation());
+  assert(postsIt != receivePostsByHighWaitAny.end() &&
+         "public wait-any must have a transfer index entry");
+  return postsIt->second;
+}
+
 ArrayRef<Operation *>
 PipeTransferIndex::getPossibleReceivePosts(PipeTransferWaitOp waitOp) const {
   auto postsIt = receivePostsByWait.find(waitOp.getOperation());
   assert(postsIt != receivePostsByWait.end() &&
          "internal receive wait must have a transfer index entry");
+  return postsIt->second;
+}
+
+ArrayRef<SmallVector<Operation *>> PipeTransferIndex::getWaitAnyCandidatePosts(
+    PipeTransferWaitAnyOp waitOp) const {
+  auto postsIt = receivePostsByWaitAny.find(waitOp.getOperation());
+  assert(postsIt != receivePostsByWaitAny.end() &&
+         "internal wait-any must have a transfer index entry");
   return postsIt->second;
 }
 

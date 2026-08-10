@@ -37,6 +37,7 @@ from .operators import (
     matmul,
     node,
     raw_addr,
+    wait_any,
 )
 
 # Math operations namespace
@@ -59,5 +60,6 @@ __all__ = [
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
+    "wait_any",
     "math",
 ]

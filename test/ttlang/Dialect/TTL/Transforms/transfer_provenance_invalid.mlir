@@ -223,21 +223,21 @@ func.func @wait_requires_one_pipe_receive(%condition: i1) {
   %receive0 = ttl.copy %pipe, %dst0
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
+      -> !ttl.receive_request
   %dst1 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %receive1 = ttl.copy %pipe, %dst1
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
-  %receive = scf.if %condition -> (!ttl.transfer_handle) {
-    scf.yield %receive0 : !ttl.transfer_handle
+      -> !ttl.receive_request
+  %receive = scf.if %condition -> (!ttl.receive_request) {
+    scf.yield %receive0 : !ttl.receive_request
   } else {
-    scf.yield %receive1 : !ttl.transfer_handle
+    scf.yield %receive1 : !ttl.receive_request
   }
   // expected-error @below {{'ttl.wait' op requires either every possible source to be the same pipe receive ttl.copy or no source to be a pipe receive}}
-  ttl.wait %receive : !ttl.transfer_handle
+  ttl.wait %receive : !ttl.receive_request
   func.return
 }
 

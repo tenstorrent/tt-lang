@@ -172,6 +172,59 @@ struct PipePostPlan {
 /// Receiver-wait lowering has no operation-specific decisions.
 struct PipeWaitPlan {};
 
+/// Completion resource and pipe reference for one wait-any candidate.
+class PipeWaitAnyCandidatePlan {
+public:
+  using Resources =
+      std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
+
+  PipeWaitAnyCandidatePlan(PipeReference pipeReference, Resources resources)
+      : pipeReference(std::move(pipeReference)),
+        resources(std::move(resources)) {}
+
+  const PipeReference &getPipeReference() const { return pipeReference; }
+
+  bool isSelected() const {
+    return std::holds_alternative<SmallVector<PipeResourceInfo>>(resources);
+  }
+
+  const PipeResourceInfo &getResources() const {
+    assert(!isSelected() &&
+           "static resources requested for selected candidate");
+    return std::get<PipeResourceInfo>(resources);
+  }
+
+  ArrayRef<PipeResourceInfo> getSelectedResources() const {
+    assert(isSelected() && "selected resources requested for static candidate");
+    return std::get<SmallVector<PipeResourceInfo>>(resources);
+  }
+
+private:
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
+
+  PipeReference pipeReference;
+  Resources resources;
+};
+
+/// Immutable candidate decisions for one wait-any operation.
+class PipeWaitAnyPlan {
+public:
+  ArrayRef<PipeWaitAnyCandidatePlan> getCandidates() const {
+    return candidates;
+  }
+
+private:
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
+
+  SmallVector<PipeWaitAnyCandidatePlan, 0> candidates;
+};
+
 /// Complete lowering decisions for one active pipe protocol operation.
 class PipeTransferPlan {
 public:
@@ -281,6 +334,9 @@ public:
   /// Return the lowering plan for an active pipe protocol operation.
   const PipeTransferPlan &getTransferPlan(Operation *operation) const;
 
+  /// Return the lowering plan for an internal wait-any operation.
+  const PipeWaitAnyPlan &getWaitAnyPlan(PipeTransferWaitAnyOp operation) const;
+
 private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
@@ -294,6 +350,7 @@ private:
   PipeTransportPlan transportPlan;
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;
   llvm::MapVector<Operation *, PipeTransferPlan> transferPlans;
+  llvm::MapVector<Operation *, PipeWaitAnyPlan> waitAnyPlans;
 };
 
 /// Compute all PipeNet decisions required after transfer IR expansion.

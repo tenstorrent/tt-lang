@@ -149,6 +149,28 @@ def _is_ttl_copy_call(node: ast.expr) -> bool:
     )
 
 
+def _wait_any_request_names(node: ast.AST) -> set[str]:
+    """Return simple variables consumed by a ttl.wait_any tuple."""
+    names: set[str] = set()
+    for candidate in ast.walk(node):
+        if not (
+            isinstance(candidate, ast.Call)
+            and isinstance(candidate.func, ast.Attribute)
+            and candidate.func.attr == "wait_any"
+            and isinstance(candidate.func.value, ast.Name)
+            and candidate.func.value.id == "ttl"
+            and candidate.args
+            and isinstance(candidate.args[0], ast.Tuple)
+        ):
+            continue
+        names.update(
+            element.id
+            for element in candidate.args[0].elts
+            if isinstance(element, ast.Name)
+        )
+    return names
+
+
 def _find_copy_records(
     stmts: list[ast.stmt],
     file_start_line: int,
@@ -179,7 +201,8 @@ def _find_copy_records(
         elif isinstance(stmt, ast.Expr) and _is_ttl_copy_call(stmt.value):
             bare_linenos.append(abs_lineno)
 
-    # Map each variable name to the absolute line numbers where .wait() is called.
+    # Map each variable name to the absolute line numbers where it is
+    # synchronized.
     # A copy assignment is only disqualified if the matching .wait() appears
     # *after* it; a wait that precedes the assignment (e.g. at the top of a loop
     # body to release the previous iteration's copy) must not suppress injection.
@@ -197,6 +220,9 @@ def _find_copy_records(
                 wait_abs_linenos.setdefault(name, []).append(
                     file_start_line + node.lineno - 1
                 )
+        synchronization_line = file_start_line + stmt.lineno - 1
+        for name in _wait_any_request_names(stmt):
+            wait_abs_linenos.setdefault(name, []).append(synchronization_line)
 
     return [
         (var, ln)

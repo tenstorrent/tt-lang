@@ -57,7 +57,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %receive = ttl.copy %pipe, %reserved
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     ttl.pipenet_foreach_src attributes {
         records = #ttl.pipenet_records<net 0 name "loopback" pipes [
           #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
@@ -71,7 +71,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       ttl.wait %send : !ttl.transfer_handle<write>
       ttl.yield
     }
-    ttl.wait %receive : !ttl.transfer_handle
+    ttl.wait %receive : !ttl.receive_request
     func.return
   }
 
@@ -100,8 +100,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %receive = ttl.copy %selected, %reserved
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
       ttl.yield
     }
     func.return

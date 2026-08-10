@@ -99,6 +99,13 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
+const PipeWaitAnyPlan &
+PipeModulePlan::getWaitAnyPlan(PipeTransferWaitAnyOp operation) const {
+  auto planIt = waitAnyPlans.find(operation.getOperation());
+  assert(planIt != waitAnyPlans.end() && "wait-any operation has no plan");
+  return planIt->second;
+}
+
 FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
                                                       int64_t blockSpan) {
   FailureOr<CircularBufferType> maybeDFBType =
@@ -511,6 +518,88 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                                SmallVector<PipeResourceInfo>(resources)))) {
       return failure();
     }
+  }
+
+  auto getWaitAnyResources = [&](Operation *post)
+      -> std::optional<PipeWaitAnyCandidatePlan::Resources> {
+    auto staticResources = plan.resourcePlan.resources.find(post);
+    if (staticResources != plan.resourcePlan.resources.end()) {
+      return staticResources->second;
+    }
+    auto selectedResources = plan.resourcePlan.selectedResources.find(post);
+    if (selectedResources != plan.resourcePlan.selectedResources.end()) {
+      return SmallVector<PipeResourceInfo>(selectedResources->second);
+    }
+    return std::nullopt;
+  };
+  auto haveSameCompletionResources =
+      [](const PipeWaitAnyCandidatePlan::Resources &lhs,
+         const PipeWaitAnyCandidatePlan::Resources &rhs) {
+        if (lhs.index() != rhs.index()) {
+          return false;
+        }
+        if (std::holds_alternative<PipeResourceInfo>(lhs)) {
+          return std::get<PipeResourceInfo>(lhs).completion.counter ==
+                 std::get<PipeResourceInfo>(rhs).completion.counter;
+        }
+        ArrayRef<PipeResourceInfo> lhsResources =
+            std::get<SmallVector<PipeResourceInfo>>(lhs);
+        ArrayRef<PipeResourceInfo> rhsResources =
+            std::get<SmallVector<PipeResourceInfo>>(rhs);
+        return lhsResources.size() == rhsResources.size() &&
+               llvm::all_of(
+                   llvm::zip_equal(lhsResources, rhsResources),
+                   [](const auto &resources) {
+                     return std::get<0>(resources).completion.counter ==
+                            std::get<1>(resources).completion.counter;
+                   });
+      };
+
+  WalkResult waitAnyResult = module.walk([&](PipeTransferWaitAnyOp waitOp) {
+    PipeWaitAnyPlan waitPlan;
+    for (ArrayRef<Operation *> possiblePosts :
+         transferIndex.getWaitAnyCandidatePosts(waitOp)) {
+      assert(!possiblePosts.empty() && "candidate must have a receiver post");
+      PipeTransferCreateOp commonCreate =
+          transferIndex.getTransferCreate(possiblePosts.front());
+      auto firstPost = cast<PipeTransferPostOp>(possiblePosts.front());
+      std::optional<int64_t> commonDFBIndex =
+          getCBIndex(getAttachedCB(firstPost.getDst()));
+      FailureOr<PipeReference> maybePipeReference =
+          getPipeReferenceForProtocolOp(possiblePosts.front(), transferIndex);
+      std::optional<PipeWaitAnyCandidatePlan::Resources> candidateResources =
+          getWaitAnyResources(possiblePosts.front());
+      if (failed(maybePipeReference) || !commonDFBIndex ||
+          !candidateResources) {
+        waitOp.emitError()
+            << "candidate receiver post has incomplete logical channel, DFB, "
+               "or completion-resource information";
+        return WalkResult::interrupt();
+      }
+      for (Operation *post : possiblePosts.drop_front()) {
+        auto postOp = cast<PipeTransferPostOp>(post);
+        std::optional<int64_t> dfbIndex =
+            getCBIndex(getAttachedCB(postOp.getDst()));
+        std::optional<PipeWaitAnyCandidatePlan::Resources> resources =
+            getWaitAnyResources(post);
+        if (transferIndex.getTransferCreate(post) != commonCreate ||
+            dfbIndex != commonDFBIndex || !resources ||
+            !haveSameCompletionResources(*candidateResources, *resources)) {
+          waitOp.emitError()
+              << "requires each candidate's possible posts to use one logical "
+                 "receive channel, destination DFB stream, and completion "
+                 "resource";
+          return WalkResult::interrupt();
+        }
+      }
+      waitPlan.candidates.emplace_back(std::move(*maybePipeReference),
+                                       std::move(*candidateResources));
+    }
+    plan.waitAnyPlans.insert({waitOp.getOperation(), std::move(waitPlan)});
+    return WalkResult::advance();
+  });
+  if (waitAnyResult.wasInterrupted()) {
+    return failure();
   }
 
   return plan;

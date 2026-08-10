@@ -15,7 +15,14 @@ import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
 from .constants import TILE_SHAPE
-from .copy import CopyTransaction, GroupTransfer, copy
+from .copy import (
+    CopyTransaction,
+    GroupTransfer,
+    ReadyReceive,
+    ReceiveRequest,
+    copy,
+    wait_any,
+)
 from .decorators import compute, datamovement
 from .nodecontext import node
 from .operation import operation
@@ -92,7 +99,7 @@ class _TTLNamespace:
     def __init__(self):
         from .dfb import make_dataflow_buffer_like
         from .constants import TILE_SHAPE
-        from .copy import copy
+        from .copy import copy, wait_any
         from .decorators import compute, datamovement
         from .nodecontext import node, grid_size
         from .operation import operation
@@ -108,6 +115,9 @@ class _TTLNamespace:
         self.datamovement = datamovement
         self.node = node
         self.copy = copy
+        self.wait_any = wait_any
+        self.ReceiveRequest = ReceiveRequest
+        self.ReadyReceive = ReadyReceive
         self.GroupTransfer = GroupTransfer
         self.Pipe = Pipe
         self.PipeNet = PipeNet
@@ -152,6 +162,9 @@ __all__ = [
     "TILE_SHAPE",
     "copy",
     "CopyTransaction",
+    "ReceiveRequest",
+    "ReadyReceive",
+    "wait_any",
     "GroupTransfer",
     "Program",
     "node",

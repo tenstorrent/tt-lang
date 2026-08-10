@@ -1,5 +1,5 @@
 // Verifies ttl-insert-copy-wait: missing ttl.wait is inserted after
-// ttl.copy ops whose transfer handle has no wait user.
+// ttl.copy ops whose result has no synchronization consumer.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-copy-wait))' --split-input-file | FileCheck %s
 
@@ -87,5 +87,44 @@ func.func @mixed_copy_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout3>
   ttl.wait %xf1 : !ttl.transfer_handle<read>
   %slice1 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #layout3> -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout3>
   %xf2 = ttl.copy %slice1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout3>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// A wait-any synchronizes every possible receive origin through an SSA merge.
+
+// CHECK-LABEL: func.func @merged_receive_wait_any
+// CHECK-COUNT-2: ttl.copy
+// CHECK: ttl.wait_any
+// CHECK-NOT: ttl.wait
+// CHECK: return
+func.func @merged_receive_wait_any(%condition: i1) {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %request = scf.if %condition -> (!ttl.receive_request) {
+    %dst = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %then_request = ttl.copy %pipe, %dst
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    scf.yield %then_request : !ttl.receive_request
+  } else {
+    %dst = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %else_request = ttl.copy %pipe, %dst
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    scf.yield %else_request : !ttl.receive_request
+  }
+  %start = arith.constant 0 : index
+  %ready = ttl.wait_any %request start %start
+      : (!ttl.receive_request, index) -> !ttl.ready_receive
   func.return
 }

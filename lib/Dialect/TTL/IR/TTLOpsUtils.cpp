@@ -11,6 +11,45 @@
 
 namespace mlir::tt::ttl {
 
+std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
+  auto compare = predicate.getDefiningOp<arith::CmpIOp>();
+  if (!compare || (compare.getPredicate() != arith::CmpIPredicate::eq &&
+                   compare.getPredicate() != arith::CmpIPredicate::ne)) {
+    return std::nullopt;
+  }
+  Value selectedValue;
+  std::optional<int64_t> selectedIndex = getConstantIntValue(compare.getRhs());
+  if (selectedIndex) {
+    selectedValue = compare.getLhs();
+  } else {
+    selectedIndex = getConstantIntValue(compare.getLhs());
+    selectedValue = compare.getRhs();
+  }
+  if (!selectedIndex || *selectedIndex < 0) {
+    return std::nullopt;
+  }
+  auto indexOp = selectedValue.getDefiningOp<ReadyReceiveIndexOp>();
+  if (!indexOp) {
+    return std::nullopt;
+  }
+  Operation *waitAny = indexOp.getReady().getDefiningOp();
+  std::size_t candidateCount;
+  if (auto highWaitAny = dyn_cast_or_null<WaitAnyOp>(waitAny)) {
+    candidateCount = highWaitAny.getRequests().size();
+  } else if (auto internalWaitAny =
+                 dyn_cast_or_null<PipeTransferWaitAnyOp>(waitAny)) {
+    candidateCount = internalWaitAny.getTokens().size();
+  } else {
+    return std::nullopt;
+  }
+  if (static_cast<std::size_t>(*selectedIndex) >= candidateCount) {
+    return std::nullopt;
+  }
+  return ReadyReceiveSelection{waitAny, *selectedIndex,
+                               compare.getPredicate() ==
+                                   arith::CmpIPredicate::eq};
+}
+
 FailureOr<ttcore::TileType> getTileType(Type type) {
   if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
     return tileType;

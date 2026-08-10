@@ -43,6 +43,7 @@ else:
         dfb_descriptor,
         get_dfb_id,
         raw_addr,
+        wait_any,
     )
 
     from ttl._generated_elementwise import *  # noqa: F401,F403
@@ -54,6 +55,8 @@ else:
         CircularBuffer,  # Deprecated, superseded by DataflowBuffer
         DataflowBuffer,
         CopyTransferHandler,
+        ReadyReceive,
+        ReceiveRequest,
         TensorBlock,
     )
     from ttl.pipe import Pipe, PipeNet
@@ -71,6 +74,8 @@ else:
         "CompilerOptions",
         "TensorBlock",
         "CopyTransferHandler",
+        "ReceiveRequest",
+        "ReadyReceive",
         "Pipe",
         "PipeNet",
         "make_dataflow_buffer_like",
@@ -85,5 +90,6 @@ else:
         "dfb_descriptor",
         "get_dfb_id",
         "raw_addr",
+        "wait_any",
         *_elementwise_all,
     ]

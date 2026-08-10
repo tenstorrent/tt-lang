@@ -16,8 +16,8 @@ func.func @pipe_to_pipe_copy() {
 func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   // expected-error @+1 {{'ttl.copy' op pipe receive requires a cb_reserve destination}}
-  %xf = ttl.copy %p, %t : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<32x32xf32>) -> !ttl.transfer_handle
-  ttl.wait %xf : !ttl.transfer_handle
+  %xf = ttl.copy %p, %t : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<32x32xf32>) -> !ttl.receive_request
+  ttl.wait %xf : !ttl.receive_request
   func.return
 }
 
@@ -104,6 +104,53 @@ func.func @pipe_transfer_send_requires_write_handle() {
   %xf = ttl.pipe_transfer.send %transfer, %cb
       : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
       -> !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// Test: wait-any requires at least one receive request.
+func.func @wait_any_requires_request() {
+  %start = arith.constant 0 : index
+  // expected-error @below {{'ttl.wait_any' op requires at least one receive request}}
+  %ready = ttl.wait_any start %start
+      : (index) -> !ttl.ready_receive
+  func.return
+}
+
+// -----
+
+// Test: wait-any candidates must be distinct SSA values.
+func.func @wait_any_requires_distinct_requests(%request: !ttl.receive_request) {
+  %start = arith.constant 0 : index
+  // expected-error @below {{'ttl.wait_any' op requires distinct receive request values}}
+  %ready = ttl.wait_any %request, %request start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  func.return
+}
+
+// -----
+
+// Test: internal wait-any requires at least one pipe token.
+func.func @pipe_transfer_wait_any_requires_token() {
+  %start = arith.constant 0 : index
+  // expected-error @below {{'ttl.pipe_transfer.wait_any' op requires at least one pipe token}}
+  %ready = ttl.pipe_transfer.wait_any start %start
+      : (index) -> !ttl.ready_receive
+  func.return
+}
+
+// -----
+
+// Test: internal wait-any candidates must be distinct SSA values.
+func.func @pipe_transfer_wait_any_requires_distinct_tokens(
+    %token: !ttl.pipe_token<net 0>) {
+  %start = arith.constant 0 : index
+  // expected-error @below {{'ttl.pipe_transfer.wait_any' op requires distinct pipe token values}}
+  %ready = ttl.pipe_transfer.wait_any %token, %token start %start
+      : (!ttl.pipe_token<net 0>, !ttl.pipe_token<net 0>, index)
+      -> !ttl.ready_receive
   func.return
 }
 

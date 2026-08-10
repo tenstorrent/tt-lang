@@ -21,6 +21,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
@@ -352,12 +353,27 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
         return emitOpError()
                << "pipe send requires source operand to be !ttl.cb";
       }
+      auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+      if (!handleType || handleType.getKind() != TransferKind::write) {
+        return emitOpError()
+               << "pipe send requires !ttl.transfer_handle<write> result";
+      }
       return success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
     }
+    if (!mlir::isa<ReceiveRequestType>(getXf().getType())) {
+      return emitOpError()
+             << "pipe receive requires !ttl.receive_request result";
+    }
     return success();
+  }
+
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType || !handleType.getKind()) {
+    return emitOpError()
+           << "non-pipe copy requires a direction-typed transfer handle result";
   }
 
   if (srcIsCb == dstIsCb) {
@@ -585,6 +601,30 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
     return failure();
   }
   return success();
+}
+
+template <typename WaitAnyOp>
+static mlir::LogicalResult verifyWaitAnyCandidates(WaitAnyOp op,
+                                                   mlir::ValueRange values,
+                                                   llvm::StringRef noun) {
+  if (values.empty()) {
+    return op.emitOpError() << "requires at least one " << noun;
+  }
+  llvm::SmallDenseSet<mlir::Value, 8> distinctValues;
+  for (mlir::Value value : values) {
+    if (!distinctValues.insert(value).second) {
+      return op.emitOpError() << "requires distinct " << noun << " values";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::WaitAnyOp::verify() {
+  return verifyWaitAnyCandidates(*this, getRequests(), "receive request");
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitAnyOp::verify() {
+  return verifyWaitAnyCandidates(*this, getTokens(), "pipe token");
 }
 
 mlir::LogicalResult mlir::tt::ttl::IterIndexOp::verify() {
