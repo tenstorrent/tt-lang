@@ -36,8 +36,8 @@ def publish_input():
     input_dfb.publish()
 ```
 
-The tensor must use TILE layout, height- or width-sharded L1 storage, and BF16 or
-FP32. Interleaved and block-sharded tensors are rejected. The optional
+The tensor must use TILE layout, height-, width-, or block-sharded L1 storage,
+and BF16 or FP32. Interleaved and ND-sharded tensors are rejected. The optional
 `byte_offset` must be page-aligned. The bound byte size is
 `product(shape) * block_count * page_size`; allocation padding does not change
 the DFB capacity. The current contract supports one device and one or more
