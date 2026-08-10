@@ -446,7 +446,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                     with x_dfb.wait() as xj:
                                         diff = xj - mean_val
                                         var_blk += ttl.math.reduce_sum(
-                                            diff * diff, sc, dims=[1]
+                                            diff * diff, dims=[1]
                                         )
                                 var_blk.store(
                                     ttl.math.rsqrt(

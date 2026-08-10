@@ -214,12 +214,13 @@ def torch_dtype_from_env(var_name: str, default: str = "bf16"):
     return torch_dtype_from_name(os.environ.get(var_name, default))
 
 
-def to_dram(torch_tensor, device):
+def to_dram(torch_tensor, device, tile=None):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
         torch_tensor: Source torch tensor
         device: TTNN device handle
+        tile: Optional physical tile dimensions
 
     Returns:
         TTNN tensor in DRAM with TILE_LAYOUT
@@ -229,23 +230,30 @@ def to_dram(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
+    tensor_kwargs = {}
+    if tile is not None:
+        tensor_kwargs["tile"] = ttnn.Tile(tile)
     return ttnn.from_torch(
         torch_tensor,
         dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        **tensor_kwargs,
     )
 
 
-def to_l1(torch_tensor, device):
+def to_l1(torch_tensor, device, tile=None):
     """Create a TTNN tensor in L1 from a torch tensor.
 
-    Creates in DRAM first then moves to L1 (required by TTNN).
+    Default tiles are created in DRAM then moved to L1. Custom tiles are
+    constructed directly in L1 because TTNN's conversion loses their tile
+    descriptor.
 
     Args:
         torch_tensor: Source torch tensor
         device: TTNN device handle
+        tile: Optional physical tile dimensions
 
     Returns:
         TTNN tensor in L1 with TILE_LAYOUT
@@ -253,7 +261,20 @@ def to_l1(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
-    dram_tensor = to_dram(torch_tensor, device)
+    if tile is not None:
+        from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
+
+        # TTNN's DRAM-to-L1 conversion allocates a default 32x32 destination.
+        # Direct construction is required to preserve a custom physical tile.
+        return ttnn.from_torch(
+            torch_tensor,
+            dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.L1_MEMORY_CONFIG,
+            tile=ttnn.Tile(tile),
+        )
+    dram_tensor = to_dram(torch_tensor, device, tile=tile)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 

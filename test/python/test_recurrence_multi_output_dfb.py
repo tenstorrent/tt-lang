@@ -21,6 +21,7 @@ M_TILES = 2
 N_BRANCH_NODES = 2
 N_MULTI_OUTPUT_USES = 3
 DTYPES = [torch.bfloat16, torch.float32]
+COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
 
 
 @ttl.operation(grid=(1, 1))
@@ -275,6 +276,34 @@ def published_value_mixed_consumers(lhs, rhs, out):
             ttl.copy(published, out[0:1, 0:1]).wait()
         with scaled_dfb.wait() as scaled:
             ttl.copy(scaled, out[0:1, 1:2]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def shared_dfb_fixed_and_strategy_consumers(lhs, rhs, out):
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=1)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        lhs_block = lhs_dfb.wait()
+        rhs_block = rhs_dfb.wait()
+        exponential = ttl.exp(lhs_block)
+        summed = lhs_block + rhs_block
+        with out_dfb.reserve() as out_block:
+            out_block.store(exponential + summed)
+
+    @ttl.datamovement()
+    def dm_read():
+        with lhs_dfb.reserve() as lhs_block:
+            ttl.copy(lhs[0:1, 0:1], lhs_block).wait()
+        with rhs_dfb.reserve() as rhs_block:
+            ttl.copy(rhs[0:1, 0:1], rhs_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as out_block:
+            ttl.copy(out_block, out[0:1, 0:1]).wait()
 
 
 @ttl.operation(grid=(N_BRANCH_NODES, 1))
@@ -588,8 +617,6 @@ def test_multi_output_out_of_order_consumers(dtype, device):
 
 @pytest.mark.requires_device
 def test_published_value_mixed_consumers(device):
-    # One f32 DFB cannot feed both FPU and SFPU consumers because their unpack
-    # modes conflict. Existing f32 kernels publish separate strategy inputs.
     dtype = torch.bfloat16
     torch.manual_seed(5)
     lhs_torch = torch.randn(TILE, TILE, dtype=dtype)
@@ -605,6 +632,31 @@ def test_published_value_mixed_consumers(device):
     result = ttnn.to_torch(out).float()
     summed = lhs_torch.float() + rhs_torch.float()
     expected = torch.cat((summed, summed * summed.sum(dim=1, keepdim=True)), dim=1)
+    assert_pcc(expected, result, threshold=_pcc_threshold(dtype))
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    "tile_hw",
+    COMPUTE_TILE_SIZES,
+    ids=[f"{height}x{width}" for height, width in COMPUTE_TILE_SIZES],
+)
+@pytest.mark.requires_device
+def test_shared_dfb_fixed_and_strategy_consumers(dtype, tile_hw, device):
+    torch.manual_seed(6)
+    tile_height, tile_width = tile_hw
+    lhs_torch = torch.randn(tile_height, tile_width, dtype=dtype)
+    rhs_torch = torch.randn(tile_height, tile_width, dtype=dtype)
+    out_torch = torch.zeros(tile_height, tile_width, dtype=dtype)
+
+    lhs = to_dram(lhs_torch, device, tile=tile_hw)
+    rhs = to_dram(rhs_torch, device, tile=tile_hw)
+    out = to_dram(out_torch, device, tile=tile_hw)
+
+    shared_dfb_fixed_and_strategy_consumers(lhs, rhs, out)
+
+    result = ttnn.to_torch(out).float()
+    expected = torch.exp(lhs_torch.float()) + lhs_torch.float() + rhs_torch.float()
     assert_pcc(expected, result, threshold=_pcc_threshold(dtype))
 
 

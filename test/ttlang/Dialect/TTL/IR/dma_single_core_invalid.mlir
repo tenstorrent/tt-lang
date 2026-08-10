@@ -136,3 +136,19 @@ module {
     func.return
   }
 }
+
+// -----
+
+// The copy span cannot exceed the dataflow buffer allocation.
+#layout_1x3 = #ttl.layout<shape = [1, 3], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = dram, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @copy_span_exceeds_capacity(%arg0: tensor<1x3x!ttcore.tile<32x32, f32>, #layout_1x3>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    // expected-error @below {{copy block span (3) exceeds DFB block count (2)}}
+    %xf = ttl.copy %arg0, %cb : (tensor<1x3x!ttcore.tile<32x32, f32>, #layout_1x3>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}

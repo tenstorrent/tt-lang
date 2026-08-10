@@ -98,6 +98,7 @@ _TTL_OPS: Dict[str, str] = {
     "make_dataflow_buffer_like": "control",
     "make_tensor_backed_dfb": "control",
     "node": "control",
+    "raw_addr": "control",
     "grid_size": "control",
     "dims": "control",
     "cores": "control",

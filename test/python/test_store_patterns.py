@@ -10,7 +10,8 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import to_dram, to_l1
+from utils.correctness import assert_allclose
 
 from ttl import ttl
 
@@ -240,13 +241,70 @@ def store_then_forward_kernel(a, b, out_main, out_copy):
             tx.wait()
 
 
-def test_passthrough(device):
-    inp = to_dram(torch.full((32, 32), 42.0, dtype=torch.bfloat16), device)
-    out = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+@pytest.mark.parametrize(
+    "tile",
+    [
+        (1, 16),
+        (1, 32),
+        (2, 16),
+        (2, 32),
+        (4, 16),
+        (4, 32),
+        (8, 16),
+        (8, 32),
+        (16, 16),
+        (16, 32),
+        (32, 16),
+        (32, 32),
+    ],
+    ids=lambda tile_dimensions: f"{tile_dimensions[0]}x{tile_dimensions[1]}",
+)
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.bfloat16,
+        torch.float32,
+        torch.int32,
+        torch.uint32,
+        torch.uint16,
+    ],
+    ids=["bf16", "fp32", "si32", "u32", "u16"],
+)
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_passthrough(device, tile, dtype, memory):
+    input_torch = torch.full(tile, 42.0, dtype=dtype)
+    output_torch = torch.zeros(tile, dtype=dtype)
+    tensor_factory = to_l1 if memory == "l1" else to_dram
+    inp = tensor_factory(input_torch, device, tile=tile)
+    out = tensor_factory(output_torch, device, tile=tile)
 
     passthrough_kernel(inp, out)
     result = ttnn.to_torch(out).float()
-    assert torch.allclose(result, torch.full_like(result, 42.0))
+    assert_allclose(result, input_torch.float(), rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "dtype", [ttnn.bfloat8_b, ttnn.bfloat4_b], ids=["bfp-bf8", "bfp-bf4"]
+)
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_passthrough_bfp(device, dtype, memory):
+    tile = (32, 32)
+    input_torch = torch.full(tile, 42.0, dtype=torch.bfloat16)
+    output_torch = torch.zeros(tile, dtype=torch.bfloat16)
+    memory_config = ttnn.L1_MEMORY_CONFIG if memory == "l1" else ttnn.DRAM_MEMORY_CONFIG
+    tensor_kwargs = {
+        "dtype": dtype,
+        "layout": ttnn.TILE_LAYOUT,
+        "device": device,
+        "memory_config": memory_config,
+    }
+    inp = ttnn.from_torch(input_torch, **tensor_kwargs)
+    out = ttnn.from_torch(output_torch, **tensor_kwargs)
+    expected = ttnn.to_torch(inp).float()
+
+    passthrough_kernel(inp, out)
+    result = ttnn.to_torch(out).float()
+    assert_allclose(result, expected, rtol=0.0, atol=0.0)
 
 
 def test_double_store(device):

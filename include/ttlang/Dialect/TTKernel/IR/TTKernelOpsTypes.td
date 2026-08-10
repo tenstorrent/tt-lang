@@ -141,6 +141,23 @@ class TTKernel_Attr<string name, string attrMnemonic, list<Trait> traits = [],
   let attrName = "ttkernel." # attrMnemonic;
 }
 
+def TTKernel_DFBDescriptorAttr
+    : TTKernel_Attr<"DFBDescriptor", "dfb_descriptor"> {
+  let summary = "Compile-time dataflow buffer allocation descriptor";
+  let description = [{
+    Preserves the finalized physical index and allocation geometry needed by
+    an external C++ template after the TTL dataflow buffer type is lowered.
+  }];
+  let parameters = (ins
+    "int64_t":$index,
+    "int64_t":$pagesPerBlock,
+    "int64_t":$blockCount,
+    "int64_t":$pageSizeBytes
+  );
+  let assemblyFormat = "`<` $index `,` $pagesPerBlock `,` $blockCount `,` $pageSizeBytes `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTKernel_ArgAttr : TTKernel_Attr<"Arg", "arg"> {
   let summary = "Kernel argument.";
   let description = [{

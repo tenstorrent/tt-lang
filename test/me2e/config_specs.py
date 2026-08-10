@@ -84,7 +84,7 @@ class TestConfig:
         maximize_dst: Enable DST subblocking and operation scheduling passes.
             When False, uses basic loop lowering without subblocking. Default is True.
 
-        enable_fpu_binary_ops: Enable FPU binary op detection for add/sub/mul.
+        enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
             When False, all binary ops use the copy_tile + SFPU path. Default is True.
 
     Examples:
@@ -177,7 +177,7 @@ CONFIGS = [
     TestConfig(num_tiles=4, block_h=2, block_w=2),  # 2x2 grid (4 tiles)
     # Maximize-DST disabled: no subblocking or scheduling (basic loop lowering).
     TestConfig(num_tiles=4, block_h=2, block_w=2, maximize_dst=False),
-    # SFPU path: FPU binary detection disabled (all binary ops use copy_tile + SFPU).
+    # SFPU execution: FPU selection disabled, so binary inputs use copy_tile.
     TestConfig(num_tiles=4, block_h=2, block_w=2, enable_fpu_binary_ops=False),
     # Both disabled: basic loop lowering with SFPU binary path.
     TestConfig(

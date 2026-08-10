@@ -223,29 +223,24 @@ tt-metal patterns documented for future implementation.
 | Transpose (CB) | | x | | | — |
 | Transpose (DST) | x | | x | | — |
 
-Notes on FPU binary: `add`, `sub`, `mul` carry
-`TTLStrategyDependentBinaryOpTrait` instead of `DSTInputsTrait`. Whether
-they lower to the FPU or SFPU form is derived on demand from operand
-provenance by `isFPUEligibleBinaryOp` (TTLOpsUtils.h): both operands
-must trace to the same indexing source — input block args of one
-`ttl.compute` with matching indexing maps, or (post-lowering) `tensor.extract`
-with identical indices — and the func-level attribute
-`ttl.enable_fpu_binary_ops` must not be disabled. Eligible ops bypass
-`copy_tile` and read directly from CBs. `isCBInputOp` delegates to this
-helper for strategy-dependent ops, so the allocator's existing trait
-queries continue to work without modification.
+Notes on FPU binary: `add`, `sub`, and `mul` have
+`TTLStrategyDependentBinaryOpTrait`. `TTLSetComputeKernelConfig` selects one
+strategy from the operation's `TileExecutionOpInterface` before DST assignment.
+The FPU strategy requires matching tile coordinates and consumes both operands
+from DFBs. The SFPU strategy consumes both operands from DST. The selected
+`ttl.tile_execution_strategy` attribute remains unchanged through allocation
+and lowering.
 
-Notes on in-place binary (max, min): These binary ops carry both
+Notes on in-place binary (max, min): These binary ops have both
 `DSTInputsTrait` (from the `TTL_TileBinaryOp` base class) and
 `TTLInPlaceOpTrait` (extra trait). The allocator treats them the same as
 unary ops for interval merging: input and output share the same DST
 slot. The second operand occupies a separate DST slot (it is not
 overwritten).
 
-The allocator queries these traits compositionally:
-- `hasTrait<TTLCBInputTileOpTrait>()` -> operand stays in CB (no DST
-  slot needed for that operand)
-- `hasTrait<TTLDSTInputsTrait>()` -> operand needs a DST slot
+The allocator queries `TileExecutionOpInterface` operand routes to determine
+whether each operand remains in its DFB or requires a DST slot. It uses the
+following traits for behavior independent of execution strategy:
 - `hasTrait<TTLInPlaceOpTrait>()` -> merge input/output intervals
   (Phase 2)
 - `hasTrait<TTLAccumulatingOpTrait>()` -> DST slot must remain live
@@ -298,26 +293,20 @@ References:
 - Christian Wimmer and Michael Franz. 2010. Linear scan register allocation on SSA form. In Proceedings of CGO '10. https://doi.org/10.1145/1772954.1772979
 - P. S. Rawat et al. 2019. Associative instruction reordering to alleviate register pressure. In Proceedings of SC '18. https://doi.org/10.1109/SC.2018.00049
 
-### FPU/SFPU eligibility (derived, no separate phase)
+### FPU/SFPU strategy selection
 
-FPU eligibility for `add`/`sub`/`mul` is derived on demand by
-`isFPUEligibleBinaryOp` (TTLOpsUtils.h). An op qualifies when both
-operands are input block arguments of the same `ttl.compute` with
-identical indexing maps (or, post-`ttl-lower-to-loops`,
-`tensor.extract` ops with identical indices). The check is gated by
-the func-level attribute `ttl.enable_fpu_binary_ops`, which
-`TTLSetComputeKernelConfig` sets from the `enable-fpu-binary-ops`
-pipeline option (default: true); when disabled, every strategy-dependent
-binary op uses the SFPU path.
+`TTLSetComputeKernelConfig` selects FPU or SFPU before allocation. Structural
+legality requires both operands to address the same tile coordinates. Kernel
+policy may disable FPU. The configuration resolver also considers shared DFB
+unpack requirements, so an otherwise eligible binary operation selects SFPU
+when FPU would conflict with another consumer of the same DFB.
 
-Eligible ops bypass `copy_tile` during lowering and read operands
-directly from CBs via the SrcA/SrcB unpackers, reducing per-iteration
-DST pressure from 3 slots (2 copies + 1 output) to 1 slot (output
-only). The allocator queries `isCBInputOp` in Phase 1 and Phase 2; that
-helper delegates to `isFPUEligibleBinaryOp` for strategy-dependent ops,
-so DST slot counting reflects the eventual lowering without a separate
-marker pass. The same predicate feeds the `unroll_factor` computation
-at the end of allocation.
+FPU operations bypass `copy_tile` and read operands through SrcA/SrcB,
+reducing per-iteration DST pressure from three slots to one. SFPU operations
+require both inputs in DST. `TTLAssignDST` reads the selected operand routes
+through `TileExecutionOpInterface` for copy insertion, interval construction,
+and `unroll_factor` computation. It does not re-evaluate strategy after
+changing the operands.
 
 ### Future: Operation Scheduling for Register Pressure
 
@@ -586,11 +575,11 @@ Build live intervals for each tile value. For in-place operations
 (those with `TTLInPlaceOpTrait`), merge the input and output intervals
 since they must share the same DST register (hardware constraint).
 
-CB-only values: Block arguments consumed exclusively by CB-reading
-operations (`isCBInputOp` — FPU binary, copy_tile, broadcast) never
-enter DST and receive no interval. The implementation achieves this by
-skipping the operand loop for `isCBInputOp` operations: their operands
-are never recorded in the interval map.
+DFB-only values: Block arguments consumed exclusively through dataflow-buffer
+operand routes never enter DST and receive no interval. Operand routes come
+from the execution strategy selected before allocation. An operation may have
+both DFB and DST operands, so interval construction checks each operand rather
+than classifying the complete operation.
 
 ```
 intervals = {}
@@ -601,24 +590,21 @@ for i, op in enumerate(operations):
   op.index = i
 
 # Process operations in forward order to build intervals.
-# Operands of CB-input ops (isCBInputOp) are SKIPPED — they stay in
-# CBs and never enter DST. This implicitly identifies CB-only block
-# arguments: if a block arg is only consumed by CB-input ops, it
-# never appears in the interval map.
+# DFB-routed operands are skipped because they never enter DST.
 for each operation op:
-  if not isCBInputOp(op):
-    # Extend input intervals to this use
-    for each input_val in op.inputs:
-      if input_val not in intervals:
-        # Block argument: start at (op.index - 1) so the input
-        # expires just before the consuming op's output is defined.
-        # This enables the output to reuse the input's DST register.
-        intervals[input_val] = Interval(op.index - 1, op.index)
-      else:
-        intervals[input_val].end = max(intervals[input_val].end, op.index)
+  for each input operand in op.inputs:
+    if operand.route != DST:
+      continue
+    input_val = operand.value
+    if input_val not in intervals:
+      # Block argument: start at (op.index - 1) so the input
+      # expires just before the consuming op's output is defined.
+      # This enables the output to reuse the input's DST register.
+      intervals[input_val] = Interval(op.index - 1, op.index)
+    else:
+      intervals[input_val].end = max(intervals[input_val].end, op.index)
 
-  # Create interval for results (all ops, including CB-input ops,
-  # produce DST results that need intervals)
+  # Create intervals for results resident in DST.
   for each output_val in op.results:
     intervals[output_val] = Interval(op.index, op.index)
 

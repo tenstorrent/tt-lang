@@ -7,6 +7,7 @@
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/OpDefinition.h"
+#include "llvm/Support/ErrorHandling.h"
 
 namespace mlir::tt::ttkernel {
 
@@ -79,6 +80,106 @@ public:
     return mlir::success();
   }
 };
+
+/// Identifies operations that access NoC hardware.
+template <typename ConcreteType>
+class TTKernelNocOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTKernelNocOpTrait> {};
+
+/// Identifies operations that access the resident NoC read command.
+template <typename ConcreteType>
+class TTKernelNocReadCommandOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocReadCommandOpTrait> {};
+
+/// Identifies operations that access the resident NoC write command.
+template <typename ConcreteType>
+class TTKernelNocWriteCommandOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocWriteCommandOpTrait> {};
+
+/// Identifies operations that access the resident NoC atomic command.
+template <typename ConcreteType>
+class TTKernelNocAtomicCommandOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocAtomicCommandOpTrait> {};
+
+/// Identifies NoC operations that preserve resident command configuration.
+template <typename ConcreteType>
+class TTKernelNocCommandStatePreservingOpTrait
+    : public mlir::OpTrait::TraitBase<
+          ConcreteType, TTKernelNocCommandStatePreservingOpTrait> {};
+
+/// Identifies operations whose semantics use resident NoC command state.
+template <typename ConcreteType>
+class TTKernelNocCommandStateDependentOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocCommandStateDependentOpTrait> {
+};
+
+/// Identifies operations whose effect on resident NoC commands is unknown.
+template <typename ConcreteType>
+class TTKernelNocCommandStateUnknownOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocCommandStateUnknownOpTrait> {};
+
+/// NoC command resources tracked by stateful command optimizations.
+enum class NocCommandClass {
+  Read,
+  Write,
+  Atomic,
+};
+
+/// Return whether `op` accesses the selected resident NoC command.
+inline bool accessesNocCommand(Operation *op, NocCommandClass commandClass) {
+  switch (commandClass) {
+  case NocCommandClass::Read:
+    return op->hasTrait<TTKernelNocReadCommandOpTrait>();
+  case NocCommandClass::Write:
+    return op->hasTrait<TTKernelNocWriteCommandOpTrait>();
+  case NocCommandClass::Atomic:
+    return op->hasTrait<TTKernelNocAtomicCommandOpTrait>();
+  }
+  llvm_unreachable("unknown NoC command class");
+}
+
+/// Return whether `op` uses the selected resident NoC command state.
+inline bool usesNocCommandState(Operation *op, NocCommandClass commandClass) {
+  if (!op->hasTrait<TTKernelNocCommandStateDependentOpTrait>()) {
+    return false;
+  }
+  assert(op->hasTrait<TTKernelNocOpTrait>() &&
+         "NoC command state user must be a NoC operation");
+  assert((accessesNocCommand(op, NocCommandClass::Read) ||
+          accessesNocCommand(op, NocCommandClass::Write) ||
+          accessesNocCommand(op, NocCommandClass::Atomic)) &&
+         "NoC command state user must identify a command class");
+  return accessesNocCommand(op, commandClass);
+}
+
+/// Return whether `op` may reprogram the selected resident NoC command.
+///
+/// An unclassified NoC operation conservatively reprograms every command
+/// class. This prevents a newly added NoC operation from silently invalidating
+/// stateful command reuse.
+inline bool mayReprogramNocCommand(Operation *op,
+                                   NocCommandClass commandClass) {
+  if (op->hasTrait<TTKernelNocCommandStateUnknownOpTrait>()) {
+    return true;
+  }
+  if (!op->hasTrait<TTKernelNocOpTrait>() ||
+      op->hasTrait<TTKernelNocCommandStatePreservingOpTrait>()) {
+    return false;
+  }
+
+  bool accessesReadCommand = op->hasTrait<TTKernelNocReadCommandOpTrait>();
+  bool accessesWriteCommand = op->hasTrait<TTKernelNocWriteCommandOpTrait>();
+  bool accessesAtomicCommand = op->hasTrait<TTKernelNocAtomicCommandOpTrait>();
+  if (!accessesReadCommand && !accessesWriteCommand && !accessesAtomicCommand) {
+    return true;
+  }
+  return accessesNocCommand(op, commandClass);
+}
 
 } // namespace mlir::tt::ttkernel
 

@@ -11,6 +11,8 @@ specified grid configurations.
 import types
 from typing import Any, Callable, Optional, Union, cast
 
+from ttl.constants import validate_math_fidelity
+
 from .typedefs import Shape
 from .context import get_context, cleanup_run_context
 
@@ -40,13 +42,14 @@ def operation(
     grid: Union[str, Shape] = "full",
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     **unknown: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that generates a kernel with specified grid.
 
-    fp32_dest_acc_en and dst_full_sync_en are accepted for compatibility with
-    compiler-side code but have no effect in the simulator.  Any other
+    Compute configuration arguments are accepted for compatibility with
+    compiler-side code but have no effect in the simulator. Any other
     unrecognised keyword argument raises TypeError to catch user errors early.
 
     The decorated function's interface is checked against the specification's
@@ -58,6 +61,7 @@ def operation(
             (configurable via set_default_grid()).
         fp32_dest_acc_en: Ignored; accepted for compiler compatibility.
         dst_full_sync_en: Ignored; accepted for compiler compatibility.
+        math_fidelity: Ignored; accepted for compiler compatibility.
 
     Returns:
         Decorated function with grid configuration
@@ -74,6 +78,8 @@ def operation(
             f"ttl.operation() received unexpected keyword argument(s): "
             f"{', '.join(sorted(unknown))}"
         )
+
+    validate_math_fidelity(math_fidelity)
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # Set grid to default if 'auto' or 'full'

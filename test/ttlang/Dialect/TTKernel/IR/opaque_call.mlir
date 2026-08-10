@@ -1,37 +1,30 @@
-// Round-trip verification of ttkernel.opaque_call with template arg SSA values.
+// Verify ttkernel.opaque_call round trips ordered static template arguments.
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s
 
-// -----
-// Test: void call with no template args
+// A void call omits the optional template argument list.
 // CHECK-LABEL: func.func @void_no_template_args
-// CHECK: ttkernel.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
+// CHECK: ttkernel.opaque_call "my_func"() {header = "my_header.hpp"} : () -> ()
 func.func @void_no_template_args() {
   ttkernel.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
   return
 }
 
 // -----
-// Test: call with constant template args
-// CHECK-LABEL: func.func @const_template_args
-// CHECK-DAG: %[[C5:.*]] = arith.constant 5 : i32
-// CHECK-DAG: %[[C10:.*]] = arith.constant 10 : i32
-// CHECK: ttkernel.opaque_call "calc" template_args(%[[C5]], %[[C10]]) () {header = "calc.hpp"} : () -> ()
-func.func @const_template_args() {
-  %c5 = arith.constant 5 : i32
-  %c10 = arith.constant 10 : i32
-  ttkernel.opaque_call "calc" template_args(%c5, %c10) () {header = "calc.hpp"} : () -> ()
+
+// Static argument kinds and source order remain explicit in TTKernel IR.
+// CHECK-LABEL: func.func @typed_template_args
+// CHECK: ttkernel.opaque_call "describe" template_args [-5 : si32, true, 4294967295 : ui32, #ttkernel.dfb_descriptor<3, 2, 4, 4096>]() {header = "describe.hpp"} : () -> ()
+func.func @typed_template_args() {
+  ttkernel.opaque_call "describe" template_args [-5 : si32, true, 4294967295 : ui32, #ttkernel.dfb_descriptor<3, 2, 4, 4096>] () {header = "describe.hpp"} : () -> ()
   return
 }
 
 // -----
-// Test: call with get_dfb_id template arg
-// CHECK-LABEL: func.func @dfb_template_arg
-// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(3)
-// CHECK-NEXT: %[[ID:.*]] = ttkernel.get_dfb_id %[[CB]]
-// CHECK-NEXT: ttkernel.opaque_call "flush" template_args(%[[ID]]) () {header = "flush.hpp"} : () -> ()
-func.func @dfb_template_arg() {
-  %cb = ttkernel.get_compile_time_arg_val(3) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
-  %id = ttkernel.get_dfb_id %cb : <1, !ttcore.tile<32x32, bf16>>
-  ttkernel.opaque_call "flush" template_args(%id) () {header = "flush.hpp"} : () -> ()
+
+// Signless storage may require an explicit unsigned C++ call expression.
+// CHECK-LABEL: func.func @unsigned_func_arg
+// CHECK: ttkernel.opaque_call "use_address"(%arg0) {header = "address.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
+func.func @unsigned_func_arg(%arg0: i32) {
+  ttkernel.opaque_call "use_address" (%arg0) {header = "address.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
   return
 }

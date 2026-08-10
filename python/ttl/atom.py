@@ -71,10 +71,8 @@ from .ttl_api import (
     _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
-    _require_device,
     _run_thread_compiler,
     _validate_operation_options,
-    get_min_remaining_l1_for_device,
     pykernel_gen,
 )
 
@@ -332,8 +330,10 @@ def _compile_atom(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
+    l1_budget_override: int,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -354,14 +354,6 @@ def _compile_atom(
     )
     if first_tensor is not None:
         memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)
-
-    has_ttnn_tensors = any(is_ttnn_tensor(v) for v in bound_arguments.values())
-    l1_budget_override = compiler_options.l1_budget
-    if l1_budget_override == 0 and has_ttnn_tensors:
-        try:
-            l1_budget_override = get_min_remaining_l1_for_device(_require_device(args))
-        except ValueError:
-            pass
 
     _reset_cb_counter()
     _set_current_grid(grid)
@@ -444,6 +436,7 @@ def _compile_atom(
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
+        math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
         l1_budget_override=l1_budget_override,
@@ -461,6 +454,7 @@ def _compile_unified_operation(
     program_hash,
     target_arch,
     compiler_options,
+    l1_budget_override,
 ):
     return _compile_atom(
         spec,
@@ -473,8 +467,10 @@ def _compile_unified_operation(
         program_hash,
         fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
+        math_fidelity=decorator_options["math_fidelity"],
         target_arch=target_arch,
         compiler_options=compiler_options,
+        l1_budget_override=l1_budget_override,
     )
 
 
@@ -503,6 +499,7 @@ class Atom:
             grid=decorator_options["grid"],
             fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
             dst_full_sync_en=decorator_options["dst_full_sync_en"],
+            math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
         )
@@ -528,6 +525,7 @@ def _unified_operation(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
@@ -536,7 +534,7 @@ def _unified_operation(
     / dst-sync overrides, compiler options). A grid is required for a
     top-level operation; a composed operation used only for expansion needs none.
     """
-    _validate_operation_options(num_outs, memory_space, tiled)
+    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
 
     def _decorator(f):
         spec = _build_atom_spec(f)
@@ -549,6 +547,7 @@ def _unified_operation(
                 "tiled": tiled,
                 "fp32_dest_acc_en": fp32_dest_acc_en,
                 "dst_full_sync_en": dst_full_sync_en,
+                "math_fidelity": math_fidelity,
                 "options": options,
             },
         )
@@ -565,6 +564,7 @@ def operation(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
@@ -583,6 +583,7 @@ def operation(
                 tiled=tiled,
                 fp32_dest_acc_en=fp32_dest_acc_en,
                 dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
                 options=options,
                 _prepare_call=prepare_call,
             )(fn)
@@ -596,6 +597,7 @@ def operation(
             tiled=tiled,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             options=options,
         )(fn)
 

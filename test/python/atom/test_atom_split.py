@@ -38,6 +38,26 @@ def test_unknown_ttl_op_is_rejected():
         split_function_body(fn, dfb_param_names=set())
 
 
+def test_raw_addr_is_a_thread_neutral_scalar_producer():
+    fn = _fn(
+        """
+        def k(inp):
+            call_extern_func(
+                "header.hpp",
+                "kernel",
+                func_args=[ttl.raw_addr(inp)],
+            )
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    for thread in ("trisc", "ncrisc", "brisc"):
+        thread_source = _thread_src(result, thread)
+        assert "call_extern_func" in thread_source
+        assert "ttl.raw_addr(inp)" in thread_source
+
+
 def test_tensor_backed_dfb_factory_and_publish_are_split_by_thread():
     fn = _fn(
         """

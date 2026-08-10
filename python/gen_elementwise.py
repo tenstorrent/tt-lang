@@ -50,7 +50,7 @@ BINARY_OP_TEMPLATE = '''\
 @syntax("{name}")
 def {name}(lhs: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
     """Element-wise {name} operation."""
-    return ttl.{name}(lhs.type, lhs, rhs)
+    return ttl.{name}(lhs, rhs)
 
 '''
 
@@ -58,7 +58,7 @@ UNARY_OP_TEMPLATE = '''\
 @syntax("{name}")
 def {name}(input: "TensorBlock") -> "TensorBlock":
     """Element-wise {name} operation."""
-    return ttl.{name}(input.type, input)
+    return ttl.{name}(input)
 
 '''
 

@@ -15,13 +15,17 @@
 - **Python lit tests**: `llvm-lit test/python/` (hardware execution tests)
 - **Simulation tests**: `pytest test/sim/` (software simulation of runtime behavior); add `--run-slow` to include slow tests (hardware CI always passes this flag; GitHub-hosted CI does not)
 
+## Docker
+
+- Run Docker commands directly. Never use `sudo docker`; the user has Docker
+  daemon access through group membership.
+
 ## Code Style Guidelines
 - **C++ Style**: LLVM style (see .clang-format, .clang-tidy)
 - **Naming**: UpperCamelCase for types, lowerCamelCase for variables/functions
 - **Includes**: Absolute paths from tt-lang root, sorted: main header → local →
   LLVM → system
-- **Comments**: Full sentences, explain why not what. Code TODOs use an issue
-  number without an issue URL.
+- **Comments**: See [Comments](#comments) below.
 - **Python**: PEP 8 with black formatter (v23.x), Python 3.10+ only
 - **Functions**: Bottom-up order, helpers before callers, static/anonymous
   namespace for .cpp
@@ -35,6 +39,39 @@
 - **Unicode**: Avoid Unicode characters in code and documentation. Use ASCII
   equivalents instead (e.g., `->` instead of `→`). This ensures compatibility
   across different editors, terminals, and build environments.
+
+### Comments
+
+A comment exists for one reason: to let the next reader understand the code.
+Comments occupy space and must be maintained, so write one only when the code
+itself cannot carry the information.
+
+- **Follow LLVM commenting conventions** in substance, location, and style:
+  https://llvm.org/docs/CodingStandards.html#commenting. Use `///` doxygen
+  comments on declarations in headers, `//` for implementation notes in `.cpp`
+  files, and write full sentences with capitalization and a period. Do not
+  repeat a header's doc comment above the definition.
+- **Default to writing no comment.** The function name, signature, and body
+  usually suffice. A comment is justified only when it states one of:
+  1. Contract or role -- what callers can rely on, not the steps taken.
+  2. Why this and not the obvious alternative -- the constraint, prior bug, or
+     framework quirk that motivated the choice.
+  3. An invariant the type system cannot express.
+- **Do not narrate the code.** Reject comments that restate the function name,
+  paraphrase the body in English, explain the *absence* of code, or hedge
+  informally ("we just", "basically", "the trick is"). One line beats three.
+- **Do not repeat a comment.** State a fact in exactly one place -- the
+  declaration, the TableGen `description`, or a design document -- and nowhere
+  else. Detailed op and pass documentation lives in the `.td`, not the `.cpp`;
+  `.cpp` comments explain non-obvious implementation only.
+- **Rationale belongs in the PR, not the source.** Design decisions,
+  alternatives considered, performance measurements, and why a block of code
+  sits in one location rather than another go in the PR description. When a
+  decision must be recorded in the repository, write it up under `docs/`.
+- **Prose rules match [Documentation Style](#documentation-style)**: no
+  metaphorical verbs (write "execute", not "fire"; "delete", not "blow away"),
+  no invented jargon, ASCII only.
+- **TODOs** reference an issue number without an issue URL.
 
 ## MLIR implementation
 - Follow the conventions in llvm-project for directory organization and naming

@@ -7,8 +7,8 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify FPU binary detection for simple add (both operands are block
-// args). No copy_tile needed since FPU reads from CB, not DST.
+// A simple add selects FPU because both block arguments have matching indexing
+// maps. FPU reads from DFBs, so no copy_tile is required.
 // DEBUG: Max DST usage: 1 / 4 registers
 // CHECK-LABEL: func.func @simple_add
 func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
@@ -33,7 +33,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // CHECK-NOT:       ttl.copy_tile
-// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<fpu>} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
 // CHECK-NEXT:      ttl.yield
 // SEPARATE-DAG:    %[[SC0:.*]] = arith.constant 0 : index

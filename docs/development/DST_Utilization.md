@@ -107,20 +107,19 @@ $$N = \min\!\left(\left\lfloor \frac{C}{D} \right\rfloor,\; \texttt{totalTiles}\
 where $C$ is DST capacity, $D$ is `dstPerIteration`, and $N$ is the
 `unroll_factor` attached as `ttl.unroll_factor` on the ComputeOp.
 
-FPU-aware execution (component 8) reduces $D$ for FPU-eligible binary
-ops. An FPU binary uses 0 DST input slots (operands come from CBs), so
-`tile_add %a, %b` where both are block args costs 1 DST slot (output
-only) instead of 3 (2 copies + output). Eligibility is derived on demand
-by `isFPUEligibleBinaryOp` (TTLOpsUtils.h) from operand provenance and
-the func-level attribute `ttl.enable_fpu_binary_ops` (set by
-`TTLSetComputeKernelConfig` from the `enable-fpu-binary-ops` option,
-default true). When the flag is disabled, every binary op uses the SFPU
-lowering with `copy_tile`.
+FPU-aware execution (component 8) reduces $D$ for binary operations whose
+selected strategy is FPU. An FPU binary uses no DST input slots because its
+operands remain in DFBs, so `tile_add %a, %b` costs one DST slot instead of
+three. `TTLSetComputeKernelConfig` selects the strategy before allocation from
+structural legality, kernel policy, and shared configuration requirements.
+`TTLAssignDST` consumes the selected operand routes through
+`TileExecutionOpInterface`.
 
-FPU/accumulating DST register reuse prevention: When multiple
-FPU binary ops or `tile_matmul_block` ops appear in the same compute
-body, their output DST registers must be distinct within a single
-`tile_regs_acquire`/`tile_regs_release` region.
+DST accumulator reuse prevention: Operations whose result depends on residual
+contents in the destination slot require distinct output slots within one
+`tile_regs_acquire`/`tile_regs_release` region. FPU binary and
+`tile_matmul_block` operations report this requirement through
+`TileExecutionOpInterface`.
 The tt-metal API provides an
 [`acc_to_dest` parameter](https://github.com/tenstorrent/tt-metal/blob/0aa689f1b1b8/tt_metal/hw/inc/api/compute/eltwise_binary.h#L57)
 on FPU binary init functions (`add_tiles_init`, `sub_tiles_init`,
@@ -141,9 +140,8 @@ binary op's result included residual from the first). Across separate
 sync regions (`tile_regs_release` between ops), DST is cleared and no
 accumulation occurs (`examples/fpu_dst_reuse_test.py` passed).
 
-`TTLAssignDST` prevents this by extending result intervals for
-FPU-accumulating ops in Phase 2 so the linear scan allocator assigns
-distinct registers
+`TTLAssignDST` prevents this by extending the affected result intervals so the
+linear scan allocator assigns distinct registers
 ([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L387-L438)).
 The same extension applies to `TileMatmulBlockOp`, which also
 accumulates into DST. The interval end is set to
@@ -641,16 +639,12 @@ The full DST maximization pipeline is operational. The pipeline computes
 the correct subblock size (with FPU-aware DST pressure), partitions the
 iteration space via TilingInterface, emits unrolled subblock bodies with
 one sync region per subblock, groups operations by kind, and consolidates
-init ops. FPU binary detection (component 8) for
-`tile_add`/`tile_sub`/`tile_mul` with both block-arg operands is derived
-on demand by `isFPUEligibleBinaryOp`, reducing per-iteration DST
-pressure (0 input slots instead of 2). The allocator prevents DST register reuse between FPU
-binary ops via an interval extension (see component 1-2 details);
-hardware testing confirmed this is necessary — FPU ops accumulate
-within a single sync region despite the `acc_to_dest=false` default
-(#343). The allocator uses trait queries (`isInPlaceOp`,
-etc.) instead of type-specific checks, so new operations only need the
-correct trait annotations.
+init ops. The selected FPU strategy for
+`tile_add`/`tile_sub`/`tile_mul` reduces per-iteration DST pressure to no input
+slots instead of two. The allocator prevents reuse when execution semantics
+report that residual destination contents affect the result (see component 1-2
+details). In-place behavior that is independent of execution strategy remains
+encoded by operation traits.
 
 Not yet implemented (component 14):
 
@@ -706,10 +700,12 @@ pipeline option to gate the optimization passes.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maximize-dst` | true | Enable subblock partitioning and operation scheduling |
-| `enable-fpu-binary-ops` | true | Use FPU execution for binary add/sub/mul when both operands are CB-backed |
+| `enable-fpu-binary-ops` | true | Allow FPU strategy selection for binary add/sub/mul |
 | `use-block-matmul` | true | Lower matmul to block-level hardware calls (`matmul_block`) instead of per-tile loops |
 | `subblock-sync` | false | Refine DFB reserve/push to per-subblock granularity; when disabled, user-placed reserve/push is preserved |
 | `combine-pack-tiles` | true | Combine consecutive `pack_tile` ops into `pack_tile_block` |
+| `reduce-full-fp32` | true | Prefer full-fp32 reduce accumulation when supported |
+| `matmul-full-fp32` | true | Prefer full-fp32 matmul accumulation when supported |
 | `lower-to-emitc` | false | Lower TTKernel to EmitC (for C++ translation) |
 
 Python API equivalents (`CompilerOptions` in
@@ -722,6 +718,8 @@ Python API equivalents (`CompilerOptions` in
 | `use_block_matmul` | `--ttl-block-matmul` / `--no-ttl-block-matmul` | `use-block-matmul` |
 | `subblock_sync` | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | `subblock-sync` |
 | `combine_pack_tiles` | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | `combine-pack-tiles` |
+| `reduce_full_fp32` | `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | `reduce-full-fp32` |
+| `matmul_full_fp32` | `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | `matmul-full-fp32` |
 
 Environment variable: `TTLANG_COMPILER_OPTIONS` (space-separated flags).
 
@@ -758,12 +756,11 @@ operands are needed by all compute lowering.
 
 With `--no-ttl-fpu-binary-ops`:
 
-`TTLSetComputeKernelConfig` writes `ttl.enable_fpu_binary_ops = false`
-on the func. `isFPUEligibleBinaryOp` then returns false for every
-strategy-dependent binary, so add/sub/mul take the SFPU path (copy_tile
-for both operands; `add_binary_tile`/`sub_binary_tile`/`mul_binary_tile`
-instead of `add_tiles`/`sub_tiles`/`mul_tiles`). The consolidation pass
-emits `init_sfpu` instead of `binary_op_init_common`.
+`TTLSetComputeKernelConfig` selects SFPU for tile add, subtract, and multiply.
+DST assignment inserts the required input copies, and TTKernel
+lowering emits `add_binary_tile`, `sub_binary_tile`, or `mul_binary_tile`
+instead of the FPU operations. Init consolidation emits `init_sfpu` instead of
+`binary_op_init_common`.
 
 With `--no-ttl-block-matmul`:
 

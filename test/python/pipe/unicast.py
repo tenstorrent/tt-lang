@@ -71,11 +71,19 @@ def unicast_pipe(inp, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: ttl.kernel_thread = #ttkernel.thread<noc>
 
-# CHECK: ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0)
-# CHECK: ttl.if_src
+# CHECK: ttl.pipenet_foreach_src
+# CHECK-SAME: name "net"
+# CHECK-SAME: <srcX = 1, srcY = 0
+# CHECK-SAME: dstEndX = 0, dstEndY = 0>
+# CHECK: ^bb0(%[[SRC_PIPE:.*]]: !ttl.selected_pipe_src):
+# CHECK: ttl.copy %{{.*}}, %[[SRC_PIPE]]
 
-# CHECK: ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0)
-# CHECK: ttl.if_dst
+# CHECK: ttl.pipenet_foreach_dst
+# CHECK-SAME: name "net"
+# CHECK-SAME: <srcX = 1, srcY = 0
+# CHECK-SAME: dstEndX = 0, dstEndY = 0>
+# CHECK: ^bb0(%[[DST_PIPE:.*]]: !ttl.selected_pipe_dst):
+# CHECK: ttl.copy %[[DST_PIPE]], %{{.*}}
 
 # =============================================================================
 # C++ Output Checks (unicast pipe)
@@ -85,9 +93,11 @@ def unicast_pipe(inp, out):
 # then write the payload and signal completion.
 # CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
+# The receiver DFB base is loop-invariant and may be materialized before the
+# synchronization sequence.
+# CHECK-CPP-DAG: get_common_arg_val<uint32_t>(
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: get_common_arg_val<uint32_t>(
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc0.async_write_barrier();
 # CHECK-CPP: noc_semaphore_inc(
