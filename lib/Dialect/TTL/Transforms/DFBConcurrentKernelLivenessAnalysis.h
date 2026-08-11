@@ -118,6 +118,9 @@ struct DFBPerNodeLifetime {
   /// False when counterfactual analysis proves no access executes on `node`.
   bool mayBeActive = true;
 
+  /// Whether all active accesses share one proved conditional execution.
+  bool conditionalExecutionProven = false;
+
   /// Per-access execution counts retained for allocation diagnostics.
   SmallVector<DFBPerNodeAccessOccurrence> reportedOccurrences;
 
@@ -132,6 +135,7 @@ struct DFBPerNodeLifetime {
 
   /// Access occurrence indices corresponding to `terminalCompletionEvents`.
   SmallVector<unsigned> terminalAccessOccurrenceIndices;
+
   /// Normalized transaction runs in occurrence order.
   SmallVector<DFBTransactionRun> transactionRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
@@ -149,11 +153,16 @@ struct DFBLogicalLifecycle {
   SmallVector<DFBAccessOccurrence> accesses;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
-  SmallVector<DFBPerNodeLifetime, 0> diagnosticNodeLifetimes;
+  SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;
   bool bounded = false;
+  bool conditionallyBounded = false;
 
   /// Returns the lifetime for `node`, or null when the DFB is inactive there.
   const DFBPerNodeLifetime *findNodeLifetime(LaunchNodeCoord node) const;
+
+  /// Returns the possible-domain lifetime for `node`, or null when absent.
+  const DFBPerNodeLifetime *
+  findPossibleNodeLifetime(LaunchNodeCoord node) const;
 };
 
 /// Builds per-node cross-kernel happens-before and DFB quiescence facts.
@@ -181,6 +190,10 @@ public:
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
 
+  /// Returns ordering proved while treating unknown domains as possible.
+  bool isConditionallyOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
+                                    LaunchNodeCoord node) const;
+
 private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
@@ -188,6 +201,7 @@ private:
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
+  SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

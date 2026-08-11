@@ -135,6 +135,7 @@ struct AccessRun {
   const DFBAccessOccurrence *access = nullptr;
   std::uint64_t executionCount = 0;
   StaticIterationDomain iterationDomain;
+  bool conditionalExecution = false;
 };
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
@@ -224,8 +225,8 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
   return domain;
 }
 
-// Proves an unresolved non-protocol access cannot repeat. Treating the access
-// as present once is conservative for lifetime ordering under conditionals.
+// Proves an unresolved access cannot repeat. Treating the access as present
+// once preserves the conditional lifetime without assuming it executes.
 static bool structurallyExecutesAtMostOnce(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
@@ -239,7 +240,8 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
     Operation *parent = region ? region->getParentOp() : nullptr;
     if (!parent || !region->hasOneBlock() ||
         nestedOperation->getBlock() != &region->front() ||
-        !isa<scf::IfOp, scf::IndexSwitchOp, scf::ExecuteRegionOp>(parent)) {
+        !isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
+             scf::ExecuteRegionOp>(parent)) {
       return false;
     }
     nestedOperation = parent;
@@ -247,8 +249,8 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
   return nestedOperation->getBlock() == &function.getBody().front();
 }
 
-// Unknown membership is included only for counterfactual diagnostics. Reuse
-// proofs continue to require exact launch-node membership.
+// Possible-domain analysis includes unknown membership while exact-domain
+// analysis continues to require proven launch-node membership.
 static bool mayContainLaunchNode(const LaunchNodeDomain &domain,
                                  LaunchNodeCoord node,
                                  bool includeUnknownDomains) {
@@ -385,6 +387,11 @@ static bool runPrecedesWithinEachIteration(const AccessRun &before,
   if (before.access->operation == after.access->operation) {
     return before.access->protocolEffect && after.access->protocolEffect &&
            before.access->sequenceIndex < after.access->sequenceIndex;
+  }
+  if (before.conditionalExecution && after.conditionalExecution) {
+    return before.access->operation->getBlock() ==
+               after.access->operation->getBlock() &&
+           before.access->operation->isBeforeInBlock(after.access->operation);
   }
   if (before.executionCount <= 1) {
     return false;
@@ -760,10 +767,9 @@ collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
         continue;
       }
       if (!countIt->second) {
-        if (!access.protocolEffect &&
-            structurallyExecutesAtMostOnce(access.operation)) {
-          runs.try_emplace(&access,
-                           AccessRun{&access, 1, StaticIterationDomain{}});
+        if (structurallyExecutesAtMostOnce(access.operation)) {
+          runs.try_emplace(
+              &access, AccessRun{&access, 1, StaticIterationDomain{}, true});
         }
         continue;
       }
@@ -773,8 +779,8 @@ collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
       if (!domain) {
         continue;
       }
-      runs.try_emplace(
-          &access, AccessRun{&access, *countIt->second, std::move(*domain)});
+      runs.try_emplace(&access, AccessRun{&access, *countIt->second,
+                                          std::move(*domain), false});
     }
   }
   return runs;
@@ -888,13 +894,28 @@ static void buildProgramOrderGraph(
   }
 }
 
-// Adds the completion edge implied by each matching push/wait transaction.
-// Unknown-domain edges are restricted to the counterfactual debug graph.
+// Conditional transaction effects match only when their structured execution
+// conditions are equivalent.
+static bool
+proveEquivalentConditionalRuns(const AccessRun &lhs, const AccessRun &rhs,
+                               LaunchNodeCoord node,
+                               const LaunchNodeDomainState &domainState) {
+  if (!lhs.conditionalExecution && !rhs.conditionalExecution) {
+    return true;
+  }
+  return lhs.conditionalExecution && rhs.conditionalExecution &&
+         proveEquivalentConditionalExecutionAtLaunchNodes(
+             lhs.access->operation, node, rhs.access->operation, node,
+             domainState);
+}
+
+// Adds completion edges between matched push/wait transaction instances.
 static void addMatchedPushWaitEdges(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs, HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
-    const AccessRuns &accessRuns) {
+    const AccessRuns &accessRuns, LaunchNodeCoord node,
+    const LaunchNodeDomainState &domainState) {
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     SmallVector<const AccessRun *> pushes;
     SmallVector<const AccessRun *> waits;
@@ -919,7 +940,8 @@ static void addMatchedPushWaitEdges(
     while (pushIndex < pushes.size() && waitIndex < waits.size()) {
       const AccessRun &push = *pushes[pushIndex];
       const AccessRun &wait = *waits[waitIndex];
-      if (push.access->numTiles != wait.access->numTiles) {
+      if (push.access->numTiles != wait.access->numTiles ||
+          !proveEquivalentConditionalRuns(push, wait, node, domainState)) {
         matched = false;
         break;
       }
@@ -1080,8 +1102,8 @@ static void appendTransactionRun(DFBPerNodeLifetime &lifetime,
   lifetime.transactionRuns.push_back({executionCount, tilesPerExecution});
 }
 
-// Derives per-node lifetime facts. Exact-domain facts control reuse;
-// counterfactual facts are retained only for debug reporting.
+// Derives exact-domain or possible-domain per-node lifetime facts. Possible
+// facts control reuse only after proving conditional boundedness.
 static DFBQuiescenceProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
     SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
@@ -1089,7 +1111,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
-    bool reportExecutionCounts, bool includeUnknownDomains = false) {
+    const LaunchNodeDomainState &domainState, bool reportExecutionCounts,
+    bool includeUnknownDomains = false) {
   DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
   lifetime.node = node;
   SmallVector<const AccessRun *> reserves;
@@ -1176,6 +1199,32 @@ static DFBQuiescenceProof computePerNodeLifetime(
   }
   assert(!reserves.empty() && !pushes.empty() && !waits.empty() &&
          !pops.empty() && "supported protocol effects must have access runs");
+
+  SmallVector<const AccessRun *> conditionalRuns;
+  for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
+    const AccessRun &run = accessRuns.at(activeAccess);
+    if (run.conditionalExecution) {
+      conditionalRuns.push_back(&run);
+    }
+  }
+  if (!conditionalRuns.empty()) {
+    bool singleConditionalTransaction =
+        conditionalRuns.size() == activeAccesses.size() &&
+        reserves.size() == 1 && pushes.size() == 1 && waits.size() == 1 &&
+        pops.size() == 1;
+    const AccessRun &reference = *conditionalRuns.front();
+    bool sameCondition = singleConditionalTransaction &&
+                         llvm::all_of(llvm::drop_begin(conditionalRuns),
+                                      [&](const AccessRun *run) {
+                                        return proveEquivalentConditionalRuns(
+                                            reference, *run, node, domainState);
+                                      });
+    if (!sameCondition) {
+      return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
+              reference.access->operation};
+    }
+    lifetime.conditionalExecutionProven = true;
+  }
   auto getTransactionCount = [](ArrayRef<const AccessRun *> runs) {
     std::optional<std::uint64_t> total = 0;
     for (const AccessRun *run : runs) {
@@ -1392,6 +1441,15 @@ DFBLogicalLifecycle::findNodeLifetime(LaunchNodeCoord node) const {
   return lifetimeIt == nodeLifetimes.end() ? nullptr : &*lifetimeIt;
 }
 
+const DFBPerNodeLifetime *
+DFBLogicalLifecycle::findPossibleNodeLifetime(LaunchNodeCoord node) const {
+  auto lifetimeIt =
+      llvm::find_if(possibleNodeLifetimes, [&](const auto &lifetime) {
+        return lifetime.node == node;
+      });
+  return lifetimeIt == possibleNodeLifetimes.end() ? nullptr : &*lifetimeIt;
+}
+
 // Logical identity is obtained through the analysis manager so every lifetime
 // uses the same declaration aggregation as physical allocation.
 DFBConcurrentKernelLivenessAnalysis::DFBConcurrentKernelLivenessAnalysis(
@@ -1512,6 +1570,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
   orderedBeforeByNode.reserve(launchNodes.size());
+  conditionallyOrderedBeforeByNode.reserve(launchNodes.size());
   bool collectAllocationDiagnostics = false;
   LLVM_DEBUG(collectAllocationDiagnostics = true);
   for (LaunchNodeCoord node : launchNodes) {
@@ -1527,7 +1586,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                            accessEvents, executionCounts, accessRuns,
                            /*includeUnknownDomains=*/false);
     addMatchedPushWaitEdges(logicalDFBs, graph, operationEvents, accessEvents,
-                            accessRuns);
+                            accessRuns, node, domainState);
     graph.computeReachability();
 
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -1536,7 +1595,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       }
       DFBQuiescenceProof proof = computePerNodeLifetime(
           logicalDFB, node, logicalDFB.nodeLifetimes, graph, operationEvents,
-          accessEvents, executionCounts, accessRuns,
+          accessEvents, executionCounts, accessRuns, domainState,
           collectAllocationDiagnostics);
       logicalDFB.nodeLifetimes.back().quiescence = proof;
     }
@@ -1561,35 +1620,53 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
     orderedBeforeByNode.push_back(std::move(nodeOrdering));
 
-    if (!collectAllocationDiagnostics) {
-      continue;
-    }
-    HappensBeforeGraph diagnosticGraph;
-    DenseMap<Operation *, EventPair> diagnosticOperationEvents;
-    DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
-        diagnosticAccessEvents;
-    AccessRuns diagnosticAccessRuns =
+    HappensBeforeGraph possibleGraph;
+    DenseMap<Operation *, EventPair> possibleOperationEvents;
+    DenseMap<const DFBAccessOccurrence *, AccessEventSpan> possibleAccessEvents;
+    AccessRuns possibleAccessRuns =
         collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
                           /*includeUnknownDomains=*/true);
-    buildProgramOrderGraph(module, logicalDFBs, node, diagnosticGraph,
-                           diagnosticOperationEvents, diagnosticAccessEvents,
-                           executionCounts, diagnosticAccessRuns,
+    buildProgramOrderGraph(module, logicalDFBs, node, possibleGraph,
+                           possibleOperationEvents, possibleAccessEvents,
+                           executionCounts, possibleAccessRuns,
                            /*includeUnknownDomains=*/true);
-    addMatchedPushWaitEdges(logicalDFBs, diagnosticGraph,
-                            diagnosticOperationEvents, diagnosticAccessEvents,
-                            diagnosticAccessRuns);
-    diagnosticGraph.computeReachability();
+    addMatchedPushWaitEdges(logicalDFBs, possibleGraph, possibleOperationEvents,
+                            possibleAccessEvents, possibleAccessRuns, node,
+                            domainState);
+    possibleGraph.computeReachability();
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
       if (logicalDFB.launchDomain.known) {
         continue;
       }
       DFBQuiescenceProof proof = computePerNodeLifetime(
-          logicalDFB, node, logicalDFB.diagnosticNodeLifetimes, diagnosticGraph,
-          diagnosticOperationEvents, diagnosticAccessEvents, executionCounts,
-          diagnosticAccessRuns, /*reportExecutionCounts=*/true,
+          logicalDFB, node, logicalDFB.possibleNodeLifetimes, possibleGraph,
+          possibleOperationEvents, possibleAccessEvents, executionCounts,
+          possibleAccessRuns, domainState,
+          /*reportExecutionCounts=*/collectAllocationDiagnostics,
           /*includeUnknownDomains=*/true);
-      logicalDFB.diagnosticNodeLifetimes.back().quiescence = proof;
+      logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
     }
+
+    SmallVector<llvm::BitVector> conditionalNodeOrdering(
+        logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
+    for (unsigned beforeIndex = 0; beforeIndex < logicalDFBs.size();
+         ++beforeIndex) {
+      const DFBPerNodeLifetime *before =
+          logicalDFBs[beforeIndex].findPossibleNodeLifetime(node);
+      if (!before) {
+        continue;
+      }
+      for (unsigned afterIndex = 0; afterIndex < logicalDFBs.size();
+           ++afterIndex) {
+        const DFBPerNodeLifetime *after =
+            logicalDFBs[afterIndex].findPossibleNodeLifetime(node);
+        if (after && proveOrderedBefore(*before, *after, possibleGraph)) {
+          conditionalNodeOrdering[beforeIndex].set(afterIndex);
+        }
+      }
+    }
+    conditionallyOrderedBeforeByNode.push_back(
+        std::move(conditionalNodeOrdering));
   }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -1599,6 +1676,21 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                                       [](const DFBPerNodeLifetime &lifetime) {
                                         return lifetime.quiescence.proven();
                                       });
+    bool hasProvenConditionalLifecycle =
+        llvm::any_of(logicalDFB.possibleNodeLifetimes,
+                     [](const DFBPerNodeLifetime &lifetime) {
+                       return lifetime.mayBeActive &&
+                              lifetime.conditionalExecutionProven &&
+                              lifetime.quiescence.proven();
+                     });
+    logicalDFB.conditionallyBounded =
+        !logicalDFB.launchDomain.known && hasProvenConditionalLifecycle &&
+        llvm::all_of(logicalDFB.possibleNodeLifetimes,
+                     [](const DFBPerNodeLifetime &lifetime) {
+                       return !lifetime.mayBeActive ||
+                              (lifetime.conditionalExecutionProven &&
+                               lifetime.quiescence.proven());
+                     });
   }
 }
 
@@ -1612,6 +1704,17 @@ bool DFBConcurrentKernelLivenessAnalysis::isOrderedBefore(
   assert(beforeIndex < orderedBeforeByNode[nodeIndex].size() &&
          afterIndex < orderedBeforeByNode[nodeIndex].size());
   return orderedBeforeByNode[nodeIndex][beforeIndex].test(afterIndex);
+}
+
+bool DFBConcurrentKernelLivenessAnalysis::isConditionallyOrderedBefore(
+    unsigned beforeIndex, unsigned afterIndex, LaunchNodeCoord node) const {
+  auto nodeIt = llvm::find(launchNodes, node);
+  assert(nodeIt != launchNodes.end() && "node must be in the launch grid");
+  unsigned nodeIndex = nodeIt - launchNodes.begin();
+  assert(beforeIndex < conditionallyOrderedBeforeByNode[nodeIndex].size() &&
+         afterIndex < conditionallyOrderedBeforeByNode[nodeIndex].size());
+  return conditionallyOrderedBeforeByNode[nodeIndex][beforeIndex].test(
+      afterIndex);
 }
 
 } // namespace mlir::tt::ttl
