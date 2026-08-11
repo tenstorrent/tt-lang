@@ -223,11 +223,15 @@ static Operation *getTopLevelKernelOperation(Operation *operation) {
              : functionBody.findAncestorOpInBlock(*operation);
 }
 
-/// Missing projected events remain unknown because nested source order alone
-/// cannot establish cross-region execution order.
+/// Exact nested events take precedence. Missing events fall back to the
+/// top-level projection because nested source order alone is insufficient.
 static std::optional<EventPair>
 getProjectedEvents(Operation *operation,
                    const DenseMap<Operation *, EventPair> &operationEvents) {
+  auto exactEventIt = operationEvents.find(operation);
+  if (exactEventIt != operationEvents.end()) {
+    return exactEventIt->second;
+  }
   Operation *projected = getTopLevelKernelOperation(operation);
   if (!projected) {
     return std::nullopt;
@@ -562,6 +566,117 @@ static LogicalResult collectLogicalDFBs(
   return success();
 }
 
+static bool
+hasExactSingleInvocationAncestry(Operation *operation, LaunchNodeCoord node,
+                                 const LaunchNodeDomainState &domainState) {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  if (!function || function.getBody().empty() ||
+      !function.getBody().hasOneBlock()) {
+    return false;
+  }
+
+  Region *functionBody = &function.getBody();
+  for (Region *region = operation->getParentRegion(); region != functionBody;) {
+    if (!region || !region->hasOneBlock()) {
+      return false;
+    }
+    Operation *terminator = region->front().getTerminator();
+    std::optional<std::uint64_t> executionCount =
+        getExactExecutionCountAtLaunchNode(terminator, node, domainState);
+    if (!executionCount || *executionCount != 1) {
+      return false;
+    }
+    Operation *parent = region->getParentOp();
+    if (!parent) {
+      return false;
+    }
+    region = parent->getParentRegion();
+  }
+  return true;
+}
+
+class ProgramOrderGraphBuilder {
+public:
+  ProgramOrderGraphBuilder(
+      HappensBeforeGraph &graph,
+      const llvm::DenseSet<Operation *> &modeledOperations,
+      DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
+          &directProtocolAccesses,
+      DenseMap<Operation *, EventPair> &operationEvents,
+      DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents)
+      : graph(graph), modeledOperations(modeledOperations),
+        directProtocolAccesses(directProtocolAccesses),
+        operationEvents(operationEvents), accessEvents(accessEvents) {}
+
+  void buildFunction(func::FuncOp function) {
+    if (function.getBody().empty() || !function.getBody().hasOneBlock()) {
+      return;
+    }
+    buildBlock(function.getBody().front());
+  }
+
+private:
+  std::optional<EventPair> buildBlock(Block &block) {
+    std::optional<EventPair> blockEvents;
+    std::optional<EventPair> previousEvents;
+    for (Operation &operation : block) {
+      if (!modeledOperations.contains(&operation)) {
+        continue;
+      }
+      EventPair events = buildOperation(operation);
+      if (!blockEvents) {
+        blockEvents = events;
+      } else {
+        graph.addEdge(previousEvents->completion, events.entry);
+        blockEvents->completion = events.completion;
+      }
+      previousEvents = events;
+    }
+    return blockEvents;
+  }
+
+  EventPair buildOperation(Operation &operation) {
+    EventPair events = graph.addOperation();
+    bool inserted = operationEvents.try_emplace(&operation, events).second;
+    assert(inserted && "modeled operation must be visited once");
+
+    auto protocolIt = directProtocolAccesses.find(&operation);
+    if (protocolIt != directProtocolAccesses.end()) {
+      llvm::sort(protocolIt->second, [](const auto *lhs, const auto *rhs) {
+        return lhs->sequenceIndex < rhs->sequenceIndex;
+      });
+      unsigned previousCompletion = events.entry;
+      for (const DFBAccessOccurrence *access : protocolIt->second) {
+        EventPair effectEvents = graph.addOperation();
+        accessEvents[access] = effectEvents;
+        graph.addEdge(previousCompletion, effectEvents.entry);
+        graph.addEdge(effectEvents.completion, events.completion);
+        previousCompletion = effectEvents.completion;
+      }
+    }
+
+    for (Region &region : operation.getRegions()) {
+      if (!region.hasOneBlock()) {
+        continue;
+      }
+      std::optional<EventPair> nestedEvents = buildBlock(region.front());
+      if (!nestedEvents) {
+        continue;
+      }
+      graph.addEdge(events.entry, nestedEvents->entry);
+      graph.addEdge(nestedEvents->completion, events.completion);
+    }
+    return events;
+  }
+
+  HappensBeforeGraph &graph;
+  const llvm::DenseSet<Operation *> &modeledOperations;
+  DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
+      &directProtocolAccesses;
+  DenseMap<Operation *, EventPair> &operationEvents;
+  DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents;
+};
+
 /// Builds source-order events only for accesses active on `node`. Operations
 /// in different kernels remain concurrent unless protocol edges order them.
 static void buildProgramOrderGraph(
@@ -570,6 +685,7 @@ static void buildProgramOrderGraph(
     DenseMap<Operation *, EventPair> &operationEvents,
     DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents,
     const AccessExecutionCounts &executionCounts,
+    const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains = false) {
   llvm::DenseSet<Operation *> modeledOperations;
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
@@ -580,44 +696,50 @@ static void buildProgramOrderGraph(
                                includeUnknownDomains)) {
         continue;
       }
-      if (Operation *projected = getTopLevelKernelOperation(access.operation)) {
-        modeledOperations.insert(projected);
-        if (access.protocolEffect && projected == access.operation) {
-          directProtocolAccesses[projected].push_back(&access);
+      Operation *topLevelOperation =
+          getTopLevelKernelOperation(access.operation);
+      if (!topLevelOperation) {
+        continue;
+      }
+      modeledOperations.insert(topLevelOperation);
+      if (access.operation == topLevelOperation) {
+        if (access.protocolEffect) {
+          directProtocolAccesses[topLevelOperation].push_back(&access);
         }
+        continue;
+      }
+
+      auto executionCountIt = executionCounts.find(&access);
+      assert(executionCountIt != executionCounts.end() &&
+             "every DFB access must have an execution-count fact");
+      std::optional<std::uint64_t> executionCount = executionCountIt->second;
+      if (!executionCount || *executionCount != 1 ||
+          !hasExactSingleInvocationAncestry(access.operation, node,
+                                            domainState)) {
+        continue;
+      }
+
+      // A projected unresolved access spans its containing top-level event.
+      // If protocol edges form a cycle with an exact descendant, asymmetric
+      // reachability keeps the mixed relation conservative.
+      for (Operation *operation = access.operation;;
+           operation = operation->getParentOp()) {
+        modeledOperations.insert(operation);
+        if (operation == topLevelOperation) {
+          break;
+        }
+      }
+      if (access.protocolEffect) {
+        directProtocolAccesses[access.operation].push_back(&access);
       }
     }
   }
+
+  ProgramOrderGraphBuilder builder(graph, modeledOperations,
+                                   directProtocolAccesses, operationEvents,
+                                   accessEvents);
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-    if (function.getBody().empty() || !function.getBody().hasOneBlock()) {
-      continue;
-    }
-    std::optional<EventPair> previousEvents;
-    for (Operation &operation : function.getBody().front()) {
-      if (!modeledOperations.contains(&operation)) {
-        continue;
-      }
-      EventPair events = graph.addOperation();
-      operationEvents[&operation] = events;
-      if (previousEvents) {
-        graph.addEdge(previousEvents->completion, events.entry);
-      }
-      auto protocolIt = directProtocolAccesses.find(&operation);
-      if (protocolIt != directProtocolAccesses.end()) {
-        llvm::sort(protocolIt->second, [](const auto *lhs, const auto *rhs) {
-          return lhs->sequenceIndex < rhs->sequenceIndex;
-        });
-        unsigned previousCompletion = events.entry;
-        for (const DFBAccessOccurrence *access : protocolIt->second) {
-          EventPair effectEvents = graph.addOperation();
-          accessEvents[access] = effectEvents;
-          graph.addEdge(previousCompletion, effectEvents.entry);
-          graph.addEdge(effectEvents.completion, events.completion);
-          previousCompletion = effectEvents.completion;
-        }
-      }
-      previousEvents = events;
-    }
+    builder.buildFunction(function);
   }
 }
 
@@ -1108,7 +1230,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     DenseMap<Operation *, EventPair> operationEvents;
     DenseMap<const DFBAccessOccurrence *, EventPair> accessEvents;
     buildProgramOrderGraph(module, logicalDFBs, node, graph, operationEvents,
-                           accessEvents, executionCounts);
+                           accessEvents, executionCounts, domainState);
     addMatchedPushWaitEdges(logicalDFBs, node, graph, operationEvents,
                             accessEvents, executionCounts, domainState);
     graph.computeReachability();
@@ -1149,6 +1271,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     buildProgramOrderGraph(module, logicalDFBs, node, possibleDomainGraph,
                            possibleDomainOperationEvents,
                            possibleDomainAccessEvents, executionCounts,
+                           domainState,
                            /*includeUnknownDomains=*/true);
     addMatchedPushWaitEdges(
         logicalDFBs, node, possibleDomainGraph, possibleDomainOperationEvents,

@@ -323,6 +323,62 @@ def _user_dfb_reuse_kernel(first, second, out):
 
 
 @ttl.operation(grid=(1, 1))
+def _exact_nested_user_dfb_reuse_kernel(first, second, out):
+    first_forward_dfb = ttl.make_dataflow_buffer_like(
+        first, shape=(1, 1), block_count=2
+    )
+    first_return_dfb = ttl.make_dataflow_buffer_like(first, shape=(1, 1), block_count=2)
+    second_forward_dfb = ttl.make_dataflow_buffer_like(
+        second, shape=(1, 1), block_count=2
+    )
+    second_return_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        node_x, _ = ttl.node(dims=2)
+        if node_x == 0:
+            with first_forward_dfb.wait():
+                pass
+
+            with first_return_dfb.reserve() as acknowledgment:
+                acknowledgment.store(
+                    ttl.block.fill(
+                        0,
+                        shape=acknowledgment.shape,
+                        dtype=acknowledgment.dtype,
+                    )
+                )
+
+            with (
+                second_forward_dfb.wait() as second_block,
+                second_return_dfb.reserve() as result_block,
+            ):
+                result_block.store(second_block)
+
+    @ttl.datamovement()
+    def data_movement():
+        node_x, _ = ttl.node(dims=2)
+        if node_x == 0:
+            with first_forward_dfb.reserve() as first_block:
+                ttl.copy(first[0, 0], first_block).wait()
+
+            with first_return_dfb.wait():
+                pass
+
+            with second_forward_dfb.reserve() as second_block:
+                ttl.copy(second[0, 0], second_block).wait()
+
+            with second_return_dfb.wait() as result_block:
+                ttl.copy(result_block, out[0, 0]).wait()
+
+    # The target runtime requires both NOC kernels. Keeping the complete
+    # protocol on one NOC gives both return DFBs the same read-pointer owner.
+    @ttl.datamovement()
+    def secondary_data_movement():
+        pass
+
+
+@ttl.operation(grid=(1, 1))
 def _distinct_noc_owner_kernel(first, second, out):
     first_dfb = ttl.make_dataflow_buffer_like(first, shape=(1, 1), block_count=2)
     acknowledgment_dfb = ttl.make_dataflow_buffer_like(
@@ -428,6 +484,46 @@ def test_user_dfb_allocation_runtime(
         "--ttl-reuse-user-dfbs" if reuse_user_dfbs else "--no-ttl-reuse-user-dfbs"
     )
     _user_dfb_reuse_kernel(first, second, out, options=reuse_option)
+
+    actual = ttnn.to_torch(out).float()
+    expected = second_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_exact_nested_cross_kernel_protocol_order_reuses_dfbs(
+    device, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    first_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    second_host = (((17 * element_indices).remainder(509) - 254) / 128).to(dtype)
+    out_host = torch.zeros((TILE, TILE), dtype=dtype)
+
+    first = to_device(first_host, device)
+    second = to_device(second_host, device)
+    out = to_device(out_host, device)
+
+    final_mlir_path = tmp_path / "exact_nested_cross_kernel_order.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    _exact_nested_user_dfb_reuse_kernel(
+        first,
+        second,
+        out,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    # The first return transaction orders the two forward DFBs. Matching NOC
+    # and compute pointer owners then permit two physical indices for four
+    # logical DFBs: one forward index and one return index.
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
 
     actual = ttnn.to_torch(out).float()
     expected = second_host.float()
