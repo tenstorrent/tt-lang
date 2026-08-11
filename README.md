@@ -237,7 +237,7 @@ cd /path/to/tt-lang
 pre-commit install
 ```
 
-Pre-commit runs automatically on `git commit`. It formats Python code with [Black](https://github.com/psf/black), C++ code with [clang-format](https://clang.llvm.org/docs/ClangFormat.html) (LLVM style), removes trailing whitespace, and checks YAML/TOML syntax.
+The installed hooks validate staged changes, commit messages, and pushes. They format Python code with [Black](https://github.com/psf/black), C++ code with [clang-format](https://clang.llvm.org/docs/ClangFormat.html) (LLVM style), remove trailing whitespace, and check YAML/TOML syntax and restricted public content. See [CONTRIBUTING.md](CONTRIBUTING.md#updating-restricted-public-content) for signature maintenance.
 
 If pre-commit modifies files, the commit is stopped. Stage the changes and commit again:
 
