@@ -92,3 +92,15 @@ func.func @adapted_dependency_occurrences() attributes {ttl.kernel_thread = #ttk
   ttl.opaque_call "adapted" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 1, 1>] (%dfb) {header = "adapted.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> ()
   return
 }
+
+// -----
+
+// Scalar results are restricted to the frontend's declared carrier types.
+// CHECK-LABEL: func.func @scalar_results
+// CHECK: %[[I32:.*]] = ttl.opaque_call "result_i32" () {header = "result.hpp"} : () -> i32
+// CHECK-NEXT: %[[I64:.*]] = ttl.opaque_call "result_i64" () {header = "result.hpp"} : () -> i64
+func.func @scalar_results() {
+  %i32 = ttl.opaque_call "result_i32" () {header = "result.hpp"} : () -> i32
+  %i64 = ttl.opaque_call "result_i64" () {header = "result.hpp"} : () -> i64
+  return
+}
