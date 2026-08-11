@@ -24,6 +24,7 @@ Math operations:
 from .ttl_api import compute, datamovement, Program
 from .atom import operation, DFB
 from .kernel import Kernel, KernelKind
+from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
     make_dfb,
@@ -49,6 +50,7 @@ __all__ = [
     "DFB",
     "Kernel",
     "KernelKind",
+    "ScalarType",
     "compute",
     "datamovement",
     "Program",
