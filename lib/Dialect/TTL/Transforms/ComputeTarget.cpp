@@ -5,7 +5,6 @@
 #include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
-#include "ttlang/Dialect/TTCore/IR/Utils.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -472,40 +471,6 @@ std::unique_ptr<ComputeTargetEnvironment> createCommonTargetEnvironment() {
       std::move(environments));
 }
 
-FailureOr<std::optional<ttcore::Arch>>
-getDeviceArch(ModuleOp module, std::string &failureReason) {
-  auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
-      ttcore::SystemDescAttr::name);
-  auto device = ttcore::lookupDeviceOp(module, ttcore::getDefaultDeviceName());
-  if (!systemDesc || !device) {
-    return std::optional<ttcore::Arch>();
-  }
-
-  ArrayRef<unsigned> chipIds = device.getDeviceAttr().getChipIds();
-  if (chipIds.empty()) {
-    failureReason = "default device has no selected chip";
-    return failure();
-  }
-  auto invalidChip = llvm::find_if(chipIds, [&](unsigned chipId) {
-    return chipId >= systemDesc.getChipDescIndices().size();
-  });
-  if (invalidChip != chipIds.end()) {
-    failureReason = "default device selects chip " +
-                    std::to_string(*invalidChip) +
-                    " outside the system description";
-    return failure();
-  }
-  ttcore::Arch arch =
-      systemDesc.getChipDesc(chipIds.front()).getArch().getValue();
-  if (llvm::any_of(llvm::drop_begin(chipIds), [&](unsigned chipId) {
-        return systemDesc.getChipDesc(chipId).getArch().getValue() != arch;
-      })) {
-    failureReason = "default device selects chips with different architectures";
-    return failure();
-  }
-  return std::optional<ttcore::Arch>(arch);
-}
-
 FailureOr<ttcore::TileType> getRequiredTileType(Type type, StringRef role,
                                                 std::string &failureReason) {
   FailureOr<ttcore::TileType> tileType = getTileType(type);
@@ -612,49 +577,11 @@ getReductionCapability(Operation *operation, std::string &failureReason) {
 
 } // namespace
 
-FailureOr<std::optional<ttcore::Arch>>
-resolveComputeTargetArch(Operation *operation, std::string &failureReason) {
-  failureReason.clear();
-  ModuleOp module = dyn_cast<ModuleOp>(operation);
-  if (!module) {
-    module = operation->getParentOfType<ModuleOp>();
-  }
-  if (!module) {
-    failureReason = "operation is not nested in a module";
-    return failure();
-  }
-
-  std::optional<ttcore::Arch> attributeArch;
-  Attribute rawTargetArch = module->getAttr(kTargetArchAttrName);
-  auto targetArch = dyn_cast_or_null<ttcore::ArchAttr>(rawTargetArch);
-  if (rawTargetArch && !targetArch) {
-    failureReason =
-        (kTargetArchAttrName + " must be a #ttcore.arch attribute").str();
-    return failure();
-  }
-  if (targetArch) {
-    attributeArch = targetArch.getValue();
-  }
-
-  FailureOr<std::optional<ttcore::Arch>> deviceArch =
-      getDeviceArch(module, failureReason);
-  if (failed(deviceArch)) {
-    return failure();
-  }
-  if (attributeArch && *deviceArch && *attributeArch != **deviceArch) {
-    failureReason =
-        (kTargetArchAttrName + " does not match the selected device arch")
-            .str();
-    return failure();
-  }
-  return attributeArch ? attributeArch : *deviceArch;
-}
-
 FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
 ComputeTargetEnvironment::get(Operation *operation,
                               std::string &failureReason) {
   FailureOr<std::optional<ttcore::Arch>> arch =
-      resolveComputeTargetArch(operation, failureReason);
+      resolveTargetArch(operation, failureReason);
   if (failed(arch)) {
     return failure();
   }

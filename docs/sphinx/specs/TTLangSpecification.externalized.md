@@ -635,7 +635,7 @@ number of SFPU lane iterations and defaults to 8.
 | Tile size in scalar elements | 32, 32 | 32, 32 |
 | Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
 | Size of L1 memory (KB) | 1464 | 1464 |
-| Maximum number of dataflow buffers | 32 | 32 |
+| Maximum number of dataflow buffers | 32 | 64 |
 
 
 [^1]: This is temporary requirement that will be removed in future versions. When removed the shape will be inferred.

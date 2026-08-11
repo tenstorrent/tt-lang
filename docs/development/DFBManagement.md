@@ -6,11 +6,13 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically when the compiler needs concrete storage for a tensor SSA value: a tensor-level operation requires a CB-attached operand, a fused expression must be preserved before a source DFB release, or a computed value is stored by operations in multiple MLIR basic blocks.
 
-The hardware supports at most 32 DFBs per node (indices 0--31). User and
-compiler-allocated DFBs share this index space. Passes operating on individual
-kernels assign compiler DFBs kernel-local provisional indices. The module-level
-finalization pass assigns module-wide physical indices after the last
-user-declared DFB and applies lifetime-based index reuse.
+Blackhole supports 64 physical DFB indices per node (0--63). Wormhole B0 and
+Quasar support 32 (0--31). Compilation without target metadata uses the
+conservative 32-index capacity. User and compiler-allocated DFBs share this
+index space. Passes operating on individual kernels assign compiler DFBs
+kernel-local provisional indices. The module-level finalization pass assigns
+module-wide physical indices after the last user-declared DFB and applies
+lifetime-based index reuse.
 
 `ttl.bind_cb` separates logical and physical identity. `dfb_id` identifies one
 logical DFB across kernel functions, while `cb_index` names its assigned
@@ -634,8 +636,8 @@ Physical index reuse may later assign the same index to non-overlapping
 compiler DFB lifetimes of identical type. `ttl-validate-cb-budget` runs after
 index finalization and verifies the resulting static DFB storage against the
 device-specific remaining L1 budget. Materialization that is semantically
-required but exceeds either the 32-index limit or the L1 budget is rejected
-with a resource diagnostic.
+required but exceeds either the selected target's DFB-index capacity or the L1
+budget is rejected with a resource diagnostic.
 
 `test/python/test_recurrence_multi_output_dfb.py` exercises this behavior on
 hardware with several results materialized from the same compute, nested and
@@ -1573,19 +1575,20 @@ them different physical indices.
 atom with a three-level tree-reduction atom over eight nodes. The composed
 operation contains 36 logical DFBs across the compute and data movement
 kernels. Proven non-overlapping lifetimes reduce the allocation to 29 physical
-indices, below the hardware limit of 32. The device test compares the final
-result with PyTorch scaled dot-product attention.
+indices, within every supported target capacity. The device test compares the
+final result with PyTorch scaled dot-product attention.
 
 `test/ttlang/Dialect/TTL/Transforms/dfb_concurrent_kernel_liveness.mlir`
 isolates the cross-kernel ordering rules. The independent allocation-oracle
 test joins 30 DFBs that all conflict pairwise with the confirmed four-DFB
-order-sensitive case. First-fit uses 33 indices and the fixed-limit exact check
-finds a 32-index assignment. The invalid liveness test confirms that 33
-mutually conflicting lifetimes are rejected.
+order-sensitive case. First-fit uses 33 indices and the target-capacity exact
+check finds a 32-index assignment. The invalid liveness test confirms that 33
+mutually conflicting lifetimes are rejected without target metadata.
 
 `test/python/test_user_dfb_reuse.py` recursively composes copy atoms into an
-operation with 33 logical DFBs. The operation compiles and executes only when
-reuse reduces the physical allocation below the hardware limit.
+operation with 33 logical DFBs. Reuse reduces the physical allocation for all
+targets. A focused Blackhole case disables reuse and executes all 33 distinct
+indices.
 
 ### Module attribute and runtime integration
 
@@ -1594,8 +1597,9 @@ compiler-created DFBs after them. This removes gaps caused by DFBs that the
 frontend created but no kernel captured, without changing logical identity or
 existing physical-index sharing. Lifetime-based assignment may further reuse
 physical indices when enabled. The planned physical DFB count is one greater
-than the greatest assigned index, and the pass verifies this does not exceed
-`kMaxCircularBuffers` (32).
+than the greatest assigned index. The pass compares this count with
+`getTargetMaxDFBIndices()`, which returns 64 for Blackhole and 32 for Wormhole
+B0, Quasar, and absent target metadata.
 
 The allocation planner records the final `ttl.base_cta_index` for every kernel
 that has the attribute. Compile-time arguments to each kernel reserve

@@ -227,9 +227,11 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   if (!dfbIndex) {
     return op->emitError("cannot resolve finalized DFB index");
   }
-  if (*dfbIndex < 0 || *dfbIndex >= kMaxCircularBuffers) {
+  int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
+  if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
     return op->emitError("finalized DFB index ")
-           << *dfbIndex << " is outside [0, " << kMaxCircularBuffers - 1 << "]";
+           << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
+           << "] for " << getTargetDFBIndexCapacityDescription(op);
   }
   return static_cast<int32_t>(*dfbIndex);
 }
@@ -316,10 +318,12 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
 
     // Get the CB index from the bind_cb op attribute.
     int64_t cbIndex = op.getCbIndex().getSExtValue();
-    if (cbIndex < 0 || cbIndex >= kMaxCircularBuffers) {
+    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
+    if (cbIndex < 0 || cbIndex >= targetMaxDFBIndices) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "cb_index " << cbIndex << " out of valid range [0, "
-             << kMaxCircularBuffers - 1 << "]";
+             << targetMaxDFBIndices - 1 << "] for "
+             << getTargetDFBIndexCapacityDescription(op);
       });
     }
 

@@ -26,11 +26,9 @@ Goals:
 3. Remove the limit on overlapping multicast width. Today, when `N`
    pipes target the same receiver and share its dataflow buffer, the
    receiver's `block_count` must be at least `N` because each pipe
-   gets its own dedicated slot in that buffer. With the tt-metal
-   per-Tensix CB cap of 32 (`NUM_CIRCULAR_BUFFERS` in
-   [`tt_metal/llrt/hal.hpp:409-411`][hal-num-cb]), this constrains
-   overlapping multicast to `N <= 32`. The compiler should let one
-   wide overlapping multicast lower without that constraint.
+   gets its own dedicated slot in that buffer. The resulting DFB allocation
+   grows with `N` until it exceeds available L1. The compiler should let one
+   wide overlapping multicast use bounded storage independent of `N`.
 
 ## 2. Background
 
@@ -51,12 +49,8 @@ requires multicast receivers to reserve the same slot for a given pipe
 because TT-Metal NoC multicast carries one destination address.
 `verifyReceiverDFBBlockCounts` then requires
 `block_count >= max_slot_idx + 1` per receiver. This
-makes overlapping multicast unrepresentable when more than 32 pipes
-target the same receiver: the tt-metal per-Tensix CB cap is 32
-(`NUM_CIRCULAR_BUFFERS` in
-[`tt_metal/llrt/hal.hpp:409-411`][hal-num-cb], enforced in tt-lang
-at `python/ttl/dataflow_buffer.py:66`), and the slot table requires
-the count to equal the number of pipes.
+makes the receiver's L1 allocation grow linearly with the number of pipes and
+eventually exceed the available L1 budget.
 
 ### Multicast handshake protocol
 
@@ -797,7 +791,7 @@ CCL receiver staging DFB feeding a matmul operand-reader DFB.
 operand-reader DFB occupies; the operand-reader waits on a semaphore
 (signaled by the multicast sender) instead of doing a
 `cb_wait_front` on the staging DFB. Saves one CB index (one of the
-32 per-Tensix tt-metal CB slots that DFBs lower to), one
+target-dependent physical slots that DFBs lower to), one
 `cb_push_back` / `cb_pop_front` pair, and the implicit L1 region
 reservation for the staging DFB.
 
@@ -808,9 +802,9 @@ DFB exists between gather and matmul-A. The companion compute
 kernel is
 [`bmm_large_block_zm_fused_bias_activation_gathered.cpp`][llama-compute].
 
-**Why this is faster.** Frees one of the 32 per-Tensix CB indices
-that DFBs lower to and removes one push/pop pair per delivered
-tile. For kernels approaching the index ceiling (e.g.
+**Why this is faster.** Frees one physical DFB index and removes one push/pop
+pair per delivered tile. For kernels approaching the target's index capacity
+(e.g.
 `make_balanced_relu_kernel` in `test_mcast_matmul.py` already uses
 4-5 DFBs), the index headroom is the limiting factor.
 
@@ -821,8 +815,8 @@ needs a separate analysis pass.
 
 #### 3.2.6 Wave decomposition for wide overlapping multicast
 
-**Pattern.** A single PipeNet whose slot-per-pipe `block_count`
-exceeds the L1 budget or the tt-metal per-Tensix CB cap of 32.
+**Pattern.** A single PipeNet whose slot-per-pipe `block_count` exceeds the L1
+budget.
 
 **Rewrite.** The pass splits the PipeNet into `K` narrower PipeNets
 executed sequentially, each with `block_count = ceil(N/K)` where `N`
@@ -865,11 +859,6 @@ queries. At minimum the interface exposes:
 - `l1BandwidthPerCycle()`: per-Tensix L1 bandwidth in bytes per
   cycle, used to bound the receiver-side staging cost subtracted by
   3.2.5.
-- `dataflowBufferDepthCap()`: 32 on Wormhole and Blackhole, the
-  static maximum `block_count` enforced by `python/ttl/circular_buffer.py`.
-  3.2.6 applies only when the slot-per-pipe `block_count` would
-  exceed this value.
-
 Each rewrite then implements `costOfRewritten(pipeNet, ctx)` and
 `costOfFallback(pipeNet, ctx)` returning a comparable scalar; the
 rewrite applies when the difference exceeds a target-specific threshold.
@@ -1288,8 +1277,6 @@ tt-metal (at SHA `c296ef469fe6aab65ab0d359e164b14b62d92bfc`):
 - [`tests/tt_metal/tt_metal/perf_microbenchmark/2_noc_rtor/test_noc_rtor.cpp`](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tests/tt_metal/tt_metal/perf_microbenchmark/2_noc_rtor/test_noc_rtor.cpp) — random-source-to-random-destination NoC sweep
 - [tt-benchmarking repository](https://github.com/tenstorrent/tt-benchmarking) — op-level perf harnesses
 - [`Kernel::compute_hash` (tt-metal JIT cache key)](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/impl/kernels/kernel.cpp#L374-L399) — hashes emitted source, compile-time args, defines, and config
-- [`NUM_CIRCULAR_BUFFERS = 32` (tt-metal per-Tensix CB cap)](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/llrt/hal.hpp#L409-L411) — the limit `block_count` is bounded by
-
 <!--
 The reference labels below back the in-text [text][label] links and
 should be left in place; markdown renders them as invisible link
@@ -1312,7 +1299,6 @@ definitions.
 [llvm-lv-force-ordered]: https://github.com/llvm/llvm-project/blob/705cdc3a9d0adb4c0667aa840a1f23165eca297b/llvm/lib/Transforms/Vectorize/LoopVectorize.cpp#L344
 [dm-in0-chain]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/kernels/dm_in0_sender.cpp#L287-L315
 [noc-mcast-docstring]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L885-L924
-[hal-num-cb]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/llrt/hal.hpp#L409-L411
 [dm-in1-out]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/kernels/dm_in1_sender_out.cpp
 [factory-in0-next]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/minimal_matmul_program_factory.cpp#L719-L722
 [factory-in1-next]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/minimal_matmul_program_factory.cpp#L770-L773

@@ -62,6 +62,32 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 // -----
 
+// Blackhole accepts index 32 in both explicit unpack policy and attached DFB
+// validation.
+// DEFAULT-LABEL: func.func @blackhole_accepts_dfb_index_32
+// DEFAULT-SAME: ttl.unpack_to_dest_fp32 = array<i32: 32>
+// BLACKHOLE-LABEL: func.func @blackhole_accepts_dfb_index_32
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @blackhole_accepts_dfb_index_32(
+      %input: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {ttl.unpack_to_dest_fp32 = array<i32: 32>} {
+    %input_dfb = ttl.bind_cb {cb_index = 32, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %input_attached = ttl.attach_cb %input, %input_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    %input_tile = tensor.extract %input_attached[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>>
+    %result = ttl.tile_exp %input_tile into dst[%zero]
+        : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    return
+  }
+}
+
+// -----
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // A bf16 kernel without an accumulation preference selects default DST mode.

@@ -13,6 +13,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
@@ -279,12 +280,6 @@ setExactSearchLimitFailure(ModuleOp moduleOp, unsigned firstFitCount,
   analysisFailure.set(moduleOp, messageStream.str());
 }
 
-/// Derives capacity text from the enforced constant so diagnostics cannot
-/// report a stale limit.
-static std::string getPhysicalIndexLimitDescription() {
-  return "the " + std::to_string(kMaxCircularBuffers) + "-index hardware limit";
-}
-
 /// Maps provisional user indices to a dense physical index range.
 ///
 /// Frontend indices identify allocation groups before finalization but may
@@ -332,6 +327,7 @@ struct PhysicalAllocationCandidate {
 static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
     const DFBPhysicalConflictModel &conflictModel,
+    const TargetDFBIndexCapacity &targetCapacity,
     DFBAnalysisFailure &analysisFailure,
     std::uint64_t exactColoringSearchStateLimit, bool requireMinimum = false) {
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
@@ -340,6 +336,7 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
       computeCompactedUserIndices(logicalDFBs);
   int32_t firstCompilerIndex =
       static_cast<int32_t>(compactedUserIndices.size());
+  int32_t targetMaxDFBIndices = targetCapacity.indexCount;
   SmallVector<unsigned> compilerLogicalIndices;
   for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
     if (indexedLogicalDFB.value().compilerCreated) {
@@ -348,9 +345,9 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
   }
 
   unsigned availableCompilerIndices =
-      firstCompilerIndex >= kMaxCircularBuffers
+      firstCompilerIndex >= targetMaxDFBIndices
           ? 0
-          : static_cast<unsigned>(kMaxCircularBuffers - firstCompilerIndex);
+          : static_cast<unsigned>(targetMaxDFBIndices - firstCompilerIndex);
   FailureOr<ConcurrentAssignmentResult> compilerAssignment =
       computeConcurrentAssignments(
           moduleOp, compilerLogicalIndices, firstCompilerIndex, conflictModel,
@@ -441,12 +438,12 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
   }
 
   int32_t compilerSlotCount = allocation.physicalDFBCount - firstCompilerIndex;
-  if (allocation.physicalDFBCount > kMaxCircularBuffers) {
+  if (allocation.physicalDFBCount > targetMaxDFBIndices) {
     if (allocation.exactSearchLimitReached) {
       setExactSearchLimitFailure(
           moduleOp, allocation.physicalDFBCount,
           allocation.exactSearchStateCount, exactColoringSearchStateLimit,
-          getPhysicalIndexLimitDescription(), analysisFailure);
+          targetCapacity.getDescription(), analysisFailure);
       return failure();
     }
     std::string message;
@@ -459,8 +456,9 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
                            static_cast<int32_t>(
                                compilerAssignment->provenColorLowerBound);
     }
-    messageStream << " unspilled DFB indices but hardware supports at most "
-                  << kMaxCircularBuffers << " (" << compilerSlotCount
+    messageStream << " unspilled DFB indices, exceeding "
+                  << targetCapacity.getDescription() << " ("
+                  << compilerSlotCount
                   << " compiler-allocated after proven reuse)";
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();
@@ -473,16 +471,18 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
 static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
     const DFBPhysicalConflictModel &conflictModel,
+    const TargetDFBIndexCapacity &targetCapacity,
     DFBAnalysisFailure &analysisFailure,
     std::uint64_t exactColoringSearchStateLimit, bool requireMinimum) {
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
       liveness.getLogicalDFBLifecycles();
   SmallVector<unsigned> logicalIndices =
       llvm::to_vector(llvm::seq<unsigned>(0, logicalDFBs.size()));
+  int32_t targetMaxDFBIndices = targetCapacity.indexCount;
   FailureOr<ConcurrentAssignmentResult> assignment =
       computeConcurrentAssignments(
           moduleOp, logicalIndices, /*firstPhysicalIndex=*/0, conflictModel,
-          kMaxCircularBuffers, exactColoringSearchStateLimit, analysisFailure,
+          targetMaxDFBIndices, exactColoringSearchStateLimit, analysisFailure,
           requireMinimum);
   if (failed(assignment)) {
     return failure();
@@ -503,13 +503,13 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
          logicalDFB.declarations, logicalDFB.bounded});
   }
 
-  if (allocation.physicalDFBCount <= kMaxCircularBuffers) {
+  if (allocation.physicalDFBCount <= targetMaxDFBIndices) {
     return allocation;
   }
   if (allocation.exactSearchLimitReached) {
     setExactSearchLimitFailure(
         moduleOp, allocation.physicalDFBCount, allocation.exactSearchStateCount,
-        exactColoringSearchStateLimit, getPhysicalIndexLimitDescription(),
+        exactColoringSearchStateLimit, targetCapacity.getDescription(),
         analysisFailure);
     return failure();
   }
@@ -522,8 +522,8 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     messageStream << "DFB allocation needs at least "
                   << assignment->provenColorLowerBound;
   }
-  messageStream << " unspilled physical indices but hardware supports at most "
-                << kMaxCircularBuffers;
+  messageStream << " unspilled physical indices, exceeding "
+                << targetCapacity.getDescription();
   analysisFailure.set(moduleOp, messageStream.str());
   return failure();
 }
@@ -775,6 +775,14 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     std::uint64_t exactColoringSearchStateLimit,
     AnalysisManager analysisManager) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
+  std::string targetFailureReason;
+  FailureOr<TargetDFBIndexCapacity> targetCapacity =
+      resolveTargetDFBIndexCapacity(moduleOp, targetFailureReason);
+  if (failed(targetCapacity)) {
+    errorOperation = moduleOp;
+    errorMessage = std::move(targetFailureReason);
+    return;
+  }
   const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
       analysisManager.getAnalysis<DFBLogicalIdentityAnalysis>();
   if (!logicalIdentityAnalysis.succeeded()) {
@@ -797,12 +805,12 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
       [&](bool requireMinimum) -> FailureOr<PhysicalAllocationCandidate> {
     if (reuseUserDFBs) {
       return computeReuseAllocation(
-          moduleOp, liveness, plan.conflictModel, analysisFailure,
-          exactColoringSearchStateLimit, requireMinimum);
+          moduleOp, liveness, plan.conflictModel, *targetCapacity,
+          analysisFailure, exactColoringSearchStateLimit, requireMinimum);
     }
     return computeDistinctUserAllocation(
-        moduleOp, liveness, plan.conflictModel, analysisFailure,
-        exactColoringSearchStateLimit, requireMinimum);
+        moduleOp, liveness, plan.conflictModel, *targetCapacity,
+        analysisFailure, exactColoringSearchStateLimit, requireMinimum);
   };
   FailureOr<PhysicalAllocationCandidate> allocation =
       computeAllocationWithinL1(moduleOp, exactColoringSearchStateLimit,

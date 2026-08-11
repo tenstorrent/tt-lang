@@ -936,13 +936,14 @@ def TTLFinalizeDFBIndices
     legal and remains live through the end of its kernel.
 
     The pass rejects copied DFB-index attributes from later passes. It computes
-    all physical assignments and runtime metadata and validates the 32-index
-    hardware limit before modifying the IR. Applying the validated plan updates
-    physical indices and `ttl.base_cta_index`, assigns missing compiler-created
-    logical IDs, and builds `ttl.dfb_allocations` for the Python runtime. The
-    attribute contains one descriptor per physical index, including
-    user-declared and compiler-created DFBs, and records the page size computed
-    from the finalized element type. See docs/development/DFBManagement.md.
+    all physical assignments and runtime metadata and validates the selected
+    target's physical DFB-index capacity before modifying the IR. Applying the
+    validated plan updates physical indices and `ttl.base_cta_index`, assigns
+    missing compiler-created logical IDs, and builds `ttl.dfb_allocations` for
+    the Python runtime. The attribute contains one descriptor per physical
+    index, including user-declared and compiler-created DFBs, and records the
+    page size computed from the finalized element type. See
+    docs/development/DFBManagement.md.
   }];
 
   let options = [
