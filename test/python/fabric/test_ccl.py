@@ -6,6 +6,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import wraps
 from itertools import product
 from math import prod
 import runpy
@@ -47,17 +48,23 @@ ONE_DIMENSIONAL_ROUTE_CONFIGS = [
     pytest.param(ttnn.FabricConfig.FABRIC_1D, id="linear"),
     pytest.param(ttnn.FabricConfig.FABRIC_1D_RING, id="ring"),
 ]
-requires_two_device_forwarding_link_indices = pytest.mark.xfail(
-    condition=(
-        ttnn.get_num_devices() == 2 and not hasattr(ttnn, "get_forwarding_link_indices")
-    ),
-    reason="requires TTNN get_forwarding_link_indices() on a two-device mesh",
-    run=False,
-    strict=True,
-)
 # Exact physical-connectivity validation belongs to TT-Metal system-health
 # tests; topology coverage here resolves routes against the live links.
 RELAXED_FABRIC_INITIALIZATION = ttnn.FabricReliabilityMode.RELAXED_INIT
+
+
+def requires_two_device_forwarding_link_indices(test):
+    @wraps(test)
+    def run_or_xfail(*args, **kwargs):
+        if ttnn.get_num_devices() == 2 and not hasattr(
+            ttnn, "get_forwarding_link_indices"
+        ):
+            pytest.xfail(
+                "requires TTNN get_forwarding_link_indices() on a two-device mesh"
+            )
+        return test(*args, **kwargs)
+
+    return run_or_xfail
 
 
 @dataclass(frozen=True)
