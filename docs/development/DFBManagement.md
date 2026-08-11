@@ -1427,6 +1427,39 @@ following reasons: descriptor mismatch, unknown launch-node domain, unproven
 quiescence, transaction mismatch, pointer-owner mismatch, or concurrent
 lifetime.
 
+#### Allocation diagnostics
+
+An assertions-enabled build can print the allocation inputs and conflict
+evidence without changing allocation behavior:
+
+```bash
+ttlang-opt input.mlir \
+  --ttl-finalize-dfb-indices='reuse-user-dfbs=true' \
+  -debug-only=ttl-finalize-dfb-indices \
+  -o /dev/null
+```
+
+The report is emitted after liveness and conflict construction and before
+capacity or L1-budget validation. Each logical DFB records its descriptor,
+tensor backing, launch-node domain, boundedness, accesses, protocol effects,
+exact execution counts, transaction sizes, pointer owners, and lifetime
+frontiers. Frontier entries are access-occurrence indices that refer to the
+numbered access records and their source locations. Each conflict records both
+logical IDs, the typed reason, an applicable launch node, and source
+operations.
+
+An unknown launch-node domain is itself sufficient to prevent reuse. For
+diagnosis, the report also evaluates each base launch node while assuming that
+unknown-domain accesses may be active. An exact-zero execution count still
+proves that an access is inactive and excludes its ordering edges. These rows
+use `domain_assumption=unknown-may-be-active`; they identify the next missing
+proof, such as a protocol effect, exact execution count, matched transaction,
+or complete use order. `may_be_active` is present only on these counterfactual
+rows and is false when every included access has an exact-zero count. They are
+counterfactual evidence only. They do not mark the DFB bounded, add lifetime
+ordering, or change the conflict relation. Nodes with identical diagnostic
+facts are grouped to keep large launch grids readable.
+
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
 index; vertices joined by an edge must receive different indices. A clique is
