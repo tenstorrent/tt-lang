@@ -12,6 +12,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
+from ttl import ttl_api  # noqa: E402
 from ttlang_test_utils import to_dram, to_l1  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
@@ -20,8 +21,8 @@ pytestmark = pytest.mark.requires_device
 # These cases use native TTL data movement and compute operations, which require
 # tiled tensor arguments.
 TILE = 32
-OVER_CAPACITY_COMPOSITION_LEVELS = 5
-OVER_CAPACITY_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 1
+CAPACITY_TEST_COMPOSITION_LEVELS = 5
+CAPACITY_TEST_LOGICAL_DFBS = (1 << CAPACITY_TEST_COMPOSITION_LEVELS) + 1
 # Two approximate SFPU exponential evaluations need operation-level error
 # bounds; f32 data movement and addition tests retain 1e-5 relative tolerance.
 F32_REPEATED_EXP_RTOL = 2e-3
@@ -117,11 +118,11 @@ def _make_nested_copy_atom(data_format, level_count):
     return nested_copy
 
 
-def _make_over_capacity_atom_kernel(data_format):
-    nested_copy = _make_nested_copy_atom(data_format, OVER_CAPACITY_COMPOSITION_LEVELS)
+def _make_capacity_test_atom_kernel(data_format):
+    nested_copy = _make_nested_copy_atom(data_format, CAPACITY_TEST_COMPOSITION_LEVELS)
 
     @ttl.operation(grid=(1, 1))
-    def over_capacity_atom_kernel(input_tensor, output_tensor):
+    def capacity_test_atom_kernel(input_tensor, output_tensor):
         first_stage_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         last_stage_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
 
@@ -129,7 +130,7 @@ def _make_over_capacity_atom_kernel(data_format):
         nested_copy(first_stage_dfb, last_stage_dfb)
         ttl.copy(last_stage_dfb.wait(), output_tensor[0, 0]).wait()
 
-    return over_capacity_atom_kernel
+    return capacity_test_atom_kernel
 
 
 def _make_conditional_lifecycle_kernel(data_format):
@@ -239,14 +240,14 @@ _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
-_over_capacity_bf16_atom_kernel = _make_over_capacity_atom_kernel("bf16")
-_over_capacity_f32_atom_kernel = _make_over_capacity_atom_kernel("float32")
+_capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
+_capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
 _conditional_bf16_lifecycle_kernel = _make_conditional_lifecycle_kernel("bf16")
 _conditional_f32_lifecycle_kernel = _make_conditional_lifecycle_kernel("float32")
 _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
 _exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
 
-assert OVER_CAPACITY_LOGICAL_DFBS > 32
+assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
 
 def _count_final_dfb_allocations(final_mlir_path):
@@ -657,12 +658,12 @@ def test_atom_accepts_same_dfb_as_source_and_result(
 @pytest.mark.parametrize(
     ("operation", "dtype"),
     [
-        (_over_capacity_bf16_atom_kernel, torch.bfloat16),
-        (_over_capacity_f32_atom_kernel, torch.float32),
+        (_capacity_test_bf16_atom_kernel, torch.bfloat16),
+        (_capacity_test_f32_atom_kernel, torch.float32),
     ],
     ids=["bf16", "f32"],
 )
-def test_over_capacity_atom_composition_requires_dfb_reuse(
+def test_33_dfb_atom_composition_with_reuse(
     device, memory_config, to_device, operation, dtype
 ):
     input_host = torch.linspace(-1.0, 1.0, TILE * TILE, dtype=torch.float32).reshape(
@@ -680,6 +681,26 @@ def test_over_capacity_atom_composition_requires_dfb_reuse(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-3, atol=1e-4)
+
+
+def test_blackhole_accepts_33_distinct_dfb_indices(device):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires the Blackhole 64-index DFB capacity")
+
+    input_host = torch.linspace(-1.0, 1.0, TILE * TILE, dtype=torch.bfloat16).reshape(
+        TILE, TILE
+    )
+    input_tensor = to_dram(input_host, device)
+    output_tensor = to_dram(torch.zeros_like(input_host), device)
+
+    _capacity_test_bf16_atom_kernel(
+        input_tensor,
+        output_tensor,
+        options="--no-ttl-reuse-user-dfbs",
+    )
+
+    actual = ttnn.to_torch(output_tensor).float()
+    assert_allclose(actual, input_host.float(), rtol=0.05, atol=1.0)
 
 
 @pytest.mark.parametrize(

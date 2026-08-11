@@ -10,7 +10,7 @@
 // After reuse (only one intermediate, nothing to reuse), the total DFB
 // count is 33, exceeding the hardware maximum of 32.
 
-// expected-error @below {{need 33 unspilled DFB indices but hardware supports at most 32 (1 compiler-allocated after proven reuse)}}
+// expected-error @below {{need 33 unspilled DFB indices but exceeds the conservative 32-DFB-index capacity used when target metadata is absent (1 compiler-allocated after proven reuse)}}
 module {
 func.func @exceeds_max_cb_count()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
