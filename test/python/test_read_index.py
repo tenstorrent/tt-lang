@@ -103,3 +103,46 @@ def test_read_index_selects_dram_slice(device, dtype, index_value, index_bias):
         expected_slot * slot_elements : (expected_slot + 1) * slot_elements
     ].float()
     assert_allclose(actual, expected, rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "index_dtype,index_value,index_bias",
+    [
+        (torch.uint8, 255, 253),
+        (torch.uint16, 65535, 65533),
+        (torch.uint32, 2147483647, 2147483645),
+    ],
+    ids=["ui8-zero-extension", "ui16-zero-extension", "ui32"],
+)
+def test_read_unsigned_index_selects_dram_slice(
+    device, index_dtype, index_value, index_bias
+):
+    """Unsigned index values use their full positive storage range."""
+    index_host = torch.full(
+        (TILE_SIZE, TILE_SIZE),
+        index_value,
+        dtype=index_dtype,
+    )
+    weight_elements = SLOT_COUNT * SLOT_TILES * TILE_SIZE * TILE_SIZE
+    weights_host = (
+        torch.arange(weight_elements, dtype=torch.float32)
+        .remainder(31)
+        .reshape(SLOT_COUNT * SLOT_TILES * TILE_SIZE, TILE_SIZE)
+        .to(torch.bfloat16)
+    )
+    output_host = torch.zeros(
+        SLOT_TILES * TILE_SIZE,
+        TILE_SIZE,
+        dtype=torch.bfloat16,
+    )
+
+    index_tensor = to_dram(index_host, device)
+    weights = to_dram(weights_host, device)
+    output = to_dram(output_host, device)
+
+    _make_gather_slot(index_bias)(index_tensor, weights, output)
+
+    actual = ttnn.to_torch(output).float()
+    slot_elements = SLOT_TILES * TILE_SIZE
+    expected = weights_host[2 * slot_elements : 3 * slot_elements].float()
+    assert_allclose(actual, expected, rtol=0.0, atol=0.0)

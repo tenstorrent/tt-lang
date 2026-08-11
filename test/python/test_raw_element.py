@@ -5,7 +5,7 @@
 """
 End-to-end tests for raw_element_read/write on f32 and bf16 tensors.
 
-Covers seven access patterns:
+Covers subtile face addressing and seven access patterns:
 
   1. Element copy -- read one position, write to another
      (datamovement-only, compute is a no-op).
@@ -29,7 +29,58 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_l1
+from ttlang_test_utils import to_dram, to_l1
+
+
+# =============================================================================
+# Subtile face addressing
+# =============================================================================
+
+
+@ttl.operation(grid=(1, 1))
+def subtile_endpoint_swap_kernel(inp, out):
+    """Swap the first and last elements of a 1x32 physical tile."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as block:
+            transaction = ttl.copy(inp[0, 0], block)
+            transaction.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as input_block:
+            first = ttl.raw_element_read(input_block, 0, 0)
+            last = ttl.raw_element_read(input_block, 0, 31)
+            with out_dfb.reserve() as output_block:
+                ttl.raw_element_write(output_block, 0, 0, last)
+                ttl.raw_element_write(output_block, 0, 31, first)
+                transaction = ttl.copy(output_block, out[0, 0])
+                transaction.wait()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_subtile_endpoint_swap(device, dtype, memory):
+    """Raw access addresses both dense faces of a 1x32 physical tile."""
+    torch_input = torch.arange(32, dtype=dtype).reshape(1, 32)
+    torch_output = torch.zeros_like(torch_input)
+    tile = [1, 32]
+    converter = to_dram if memory == "dram" else to_l1
+    input_tensor = converter(torch_input, device, tile=tile)
+    output_tensor = converter(torch_output, device, tile=tile)
+
+    subtile_endpoint_swap_kernel(input_tensor, output_tensor)
+    result = ttnn.to_torch(output_tensor)
+
+    assert result[0, 0].item() == torch_input[0, 31].item()
+    assert result[0, 31].item() == torch_input[0, 0].item()
 
 
 # =============================================================================

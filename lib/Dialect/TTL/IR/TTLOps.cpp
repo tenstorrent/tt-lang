@@ -2844,9 +2844,17 @@ mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
   if (failed(scalarTy)) {
     return failure();
   }
-  if (!scalarTy->isF32() && !scalarTy->isBF16()) {
-    return emitOpError() << "requires an f32 or bf16 block element type, got "
-                         << *scalarTy;
+  auto integerType = mlir::dyn_cast<IntegerType>(*scalarTy);
+  bool isSupportedUnsignedInteger =
+      integerType && integerType.isUnsigned() &&
+      (integerType.getWidth() == 8 || integerType.getWidth() == 16 ||
+       integerType.getWidth() == 32);
+  if (!scalarTy->isF32() && !scalarTy->isBF16() &&
+      !isSupportedUnsignedInteger) {
+    return emitOpError()
+           << "requires an f32, bf16, ui8, ui16, or ui32 block element type, "
+              "got "
+           << *scalarTy;
   }
   return success();
 }

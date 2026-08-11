@@ -1243,6 +1243,52 @@ def _get_block_scalar_type(block):
     )
 
 
+def _validate_index_block_scalar_type(block):
+    """Validate a block element type accepted by ``read_index``."""
+    from ttl.dialects import ttcore
+
+    block_type = block.type
+    if not isinstance(block_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType block, got {block_type}")
+
+    elem_type = block_type.element_type
+    tile_type = ttcore.ir.TileType.maybe_downcast(elem_type)
+    if tile_type is not None:
+        dtype = ttcore.DataType(tile_type.data_type_as_int)
+        supported_dtypes = (
+            ttcore.DataType.Float32,
+            ttcore.DataType.BFloat16,
+            ttcore.DataType.UInt8,
+            ttcore.DataType.UInt16,
+            ttcore.DataType.UInt32,
+        )
+        if dtype in supported_dtypes:
+            return
+        raise ValueError(
+            "read_index only supports f32, bf16, ui8, ui16, and ui32, "
+            f"got tile dtype {dtype}"
+        )
+
+    is_supported_unsigned_integer = (
+        isinstance(elem_type, IntegerType)
+        and elem_type.is_unsigned
+        and elem_type.width in (8, 16, 32)
+    )
+    if (
+        elem_type
+        in (
+            F32Type.get(block_type.context),
+            BF16Type.get(block_type.context),
+        )
+        or is_supported_unsigned_integer
+    ):
+        return
+    raise ValueError(
+        "read_index only supports f32, bf16, ui8, ui16, and ui32, "
+        f"got element type {elem_type}"
+    )
+
+
 def _as_index_values(block, coords):
     context = block.type.context
     index_type = IndexType.get(context)
@@ -1285,16 +1331,17 @@ def raw_element_read(block, *coords):
 def read_index(block, *coords):
     """Read a nonnegative scalar element as an index.
 
-    Coordinates follow ``raw_element_read``. Fractional values truncate
-    toward zero. The source value must be finite, nonnegative, and no greater
-    than INT32_MAX; behavior is undefined otherwise.
+    Coordinates follow ``raw_element_read``. Unsigned integers are
+    zero-extended and floating-point values truncate toward zero. The source
+    value must be no greater than INT32_MAX. Floating-point values must also
+    be finite and nonnegative. Behavior is undefined otherwise.
 
     Only supported in data movement (noc) threads.
     """
     if len(coords) < 1:
         raise ValueError("read_index requires at least one coordinate")
     # Validate before op construction so unsupported dtypes raise in Python.
-    _get_block_scalar_type(block)
+    _validate_index_block_scalar_type(block)
     return ttl.read_index(block, _as_index_values(block, coords))
 
 
