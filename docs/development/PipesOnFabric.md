@@ -651,11 +651,11 @@ pass does not establish correctness without the full-system result.
 
 The POC still requires:
 
-- program-wide link scoring using contention and workload estimates;
-- payload packetization using the runtime maximum payload size;
+- explicit logical `DeviceRef` to `MeshCoordinate` binding;
+- program-wide connection lifetime, router reuse, barrier, and link-scoring
+  plans using contention and workload estimates;
 - multicast lowering for graph transfers with device-range destinations;
 - receiver-published address support beyond the verified computed-address
   requirement for fabric receivers;
-- packet-boundary and repeated-invocation cache behavior hardware pytests;
 - performance comparison of destination-table decoding and connection reuse
   against specialized communication kernels.

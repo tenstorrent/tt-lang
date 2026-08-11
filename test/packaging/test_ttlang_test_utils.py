@@ -246,3 +246,66 @@ def test_fabric_mesh_uses_reliability_mode(monkeypatch) -> None:
         ("close", mesh_device),
         ("configure", "disabled"),
     ]
+
+
+def test_fabric_mesh_cleans_up_after_context_failure(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with pytest.raises(RuntimeError, match="test context failure"):
+        with module.open_fabric_mesh() as opened_mesh:
+            assert opened_mesh is mesh_device
+            raise RuntimeError("test context failure")
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_disables_fabric_after_open_failure(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    def fail_open(mesh_shape):
+        events.append(("open", mesh_shape.shape))
+        raise RuntimeError("test open failure")
+
+    fake_ttnn.open_mesh_device = fail_open
+
+    with pytest.raises(RuntimeError, match="test open failure"):
+        with module.open_fabric_mesh():
+            pass
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 4)),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_disables_fabric_after_close_failure(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    def fail_close(mesh):
+        events.append(("close", mesh))
+        raise RuntimeError("test close failure")
+
+    fake_ttnn.close_mesh_device = fail_close
+
+    with pytest.raises(RuntimeError, match="test close failure"):
+        with module.open_fabric_mesh() as opened_mesh:
+            assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]

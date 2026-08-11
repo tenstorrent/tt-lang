@@ -216,9 +216,11 @@ def open_fabric_mesh(
         )
         yield mesh_device
     finally:
-        if mesh_device is not None:
-            ttnn_module.close_mesh_device(mesh_device)
-        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
+        try:
+            if mesh_device is not None:
+                ttnn_module.close_mesh_device(mesh_device)
+        finally:
+            ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
 
 # =============================================================================
