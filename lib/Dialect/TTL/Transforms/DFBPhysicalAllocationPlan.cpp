@@ -125,24 +125,42 @@ private:
       }
       return;
     }
-    if (!lhs.launchDomain.known || !rhs.launchDomain.known) {
+    bool useConditionalProof =
+        !lhs.launchDomain.known && !rhs.launchDomain.known &&
+        lhs.conditionallyBounded && rhs.conditionallyBounded;
+    if ((!lhs.launchDomain.known || !rhs.launchDomain.known) &&
+        !useConditionalProof) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::UnknownLaunchNodeDomain, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
 
-    LaunchNodeDomain sharedNodes =
-        lhs.launchDomain.intersectWith(rhs.launchDomain);
-    for (LaunchNodeCoord node : sharedNodes.nodes) {
+    SmallVector<LaunchNodeCoord> sharedNodes;
+    if (useConditionalProof) {
+      llvm::append_range(sharedNodes, liveness.getLaunchNodes());
+    } else {
+      LaunchNodeDomain exactSharedNodes =
+          lhs.launchDomain.intersectWith(rhs.launchDomain);
+      llvm::append_range(sharedNodes, exactSharedNodes.nodes);
+    }
+    for (LaunchNodeCoord node : sharedNodes) {
+      const DFBPerNodeLifetime *lhsLifetime =
+          useConditionalProof ? lhs.findPossibleNodeLifetime(node)
+                              : lhs.findNodeLifetime(node);
+      const DFBPerNodeLifetime *rhsLifetime =
+          useConditionalProof ? rhs.findPossibleNodeLifetime(node)
+                              : rhs.findNodeLifetime(node);
+      if (lhsLifetime && rhsLifetime &&
+          (!lhsLifetime->mayBeActive || !rhsLifetime->mayBeActive)) {
+        continue;
+      }
       if (lhs.tensorBacking != rhs.tensorBacking) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::StorageMismatch, node,
                     lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
-      const DFBPerNodeLifetime *lhsLifetime = lhs.findNodeLifetime(node);
-      const DFBPerNodeLifetime *rhsLifetime = rhs.findNodeLifetime(node);
       if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
           !rhsLifetime->quiescence.proven()) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
@@ -166,8 +184,15 @@ private:
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (!liveness.isOrderedBefore(lhsIndex, rhsIndex, node) &&
-          !liveness.isOrderedBefore(rhsIndex, lhsIndex, node)) {
+      bool ordered =
+          useConditionalProof
+              ? liveness.isConditionallyOrderedBefore(lhsIndex, rhsIndex,
+                                                      node) ||
+                    liveness.isConditionallyOrderedBefore(rhsIndex, lhsIndex,
+                                                          node)
+              : liveness.isOrderedBefore(lhsIndex, rhsIndex, node) ||
+                    liveness.isOrderedBefore(rhsIndex, lhsIndex, node);
+      if (!ordered) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::ConcurrentLifetime, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
@@ -440,7 +465,8 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.launchDomain,
-         logicalDFB.declarations, logicalDFB.bounded});
+         logicalDFB.declarations,
+         logicalDFB.bounded || logicalDFB.conditionallyBounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
   }
@@ -533,7 +559,8 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.launchDomain,
-         logicalDFB.declarations, logicalDFB.bounded});
+         logicalDFB.declarations,
+         logicalDFB.bounded || logicalDFB.conditionallyBounded});
   }
 
   if (allocation.physicalDFBCount <= targetMaxDFBIndices) {
