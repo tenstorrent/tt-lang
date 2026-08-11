@@ -27,7 +27,7 @@ semantics used by both local NoC and fabric transports.
                          v
   +-----------------------------------------------------------+
   | Source TENSIX node                                        |
-  | encode final destination -> fabric write + atomic         |
+  | encode target route -> fabric write + atomic              |
   +-----------------------------------------------------------+
                          |
                          | TT-Metal fabric routing tables
@@ -106,23 +106,24 @@ still identifies how far or to which device the packet travels.
 ### Packet routing
 
 Host runtime binding supplies the final physical destination for each logical
-transfer. Generated kernels use TT-Metal's destination-based packet encoders:
+transfer. Generated kernels use the route encoding required by the active
+fabric mode:
 
 ```cpp
 #if defined(FABRIC_2D)
 tt::tt_fabric::fabric_set_unicast_route(
     packet_header, destination_device_id, destination_mesh_id);
 #else
-tt::tt_fabric::fabric_set_unicast_route(
-    packet_header, destination_device_id);
+tt::tt_fabric::fabric_set_unicast_route<false>(
+    packet_header, destination_hop_count);
 #endif
 ```
 
-TT-Metal initializes routing tables when fabric starts. Both calls decode the
-destination's entry into the packet header; the 2D form also identifies the
-destination mesh. The host selects the injection direction and link while
-constructing the program descriptor. The kernel does not reconstruct a
-topology model or search connection tags.
+TT-Metal initializes routing tables when fabric starts. The 2D form encodes the
+destination mesh and device. The 1D form encodes the number of hops along one
+forwarding direction. The host validates each 1D hop against the control plane,
+connects the manager to the first device, and supplies the final hop count. The
+kernel does not reconstruct a topology model or search connection tags.
 
 The selected operation is a target-runtime decision. Neither the fabric mode
 nor either route encoding is part of the TTL domain or transfer-graph model.
@@ -274,13 +275,12 @@ that the active TT-Metal control plane can route. The current implementation:
   and a common forwarding link;
 - assigns distinct forwarding links to concurrent connections in the same
   direction;
-- supplies the final destination identifiers to TT-Metal's device routing
-  table decoder.
+- supplies final destination identifiers for 2D routing or a validated hop
+  count for 1D routing.
 
-The resulting transport plan records the connection slot, final destination,
-source and destination TENSIX nodes, L1 addresses, payload constraints, and
-synchronization objects. It contains no topology inferred from a
-`DeviceDomain`.
+The resulting transport plan records the connection slot, target route, source
+and destination TENSIX nodes, L1 addresses, payload constraints, and
+synchronization objects. It contains no topology inferred from a `DeviceDomain`.
 
 A future route optimizer belongs in this late planner. When the control plane
 exposes multiple legal routes or links, the planner can reject candidates that
@@ -409,10 +409,10 @@ packet submission:
 - submit a fused payload write and remote atomic increment;
 - close the opened connections.
 
-The send operations take a connection index, destination device id, and
-destination mesh id. The connection index selects the injection slot. The
-active target configuration selects the applicable destination-based packet
-encoder.
+The send operations take a connection index, destination device id,
+destination mesh id, and destination hop count. The connection index selects
+the injection slot. The active target configuration selects the applicable
+route encoding.
 
 These operations do not use tt-mlir's experimental fabric operations. Those
 operations consume a different runtime argument layout produced by the
@@ -446,12 +446,12 @@ tt-lang
   [H] Query and cache the outgoing direction for each distinct
       source/destination pair.
   [H] Group destinations by direction, configure one injection connection per
-      direction, and write the connection index and final destination into
-      runtime args.
+      direction, and write the connection index and target route into runtime
+      args.
   [D] Once per kernel invocation: open the configured connections.
   [D] Once per fabric operation: index the selected connection, encode the
-      packet route from TT-Metal's destination table, construct the packet
-      command, and submit it.
+      packet route for the active fabric mode, construct the packet command,
+      and submit it.
 
 tt-mlir experimental API
   [H] Serialize TopologyInfo and connection descriptors into runtime args.
@@ -468,13 +468,13 @@ both approaches.
 | Concern | tt-lang | tt-mlir experimental API |
 | --- | --- | --- |
 | C++ object | `[D]` Uses `tt::tt_fabric::RoutingPlaneConnectionManager` directly. | `[D]` Wraps the same manager in `experimental::FabricConnectionManager`. |
-| Route resolution | `[H]` Queries the outgoing direction and eligible links, reuses one connection per direction when its destinations have a common link, and assigns distinct links to concurrent connections. `[D]` Packet encoding decodes TT-Metal's precomputed entry for the final destination. | `[D]` Derives an outgoing direction and hop encoding from destination mesh and device identifiers for each fabric operation. |
-| Transfer operands | `[C]` Routing-plane TTKernel operations represent a connection index, destination device id, and destination mesh id. `[D]` Generated kernels select the applicable destination encoder for the active fabric mode. | `[C]` [Fabric TTKernel operations](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L4227-L4320) represent destination mesh and device identifiers. `[D]` The wrapper resolves them. |
+| Route resolution | `[H]` Queries the outgoing direction and eligible links, reuses one connection per direction when its destinations have a common link, and assigns distinct links to concurrent connections. For 1D routing, it validates each logical hop and connects to the adjacent device. `[D]` Packet encoding uses the final destination in 2D mode or the validated hop count in 1D mode. | `[D]` Derives an outgoing direction and hop encoding from destination mesh and device identifiers for each fabric operation. |
+| Transfer operands | `[C]` Routing-plane TTKernel operations represent a connection index, destination device id, destination mesh id, and destination hop count. `[D]` Generated kernels select the applicable route encoding for the active fabric mode. | `[C]` [Fabric TTKernel operations](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L4227-L4320) represent destination mesh and device identifiers. `[D]` The wrapper resolves them. |
 | Connection selection | `[D]` Generated C++ indexes the selected manager slot directly. | `[D]` The wrapper [searches active connection tags](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L38-L76) for each fabric operation. |
 | Runtime arguments | `[C]` The compiler assigns an explicit base for the connection descriptor block. `[H]` The binder appends connection slots, final destinations, and control-plane-produced connection arguments. `[D]` Connection setup reads them once per kernel invocation. | `[H]` The runtime serializes topology and connection descriptors into a [fixed fabric argument block](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L105-L135). `[D]` Setup parses that block once per kernel invocation. |
 | Topology model | `[C]` Logical TTL domains contain no fabric topology constants. `[H]` Host runtime binding queries TT-Metal for outgoing directions and connections. `[D]` Canonical TT-Metal routing tables determine packet forwarding. | `[H]` The runtime supplies a topology descriptor encoding [two dimensions, four directions, a 32-device limit, and line/ring/mesh/torus categories](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_topology_info.h#L14-L35). `[D]` Kernel helpers interpret it. |
 | Current operation coverage | Provides the unicast atomic and fused write-plus-atomic operations required by fabric PipeNets. | Also provides arbitrary-length packetization and multicast write and semaphore helpers. |
-| Per-operation kernel work | `[D]` Indexes a preselected connection and decodes a precomputed TT-Metal route by final destination. | `[D]` Performs [logical-position route calculation](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h#L36-L108) and connection-tag lookup before constructing the packet command. |
+| Per-operation kernel work | `[D]` Indexes a preselected connection and encodes either a 2D final destination or a 1D hop count. | `[D]` Performs [logical-position route calculation](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h#L36-L108) and connection-tag lookup before constructing the packet command. |
 
 The tt-lang representation is intentionally lower-level at the TTKernel
 boundary. Logical destinations remain available in TTL until host runtime route
@@ -489,9 +489,9 @@ The design comparison has the following implications:
 
 | Goal | tt-lang | tt-mlir experimental API |
 | --- | --- | --- |
-| Architecture portability | `[C]` Logical domains and transfer graphs contain no topology categories or link counts. `[H]` The host runtime obtains connections from the active TT-Metal control plane and writes final destinations into kernel runtime arguments. A new route encoding requires corresponding host binding and TTKernel/EmitC lowering support. | `[H]` The runtime serializes explicit line, ring, mesh, and torus models with fixed dimension and device limits. `[D]` The kernel wrapper interprets that model. Supporting a new topology requires changes to the topology descriptor, runtime serialization, and kernel routing helpers. |
+| Architecture portability | `[C]` Logical domains and transfer graphs contain no topology categories or link counts. `[H]` The host runtime obtains connections from the active TT-Metal control plane and writes target routes into kernel runtime arguments. A new route encoding requires corresponding host binding and TTKernel/EmitC lowering support. | `[H]` The runtime serializes explicit line, ring, mesh, and torus models with fixed dimension and device limits. `[D]` The kernel wrapper interprets that model. Supporting a new topology requires changes to the topology descriptor, runtime serialization, and kernel routing helpers. |
 | Extensibility | Logical transfers, route planning, connection reuse, and packet emission are separate components. New route scoring or packet operations do not change domain semantics, but the compiler/runtime argument contract must track TT-Metal API changes. | The wrapper gives TTKernel operations a compact destination-oriented API and already provides broader packetization and multicast helpers. Extending its topology model also increases on-device wrapper state and routing logic. |
-| Kernel performance | `[H]` Direction and eligible-link queries or cache lookups occur before program submission. `[D]` Kernels directly index reused connection slots and decode one destination-table entry per operation. Current planning assigns valid links without scoring contention or workload traffic. | `[D]` Destination-oriented operations support runtime-selected destinations within the encoded topology. Each fabric operation reconstructs source and destination logical positions, performs topology-dependent hop calculation, and linearly searches active connection tags. This work is potentially material for small or frequent transfers. |
+| Kernel performance | `[H]` Direction and eligible-link queries or cache lookups occur before program submission. `[D]` Kernels directly index reused connection slots and encode one target route per operation. Current planning assigns valid links without scoring contention or workload traffic. | `[D]` Destination-oriented operations support runtime-selected destinations within the encoded topology. Each fabric operation reconstructs source and destination logical positions, performs topology-dependent hop calculation, and linearly searches active connection tags. This work is potentially material for small or frequent transfers. |
 | Route optimization | `[H]` A late planner can use global program information when TT-Metal exposes multiple legal route or link candidates. | `[D]` For every fabric operation, kernel helpers calculate the direction and hop encoding from local topology and destination values. This limits access to program-wide traffic information. |
 | Maturity | Generated C++ directly exposes the operations needed to converge on optimized routing-plane kernel sequences. Current packet and multicast coverage is narrower, and comparative performance has not yet been measured. | The experimental API currently covers more unicast, multicast, arbitrary-length write, and semaphore operations, but embeds more current-architecture policy in the kernel support library. |
 
@@ -528,8 +528,8 @@ auto* packet_header = PacketHeaderPool::allocate_header(1);
 tt::tt_fabric::fabric_set_unicast_route(
     packet_header, destination_device_id, destination_mesh_id);
 #else
-tt::tt_fabric::fabric_set_unicast_route(
-    packet_header, destination_device_id);
+tt::tt_fabric::fabric_set_unicast_route<false>(
+    packet_header, destination_hop_count);
 #endif
 
 packet_header->to_noc_fused_unicast_write_atomic_inc(...);
@@ -566,13 +566,14 @@ The compiler-managed runtime prefix is:
   route_slot_0, ..., route_slot_N,
   destination_device_id_0, ..., destination_device_id_N,
   destination_mesh_id_0, ..., destination_mesh_id_N,
+  destination_hop_count_0, ..., destination_hop_count_N,
   routing_plane_connection_manager_args...
 ]
 ```
 
 `route_slot_I` selects the manager connection used by logical route `I`. The
 remaining arrays describe its final target. Connection manager arguments begin
-at `1 + 3 * N`. Nodes without an active fabric route receive zeroed route
+at `1 + 4 * N`. Nodes without an active fabric route receive zeroed route
 metadata and no connection-manager arguments.
 
 This prefix is private to the tt-lang target runtime and generated TTKernel
@@ -612,18 +613,18 @@ its semaphores and runtime arguments are invocation resources. Both the cached
 direction query and connection setup run on the host before submission. No
 control-plane query runs in a device kernel or once per packet.
 
-Generated kernels pass final destination identifiers to TT-Metal's routing
-table decoder. This keeps topology interpretation in TT-Metal without adding a
-tt-lang-specific public route API or inferring routes from logical coordinates,
-physical mesh dimensions, or node-number differences.
+Generated kernels pass final destination identifiers for 2D routing or a
+validated hop count for 1D routing. This keeps forwarding decisions in TT-Metal
+without adding a tt-lang-specific public route API or inferring physical routes
+from node-number differences.
 
 ### Destination-routed transport behavior
 
-Generated C++ uses the routing-plane manager, packet pool, destination-based
-route encoder, fused write and atomic command, sender submission sequence,
-completion wait, and connection closure. Fabric routers forward the packet
-according to the TT-Metal routing tables; intermediate TENSIX programs are not
-part of the current transport.
+Generated C++ uses the routing-plane manager, packet pool, target route encoder,
+fused write and atomic command, sender submission sequence, completion wait,
+and connection closure. Fabric routers forward the packet according to the
+TT-Metal routing tables; intermediate TENSIX programs are not part of the
+current transport.
 
 ### Validation requirements
 

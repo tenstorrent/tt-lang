@@ -5,6 +5,7 @@
 """TTNN target binding for compiler-generated fabric routes."""
 
 from dataclasses import dataclass
+from enum import Enum, auto
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +18,22 @@ class FabricRouteSpec:
     remote_device: Tuple[int, ...]
     source_nodes: Tuple[Tuple[int, ...], ...]
     route_index: int
+
+
+@dataclass(frozen=True)
+class _ResolvedFabricRoute:
+    device_chain: Tuple[Tuple[int, ...], ...]
+    hop_count: int
+
+    @property
+    def connection_device(self) -> Tuple[int, ...]:
+        return self.device_chain[1]
+
+
+class _FabricRoutingMode(Enum):
+    ONE_DIMENSIONAL = auto()
+    NEIGHBOR_EXCHANGE = auto()
+    TWO_DIMENSIONAL = auto()
 
 
 class FabricRouteCache:
@@ -32,8 +49,7 @@ class FabricRouteCache:
     def _node_key(node_id: Any) -> Tuple[int, int]:
         return (int(node_id.mesh_id), int(node_id.chip_id))
 
-    def _prepare_query(self, ttnn_api: Any, mesh_device: Any) -> None:
-        fabric_config = ttnn_api.get_fabric_config()
+    def _prepare_query(self, mesh_device: Any, fabric_config: Any) -> None:
         if self._mesh_device is mesh_device and self._fabric_config == fabric_config:
             return
         self._mesh_device = mesh_device
@@ -45,10 +61,11 @@ class FabricRouteCache:
         self,
         ttnn_api: Any,
         mesh_device: Any,
+        fabric_config: Any,
         source_node_id: Any,
         destination_node_id: Any,
     ) -> int:
-        self._prepare_query(ttnn_api, mesh_device)
+        self._prepare_query(mesh_device, fabric_config)
         route_key = (
             *self._node_key(source_node_id),
             *self._node_key(destination_node_id),
@@ -69,10 +86,11 @@ class FabricRouteCache:
         self,
         ttnn_api: Any,
         mesh_device: Any,
+        fabric_config: Any,
         source_node_id: Any,
         destination_node_id: Any,
     ) -> Tuple[int, ...]:
-        self._prepare_query(ttnn_api, mesh_device)
+        self._prepare_query(mesh_device, fabric_config)
         route_key = (
             *self._node_key(source_node_id),
             *self._node_key(destination_node_id),
@@ -103,7 +121,7 @@ class FabricRouteCache:
 
 @dataclass(frozen=True)
 class _FabricConnectionRequest:
-    destination_node_id: Any
+    connection_node_id: Any
     direction: int
     eligible_links: Optional[Tuple[int, ...]]
 
@@ -118,7 +136,7 @@ class _FabricManagerRequest:
 
 @dataclass(frozen=True)
 class _FabricConnectionBinding:
-    destination_node_id: Any
+    connection_node_id: Any
     link_index: Optional[int]
 
 
@@ -146,23 +164,99 @@ def _build_mesh_coordinate(ttnn_api: Any, coordinates: Tuple[int, ...]) -> Any:
         return ttnn_api.MeshCoordinate(coordinates)
 
 
+def _get_fabric_routing_mode(ttnn_api: Any, fabric_config: Any) -> _FabricRoutingMode:
+    fabric_config_type = getattr(ttnn_api, "FabricConfig", None)
+    mode_config_names = (
+        (
+            _FabricRoutingMode.NEIGHBOR_EXCHANGE,
+            ("FABRIC_1D_NEIGHBOR_EXCHANGE",),
+        ),
+        (
+            _FabricRoutingMode.ONE_DIMENSIONAL,
+            ("FABRIC_1D", "FABRIC_1D_RING"),
+        ),
+        (
+            _FabricRoutingMode.TWO_DIMENSIONAL,
+            (
+                "FABRIC_2D",
+                "FABRIC_2D_TORUS_X",
+                "FABRIC_2D_TORUS_Y",
+                "FABRIC_2D_TORUS_XY",
+            ),
+        ),
+    )
+    for routing_mode, config_names in mode_config_names:
+        if any(
+            (config_value := getattr(fabric_config_type, config_name, None)) is not None
+            and fabric_config == config_value
+            for config_name in config_names
+        ):
+            return routing_mode
+    raise ValueError(f"unsupported fabric configuration {fabric_config}")
+
+
+def _resolve_fabric_route(
+    routing_mode: _FabricRoutingMode,
+    local_device: Tuple[int, ...],
+    remote_device: Tuple[int, ...],
+) -> _ResolvedFabricRoute:
+    """Resolve the manager endpoint and target-specific route metadata."""
+    if routing_mode == _FabricRoutingMode.TWO_DIMENSIONAL:
+        return _ResolvedFabricRoute((local_device, remote_device), 0)
+
+    differing_axes = [
+        axis
+        for axis, (local_coordinate, remote_coordinate) in enumerate(
+            zip(local_device, remote_device)
+        )
+        if local_coordinate != remote_coordinate
+    ]
+    if len(local_device) != len(remote_device) or len(differing_axes) != 1:
+        raise ValueError(
+            "FABRIC_1D routes must connect devices on one logical mesh axis"
+        )
+
+    route_axis = differing_axes[0]
+    route_step = 1 if remote_device[route_axis] > local_device[route_axis] else -1
+    route_coordinates = range(
+        local_device[route_axis],
+        remote_device[route_axis] + route_step,
+        route_step,
+    )
+    device_chain = []
+    for route_coordinate in route_coordinates:
+        device = list(local_device)
+        device[route_axis] = route_coordinate
+        device_chain.append(tuple(device))
+    if routing_mode == _FabricRoutingMode.NEIGHBOR_EXCHANGE and len(device_chain) != 2:
+        raise ValueError(
+            "FABRIC_1D_NEIGHBOR_EXCHANGE only supports adjacent device routes"
+        )
+    return _ResolvedFabricRoute(tuple(device_chain), len(device_chain) - 1)
+
+
 def _intersect_forwarding_links(
     ttnn_api: Any,
     route_cache: FabricRouteCache,
     mesh_device: Any,
+    fabric_config: Any,
     source_node_id: Any,
-    destination_node_ids: List[Any],
+    connection_node_ids: List[Any],
 ) -> Tuple[int, ...]:
-    destination_links = [
+    connection_links = [
         route_cache.get_forwarding_links(
-            ttnn_api, mesh_device, source_node_id, destination_node_id
+            ttnn_api,
+            mesh_device,
+            fabric_config,
+            source_node_id,
+            connection_node_id,
         )
-        for destination_node_id in destination_node_ids
+        for connection_node_id in connection_node_ids
     ]
     return tuple(
         link_index
-        for link_index in destination_links[0]
-        if all(link_index in links for links in destination_links[1:])
+        for link_index in connection_links[0]
+        if all(link_index in links for links in connection_links[1:])
     )
 
 
@@ -260,6 +354,8 @@ def build_fabric_target_binding_plan(
         _build_mesh_coordinate(ttnn_api, device_coordinates)
     )
     active_route_cache = route_cache or FabricRouteCache()
+    fabric_config = ttnn_api.get_fabric_config()
+    routing_mode = _get_fabric_routing_mode(ttnn_api, fabric_config)
     can_enumerate_forwarding_links = (
         getattr(ttnn_api, "get_forwarding_link_indices", None) is not None
     )
@@ -295,38 +391,70 @@ def build_fabric_target_binding_plan(
                     )
                     for coordinates in active_remote_devices
                 ]
-                route_directions = [
-                    active_route_cache.resolve_direction(
-                        ttnn_api,
-                        mesh_device,
-                        source_node_id,
-                        destination_node_id,
+                resolved_routes = [
+                    _resolve_fabric_route(
+                        routing_mode, device_coordinates, remote_device
                     )
-                    for destination_node_id in destination_node_ids
+                    for remote_device in active_remote_devices
                 ]
+                route_connection_node_ids = [
+                    mesh_device.get_fabric_node_id(
+                        _build_mesh_coordinate(
+                            ttnn_api, resolved_route.connection_device
+                        )
+                    )
+                    for resolved_route in resolved_routes
+                ]
+                route_directions = []
+                for resolved_route in resolved_routes:
+                    route_node_ids = [
+                        mesh_device.get_fabric_node_id(
+                            _build_mesh_coordinate(ttnn_api, coordinates)
+                        )
+                        for coordinates in resolved_route.device_chain
+                    ]
+                    hop_directions = [
+                        active_route_cache.resolve_direction(
+                            ttnn_api,
+                            mesh_device,
+                            fabric_config,
+                            route_node_ids[hop_index],
+                            route_node_ids[hop_index + 1],
+                        )
+                        for hop_index in range(len(route_node_ids) - 1)
+                    ]
+                    if any(
+                        direction != hop_directions[0]
+                        for direction in hop_directions[1:]
+                    ):
+                        raise ValueError(
+                            "FABRIC_1D routes require one forwarding direction"
+                        )
+                    route_directions.append(hop_directions[0])
                 connection_index_by_direction = {}
-                connection_destination_node_ids = []
+                connection_node_ids = []
                 connection_directions = []
-                destinations_by_connection = []
+                connection_nodes_by_connection = []
                 remote_connection_slots = []
-                for destination_node_id, direction in zip(
-                    destination_node_ids, route_directions
+                for connection_node_id, direction in zip(
+                    route_connection_node_ids, route_directions
                 ):
                     connection_index = connection_index_by_direction.get(direction)
                     if connection_index is None:
-                        connection_index = len(connection_destination_node_ids)
+                        connection_index = len(connection_node_ids)
                         connection_index_by_direction[direction] = connection_index
-                        connection_destination_node_ids.append(destination_node_id)
+                        connection_node_ids.append(connection_node_id)
                         connection_directions.append(direction)
-                        destinations_by_connection.append([])
-                    destinations_by_connection[connection_index].append(
-                        destination_node_id
+                        connection_nodes_by_connection.append([])
+                    connection_nodes_by_connection[connection_index].append(
+                        connection_node_id
                     )
                     remote_connection_slots.append(connection_index)
 
                 route_slots = [0] * route_count
                 destination_device_ids = [0] * route_count
                 destination_mesh_ids = [0] * route_count
+                destination_hop_counts = [0] * route_count
                 active_route_indices = set()
                 for route_index, remote_slot in enumerate(route_remote_slots):
                     if remote_slot >= len(route_directions):
@@ -351,16 +479,20 @@ def build_fabric_target_binding_plan(
                     destination_mesh_ids[route.route_index] = int(
                         destination_node_id.mesh_id
                     )
+                    destination_hop_counts[route.route_index] = resolved_routes[
+                        remote_slot
+                    ].hop_count
 
                 runtime_prefix = (
-                    len(connection_destination_node_ids),
+                    len(connection_node_ids),
                     *route_slots,
                     *destination_device_ids,
                     *destination_mesh_ids,
+                    *destination_hop_counts,
                 )
                 connection_requests = []
-                for connection_index, destination_node_id in enumerate(
-                    connection_destination_node_ids
+                for connection_index, connection_node_id in enumerate(
+                    connection_node_ids
                 ):
                     eligible_links = None
                     if can_enumerate_forwarding_links:
@@ -368,8 +500,9 @@ def build_fabric_target_binding_plan(
                             ttnn_api,
                             active_route_cache,
                             mesh_device,
+                            fabric_config,
                             source_node_id,
-                            destinations_by_connection[connection_index],
+                            connection_nodes_by_connection[connection_index],
                         )
                         if not eligible_links:
                             raise ValueError(
@@ -378,7 +511,7 @@ def build_fabric_target_binding_plan(
                             )
                     connection_requests.append(
                         _FabricConnectionRequest(
-                            destination_node_id=destination_node_id,
+                            connection_node_id=connection_node_id,
                             direction=connection_directions[connection_index],
                             eligible_links=eligible_links,
                         )
@@ -397,7 +530,7 @@ def build_fabric_target_binding_plan(
     for manager_index, manager_request in enumerate(manager_requests):
         connection_bindings = tuple(
             _FabricConnectionBinding(
-                destination_node_id=connection.destination_node_id,
+                connection_node_id=connection.connection_node_id,
                 link_index=selected_links[(manager_index, connection_index)],
             )
             for connection_index, connection in enumerate(manager_request.connections)
@@ -438,12 +571,12 @@ def apply_fabric_target_binding_plan(
     for manager in plan.managers:
         kernel_descriptor = program_descriptor.kernels[manager.kernel_index]
         node_x, node_y = manager.node_coordinates
-        destination_node_ids = []
+        connection_node_ids = []
         connection_link_indices = []
         fabric_args = []
         if manager.connections:
-            destination_node_ids = [
-                connection.destination_node_id for connection in manager.connections
+            connection_node_ids = [
+                connection.connection_node_id for connection in manager.connections
             ]
             explicit_link_indices = [
                 connection.link_index
@@ -456,7 +589,7 @@ def apply_fabric_target_binding_plan(
             connection_link_indices = explicit_link_indices
             fabric_args = ttnn_api.setup_routing_plane_connection(
                 plan.source_node_id,
-                destination_node_ids,
+                connection_node_ids,
                 connection_link_indices,
                 program_descriptor,
                 manager.kernel_index,
@@ -470,7 +603,7 @@ def apply_fabric_target_binding_plan(
                 device_coordinates,
                 manager.kernel_index,
                 manager.node_coordinates,
-                destination_node_ids,
+                connection_node_ids,
                 connection_link_indices,
                 runtime_args,
                 flush=True,
