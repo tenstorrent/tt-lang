@@ -116,13 +116,25 @@ jobs:
         run: |
           source build/env/activate
           unset TT_VISIBLE_DEVICES
-          timeout --signal=TERM --kill-after=15s 1800 \
-            python3 -m pytest \
-              -c build/test/pytest.ini \
-              --rootdir="$GITHUB_WORKSPACE/test" \
-              test/python/fabric \
-              -v -x --tb=long --timeout=300 --timeout-method=thread \
-              --junitxml=build/test/pytest-report-fabric-full.xml
+          set -o pipefail
+          if ! timeout --signal=TERM --kill-after=15s 1800 \
+              python3 -m pytest \
+                -c build/test/pytest.ini \
+                --rootdir="$GITHUB_WORKSPACE/test" \
+                test/python/fabric \
+                -v -x --tb=long --timeout=300 --timeout-method=thread \
+                --junitxml=build/test/pytest-report-fabric-full.xml \
+              2>&1 | tee /tmp/device_test.log; then
+            python3 - /tmp/device_test.log <<'PY'
+          import pathlib
+          import sys
+
+          failure = "".join(pathlib.Path(sys.argv[1]).read_text().splitlines(True)[-80:])
+          failure = failure[-6000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Full Galaxy fabric pytest failure::{failure}")
+          PY
+            exit 1
+          fi
 
       - name: Smoketest
         run: |
