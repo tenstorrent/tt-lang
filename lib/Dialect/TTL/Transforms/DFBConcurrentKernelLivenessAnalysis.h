@@ -108,9 +108,6 @@ struct DFBDiagnosticAccessOccurrence {
 
 /// Per-node data collected only for the allocation report.
 struct DFBPerNodeLifetimeDiagnostics {
-  /// False when counterfactual analysis proves that no access executes.
-  bool mayBeActive = true;
-
   /// Execution-count row for every access considered on the launch node.
   SmallVector<DFBDiagnosticAccessOccurrence> occurrences;
 
@@ -121,7 +118,7 @@ struct DFBPerNodeLifetimeDiagnostics {
   SmallVector<unsigned> terminalAccessOccurrenceIndices;
 
   bool operator==(const DFBPerNodeLifetimeDiagnostics &rhs) const {
-    return mayBeActive == rhs.mayBeActive && occurrences == rhs.occurrences &&
+    return occurrences == rhs.occurrences &&
            earliestAccessOccurrenceIndices ==
                rhs.earliestAccessOccurrenceIndices &&
            terminalAccessOccurrenceIndices ==
@@ -144,12 +141,17 @@ struct DFBTransactionRun {
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
 
+  /// Whether an access may execute on `node`.
+  bool mayBeActive = true;
+
+  /// Whether all active accesses share one proved conditional execution.
+  bool conditionalExecutionProven = false;
+
   /// Minimal access-entry event IDs under the proved happens-before relation.
   SmallVector<unsigned> earliestEntryEvents;
 
   /// Completion event IDs after which the DFB is quiescent.
   SmallVector<unsigned> terminalCompletionEvents;
-
   /// Normalized transaction runs in occurrence order.
   SmallVector<DFBTransactionRun> transactionRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
@@ -159,10 +161,9 @@ struct DFBPerNodeLifetime {
 
 /// Allocation-report data omitted from normal liveness analysis.
 struct DFBLogicalLifecycleDiagnostics {
-  SmallVector<DFBPerNodeLifetime, 0> counterfactualNodeLifetimes;
   SmallVector<DFBPerNodeLifetimeDiagnostics, 0> nodeLifetimeDiagnostics;
   SmallVector<DFBPerNodeLifetimeDiagnostics, 0>
-      counterfactualNodeLifetimeDiagnostics;
+      possibleNodeLifetimeDiagnostics;
 };
 
 /// Immutable protocol and per-node lifetime facts for one logical DFB.
@@ -175,11 +176,17 @@ struct DFBLogicalLifecycle {
   SmallVector<DFBAccessOccurrence> accesses;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
+  SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;
   std::unique_ptr<DFBLogicalLifecycleDiagnostics> allocationDiagnostics;
   bool bounded = false;
+  bool conditionallyBounded = false;
 
   /// Returns the lifetime for `node`, or null when the DFB is inactive there.
   const DFBPerNodeLifetime *findNodeLifetime(LaunchNodeCoord node) const;
+
+  /// Returns the possible-domain lifetime for `node`, or null when absent.
+  const DFBPerNodeLifetime *
+  findPossibleNodeLifetime(LaunchNodeCoord node) const;
 };
 
 /// Builds per-node cross-kernel happens-before and DFB quiescence facts.
@@ -207,6 +214,10 @@ public:
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
 
+  /// Returns ordering proved while treating unknown domains as possible.
+  bool isConditionallyOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
+                                    LaunchNodeCoord node) const;
+
 private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
@@ -214,6 +225,7 @@ private:
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
+  SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

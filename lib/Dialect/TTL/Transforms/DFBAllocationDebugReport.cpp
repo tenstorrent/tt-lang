@@ -234,13 +234,15 @@ static void printTransactions(llvm::raw_ostream &output,
   output << ']';
 }
 
-static bool
-hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
-                        const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
-                        const DFBPerNodeLifetime &rhs,
-                        const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
+static bool hasEqualPossibleFacts(
+    const DFBPerNodeLifetime &lhs,
+    const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
+    const DFBPerNodeLifetime &rhs,
+    const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
   if (lhs.quiescence.failure != rhs.quiescence.failure ||
       lhs.quiescence.evidence != rhs.quiescence.evidence ||
+      lhs.mayBeActive != rhs.mayBeActive ||
+      lhs.conditionalExecutionProven != rhs.conditionalExecutionProven ||
       lhs.transactionRuns != rhs.transactionRuns ||
       lhs.writePointerOwner != rhs.writePointerOwner ||
       lhs.readPointerOwner != rhs.readPointerOwner ||
@@ -275,29 +277,29 @@ struct LifetimeWithDiagnostics {
   const DFBPerNodeLifetimeDiagnostics *diagnostics = nullptr;
 };
 
-struct DiagnosticLifetimeGroup {
+struct PossibleLifetimeGroup {
   LifetimeWithDiagnostics representative;
   SmallVector<LaunchNodeCoord> nodes;
 };
 
-static void printDiagnosticLifetimes(
+static void printPossibleLifetimes(
     llvm::raw_ostream &output,
+    const DFBLogicalLifecycle &logicalDFB,
     const DFBLogicalLifecycleDiagnostics &allocationDiagnostics) {
-  assert(
-      allocationDiagnostics.counterfactualNodeLifetimes.size() ==
-          allocationDiagnostics.counterfactualNodeLifetimeDiagnostics.size() &&
-      "counterfactual lifetimes must have allocation-report data");
-  SmallVector<DiagnosticLifetimeGroup> groups;
+  assert(logicalDFB.possibleNodeLifetimes.size() ==
+             allocationDiagnostics.possibleNodeLifetimeDiagnostics.size() &&
+         "possible lifetimes must have allocation-report data");
+  SmallVector<PossibleLifetimeGroup> groups;
   for (auto lifetimeAndDiagnostics : llvm::zip_equal(
-           allocationDiagnostics.counterfactualNodeLifetimes,
-           allocationDiagnostics.counterfactualNodeLifetimeDiagnostics)) {
+           logicalDFB.possibleNodeLifetimes,
+           allocationDiagnostics.possibleNodeLifetimeDiagnostics)) {
     const DFBPerNodeLifetime &lifetime = std::get<0>(lifetimeAndDiagnostics);
     const DFBPerNodeLifetimeDiagnostics &diagnostics =
         std::get<1>(lifetimeAndDiagnostics);
     auto groupIt = llvm::find_if(groups, [&](const auto &group) {
-      return hasEqualDiagnosticFacts(*group.representative.lifetime,
-                                     *group.representative.diagnostics,
-                                     lifetime, diagnostics);
+      return hasEqualPossibleFacts(*group.representative.lifetime,
+                                   *group.representative.diagnostics, lifetime,
+                                   diagnostics);
     });
     if (groupIt == groups.end()) {
       groups.push_back({{&lifetime, &diagnostics}, {lifetime.node}});
@@ -306,14 +308,16 @@ static void printDiagnosticLifetimes(
     }
   }
 
-  for (const DiagnosticLifetimeGroup &group : groups) {
+  for (const PossibleLifetimeGroup &group : groups) {
     const DFBPerNodeLifetime &lifetime = *group.representative.lifetime;
     const DFBPerNodeLifetimeDiagnostics &diagnostics =
         *group.representative.diagnostics;
-    output << "  diagnostic_nodes quiescence="
+    output << "  possible_nodes quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
-           << " domain_assumption=unknown-may-be-active may_be_active="
-           << diagnostics.mayBeActive << " node_count=" << group.nodes.size();
+           << " domain_assumption=unknown-possible may_be_active="
+           << lifetime.mayBeActive
+           << " conditional_execution=" << lifetime.conditionalExecutionProven
+           << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
       llvm::interleaveComma(group.nodes, output, [&](LaunchNodeCoord node) {
@@ -348,11 +352,12 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     printNode(output, lifetime.node);
     output << " quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
-           << " domain_assumption=exact";
+           << " domain_assumption=exact conditional_execution="
+           << lifetime.conditionalExecutionProven;
     printLifetimeFacts(output, lifetime, diagnostics);
     output << '\n';
   }
-  printDiagnosticLifetimes(output, allocationDiagnostics);
+  printPossibleLifetimes(output, logicalDFB, allocationDiagnostics);
 }
 
 static void printConflictEvidence(llvm::raw_ostream &output,
@@ -385,7 +390,9 @@ void printDFBAllocationDebugReport(
        liveness.getLogicalDFBLifecycles()) {
     output << "DFB logical_id=" << logicalDFB.logicalId
            << " bounded=" << logicalDFB.bounded
-           << " compiler_created=" << logicalDFB.compilerCreated << " type=";
+           << " compiler_created=" << logicalDFB.compilerCreated
+           << " conditionally_bounded=" << logicalDFB.conditionallyBounded
+           << " type=";
     logicalDFB.type.print(output);
     output << " tensor_backing=";
     if (logicalDFB.tensorBacking) {

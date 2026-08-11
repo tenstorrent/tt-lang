@@ -11,7 +11,7 @@
 // REPORT: DFB allocation liveness report
 // REPORT: DFB logical_id=0 bounded=1 compiler_created=0
 // REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(0,0)} operation=ttl.cb_reserve kernel=@producer
-// REPORT: node (0,0) quiescence=none domain_assumption=exact evidence=none occurrences=[0:1, 1:1, 2:1, 3:1] transactions=[1] write_owner=(0,0):noc0:write read_owner=(0,0):unpack:read
+// REPORT: node (0,0) quiescence=none domain_assumption=exact conditional_execution=0 evidence=none occurrences=[0:1, 1:1, 2:1, 3:1] transactions=[1] write_owner=(0,0):noc0:write read_owner=(0,0):unpack:read
 // REPORT-SAME: earliest_accesses=[0, 2] terminal_accesses=[3]
 // REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch node=(0,0)
 // REPORT: DFB allocation liveness report end

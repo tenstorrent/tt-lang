@@ -980,9 +980,14 @@ def TTLFinalizeDFBIndices
     `CircularBufferType` equality, equal transaction tile counts that divide
     the DFB capacity, and identical read- and write-pointer processors on each
     launch node. These requirements preserve hardware counter and ring-pointer
-    state. A logical DFB without an exact single lifecycle or a proven lifetime
-    order conflicts with every other DFB. Unsupported or unknown control flow
-    can reduce reuse but cannot produce an unsafe physical assignment.
+    state. One unresolved structured condition is supported when every active
+    DFB access belongs to one reserve, push, wait, and pop transaction
+    controlled by equivalent `scf.if` or `affine.if` frames in one kernel
+    function. Branch polarity, nesting, and control SSA values must match.
+    Unresolved loops, repeated conditional transactions, and separately
+    evaluated opaque predicates remain unsupported. A logical DFB without a
+    matched lifecycle or a proven lifetime order conflicts with every other
+    DFB.
 
     Two DFBs used by one compute kernel may share a physical index only when
     every target-supported destination width assigns compatible static unpack
@@ -1027,10 +1032,14 @@ def TTLFinalizeDFBIndices
     counts, transaction sizes, pointer owners, lifetime frontiers, and conflict
     evidence. Lifetime frontiers use access-occurrence indices that map to the
     report's numbered access records. For an unknown launch-node domain, it
-    separately labels a counterfactual per-node analysis that assumes
-    unknown-domain accesses may be active while preserving exact-zero
-    inactivity. Those diagnostic attempts do not establish boundedness or
-    affect the conflict relation. If node-dependent IR has no launch grid, the
+    separately labels a possible-domain per-node analysis that treats unknown
+    accesses as possible while preserving exact-zero inactivity. It may
+    establish conditional boundedness only for one complete transaction whose
+    active accesses share one structured at-most-once condition on every
+    possible node. Reuse remains restricted to two conditionally bounded
+    unknown-domain DFBs with matching transactions, pointer owners, and
+    possible-domain lifetime order. Per-access counts and lifetime-frontier
+    indices remain report-only. If node-dependent IR has no launch grid, the
     report retains logical DFB and access facts but omits per-node rows because
     no base launch nodes are available.
 
