@@ -183,6 +183,7 @@ def open_fabric_mesh(
     requested_mesh_shape: tuple[int, ...] | None = None,
     *,
     fabric_config: Any | None = None,
+    router_config: Any | None = None,
 ):
     """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
     control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
@@ -203,7 +204,10 @@ def open_fabric_mesh(
 
     mesh_device = None
     try:
-        ttnn_module.set_fabric_config(fabric_config)
+        if router_config is None:
+            ttnn_module.set_fabric_config(fabric_config)
+        else:
+            ttnn_module.set_fabric_config(fabric_config, router_config=router_config)
         mesh_device = ttnn_module.open_mesh_device(
             ttnn_module.MeshShape(requested_mesh_shape)
         )

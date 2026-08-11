@@ -145,7 +145,9 @@ def _make_point_to_point_operation(
     mesh_shape: tuple[int, ...],
     source_device: tuple[int, ...],
     destination_device: tuple[int, ...],
+    block_shape: tuple[int, int] = (1, 1),
 ):
+    block_rows, block_columns = block_shape
     device_domain = ttl.DeviceDomain(mesh_shape)
     point_to_point_net = ttl.PipeNet(
         graph=ttl.TransferGraph.edges(
@@ -155,8 +157,10 @@ def _make_point_to_point_operation(
 
     @ttl.operation(grid=(1, 1), device_domain=device_domain)
     def point_to_point(inp, out):
-        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=block_shape, block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=block_shape, block_count=2
+        )
 
         @ttl.compute()
         def idle_compute():
@@ -166,7 +170,7 @@ def _make_point_to_point_operation(
         def sender_node():
             def send(pipe):
                 with send_dfb.reserve() as send_block:
-                    ttl.copy(inp[0, 0], send_block).wait()
+                    ttl.copy(inp[0:block_rows, 0:block_columns], send_block).wait()
                 with send_dfb.wait() as send_block:
                     ttl.copy(send_block, pipe).wait()
 
@@ -178,7 +182,7 @@ def _make_point_to_point_operation(
                 with receive_dfb.reserve() as receive_block:
                     ttl.copy(pipe, receive_block).wait()
                 with receive_dfb.wait() as receive_block:
-                    ttl.copy(receive_block, out[0, 0]).wait()
+                    ttl.copy(receive_block, out[0:block_rows, 0:block_columns]).wait()
 
             point_to_point_net.if_dst(receive)
 
@@ -790,6 +794,54 @@ def test_point_to_point(
 
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify packet splitting immediately below, at, and above the configured
+# router payload limit. Completion must be published only by the final packet.
+@pytest.mark.parametrize("payload_tiles", [1, 2, 3], ids=["below", "at", "above"])
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_point_to_point_packet_boundary(
+    fabric_mesh_shape,
+    payload_tiles,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    device_count = prod(fabric_mesh_shape)
+    source_device = tuple(0 for _extent in fabric_mesh_shape)
+    destination_device = tuple(extent - 1 for extent in fabric_mesh_shape)
+    point_to_point = _make_point_to_point_operation(
+        fabric_mesh_shape,
+        source_device,
+        destination_device,
+        block_shape=(payload_tiles, 1),
+    )
+    shard_rows = payload_tiles * TILE_SIZE
+    logical_shape = (device_count * shard_rows, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+    tile_size_bytes = TILE_SIZE * TILE_SIZE * inp_torch.element_size()
+    router_payload_size = 2 * tile_size_bytes
+    router_config = ttnn.FabricRouterConfig()
+    router_config.max_packet_payload_size_bytes = router_payload_size
+
+    with open_fabric_mesh(
+        requested_mesh_shape=fabric_mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+        router_config=router_config,
+    ) as mesh:
+        assert ttnn.get_tt_fabric_max_payload_size_bytes() == router_payload_size
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        point_to_point(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[-shard_rows:, :] = inp_torch[:shard_rows, :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 

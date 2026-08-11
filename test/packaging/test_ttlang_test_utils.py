@@ -90,8 +90,11 @@ def _create_fake_fabric_ttnn(discovered_shape: tuple[int, ...]):
     fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
     mesh_device = object()
 
-    def set_fabric_config(config):
-        events.append(("configure", config))
+    def set_fabric_config(config, **kwargs):
+        event = ("configure", config)
+        if kwargs:
+            event += (kwargs,)
+        events.append(event)
 
     def open_mesh_device(shape):
         events.append(("open", shape.shape))
@@ -203,6 +206,25 @@ def test_fabric_mesh_uses_requested_shape_and_config(monkeypatch) -> None:
     assert events == [
         ("configure", "fabric-2d"),
         ("open", (2, 2)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_uses_router_config(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+    router_config = object()
+
+    with module.open_fabric_mesh(
+        fabric_config="fabric-2d", router_config=router_config
+    ) as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-2d", {"router_config": router_config}),
+        ("open", (2, 4)),
         ("close", mesh_device),
         ("configure", "disabled"),
     ]
