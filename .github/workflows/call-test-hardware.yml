@@ -111,6 +111,19 @@ jobs:
           source build/env/activate
           pip install -r dev-requirements.txt
 
+      - name: Full Galaxy fabric topology pytests
+        if: inputs.runs-on == 'galaxy-bh'
+        run: |
+          source build/env/activate
+          unset TT_VISIBLE_DEVICES
+          timeout --signal=TERM --kill-after=15s 1800 \
+            python3 -m pytest \
+              -c build/test/pytest.ini \
+              --rootdir="$GITHUB_WORKSPACE/test" \
+              test/python/fabric \
+              -v -x --tb=long --timeout=300 --timeout-method=thread \
+              --junitxml=build/test/pytest-report-fabric-full.xml
+
       - name: Smoketest
         run: |
           source build/env/activate
@@ -146,19 +159,6 @@ jobs:
         run: |
           source build/env/activate
           .github/scripts/run-hardware-pytests.sh test/python build/test/pytest-report
-
-      - name: Full Galaxy fabric topology pytests
-        if: inputs.runs-on == 'galaxy-bh'
-        run: |
-          source build/env/activate
-          unset TT_VISIBLE_DEVICES
-          timeout --signal=TERM --kill-after=15s 1800 \
-            python3 -m pytest \
-              -c build/test/pytest.ini \
-              --rootdir="$GITHUB_WORKSPACE/test" \
-              test/python/fabric \
-              -v -x --tb=long --timeout=300 --timeout-method=thread \
-              --junitxml=build/test/pytest-report-fabric-full.xml
 
       - name: ME2E tests (MLIR input end-to-end tests)
         env:
