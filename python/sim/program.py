@@ -198,14 +198,16 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
         ) -> None:
             """Cooperative scheduling execution mode using greenlets."""
 
-            # Warn if the number of DataflowBuffers exceeds the hardware limit.
+            # Warn if the number of DataflowBuffers exceeds the configured limit.
             dfb_count = get_context().kernel_dfb_count
             max_dfbs = get_max_dfbs()
             if dfb_count > max_dfbs:
                 warnings.warn(
                     f"Kernel defines {dfb_count} dataflow buffers, "
-                    f"but the hardware limit is {max_dfbs}. "
-                    f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+                    f"but the configured limit is {max_dfbs}. "
+                    f"Reduce the number of ttl.make_dataflow_buffer_like() calls, "
+                    f"or raise the limit with --max-dfbs. Blackhole supports 64 "
+                    f"physical DFB indices; Wormhole B0 and Quasar support 32.",
                     stacklevel=2,
                 )
 

@@ -7,8 +7,12 @@
 // assignment enumeration supplies expected results without calling the
 // production search.
 
+#include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
+#include "ttlang/Target/TargetInfo.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -27,6 +31,69 @@ using mlir::tt::ttl::InterferenceGraphColorLimitStatus;
 
 constexpr uint64_t kUnlimitedSearchStates =
     std::numeric_limits<uint64_t>::max();
+
+/// Verifies the target query and default system descriptor use the same
+/// architecture capacities.
+static bool verifyTargetDFBIndexCapacities() {
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::tt::ttcore::TTCoreDialect>();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+
+  struct ExpectedCapacity {
+    mlir::tt::ttcore::Arch arch;
+    int32_t indexCount;
+  };
+  constexpr ExpectedCapacity expectedCapacities[] = {
+      {mlir::tt::ttcore::Arch::WormholeB0,
+       mlir::tt::kWormholeB0DFBIndexCapacity},
+      {mlir::tt::ttcore::Arch::Blackhole, mlir::tt::kBlackholeDFBIndexCapacity},
+      {mlir::tt::ttcore::Arch::Quasar, mlir::tt::kQuasarDFBIndexCapacity},
+  };
+  for (const ExpectedCapacity &expected : expectedCapacities) {
+    module->getOperation()->setAttr(
+        mlir::tt::kTargetArchAttrName,
+        mlir::tt::ttcore::ArchAttr::get(&context, expected.arch));
+    if (mlir::tt::getTargetMaxDFBIndices(*module) != expected.indexCount) {
+      llvm::errs() << "target DFB-index capacity mismatch\n";
+      return false;
+    }
+  }
+  module->getOperation()->removeAttr(mlir::tt::kTargetArchAttrName);
+  if (mlir::tt::getTargetMaxDFBIndices(*module) !=
+      mlir::tt::kMissingTargetDFBIndexCapacity) {
+    llvm::errs() << "missing-target DFB-index capacity mismatch\n";
+    return false;
+  }
+
+  struct ExpectedSystemDescCapacity {
+    mlir::tt::ttcore::Arch arch;
+    unsigned numCBs;
+    llvm::StringRef name;
+  };
+  const ExpectedSystemDescCapacity expectedSystemDescCapacities[] = {
+      {mlir::tt::ttcore::Arch::Blackhole, mlir::tt::kBlackholeDFBIndexCapacity,
+       "Blackhole"},
+      {mlir::tt::ttcore::Arch::WormholeB0,
+       mlir::tt::kWormholeB0DFBIndexCapacity, "Wormhole B0"},
+  };
+  for (const ExpectedSystemDescCapacity &expected :
+       expectedSystemDescCapacities) {
+    mlir::tt::ttcore::SystemDescAttr systemDesc =
+        mlir::tt::ttcore::SystemDescAttr::getDefault(&context, expected.arch);
+    if (systemDesc.getChipDescs().size() != 1 ||
+        systemDesc.getChipDescs().front().getNumCBs() != expected.numCBs) {
+      llvm::errs() << "default " << expected.name
+                   << " system descriptor reports the wrong DFB-index "
+                      "capacity\n";
+      return false;
+    }
+  }
+
+  llvm::outs() << "target_capacities=32,64,32,32\n"
+               << "system_desc_num_cbs=64,32\n";
+  return true;
+}
 
 /// Enumerates index choices in vertex order so expected results do not depend
 /// on the production search order.
@@ -371,6 +438,7 @@ int main() {
                  verifyGreedyCapacityReproducer() &&
                  verifySearchLimitOutcome() &&
                  verifyFixedLimitAvoidsMinimumSearch() &&
+                 verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0
              : 1;

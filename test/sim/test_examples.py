@@ -407,7 +407,7 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
     This example allocates 36 DataflowBuffers, exceeding the default limit of 32.
     The warning is issued at kernel definition time before any kernel execution.
     """
-    with pytest.warns(UserWarning, match="hardware limit is 32"):
+    with pytest.warns(UserWarning, match="configured limit is 32"):
         code, out = run_script_in_process(ERRORS_DIR / "max_dfbs_warning.py", scheduler)
     assert (
         code == 0
