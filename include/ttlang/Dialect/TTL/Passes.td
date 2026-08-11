@@ -1042,6 +1042,16 @@ def TTLFinalizeDFBIndices
     allocation diagnostic; it does not report that hardware capacity was
     proved insufficient.
 
+    An assertions-enabled build accepts
+    `-debug-only=ttl-finalize-dfb-indices` to print the immutable liveness facts
+    and typed conflicts before allocation succeeds or fails. The report includes
+    logical descriptors, access domains, protocol effects, exact execution
+    counts, transaction sizes, pointer owners, lifetime frontiers, and conflict
+    evidence. For an unknown launch-node domain, it separately labels a
+    counterfactual per-node analysis that assumes unknown-domain accesses are
+    active. Those diagnostic attempts do not establish boundedness or affect
+    the conflict relation.
+
     Every storage-accessing operation with a direct DFB operand is treated as a
     runtime access from operation entry through completion. Every direct DFB
     operand of `ttl.opaque_call` is a possible read or write; both require the

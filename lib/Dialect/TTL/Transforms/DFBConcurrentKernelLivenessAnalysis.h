@@ -75,10 +75,18 @@ struct DFBAccessOccurrence {
   Operation *unanalyzableDomainOperation = nullptr;
 };
 
+/// Execution count recorded for one access at one launched node.
+struct DFBPerNodeAccessOccurrence {
+  unsigned occurrenceIndex = 0;
+  std::optional<std::uint64_t> exactExecutionCount;
+};
+
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
-  SmallVector<unsigned> occurrenceIndices;
+  bool assumesUnknownDomainsActive = false;
+  bool mayBeActive = true;
+  SmallVector<DFBPerNodeAccessOccurrence> occurrences;
   SmallVector<unsigned> earliestEntryEvents;
   SmallVector<unsigned> terminalCompletionEvents;
   SmallVector<int64_t> transactionTileCounts;

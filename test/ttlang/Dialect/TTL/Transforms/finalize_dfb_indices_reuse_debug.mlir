@@ -1,11 +1,22 @@
 // Tests default-mode debug reporting when three logical DFBs use two physical
 // indices.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s --check-prefix=REPORT
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' 2>&1 | FileCheck %s --check-prefix=NO-REPORT
 
-// CHECK: Total DFB count: 2
-// CHECK-NEXT: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1 (bounded)
-// CHECK-NEXT: DFB assignment: logical DFB 2 -> physical index 0 (bounded)
+// REPORT: DFB allocation liveness report
+// REPORT: DFB logical_id=0 bounded=1 compiler_created=0
+// REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(0,0)} operation=ttl.cb_reserve kernel=@producer
+// REPORT: node (0,0) quiescence=none domain_assumption=exact may_be_active=1 evidence=none occurrences=[0:1, 1:1, 2:1, 3:1] transactions=[1] write_owner=(0,0):noc0:write read_owner=(0,0):unpack:read
+// REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch node=(0,0)
+// REPORT: DFB allocation liveness report end
+// REPORT-NEXT: Total DFB count: 2
+// REPORT-NEXT: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 1 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 2 -> physical index 0 (bounded)
+
+// NO-REPORT-NOT: DFB allocation liveness report
+// NO-REPORT: func.func @producer
+// NO-REPORT-NOT: DFB allocation liveness report
 
 module {
   func.func @producer()

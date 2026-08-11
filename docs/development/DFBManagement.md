@@ -1430,6 +1430,34 @@ following reasons: descriptor mismatch, unknown launch-node domain, unproven
 quiescence, transaction mismatch, pointer-owner mismatch, or concurrent
 lifetime.
 
+#### Allocation diagnostics
+
+An assertions-enabled build can print the allocation inputs and conflict
+evidence without changing allocation behavior:
+
+```bash
+ttlang-opt input.mlir \
+  --ttl-finalize-dfb-indices='reuse-user-dfbs=true' \
+  -debug-only=ttl-finalize-dfb-indices \
+  -o /dev/null
+```
+
+The report is emitted after liveness and conflict construction and before
+capacity or L1-budget validation. Each logical DFB records its descriptor,
+tensor backing, launch-node domain, boundedness, accesses, protocol effects,
+exact execution counts, transaction sizes, pointer owners, and lifetime
+frontiers. Each conflict records both logical IDs, the typed reason, an
+applicable launch node, and source operations.
+
+An unknown launch-node domain is itself sufficient to prevent reuse. For
+diagnosis, the report also evaluates each base launch node while assuming that
+unknown-domain accesses are active. These rows use
+`domain_assumption=all-unknown-active`; they identify the next missing proof,
+such as a protocol effect, exact execution count, matched transaction, or
+complete use order. They are counterfactual evidence only. They do not mark the
+DFB bounded, add lifetime ordering, or change the conflict relation. Nodes with
+identical diagnostic facts are grouped to keep large launch grids readable.
+
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
 index; vertices joined by an edge must receive different indices. A clique is
