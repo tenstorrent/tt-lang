@@ -143,6 +143,12 @@ class _AssignmentCollector(_ScopedCollector):
         self.loop_carried_names.append(name)
         self._loop_carried_seen.add(name)
 
+    def requires_loop_carried_state(self, name):
+        return (
+            name in self._loop_carried_seen
+            or name in self._dependencies_by_name.get(name, set())
+        )
+
     def _record_assignment(self, targets, value, *, from_augassign=False):
         read_variable_names = _collect_read_variable_names(value)
         if from_augassign:
@@ -174,9 +180,11 @@ class _AssignmentCollector(_ScopedCollector):
         for name in written_names:
             combined = set(condition_reads)
             for branch_deps in branch_deps_list:
-                combined |= branch_deps.get(name, deps_before.get(name, set()))
+                # An outer variable with no prior local assignment depends on
+                # itself in every branch that leaves it unchanged.
+                combined |= branch_deps.get(name, deps_before.get(name, {name}))
             merged[name] = combined
-            if name in combined:
+            if name in combined and (name in condition_reads or name in deps_before):
                 self._add_loop_carried_name(name)
 
         return merged
@@ -660,7 +668,9 @@ class TTCompilerBase(PyKernelAstBase):
         # plain Assign (`acc = acc + d`), it stays carried; the Assign
         # produces a fresh value that scf.for must thread.
         carried_var_names = []
-        for var_name in collector.loop_carried_names:
+        for var_name in collector.names:
+            if not collector.requires_loop_carried_state(var_name):
+                continue
             if var_name == node.target.id:
                 continue
             if not self._var_exists(var_name):
@@ -1211,6 +1221,10 @@ class TTCompilerBase(PyKernelAstBase):
 
         if isinstance(lhs.type, FloatType):
             match (node.ops[0]):
+                case ast.Eq():
+                    return arith.cmpf(arith.CmpFPredicate.OEQ, lhs, rhs)
+                case ast.NotEq():
+                    return arith.cmpf(arith.CmpFPredicate.UNE, lhs, rhs)
                 case ast.Gt():
                     return arith.cmpf(arith.CmpFPredicate.OGT, lhs, rhs)
                 case ast.Lt():

@@ -1208,9 +1208,10 @@ def TTKernelLowerScalarFpTypes
     The following conversions are performed:
 
     1. **arith.cmpf**: Converts scalar float comparisons to TTKernel soft-float
-       comparison ops (`ttkernel.float32_greater` / `ttkernel.bfloat16_greater`).
-       Supported predicates: `ogt` and `olt` (swapped operands). Unsupported
-       predicates cause the pass to fail.
+       comparison ops or IEEE-754 bit-pattern arithmetic. Supported predicates:
+       `ogt`, `olt` (swapped operands), `oeq`, and `une`. Equality treats signed
+       zeroes as equal and rejects NaN operands. Unsupported predicates cause
+       the pass to fail.
 
     2. **arith.truncf**: Converts float truncation (e.g. f32 -> bf16) to
        integer bit extraction via `arith.shrui` + `arith.trunci`.
