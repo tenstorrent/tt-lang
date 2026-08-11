@@ -27,7 +27,7 @@ pytestmark = pytest.mark.requires_device
 # These cases use native TTL data movement and compute operations, which require
 # tiled tensor arguments.
 TILE = 32
-OVER_CAPACITY_COMPOSITION_LEVELS = 5
+OVER_CAPACITY_COMPOSITION_LEVELS = 6
 EXTERNAL_COMPOSITION_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 6
 EXTERNAL_COMPOSITION_PHYSICAL_DFBS = 8
 # The external fp32 pack step produces approximately 1/256 output increments.
@@ -300,11 +300,14 @@ def test_external_composition_requires_dfb_reuse(
         else scratch_operation
     )
 
-    # The disabled mode requires one physical index for each of the 38 logical
-    # DFBs, proving that enabled execution cannot fit without index reuse.
+    # The disabled mode requires one physical index for each logical DFB,
+    # exceeding every supported target capacity.
     with pytest.raises(
         RuntimeError,
-        match=("need 38 unspilled DFB indices " "but hardware supports at most 32"),
+        match=(
+            "need 70 unspilled DFB indices but exceeds the "
+            "(?:64-DFB-index Blackhole|32-DFB-index Wormhole B0) target capacity"
+        ),
     ):
         operation(
             lhs,
