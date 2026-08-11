@@ -756,6 +756,9 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileTransposeOp>(op)) {
     return TileOpCategory::Transpose;
   }
+  if (isa<TileFillOp>(op)) {
+    return TileOpCategory::Fill;
+  }
 
   if (op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
     FailureOr<TileExecutionStrategy> strategy =
