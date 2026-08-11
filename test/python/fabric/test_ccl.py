@@ -55,6 +55,9 @@ requires_two_device_forwarding_link_indices = pytest.mark.xfail(
     run=False,
     strict=True,
 )
+# Exact physical-connectivity validation belongs to TT-Metal system-health
+# tests; topology coverage here resolves routes against the live links.
+RELAXED_FABRIC_INITIALIZATION = ttnn.FabricReliabilityMode.RELAXED_INIT
 
 
 @dataclass(frozen=True)
@@ -779,6 +782,17 @@ def _open_collective_mesh(mesh_shape: tuple[int, ...]):
     )
 
 
+def _open_route_mesh(mesh_shape: tuple[int, ...], fabric_config):
+    config_options = {}
+    if fabric_config != ttnn.FabricConfig.FABRIC_2D:
+        config_options["reliability_mode"] = RELAXED_FABRIC_INITIALIZATION
+    return open_fabric_mesh(
+        requested_mesh_shape=mesh_shape,
+        fabric_config=fabric_config,
+        **config_options,
+    )
+
+
 @pytest.fixture(scope="module")
 def fabric_mesh_shape():
     if ttnn.get_num_devices() < 2:
@@ -1007,10 +1021,7 @@ def test_two_dimensional_route(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(
-        requested_mesh_shape=fabric_mesh_shape,
-        fabric_config=fabric_config,
-    ) as mesh:
+    with _open_route_mesh(fabric_mesh_shape, fabric_config) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -1059,10 +1070,7 @@ def test_one_dimensional_route(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(
-        requested_mesh_shape=fabric_mesh_shape,
-        fabric_config=fabric_config,
-    ) as parent_mesh:
+    with _open_route_mesh(fabric_mesh_shape, fabric_config) as parent_mesh:
         mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
         try:
             inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
@@ -1106,9 +1114,8 @@ def test_one_dimensional_neighbor_exchange(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with open_fabric_mesh(
-        requested_mesh_shape=fabric_mesh_shape,
-        fabric_config=ttnn.FabricConfig.FABRIC_1D_NEIGHBOR_EXCHANGE,
+    with _open_route_mesh(
+        fabric_mesh_shape, ttnn.FabricConfig.FABRIC_1D_NEIGHBOR_EXCHANGE
     ) as parent_mesh:
         mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
         try:
@@ -1159,10 +1166,7 @@ def test_reopen_with_different_fabric_config(
         ttnn.FabricConfig.FABRIC_2D,
         ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
     ):
-        with open_fabric_mesh(
-            requested_mesh_shape=fabric_mesh_shape,
-            fabric_config=fabric_config,
-        ) as mesh:
+        with _open_route_mesh(fabric_mesh_shape, fabric_config) as mesh:
             inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
             out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -1240,9 +1244,8 @@ def test_axis_neighbor_wrap(
         axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
     )
 
-    with open_fabric_mesh(
-        requested_mesh_shape=fabric_mesh_shape,
-        fabric_config=ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
+    with _open_route_mesh(
+        fabric_mesh_shape, ttnn.FabricConfig.FABRIC_2D_TORUS_XY
     ) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)

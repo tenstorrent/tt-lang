@@ -183,6 +183,7 @@ def open_fabric_mesh(
     requested_mesh_shape: tuple[int, ...] | None = None,
     *,
     fabric_config: Any | None = None,
+    reliability_mode: Any | None = None,
     router_config: Any | None = None,
 ):
     """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
@@ -204,10 +205,12 @@ def open_fabric_mesh(
 
     mesh_device = None
     try:
-        if router_config is None:
-            ttnn_module.set_fabric_config(fabric_config)
-        else:
-            ttnn_module.set_fabric_config(fabric_config, router_config=router_config)
+        config_options = {}
+        if reliability_mode is not None:
+            config_options["reliability_mode"] = reliability_mode
+        if router_config is not None:
+            config_options["router_config"] = router_config
+        ttnn_module.set_fabric_config(fabric_config, **config_options)
         mesh_device = ttnn_module.open_mesh_device(
             ttnn_module.MeshShape(requested_mesh_shape)
         )

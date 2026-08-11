@@ -228,3 +228,21 @@ def test_fabric_mesh_uses_router_config(monkeypatch) -> None:
         ("close", mesh_device),
         ("configure", "disabled"),
     ]
+
+
+def test_fabric_mesh_uses_reliability_mode(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with module.open_fabric_mesh(
+        fabric_config="fabric-2d", reliability_mode="relaxed"
+    ) as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-2d", {"reliability_mode": "relaxed"}),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
