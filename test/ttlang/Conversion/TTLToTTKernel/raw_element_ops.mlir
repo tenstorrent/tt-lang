@@ -141,6 +141,44 @@ module {
 
 // -----
 
+// A 1x32 subtile contains two dense 1x16 faces. The second face therefore
+// starts at element 16, not at the full-tile face offset 256.
+// CHECK-LABEL: func.func @read_tiled_1x32_second_face
+// CHECK-DAG: %[[C16:.*]] = arith.constant 16 : i32
+// CHECK: ttkernel.load_from_l1({{.*}}, %[[C16]])
+module {
+  func.func @read_tiled_1x32_second_face()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x32, f32>, 2>
+    %block = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<1x32, f32>, 2> -> tensor<1x1x!ttcore.tile<1x32, f32>>
+    %c0 = arith.constant 0 : index
+    %c16 = arith.constant 16 : index
+    %val = ttl.raw_element_read %block[%c0, %c16] : tensor<1x1x!ttcore.tile<1x32, f32>> -> f32
+    func.return
+  }
+}
+
+// -----
+
+// A 2x32 subtile stores each 2x16 face densely. The second face starts after
+// 32 elements and its last element is at offset 63.
+// CHECK-LABEL: func.func @read_tiled_2x32_last_element
+// CHECK-DAG: %[[C63:.*]] = arith.constant 63 : i32
+// CHECK: ttkernel.load_from_l1({{.*}}, %[[C63]])
+module {
+  func.func @read_tiled_2x32_last_element()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<2x32, bf16>, 2>
+    %block = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<2x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<2x32, bf16>>
+    %c1 = arith.constant 1 : index
+    %c31 = arith.constant 31 : index
+    %val = ttl.raw_element_read %block[%c1, %c31] : tensor<1x1x!ttcore.tile<2x32, bf16>> -> bf16
+    func.return
+  }
+}
+
+// -----
+
 // Read f32 from row-major block at (1, 3) -> offset = 1*8 + 3 = 11.
 // CHECK-LABEL: func.func @read_row_major_f32
 // CHECK-DAG: %[[C11:.*]] = arith.constant 11 : i32

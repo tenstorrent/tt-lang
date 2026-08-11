@@ -2167,9 +2167,10 @@ static Value computeRawElementOffset(RankedTensorType blockType,
   int64_t tileH = tileType.getHeight();
   int64_t tileW = tileType.getWidth();
   int64_t tileElems = tileH * tileW;
-  constexpr int64_t kFaceH = 16;
   constexpr int64_t kFaceW = 16;
-  constexpr int64_t kFaceElems = kFaceH * kFaceW;
+  int64_t faceH = std::min<int64_t>(tileH, 16);
+  int64_t faceElems = faceH * kFaceW;
+  int64_t faceCols = tileW / kFaceW;
   ArrayRef<int64_t> gridShape = blockType.getShape();
   int64_t rank = blockType.getRank();
 
@@ -2209,19 +2210,20 @@ static Value computeRawElementOffset(RankedTensorType blockType,
     }
   }
 
-  // Face decomposition: 4x(16x16) faces in row-major face order.
-  Value faceHC = cst(kFaceH);
+  // TT-Metal subtiles reduce face height to the tile height. Deriving the
+  // geometry keeps every face dense within the tile's allocated storage.
+  Value faceHC = cst(faceH);
   Value faceWC = cst(kFaceW);
   Value faceRow = arith::DivUIOp::create(rewriter, loc, intraRow, faceHC);
   Value faceCol = arith::DivUIOp::create(rewriter, loc, intraCol, faceWC);
-  Value faceIdx = arith::MulIOp::create(rewriter, loc, faceRow, cst(2));
+  Value faceIdx = arith::MulIOp::create(rewriter, loc, faceRow, cst(faceCols));
   faceIdx = arith::AddIOp::create(rewriter, loc, faceIdx, faceCol);
 
   Value localRow = arith::RemUIOp::create(rewriter, loc, intraRow, faceHC);
   Value localCol = arith::RemUIOp::create(rewriter, loc, intraCol, faceWC);
 
   Value intraElem =
-      arith::MulIOp::create(rewriter, loc, faceIdx, cst(kFaceElems));
+      arith::MulIOp::create(rewriter, loc, faceIdx, cst(faceElems));
   Value rowPart = arith::MulIOp::create(rewriter, loc, localRow, faceWC);
   intraElem = arith::AddIOp::create(rewriter, loc, intraElem, rowPart);
   intraElem = arith::AddIOp::create(rewriter, loc, intraElem, localCol);
