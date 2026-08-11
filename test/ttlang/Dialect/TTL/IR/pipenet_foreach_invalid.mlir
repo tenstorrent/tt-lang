@@ -71,7 +71,7 @@ func.func @selected_copy_requires_record_definition(
   %copy = ttl.copy %pipe, %reserve
       : (!ttl.selected_pipe_dst,
          tensor<1x1x!ttcore.tile<32x32, bf16>>)
-      -> !ttl.transfer_handle
+      -> !ttl.receive_request
   func.return
 }
 

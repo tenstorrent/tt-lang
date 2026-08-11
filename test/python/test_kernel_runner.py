@@ -122,6 +122,10 @@ class _MalformedCoreRanges:
     def ranges(self):
         return (object(),)
 
+    @staticmethod
+    def num_cores():
+        return 1
+
 
 class _FakeTTNN:
     def __init__(self):
@@ -279,6 +283,12 @@ class _FakeTTNN:
                 core_range.start.x <= coordinate.x <= core_range.end.x
                 and core_range.start.y <= coordinate.y <= core_range.end.y
                 for core_range in self.ranges
+            )
+
+        def num_cores(self):
+            return sum(
+                (item.end.x - item.start.x + 1) * (item.end.y - item.start.y + 1)
+                for item in self.ranges
             )
 
     @staticmethod
@@ -3032,6 +3042,119 @@ def _tensor_backing_config(
             ),
         ),
     )
+
+
+def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x4000)
+    config = _tensor_backing_config(
+        0,
+        nodes=((0, 0),),
+        byte_offset=2048,
+        byte_size=2048,
+    )
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        core_ranges=_FakeCoreRanges(),
+        cb_configs=[config],
+        pipe_computed_address_dfb_indices=[0],
+    )
+
+    assert resources.computed_address_dfb_tensors == {}
+    assert resources.computed_address_base_addresses == {0: 0x4800}
+
+
+@pytest.mark.parametrize(
+    "storage_segments",
+    [
+        (),
+        (DFBStorageSegment(nodes=((0, 0), (2, 0))),),
+    ],
+    ids=["implicit-compiler-storage", "explicit-compiler-storage"],
+)
+def test_pipe_runtime_resources_allocate_compiler_computed_address_storage(
+    monkeypatch, storage_segments
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    backing_tensor = _FakeTensor(object(), address=0x6000)
+    allocated_core_ranges = []
+
+    def allocate_backing(core_ranges, _num_bytes, _device):
+        allocated_core_ranges.append(core_ranges)
+        return backing_tensor
+
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        allocate_backing,
+    )
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_segments)
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[_FakeTensor(object())],
+        core_ranges=_FakeCoreRanges(),
+        cb_configs=[config],
+        pipe_computed_address_dfb_indices=[0],
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors=(resources.computed_address_dfb_tensors),
+    )
+
+    assert resources.computed_address_dfb_tensors == {0: backing_tensor}
+    assert resources.computed_address_base_addresses == {0: 0x6000}
+    assert descriptors[0].backing_desc["tensor"] is backing_tensor
+    if storage_segments:
+        assert allocated_core_ranges[0].num_cores() == 2
+        descriptor_ranges = descriptors[0].core_ranges.ranges
+        assert [(item.start.x, item.start.y) for item in descriptor_ranges] == [
+            (0, 0),
+            (2, 0),
+        ]
+    else:
+        assert isinstance(allocated_core_ranges[0], _FakeCoreRanges)
+
+
+def test_pipe_runtime_resources_reject_mixed_computed_address_storage(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda _core_ranges, _num_bytes, _device: _FakeTensor(object()),
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(nodes=((0, 0),), tensor_index=0),
+            DFBStorageSegment(nodes=((1, 0),)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="requires either tensor-backed storage on every segment or compiler storage",
+    ):
+        kernel_runner.build_pipe_runtime_resources(
+            tensors=[_FakeTensor(object())],
+            core_ranges=_FakeCoreRanges(),
+            cb_configs=[config],
+            pipe_computed_address_dfb_indices=[0],
+        )
 
 
 def test_build_cb_descriptors_rejects_aliased_partial_tensor_ranges(monkeypatch):

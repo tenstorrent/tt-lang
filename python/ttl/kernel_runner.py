@@ -1051,8 +1051,7 @@ def _allocate_l1_sharded_storage_tensor(core_ranges: Any, num_bytes: int, device
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, 32)
     elements_per_core = max(1, aligned_bytes // 4)
-    grid_size = core_ranges.bounding_box().grid_size()
-    num_cores = grid_size.x * grid_size.y
+    num_cores = core_ranges.num_cores()
     shard_spec = ttnn.ShardSpec(
         core_ranges,
         (1, elements_per_core),
@@ -1122,6 +1121,30 @@ def build_pipe_global_semaphores(
     return semaphores, addresses
 
 
+def _uses_tensor_backed_computed_address(
+    config: PhysicalDFBConfig, dfb_index: int
+) -> bool:
+    if not config.storage_segments:
+        return False
+    tensor_backed = [segment.is_tensor_backed for segment in config.storage_segments]
+    if any(tensor_backed) and not all(tensor_backed):
+        raise ValueError(
+            f"computed-address receiver DFB {dfb_index} requires either "
+            "tensor-backed storage on every segment or compiler storage"
+        )
+    return all(tensor_backed)
+
+
+def _get_computed_address_backing_core_ranges(
+    config: PhysicalDFBConfig, default_core_ranges: Any
+) -> Any:
+    if not config.storage_segments:
+        return default_core_ranges
+    assert all(not segment.is_tensor_backed for segment in config.storage_segments)
+    nodes = tuple(node for segment in config.storage_segments for node in segment.nodes)
+    return _make_node_core_ranges(nodes)
+
+
 def build_pipe_computed_address_dfb_tensors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -1129,7 +1152,7 @@ def build_pipe_computed_address_dfb_tensors(
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
 ) -> Dict[int, Any]:
-    """Allocate hidden L1 backing tensors for computed pipe receiver DFBs."""
+    """Allocate hidden L1 backing for computed pipe receiver scratch DFBs."""
     dfb_indices = sorted(set(pipe_computed_address_dfb_indices or []))
     if not dfb_indices:
         return {}
@@ -1148,10 +1171,50 @@ def build_pipe_computed_address_dfb_tensors(
         config = cb_configs[dfb_index]
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, dfb_index)
+        if _uses_tensor_backed_computed_address(config, dfb_index):
+            continue
+        backing_core_ranges = _get_computed_address_backing_core_ranges(
+            config, core_ranges
+        )
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
-            core_ranges, allocation.total_size, device
+            backing_core_ranges, allocation.total_size, device
         )
     return backing_tensors
+
+
+def _get_tensor_backed_computed_address_bases(
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    dfb_indices: List[int],
+) -> Dict[int, int]:
+    bases = {}
+    for dfb_index in sorted(set(dfb_indices)):
+        if dfb_index < 0 or dfb_index >= len(cb_configs):
+            raise ValueError(
+                f"computed-address receiver DFB index {dfb_index} is invalid"
+            )
+        config = cb_configs[dfb_index]
+        if not _uses_tensor_backed_computed_address(config, dfb_index):
+            continue
+        segment_bases = set()
+        for segment in config.storage_segments:
+            tensor_index = segment.tensor_index
+            assert tensor_index is not None
+            if tensor_index < 0 or tensor_index >= len(tensors):
+                raise ValueError(
+                    f"computed-address receiver DFB {dfb_index} references "
+                    f"invalid tensor index {tensor_index}"
+                )
+            segment_bases.add(
+                int(tensors[tensor_index].buffer_address()) + segment.byte_offset
+            )
+        if len(segment_bases) != 1:
+            raise ValueError(
+                f"computed-address receiver DFB {dfb_index} requires one "
+                "tensor-backed base address across its launch nodes"
+            )
+        bases[dfb_index] = segment_bases.pop()
+    return bases
 
 
 def build_pipe_runtime_resources(
@@ -1174,6 +1237,7 @@ def build_pipe_runtime_resources(
         resource_device = _first_device(tensors)
 
     computed_address_dfb_tensors = {}
+    tensor_backed_computed_address_bases = {}
     if computed_address_dfb_indices:
         if cb_configs is None:
             raise ValueError(
@@ -1185,6 +1249,11 @@ def build_pipe_runtime_resources(
             core_ranges=core_ranges,
             pipe_computed_address_dfb_indices=computed_address_dfb_indices,
             device=resource_device,
+        )
+        tensor_backed_computed_address_bases = (
+            _get_tensor_backed_computed_address_bases(
+                tensors, cb_configs, computed_address_dfb_indices
+            )
         )
 
     scratch_tensors = build_pipe_sram_scratch_tensors(
@@ -1212,6 +1281,7 @@ def build_pipe_runtime_resources(
         dfb_index: int(tensor.buffer_address())
         for dfb_index, tensor in computed_address_dfb_tensors.items()
     }
+    computed_address_base_addresses.update(tensor_backed_computed_address_bases)
     if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
         for dfb_index, tensor in computed_address_dfb_tensors.items():
             device_addresses = [
@@ -1502,21 +1572,24 @@ def build_cb_descriptors(
             **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
         )
         if cb_index in backing_tensors:
-            if config.storage_segments:
+            if any(segment.is_tensor_backed for segment in config.storage_segments):
                 raise ValueError(
                     f"DFB[{cb_index}] cannot combine PipeNet computed-address "
-                    "storage with finalized storage segments"
+                    "storage with tensor-backed storage segments"
                 )
+            backing_core_ranges = _get_computed_address_backing_core_ranges(
+                config, core_ranges
+            )
             cb_desc = ttnn.CBDescriptor(
                 total_size=allocation.total_size,
-                core_ranges=core_ranges,
+                core_ranges=backing_core_ranges,
                 format_descriptors=[cb_format],
             )
             backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
                 cb_index,
                 backing_tensors[cb_index],
                 total_size=allocation.total_size,
-                core_ranges=core_ranges,
+                core_ranges=backing_core_ranges,
             )
             cb_desc.set_buffer_from_cb(backing_desc)
             cb_descriptors.append(cb_desc)

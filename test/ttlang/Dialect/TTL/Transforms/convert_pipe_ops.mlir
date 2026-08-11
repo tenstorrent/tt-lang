@@ -136,8 +136,8 @@ func.func @copy_cb_to_pipe_receiver() attributes { "ttl.kernel_thread" = #ttkern
   %local = ttl.cb_reserve %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %recv = ttl.cb_reserve %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %post : !ttl.transfer_handle
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -172,8 +172,8 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
   %local = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf : !ttl.transfer_handle
+  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+  ttl.wait %xf : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -210,8 +210,8 @@ func.func @copy_loop_carried_pipe_to_cb() attributes { "ttl.kernel_thread" = #tt
   %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %xf = ttl.copy %loop_pipe, %recv
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
-  ttl.wait %xf : !ttl.transfer_handle
+      -> !ttl.receive_request
+  ttl.wait %xf : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -241,11 +241,11 @@ func.func @zero_trip_receive_wait() attributes { "ttl.kernel_thread" = #ttkernel
   %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %xf = ttl.copy %p, %recv
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
+      -> !ttl.receive_request
   scf.for %iter = %zero to %zero step %one iter_args(%xf_arg = %xf)
-      -> (!ttl.transfer_handle) {
-    ttl.wait %xf_arg : !ttl.transfer_handle
-    scf.yield %xf_arg : !ttl.transfer_handle
+      -> (!ttl.receive_request) {
+    ttl.wait %xf_arg : !ttl.receive_request
+    scf.yield %xf_arg : !ttl.receive_request
   }
   func.return
 }
@@ -782,16 +782,16 @@ func.func @same_source_two_pipes_use_distinct_sync_state() attributes { "ttl.ker
     %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post0 : !ttl.transfer_handle
+    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post0 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_dst %p1 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
     %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_src %p0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
@@ -836,24 +836,24 @@ func.func @same_source_three_pipes_use_distinct_sync_state() attributes { "ttl.k
     %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post0 : !ttl.transfer_handle
+    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post0 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_dst %p1 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
     %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_dst %p2 : !ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0> {
     %recv2_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv2 = tensor.extract_slice %recv2_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post2 : !ttl.transfer_handle
+    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post2 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_src %p0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
@@ -900,8 +900,8 @@ func.func @same_source_sequential_transfers_use_distinct_sync_state() attributes
     %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post0 : !ttl.transfer_handle
+    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post0 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_src %p0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
@@ -912,8 +912,8 @@ func.func @same_source_sequential_transfers_use_distinct_sync_state() attributes
     %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_src %p1 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
@@ -948,16 +948,16 @@ func.func @same_pipe_key_nonoverlapping_transfers_reuse_storage() attributes { "
   %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %recv0 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send0 = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send0 : !ttl.transfer_handle<write>
-  ttl.wait %post0 : !ttl.transfer_handle
+  ttl.wait %post0 : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send1 = ttl.copy %src_cb, %p1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send1 : !ttl.transfer_handle<write>
-  ttl.wait %post1 : !ttl.transfer_handle
+  ttl.wait %post1 : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -1102,16 +1102,16 @@ func.func @different_sources_overlap_reuse_source_local_sync_state() attributes 
     %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post0 : !ttl.transfer_handle
+    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post0 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_dst %p1 : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 0> {
     %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_src %p0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
@@ -1152,10 +1152,10 @@ func.func @same_source_pipes_keep_local_ready_counters_below_limit() attributes 
   %p12 = ttl.create_pipe src(0, 0) dst(13, 0) to(13, 0) net 0 : !ttl.pipe<src(0, 0) dst(13, 0) to(13, 0) net 0>
   %p13 = ttl.create_pipe src(0, 0) dst(14, 0) to(14, 0) net 0 : !ttl.pipe<src(0, 0) dst(14, 0) to(14, 0) net 0>
   %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p0, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post = ttl.copy %p0, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send = ttl.copy %src_cb, %p0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
-  ttl.wait %post : !ttl.transfer_handle
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -1177,10 +1177,10 @@ func.func @sparse_pipe_net_id_uses_compact_resources() attributes { "ttl.kernel_
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 14 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 14>
   %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 14>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 14>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 14>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
-  ttl.wait %post : !ttl.transfer_handle
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -1213,10 +1213,10 @@ func.func @high_pipe_net_id_uses_local_ready_counter() attributes { "ttl.kernel_
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 15 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>
   %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
-  ttl.wait %post : !ttl.transfer_handle
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
   func.return
 }
@@ -1256,16 +1256,16 @@ func.func @interleaved_pipenets_reuse_local_resources() attributes { "ttl.kernel
     %recv0_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv0 = tensor.extract_slice %recv0_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post0 : !ttl.transfer_handle
+    %post0 = ttl.copy %p0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post0 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_dst %side : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 0> {
     %recv1_full = ttl.cb_reserve %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<2x1x!ttcore.tile<32x32, f32>>
     %recv1 = tensor.extract_slice %recv1_full[1, 0] [1, 1] [1, 1]
         : tensor<2x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %side, %recv1 : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %side, %recv1 : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[2, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.if_src %p0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15> {
@@ -1310,8 +1310,8 @@ func.func @separate_pipe_values_share_ready_state() attributes { "ttl.kernel_thr
     %receiver_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0 {isCollective = true} : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
     ttl.if_dst %receiver_pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0> {
       %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 3> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      %post = ttl.copy %receiver_pipe, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-      ttl.wait %post : !ttl.transfer_handle
+      %post = ttl.copy %receiver_pipe, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+      ttl.wait %post : !ttl.receive_request
       ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 3>
       %consumed = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 3> -> tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 3>
@@ -1402,8 +1402,8 @@ func.func @copy_cb_to_pipe_multicast() attributes { "ttl.kernel_thread" = #ttker
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     %recv = ttl.cb_reserve %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post : !ttl.transfer_handle
+    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   ttl.if_src %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
@@ -1443,8 +1443,8 @@ func.func @copy_cb_to_pipe_multicast_noc1() attributes { "ttl.kernel_thread" = #
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     %recv = ttl.cb_reserve %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post : !ttl.transfer_handle
+    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   ttl.if_src %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
@@ -1492,8 +1492,8 @@ func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread"
   %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 3) net 0 : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>
   ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0> {
     %recv = ttl.cb_reserve %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post : !ttl.transfer_handle
+    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   ttl.if_src %p : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0> {
@@ -1528,10 +1528,10 @@ func.func @loopback_multicast_aggregate_ready_counting() attributes { "ttl.kerne
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %p = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>
   %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
-  ttl.wait %post : !ttl.transfer_handle
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
   func.return
 }
@@ -1562,10 +1562,10 @@ func.func @non_loopback_multicast_computed_address() attributes { "ttl.kernel_th
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
   %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
-  ttl.wait %post : !ttl.transfer_handle
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -1595,10 +1595,10 @@ func.func @degenerate_multicast_aggregate_ready_counting() attributes { "ttl.ker
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {isCollective = true} : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
   %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+  %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
   %send = ttl.copy %src_cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %send : !ttl.transfer_handle<write>
-  ttl.wait %post : !ttl.transfer_handle
+  ttl.wait %post : !ttl.receive_request
   ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
   func.return
 }
@@ -1633,8 +1633,8 @@ func.func @copy_pipe_to_cb_multicast() attributes { "ttl.kernel_thread" = #ttker
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+    %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   func.return
@@ -1742,4 +1742,125 @@ func.func @wait_twice_for_pipe_token()
   ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   func.return
+}
+
+// -----
+
+// A pipe function argument supplies the point-to-point transfer contract.
+// CHECK-LABEL: func.func @pipe_block_argument
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK-NOT: ttl.pipe_transfer
+func.func @pipe_block_argument(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %handle = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  ttl.wait %handle : !ttl.receive_request
+  func.return
+}
+
+// Define the sender half so the block-argument receiver belongs to a complete
+// transfer.
+func.func @pipe_block_argument_sender(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %src_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %handle = ttl.copy %src_cb, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %handle : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// Transfers in a zero-trip loop require no resources or transfer plans and are
+// removed without reaching active send, post, or wait lowering.
+// CHECK-LABEL: func.func @zero_trip_transfer
+// CHECK-NOT: ttl.pipe_transfer
+// CHECK-NOT: ttkernel.noc_
+func.func @zero_trip_transfer()
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  scf.for %iteration = %zero to %zero step %one {
+    %dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %receive = ttl.copy %pipe, %dst
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    %send = ttl.copy %src_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %receive : !ttl.receive_request
+  }
+  func.return
+}
+
+// -----
+
+// Mutually exclusive publications consume one collective receive post once.
+// CHECK-LABEL: func.func @mutually_exclusive_receiver_publications
+// CHECK: scf.if
+// CHECK: ttkernel.cb_push_back
+// CHECK: } else {
+// CHECK: ttkernel.cb_push_back
+module attributes {ttl.launch_grid = array<i64: 2, 2>} {
+  func.func @mutually_exclusive_receiver_publications(%condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    %block = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %request = ttl.copy %pipe, %block
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    ttl.wait %request : !ttl.receive_request
+    scf.if %condition {
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    } else {
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    func.return
+  }
+
+  func.func @mutually_exclusive_receiver_publications_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    %send = ttl.copy %source, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    func.return
+  }
 }

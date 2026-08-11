@@ -154,7 +154,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post0 = ttl.copy %p0, %recv0
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send0 = ttl.copy %src, %p0
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>)
@@ -165,7 +165,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post1 = ttl.copy %p1, %recv1
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send1 = ttl.copy %src, %p1
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>)
@@ -176,7 +176,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post2 = ttl.copy %p2, %recv2
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 2>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send2 = ttl.copy %src, %p2
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 2>)
@@ -187,7 +187,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post3 = ttl.copy %p3, %recv3
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 3>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send3 = ttl.copy %src, %p3
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 3>)
@@ -198,7 +198,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post4 = ttl.copy %p4, %recv4
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 4>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send4 = ttl.copy %src, %p4
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 4>)
@@ -209,7 +209,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post5 = ttl.copy %p5, %recv5
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 5>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send5 = ttl.copy %src, %p5
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 5>)
@@ -220,7 +220,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post6 = ttl.copy %p6, %recv6
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 6>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send6 = ttl.copy %src, %p6
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 6>)
@@ -231,7 +231,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post7 = ttl.copy %p7, %recv7
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 7>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send7 = ttl.copy %src, %p7
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 7>)
@@ -242,7 +242,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post8 = ttl.copy %p8, %recv8
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 8>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send8 = ttl.copy %src, %p8
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 8>)
@@ -253,7 +253,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post9 = ttl.copy %p9, %recv9
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 9>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send9 = ttl.copy %src, %p9
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 9>)
@@ -264,7 +264,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post10 = ttl.copy %p10, %recv10
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 10>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send10 = ttl.copy %src, %p10
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 10>)
@@ -275,7 +275,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post11 = ttl.copy %p11, %recv11
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 11>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send11 = ttl.copy %src, %p11
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 11>)
@@ -286,7 +286,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post12 = ttl.copy %p12, %recv12
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 12>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send12 = ttl.copy %src, %p12
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 12>)
@@ -297,7 +297,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post13 = ttl.copy %p13, %recv13
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 13>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send13 = ttl.copy %src, %p13
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 13>)
@@ -308,7 +308,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post14 = ttl.copy %p14, %recv14
         : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 14>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send14 = ttl.copy %src, %p14
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 14>)
@@ -319,7 +319,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %post15 = ttl.copy %p15, %recv15
         : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 15>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send15 = ttl.copy %src, %p15
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 15>)
@@ -460,7 +460,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post = ttl.copy %p, %recv
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %cb, %p
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 16>)
@@ -471,7 +471,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post0 = ttl.copy %p0, %recv0
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send0 = ttl.copy %cb, %p0
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 0>)
@@ -482,7 +482,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post1 = ttl.copy %p1, %recv1
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 1>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send1 = ttl.copy %cb, %p1
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 1>)
@@ -493,7 +493,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post2 = ttl.copy %p2, %recv2
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 2>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send2 = ttl.copy %cb, %p2
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 2>)
@@ -504,7 +504,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post3 = ttl.copy %p3, %recv3
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 3>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send3 = ttl.copy %cb, %p3
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 3>)
@@ -515,7 +515,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post4 = ttl.copy %p4, %recv4
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 4>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send4 = ttl.copy %cb, %p4
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 4>)
@@ -526,7 +526,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post5 = ttl.copy %p5, %recv5
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 5>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send5 = ttl.copy %cb, %p5
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 5>)
@@ -537,7 +537,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post6 = ttl.copy %p6, %recv6
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 6>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send6 = ttl.copy %cb, %p6
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 6>)
@@ -548,7 +548,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post7 = ttl.copy %p7, %recv7
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 7>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send7 = ttl.copy %cb, %p7
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 7>)
@@ -559,7 +559,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post8 = ttl.copy %p8, %recv8
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 8>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send8 = ttl.copy %cb, %p8
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 8>)
@@ -570,7 +570,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post9 = ttl.copy %p9, %recv9
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 9>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send9 = ttl.copy %cb, %p9
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 9>)
@@ -581,7 +581,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post10 = ttl.copy %p10, %recv10
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 10>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send10 = ttl.copy %cb, %p10
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 10>)
@@ -592,7 +592,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post11 = ttl.copy %p11, %recv11
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 11>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send11 = ttl.copy %cb, %p11
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 11>)
@@ -603,7 +603,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post12 = ttl.copy %p12, %recv12
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 12>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send12 = ttl.copy %cb, %p12
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 12>)
@@ -614,7 +614,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post13 = ttl.copy %p13, %recv13
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 13>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send13 = ttl.copy %cb, %p13
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 13>)
@@ -625,7 +625,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
     %post14 = ttl.copy %p14, %recv14
         : (!ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 14>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send14 = ttl.copy %cb, %p14
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 14>)

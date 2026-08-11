@@ -119,7 +119,14 @@ from .kernel import (
     _selector_kind,
 )
 from .runtime_resources import ProgramRuntimeResources
-from .operators import CopyTransferHandler, TensorBlock, copy
+from .operators import (
+    CopyTransferHandler,
+    ReadyReceive,
+    ReceiveRequest,
+    TensorBlock,
+    copy,
+    wait_any,
+)
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
 
@@ -2960,6 +2967,9 @@ __all__ = [
     "DataflowBuffer",
     "CircularBuffer",
     "CopyTransferHandler",
+    "ReceiveRequest",
+    "ReadyReceive",
     "copy",
+    "wait_any",
     "CompiledTTNNKernel",
 ]

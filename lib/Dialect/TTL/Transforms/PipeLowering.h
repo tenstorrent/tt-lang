@@ -116,6 +116,7 @@ enum class PipeAddressMode {
 struct PipeResourcePlan;
 class PipeModulePlan;
 class PipeTransferPlan;
+class PipeWaitAnyPlan;
 class PipeCapacityPlan;
 class PipeSynchronizationSelection;
 class PipeTransportPlan;
@@ -381,6 +382,13 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
                                     const PipeTransferPlan &transferPlan,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
+
+/// Lower rotating selection over receiver completion counters.
+LogicalResult lowerPipeTransferWaitAny(PipeTransferWaitAnyOp op,
+                                       ValueRange tokenSequences,
+                                       const PipeWaitAnyPlan &waitAnyPlan,
+                                       const PipeResourcePlan &pipeResourcePlan,
+                                       ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
 /// `pipeNetIndex` is borrowed and must outlive `patterns`; the is_src /

@@ -90,8 +90,8 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
         %recv_handle = ttl.copy %pipe, %recv
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv_handle : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv_handle : !ttl.receive_request
         ttl.cb_push %dst_a
             : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         %received = ttl.cb_wait %dst_a
@@ -147,8 +147,8 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
         %recv_handle = ttl.copy %pipe, %recv
             : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv_handle : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv_handle : !ttl.receive_request
         ttl.cb_push %dst_b
             : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         %received = ttl.cb_wait %dst_b
@@ -177,8 +177,8 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
       %recv_handle = ttl.copy %scalar_pipe, %recv
           : (!ttl.pipe<src(0, 0) dst(3, 0) to(3, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv_handle : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv_handle : !ttl.receive_request
       ttl.cb_push %dst_scalar
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       %received = ttl.cb_wait %dst_scalar

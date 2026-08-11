@@ -120,6 +120,22 @@ findUniquePipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
       });
 }
 
+FailureOr<SmallVector<CopyOp>>
+findPipeReceiveCopies(ValueOriginAnalysis &analysis, Value value) {
+  SmallVector<CopyOp> copies;
+  for (Value origin : analysis.getOrigins(value)) {
+    auto copyOp = origin.getDefiningOp<CopyOp>();
+    if (!copyOp || !isPipeReceiveCopy(copyOp)) {
+      return failure();
+    }
+    copies.push_back(copyOp);
+  }
+  if (copies.empty()) {
+    return failure();
+  }
+  return copies;
+}
+
 FailureOr<SmallVector<PipeTransferPostOp>>
 findPipeTransferPostsForToken(ValueOriginAnalysis &analysis, Value token) {
   SmallVector<PipeTransferPostOp> posts;
@@ -250,6 +266,30 @@ LogicalResult verifyPipeWait(PipeTransferWaitOp op,
   return success();
 }
 
+LogicalResult verifyPipeWaitAny(PipeTransferWaitAnyOp op,
+                                ValueOriginAnalysis &analysis) {
+  for (Value token : op.getTokens()) {
+    auto tokenType = cast<PipeTokenType>(token.getType());
+    FailureOr<SmallVector<PipeTransferPostOp>> maybePosts =
+        findPipeTransferPostsForToken(analysis, token);
+    if (failed(maybePosts) ||
+        llvm::any_of(*maybePosts, [&](PipeTransferPostOp post) {
+          return tokenType.getPipeNetId() !=
+                 cast<PipeTokenType>(post.getToken().getType()).getPipeNetId();
+        })) {
+      return op.emitOpError()
+             << "requires every possible token value to derive from a "
+                "ttl.pipe_transfer.post in the token's PipeNet";
+    }
+    if (failed(findPipeTransferCreateForPosts(analysis, *maybePosts))) {
+      return op.emitOpError()
+             << "requires each token's possible receive posts to derive "
+                "from one ttl.pipe_transfer.create";
+    }
+  }
+  return success();
+}
+
 struct TTLVerifyTransferProvenancePass
     : impl::TTLVerifyTransferProvenanceBase<TTLVerifyTransferProvenancePass> {
   using Base::Base;
@@ -288,6 +328,9 @@ LogicalResult verifyTransferProvenance(ModuleOp module,
                 [&](PipeTransferSendOp op) { return verifySend(op, analysis); })
             .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp op) {
               return verifyPipeWait(op, analysis);
+            })
+            .Case<PipeTransferWaitAnyOp>([&](PipeTransferWaitAnyOp op) {
+              return verifyPipeWaitAny(op, analysis);
             })
             .Default([](Operation *) { return success(); });
     return failed(verification) ? WalkResult::interrupt()

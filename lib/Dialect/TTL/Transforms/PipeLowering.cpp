@@ -33,6 +33,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/IntEqClasses.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
@@ -456,9 +457,8 @@ static Value buildPipeCounterPtr(Location loc, FuncOp func,
 }
 
 static Value loadIndexTableEntry(Location loc, ArrayRef<int64_t> values,
-                                 Value recordIndex,
-                                 ConversionPatternRewriter &rewriter) {
-  return buildConstantIndexTableLookup(rewriter, loc, values, recordIndex);
+                                 Value recordIndex, OpBuilder &builder) {
+  return buildConstantIndexTableLookup(builder, loc, values, recordIndex);
 }
 
 static Value buildSelectedRouteIndex(Location loc,
@@ -472,7 +472,7 @@ static Value buildSelectedRouteIndex(Location loc,
 static Value buildSelectedPipeCounterAddress(
     Operation *op, Location loc, ArrayRef<PipeCounterInfo> counters,
     Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
-    ConversionPatternRewriter &rewriter) {
+    OpBuilder &builder) {
   assert(!counters.empty() && "selected pipe counter table is empty");
 
   FuncOp func = op->getParentOfType<FuncOp>();
@@ -487,8 +487,8 @@ static Value buildSelectedPipeCounterAddress(
     SmallVector<int64_t> localIndices = llvm::map_to_vector(
         counters, [](PipeCounterInfo counter) { return counter.getIndex(); });
     Value semaphoreIndex =
-        loadIndexTableEntry(loc, localIndices, recordIndex, rewriter);
-    return ttk::GetSemaphoreOp::create(rewriter, loc, semaphoreIndex)
+        loadIndexTableEntry(loc, localIndices, recordIndex, builder);
+    return ttk::GetSemaphoreOp::create(builder, loc, semaphoreIndex)
         .getResult();
   }
   auto getGlobalArgIndex = [&](PipeCounterInfo counter) {
@@ -500,8 +500,8 @@ static Value buildSelectedPipeCounterAddress(
     SmallVector<int64_t> globalArgIndices =
         llvm::map_to_vector(counters, getGlobalArgIndex);
     Value commonArgIndex =
-        loadIndexTableEntry(loc, globalArgIndices, recordIndex, rewriter);
-    return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+        loadIndexTableEntry(loc, globalArgIndices, recordIndex, builder);
+    return ttk::GetCommonArgValOp::create(builder, loc, builder.getI32Type(),
                                           commonArgIndex)
         .getResult();
   }
@@ -530,24 +530,23 @@ static Value buildSelectedPipeCounterAddress(
   // arith.select cannot prevent either address operation from executing. Use
   // an existing index in the unused storage class so both addresses are valid.
   Value localIndex =
-      loadIndexTableEntry(loc, localIndices, recordIndex, rewriter);
+      loadIndexTableEntry(loc, localIndices, recordIndex, builder);
   Value localAddress =
-      ttk::GetSemaphoreOp::create(rewriter, loc, localIndex).getResult();
+      ttk::GetSemaphoreOp::create(builder, loc, localIndex).getResult();
   Value typedLocalAddress =
-      ttk::CastToL1AddrOp::create(rewriter, loc, localAddress);
+      ttk::CastToL1AddrOp::create(builder, loc, localAddress);
   Value globalArgIndex =
-      loadIndexTableEntry(loc, globalArgIndices, recordIndex, rewriter);
-  Value globalAddress =
-      ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
-                                     globalArgIndex)
-          .getResult();
+      loadIndexTableEntry(loc, globalArgIndices, recordIndex, builder);
+  Value globalAddress = ttk::GetCommonArgValOp::create(
+                            builder, loc, builder.getI32Type(), globalArgIndex)
+                            .getResult();
   Value typedGlobalAddress =
-      ttk::CastToL1AddrOp::create(rewriter, loc, globalAddress);
-  Value storageKind = loadIndexTableEntry(loc, isGlobal, recordIndex, rewriter);
-  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      ttk::CastToL1AddrOp::create(builder, loc, globalAddress);
+  Value storageKind = loadIndexTableEntry(loc, isGlobal, recordIndex, builder);
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value usesGlobal = arith::CmpIOp::create(
-      rewriter, loc, arith::CmpIPredicate::ne, storageKind, zero);
-  return arith::SelectOp::create(rewriter, loc, usesGlobal, typedGlobalAddress,
+      builder, loc, arith::CmpIPredicate::ne, storageKind, zero);
+  return arith::SelectOp::create(builder, loc, usesGlobal, typedGlobalAddress,
                                  typedLocalAddress);
 }
 
@@ -2060,12 +2059,14 @@ static LogicalResult lowerSelectedPipeTransferSend(
     const FabricRuntimeMap &fabricRuntime,
     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
   ArrayRef<PipeResourceInfo> sourceResources =
-      transferPlan.getSelectedSourceResources();
+      resourceAccessPlan.getSelectedSourceResources();
   ArrayRef<PipeResourceInfo> destinationResources =
-      transferPlan.getSelectedDestinationResources();
+      resourceAccessPlan.getSelectedDestinationResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
   bool usesFabric = transferPlan.getSynchronizationProtocol() ==
                     PipeSynchronizationProtocol::Fabric;
@@ -2267,7 +2268,9 @@ LogicalResult lowerPipeTransferSend(
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
          "inactive sender must not use an active transfer plan");
   assert(transferPlan.isSend() && "sender operation has a non-send plan");
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   if (pipeRef.isSelected()) {
     return lowerSelectedPipeTransferSend(
         op, srcCB, transferPlan, pipeResourcePlan, fabricReadyCounters,
@@ -2276,7 +2279,7 @@ LogicalResult lowerPipeTransferSend(
   const PipeTransportStream &transportStream =
       pipeTransportPlan.getStreamForOperation(op);
   PipeType pipeType = pipeRef.getStaticPipeType();
-  const PipeResourceInfo &pipeResource = transferPlan.getResources();
+  const PipeResourceInfo &pipeResource = resourceAccessPlan.getResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
   const PipeTransportPacketization &packetization =
       transportStream.getPacketization();
@@ -2513,12 +2516,14 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
                               const FabricRuntimeMap &fabricRuntime,
                               ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
   ArrayRef<PipeResourceInfo> sourceResources =
-      transferPlan.getSelectedSourceResources();
+      resourceAccessPlan.getSelectedSourceResources();
   ArrayRef<PipeResourceInfo> destinationResources =
-      transferPlan.getSelectedDestinationResources();
+      resourceAccessPlan.getSelectedDestinationResources();
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer post must be inside a function");
   auto sequenceIt = postSequenceCounters.find(func);
@@ -2652,14 +2657,16 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
          "inactive receiver post must not use an active transfer plan");
   assert(transferPlan.isPost() && "receiver post has another operation plan");
-  const PipeReference &pipeRef = transferPlan.getPipeReference();
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
+  const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   if (pipeRef.isSelected()) {
     return lowerSelectedPipeTransferPost(op, dst, transferPlan,
                                          postSequenceCounters, pipeResourcePlan,
                                          fabricRuntime, rewriter);
   }
   PipeType pipeType = pipeRef.getStaticPipeType();
-  const PipeResourceInfo &pipeResource = transferPlan.getResources();
+  const PipeResourceInfo &pipeResource = resourceAccessPlan.getResources();
   const PipePostPlan &postPlan = transferPlan.getPost();
   auto func = op->getParentOfType<func::FuncOp>();
   assert(func && "pipe transfer post must be inside a function");
@@ -2845,12 +2852,15 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
   auto loc = op.getLoc();
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer wait must be inside a function");
+  const PipeResourceAccessPlan &resourceAccessPlan =
+      transferPlan.getResourceAccessPlan();
   Value receiverCompletionCounterAddress;
-  if (transferPlan.isSelected()) {
+  if (resourceAccessPlan.isSelected()) {
     SelectedPipeFields fields =
-        getSelectedPipeFields(transferPlan.getPipeReference());
+        getSelectedPipeFields(resourceAccessPlan.getPipeReference());
     SmallVector<PipeCounterInfo> completionCounters =
-        llvm::map_to_vector(transferPlan.getSelectedDestinationResources(),
+        llvm::map_to_vector(
+            resourceAccessPlan.getSelectedDestinationResources(),
                             [](const PipeResourceInfo &resource) {
                               return resource.completion.counter;
                             });
@@ -2858,7 +2868,8 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
         op, loc, completionCounters, fields.destinationRecordIndex,
         pipeResourcePlan, rewriter);
   } else {
-    PipeCompletionInfo completionInfo = transferPlan.getResources().completion;
+    PipeCompletionInfo completionInfo =
+        resourceAccessPlan.getResources().completion;
     receiverCompletionCounterAddress = buildPipeCounterAddress(
         loc, func, completionInfo.counter, pipeResourcePlan, rewriter);
   }
@@ -2872,6 +2883,149 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
                                   tokenSequence);
 
   rewriter.eraseOp(op);
+  return success();
+}
+
+static Value buildWaitAnyCompletionAddress(
+    PipeTransferWaitAnyOp op, const PipeResourceAccessPlan &candidate,
+    const PipeResourcePlan &pipeResourcePlan, OpBuilder &builder) {
+  Location loc = op.getLoc();
+  FuncOp function = op->getParentOfType<FuncOp>();
+  assert(function && "pipe wait-any must be inside a function");
+  if (!candidate.isSelected()) {
+    return buildPipeCounterAddress(loc, function,
+                                   candidate.getResources().completion.counter,
+                                   pipeResourcePlan, builder);
+  }
+  SelectedPipeFields fields =
+      getSelectedPipeFields(candidate.getPipeReference());
+  SmallVector<PipeCounterInfo> completionCounters = llvm::map_to_vector(
+      candidate.getSelectedDestinationResources(),
+      [](const PipeResourceInfo &resource) {
+        return resource.completion.counter;
+      });
+  return buildSelectedPipeCounterAddress(op, loc, completionCounters,
+                                         fields.destinationRecordIndex,
+                                         pipeResourcePlan, builder);
+}
+
+static Value buildWaitAnyCandidateReached(
+    PipeTransferWaitAnyOp op, Value candidateIndex, ValueRange tokenSequences,
+    const PipeWaitAnyPlan &waitAnyPlan,
+    const PipeResourcePlan &pipeResourcePlan, OpBuilder &builder) {
+  Location loc = op.getLoc();
+  SmallVector<int64_t> cases;
+  cases.reserve(tokenSequences.size());
+  for (int64_t candidate = 0;
+       candidate < static_cast<int64_t>(tokenSequences.size()); ++candidate) {
+    cases.push_back(candidate);
+  }
+  auto switchOp =
+      scf::IndexSwitchOp::create(builder, loc, TypeRange{builder.getI1Type()},
+                                 candidateIndex, cases, cases.size());
+  ArrayRef<PipeResourceAccessPlan> candidatePlans = waitAnyPlan.getCandidates();
+  for (auto [ordinal, region] : llvm::enumerate(switchOp.getCaseRegions())) {
+    assert(region.empty() && "new index switch case must be empty");
+    Block *block = new Block();
+    region.push_back(block);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToEnd(block);
+    Value address = buildWaitAnyCompletionAddress(op, candidatePlans[ordinal],
+                                                  pipeResourcePlan, builder);
+    auto l1PointerType = ttk::L1AddrPtrType::get(builder.getContext(), 32);
+    Value pointer =
+        ttk::CastToL1PtrOp::create(builder, loc, l1PointerType, address);
+    Value reached = ttk::SemaphoreReachedOp::create(
+        builder, loc, builder.getI1Type(), pointer, tokenSequences[ordinal]);
+    scf::YieldOp::create(builder, loc, reached);
+  }
+  Region &defaultRegion = switchOp.getDefaultRegion();
+  assert(defaultRegion.empty() && "new index switch default must be empty");
+  Block *defaultBlock = new Block();
+  defaultRegion.push_back(defaultBlock);
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToEnd(defaultBlock);
+    Value notReached = arith::ConstantIntOp::create(builder, loc, 0, 1);
+    scf::YieldOp::create(builder, loc, notReached);
+  }
+  return switchOp.getResults().front();
+}
+
+LogicalResult lowerPipeTransferWaitAny(PipeTransferWaitAnyOp op,
+                                       ValueRange tokenSequences,
+                                       const PipeWaitAnyPlan &waitAnyPlan,
+                                       const PipeResourcePlan &pipeResourcePlan,
+                                       ConversionPatternRewriter &rewriter) {
+  assert(tokenSequences.size() == waitAnyPlan.getCandidates().size() &&
+         "wait-any token and candidate plan counts differ");
+  Location loc = op.getLoc();
+  int64_t candidateCount = static_cast<int64_t>(tokenSequences.size());
+  Value countI32 =
+      arith::ConstantIntOp::create(rewriter, loc, candidateCount, 32);
+  Value startI32 = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getI32Type(), op.getStart());
+  Value signedRemainder =
+      arith::RemSIOp::create(rewriter, loc, startI32, countI32);
+  Value nonnegativeStart =
+      arith::AddIOp::create(rewriter, loc, signedRemainder, countI32);
+  Value normalizedStartI32 =
+      arith::RemUIOp::create(rewriter, loc, nonnegativeStart, countI32);
+  Value sentinel = countI32;
+
+  auto whileOp = scf::WhileOp::create(
+      rewriter, loc, TypeRange{rewriter.getI32Type()}, ValueRange{sentinel},
+      [&](OpBuilder &builder, Location bodyLoc, ValueRange beforeValues) {
+        Value continuePolling =
+            arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
+                                  beforeValues.front(), sentinel);
+        scf::ConditionOp::create(builder, bodyLoc, continuePolling,
+                                 beforeValues);
+      },
+      [&](OpBuilder &builder, Location bodyLoc, ValueRange afterValues) {
+        Value lowerBound = arith::ConstantIndexOp::create(builder, bodyLoc, 0);
+        Value upperBound =
+            arith::ConstantIndexOp::create(builder, bodyLoc, candidateCount);
+        Value step = arith::ConstantIndexOp::create(builder, bodyLoc, 1);
+        auto scanLoop = scf::ForOp::create(
+            builder, bodyLoc, lowerBound, upperBound, step, afterValues,
+            [&](OpBuilder &scanBuilder, Location scanLoc, Value offset,
+                ValueRange iterArgs) {
+              Value selected = iterArgs.front();
+              Value notSelected = arith::CmpIOp::create(
+                  scanBuilder, scanLoc, arith::CmpIPredicate::eq, selected,
+                  sentinel);
+              auto ifOp = scf::IfOp::create(scanBuilder, scanLoc,
+                                            TypeRange{scanBuilder.getI32Type()},
+                                            notSelected,
+                                            /*withElseRegion=*/true);
+              scanBuilder.setInsertionPointToStart(
+                  &ifOp.getThenRegion().front());
+              Value offsetI32 = arith::IndexCastOp::create(
+                  scanBuilder, scanLoc, scanBuilder.getI32Type(), offset);
+              Value rotated = arith::AddIOp::create(
+                  scanBuilder, scanLoc, normalizedStartI32, offsetI32);
+              Value candidateI32 = arith::RemUIOp::create(scanBuilder, scanLoc,
+                                                          rotated, countI32);
+              Value candidateIndex = arith::IndexCastOp::create(
+                  scanBuilder, scanLoc, scanBuilder.getIndexType(),
+                  candidateI32);
+              Value reached = buildWaitAnyCandidateReached(
+                  op, candidateIndex, tokenSequences, waitAnyPlan,
+                  pipeResourcePlan, scanBuilder);
+              Value nextSelected = arith::SelectOp::create(
+                  scanBuilder, scanLoc, reached, candidateI32, selected);
+              scf::YieldOp::create(scanBuilder, scanLoc, nextSelected);
+              scanBuilder.setInsertionPointToStart(
+                  &ifOp.getElseRegion().front());
+              scf::YieldOp::create(scanBuilder, scanLoc, selected);
+              scanBuilder.setInsertionPointAfter(ifOp);
+              scf::YieldOp::create(scanBuilder, scanLoc, ifOp.getResults());
+            });
+        scf::YieldOp::create(builder, bodyLoc, scanLoop.getResults());
+      });
+
+  rewriter.replaceOp(op, whileOp.getResults().front());
   return success();
 }
 
@@ -3391,6 +3545,7 @@ collectPipeTransferAllocationUnits(
   SmallVector<PipeTransferAllocationUnit, 0> units;
   llvm::DenseMap<Operation *, int64_t> operationOrdinals;
   llvm::DenseMap<Operation *, SmallVector<Operation *>> waitOpsByPost;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> waitAnyOpsByPost;
   int64_t nextOperationOrdinal = 0;
   WalkResult provenanceWalkResult = mod.walk([&](Operation *op) {
     if (isa<PipeTransferPostOp, PipeTransferSendOp>(op)) {
@@ -3415,6 +3570,17 @@ collectPipeTransferAllocationUnits(
         return WalkResult::advance();
       }
       waitOpsByPost[postOp].push_back(op);
+      return WalkResult::advance();
+    }
+    if (auto waitOp = dyn_cast<PipeTransferWaitAnyOp>(op)) {
+      for (ArrayRef<Operation *> possiblePosts :
+           transferIndex.getWaitAnyCandidatePosts(waitOp)) {
+        for (Operation *postOp : possiblePosts) {
+          assert(pipeGraph.hasPipeTransferNodeForProtocolOp(postOp) &&
+                 "validated wait-any post must have a transfer graph node");
+          waitAnyOpsByPost[postOp].push_back(op);
+        }
+      }
     }
     return WalkResult::advance();
   });
@@ -3479,6 +3645,12 @@ collectPipeTransferAllocationUnits(
           recordSelectedProtocolRow(unit, waitOp, postRecordIndex);
         }
       }
+      auto waitAnyIt = waitAnyOpsByPost.find(postOp);
+      if (waitAnyIt != waitAnyOpsByPost.end()) {
+        for (Operation *waitAnyOp : waitAnyIt->second) {
+          updateIntervalEnd(unit.interval, waitAnyOp, dominanceInfo);
+        }
+      }
       updateIntervalStart(unit.interval, postOp, ordinalIt->second,
                           dominanceInfo);
     }
@@ -3534,6 +3706,94 @@ static bool usesFabricProtocol(
   }
   PipeTransferSendOp sendOp = llvm::cast<PipeTransferSendOp>(unit.sendOp);
   return synchronizationSelection->usesFabricProtocol(sendOp);
+}
+
+static FailureOr<SmallVector<std::size_t>>
+buildWaitAnyCompletionGroups(ModuleOp module,
+                             ArrayRef<PipeTransferAllocationUnit> units,
+                             const PipeTransferIndex &transferIndex) {
+  if (units.size() > std::numeric_limits<unsigned>::max()) {
+    module.emitError("too many PipeNet resource allocation units");
+    return failure();
+  }
+  llvm::IntEqClasses completionGroups(static_cast<unsigned>(units.size()));
+  using RecordUnit = std::pair<unsigned, std::size_t>;
+  llvm::DenseMap<Operation *, SmallVector<RecordUnit>> unitsByPostRecord;
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    llvm::SmallPtrSet<Operation *, 4> selectedPosts;
+    for (auto [operation, recordIndex] :
+         indexedUnit.value().selectedProtocolRecords) {
+      if (isa<PipeTransferPostOp>(operation)) {
+        unitsByPostRecord[operation].push_back(
+            {recordIndex, indexedUnit.index()});
+        selectedPosts.insert(operation);
+      }
+    }
+    for (Operation *operation : indexedUnit.value().protocolOps) {
+      if (isa<PipeTransferPostOp>(operation) &&
+          !selectedPosts.contains(operation)) {
+        unitsByPostRecord[operation].push_back({0, indexedUnit.index()});
+      }
+    }
+  }
+
+  WalkResult walkResult = module.walk([&](PipeTransferWaitAnyOp waitOp) {
+    for (ArrayRef<Operation *> possiblePosts :
+         transferIndex.getWaitAnyCandidatePosts(waitOp)) {
+      assert(!possiblePosts.empty() && "candidate must have a receiver post");
+      Operation *firstPost = possiblePosts.front();
+      PipeTransferCreateOp commonCreate =
+          transferIndex.getTransferCreate(firstPost);
+      std::optional<int64_t> commonDFBIndex = getCBIndex(
+          getAttachedCB(cast<PipeTransferPostOp>(firstPost).getDst()));
+      auto firstUnitsIt = unitsByPostRecord.find(firstPost);
+      assert(commonDFBIndex && firstUnitsIt != unitsByPostRecord.end() &&
+             "active wait-any post must have a destination DFB and unit");
+      ArrayRef<RecordUnit> commonRecordUnits = firstUnitsIt->second;
+      for (Operation *post : possiblePosts.drop_front()) {
+        std::optional<int64_t> dfbIndex =
+            getCBIndex(getAttachedCB(cast<PipeTransferPostOp>(post).getDst()));
+        auto unitsIt = unitsByPostRecord.find(post);
+        if (transferIndex.getTransferCreate(post) != commonCreate ||
+            dfbIndex != commonDFBIndex || unitsIt == unitsByPostRecord.end() ||
+            unitsIt->second.size() != commonRecordUnits.size()) {
+          waitOp.emitError()
+              << "requires each candidate's possible posts to use one logical "
+                 "receive channel and destination DFB stream";
+          return WalkResult::interrupt();
+        }
+        for (const RecordUnit &commonRecordUnit : commonRecordUnits) {
+          unsigned recordIndex = commonRecordUnit.first;
+          std::size_t commonUnitIndex = commonRecordUnit.second;
+          auto matchingUnit =
+              llvm::find_if(unitsIt->second, [&](const RecordUnit &recordUnit) {
+                return recordUnit.first == recordIndex;
+              });
+          if (matchingUnit == unitsIt->second.end() ||
+              units[commonUnitIndex].pipe != units[matchingUnit->second].pipe) {
+            waitOp.emitError()
+                << "requires each candidate's possible posts to use one "
+                   "logical receive channel and destination DFB stream";
+            return WalkResult::interrupt();
+          }
+          completionGroups.join(static_cast<unsigned>(commonUnitIndex),
+                                static_cast<unsigned>(matchingUnit->second));
+        }
+      }
+    }
+    return WalkResult::advance();
+  });
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+  completionGroups.compress();
+  SmallVector<std::size_t> representatives;
+  representatives.reserve(units.size());
+  for (std::size_t unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
+    representatives.push_back(
+        completionGroups[static_cast<unsigned>(unitIndex)]);
+  }
+  return representatives;
 }
 
 static bool usesSenderReadyCounter(
@@ -3823,19 +4083,48 @@ LogicalResult buildPipeResourcePlan(
       computedAddressPlan.counterInitializations;
   info.computedAddressDFBIndices = computedAddressPlan.dfbIndices;
 
+  FailureOr<SmallVector<std::size_t>> maybeCompletionGroups =
+      buildWaitAnyCompletionGroups(mod, units, transferIndex);
+  if (failed(maybeCompletionGroups)) {
+    return failure();
+  }
+
   SmallVector<SmallVector<PipeCounterLocation>>
       nodeLocalCompletionLocationsByColor;
   SmallVector<SmallVector<PipeCounterLocation>>
       fabricCompletionLocationsByColor;
-  for (PipeTransferAllocationUnit &unit : units) {
-    SmallVector<PipeCounterLocation> completionLocations =
-        getCompletionCounterLocations(unit, pipeGraph);
+
+  llvm::MapVector<std::size_t, SmallVector<std::size_t>> unitIndicesByGroup;
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    unitIndicesByGroup[(*maybeCompletionGroups)[indexedUnit.index()]].push_back(
+        indexedUnit.index());
+  }
+  for (const auto &[group, unitIndices] : unitIndicesByGroup) {
+    (void)group;
+    assert(!unitIndices.empty() && "completion group must contain one unit");
+    bool usesFabric =
+        usesFabricProtocol(units[unitIndices.front()], synchronizationSelection);
+    SmallVector<PipeCounterLocation> completionLocations;
+    for (std::size_t unitIndex : unitIndices) {
+      PipeTransferAllocationUnit &unit = units[unitIndex];
+      assert(usesFabric ==
+                 usesFabricProtocol(unit, synchronizationSelection) &&
+             "one wait-any completion group cannot mix protocols");
+      for (PipeCounterLocation location :
+           getCompletionCounterLocations(unit, pipeGraph)) {
+        if (!llvm::is_contained(completionLocations, location)) {
+          completionLocations.push_back(location);
+        }
+      }
+    }
     SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
-        usesFabricProtocol(unit, synchronizationSelection)
-            ? fabricCompletionLocationsByColor
-            : nodeLocalCompletionLocationsByColor;
-    unit.maybeCompletionCounterColor =
+        usesFabric ? fabricCompletionLocationsByColor
+                   : nodeLocalCompletionLocationsByColor;
+    int64_t completionColor =
         allocateCompletionCounterColor(completionLocations, locationsByColor);
+    for (std::size_t unitIndex : unitIndices) {
+      units[unitIndex].maybeCompletionCounterColor = completionColor;
+    }
   }
   PipeCounterAllocator counterAllocator(PipeCounterAllocationCounts{},
                                         counterPolicy);

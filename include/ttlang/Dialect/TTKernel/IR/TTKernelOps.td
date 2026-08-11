@@ -4019,6 +4019,24 @@ def TTKernel_SemaphoreWaitMinOp : TTKernel_Op<"experimental.semaphore_wait_min">
     }];
 }
 
+def TTKernel_SemaphoreReachedOp
+    : TTKernel_Op<"experimental.semaphore_reached",
+                  [MemoryEffects<[MemRead]>]> {
+    let summary = "Test a semaphore completion threshold";
+    let description = [{
+      Invalidates the L1 cache, reads a local L1 semaphore address, and returns
+      whether its value is equal to or greater than the target value. The
+      operation does not block or modify the semaphore.
+    }];
+
+    let arguments = (ins TTKernel_L1AddrPtr:$sem_addr, I32:$val);
+    let results = (outs I1:$reached);
+
+    let assemblyFormat = [{
+      `(` $sem_addr `,` $val `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
 def TTKernel_NocSemaphoreSetMulticastOp
     : TTKernel_NocWriteCommandOp<"noc_semaphore_set_multicast"> {
     let summary = "NocSemaphoreSetMulticast";
