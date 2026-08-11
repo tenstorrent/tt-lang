@@ -75,12 +75,21 @@ struct DFBAccessOccurrence {
   Operation *unanalyzableDomainOperation = nullptr;
 };
 
+/// Execution count retained for one access in the debug report.
+struct DFBPerNodeAccessOccurrence {
+  unsigned occurrenceIndex = 0;
+  std::optional<std::uint64_t> exactExecutionCount;
+};
+
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
-  SmallVector<unsigned> occurrenceIndices;
+  bool mayBeActive = true;
+  SmallVector<DFBPerNodeAccessOccurrence> reportedOccurrences;
   SmallVector<unsigned> earliestEntryEvents;
   SmallVector<unsigned> terminalCompletionEvents;
+  SmallVector<unsigned> earliestAccessOccurrenceIndices;
+  SmallVector<unsigned> terminalAccessOccurrenceIndices;
   SmallVector<int64_t> transactionTileCounts;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
@@ -97,6 +106,7 @@ struct DFBLogicalLifecycle {
   SmallVector<DFBAccessOccurrence> accesses;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
+  SmallVector<DFBPerNodeLifetime, 0> diagnosticNodeLifetimes;
   bool bounded = false;
 
   /// Returns the lifetime for `node`, or null when the DFB is inactive there.
