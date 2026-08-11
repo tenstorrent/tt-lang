@@ -24,10 +24,13 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+
+#define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
 namespace mlir::tt::ttl {
 
@@ -103,6 +106,34 @@ struct AccessDomain {
 struct LivenessDomainState : LaunchNodeDomainState {
   DenseMap<Operation *, AccessDomain> accessDomains;
 };
+
+using AccessExecutionCounts =
+    DenseMap<const DFBAccessOccurrence *, std::optional<std::uint64_t>>;
+
+// Unknown membership is included only for counterfactual diagnostics. Reuse
+// proofs continue to require exact launch-node membership.
+static bool mayContainLaunchNode(const LaunchNodeDomain &domain,
+                                 LaunchNodeCoord node,
+                                 bool includeUnknownDomains) {
+  return knownLaunchNodeDomainContains(domain, node) ||
+         (includeUnknownDomains && !domain.known);
+}
+
+// Exact-zero accesses cannot contribute ordering edges even when their launch
+// domain is otherwise unknown.
+static bool mayAccessLaunchNode(const DFBAccessOccurrence &access,
+                                LaunchNodeCoord node,
+                                const AccessExecutionCounts &executionCounts,
+                                bool includeUnknownDomains) {
+  if (!mayContainLaunchNode(access.launchDomain, node, includeUnknownDomains)) {
+    return false;
+  }
+  auto executionCountIt = executionCounts.find(&access);
+  assert(executionCountIt != executionCounts.end() &&
+         "every reported DFB access must have an execution-count fact");
+  std::optional<std::uint64_t> executionCount = executionCountIt->second;
+  return !executionCount || *executionCount != 0;
+}
 
 // Identifies attributes that copy a provisional physical DFB index and would
 // become stale after allocation changes declaration indices.
@@ -214,13 +245,13 @@ static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
 }
 
 // Finds every access without a proved predecessor so all possible lifetime
-// starts constrain reuse.
-static SmallVector<unsigned> findMinimalEntryEvents(
+// starts constrain reuse and remain traceable in the debug report.
+static SmallVector<const DFBAccessOccurrence *> findMinimalEntryAccesses(
     ArrayRef<const DFBAccessOccurrence *> accesses,
     const HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents) {
-  SmallVector<unsigned> minimal;
+  SmallVector<const DFBAccessOccurrence *> minimal;
   for (const DFBAccessOccurrence *candidate : accesses) {
     std::optional<EventPair> candidateEvents =
         getAccessEvents(*candidate, operationEvents, accessEvents);
@@ -233,9 +264,8 @@ static SmallVector<unsigned> findMinimalEntryEvents(
       return otherEvents &&
              graph.strictlyPrecedes(otherEvents->entry, candidateEvents->entry);
     });
-    if (!hasPredecessor &&
-        !llvm::is_contained(minimal, candidateEvents->entry)) {
-      minimal.push_back(candidateEvents->entry);
+    if (!hasPredecessor) {
+      minimal.push_back(candidate);
     }
   }
   return minimal;
@@ -517,6 +547,35 @@ static LogicalResult collectLogicalDFBs(
   return success();
 }
 
+// Collects complete per-access counts only for the enabled debug report.
+// Counts are cached by operation because one call may describe several DFB
+// effects or dependencies.
+static AccessExecutionCounts
+collectAccessExecutionCounts(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+                             LaunchNodeCoord node,
+                             const LaunchNodeDomainState &domainState) {
+  AccessExecutionCounts executionCounts;
+  DenseMap<Operation *, std::optional<std::uint64_t>> operationCounts;
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+      if (!mayContainLaunchNode(access.launchDomain, node,
+                                /*includeUnknownDomains=*/true)) {
+        continue;
+      }
+      auto operationCountIt = operationCounts.find(access.operation);
+      if (operationCountIt == operationCounts.end()) {
+        std::optional<std::uint64_t> executionCount =
+            getExactExecutionCountAtLaunchNode(access.operation, node,
+                                               domainState);
+        operationCountIt =
+            operationCounts.try_emplace(access.operation, executionCount).first;
+      }
+      executionCounts.try_emplace(&access, operationCountIt->second);
+    }
+  }
+  return executionCounts;
+}
+
 // Builds source-order events only for accesses active on `node`. Direct
 // protocol effects receive separate events in their declared sequence;
 // operations in different kernels remain concurrent unless protocol edges
@@ -525,13 +584,19 @@ static void buildProgramOrderGraph(
     ModuleOp module, ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     LaunchNodeCoord node, HappensBeforeGraph &graph,
     DenseMap<Operation *, EventPair> &operationEvents,
-    DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents) {
+    DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents,
+    const AccessExecutionCounts *executionCounts, bool includeUnknownDomains) {
   llvm::DenseSet<Operation *> modeledOperations;
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
       directProtocolAccesses;
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-      if (!knownLaunchNodeDomainContains(access.launchDomain, node)) {
+      bool mayAccess = executionCounts
+                           ? mayAccessLaunchNode(access, node, *executionCounts,
+                                                 includeUnknownDomains)
+                           : mayContainLaunchNode(access.launchDomain, node,
+                                                  includeUnknownDomains);
+      if (!mayAccess) {
         continue;
       }
       if (Operation *projected = getTopLevelKernelOperation(access.operation)) {
@@ -575,31 +640,96 @@ static void buildProgramOrderGraph(
   }
 }
 
-// Derives the immutable per-node lifetime facts required for reuse. Any
-// unsupported or ambiguous protocol fact returns a typed failed proof, which
-// can only add conflicts.
+// Adds the completion edge implied by each matching push/wait transaction.
+// Unknown-domain edges are restricted to the counterfactual debug graph.
+static void addMatchedPushWaitEdges(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs, LaunchNodeCoord node,
+    HappensBeforeGraph &graph,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents,
+    const AccessExecutionCounts *executionCounts, bool includeUnknownDomains) {
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    SmallVector<const DFBAccessOccurrence *> pushes;
+    SmallVector<const DFBAccessOccurrence *> waits;
+    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+      bool mayAccess = executionCounts
+                           ? mayAccessLaunchNode(access, node, *executionCounts,
+                                                 includeUnknownDomains)
+                           : mayContainLaunchNode(access.launchDomain, node,
+                                                  includeUnknownDomains);
+      if (!mayAccess) {
+        continue;
+      }
+      if (access.protocolEffect == DFBProtocolEffectKind::Push) {
+        pushes.push_back(&access);
+      } else if (access.protocolEffect == DFBProtocolEffectKind::Wait) {
+        waits.push_back(&access);
+      }
+    }
+    if (pushes.size() != waits.size()) {
+      continue;
+    }
+    for (auto [push, wait] : llvm::zip_equal(pushes, waits)) {
+      if (push->numTiles != wait->numTiles) {
+        continue;
+      }
+      std::optional<EventPair> pushEvents =
+          getAccessEvents(*push, operationEvents, accessEvents);
+      std::optional<EventPair> waitEvents =
+          getAccessEvents(*wait, operationEvents, accessEvents);
+      if (pushEvents && waitEvents) {
+        graph.addEdge(pushEvents->completion, waitEvents->completion);
+      }
+    }
+  }
+}
+
+// Derives per-node lifetime facts. Exact-domain facts control reuse;
+// counterfactual facts are retained only for debug reporting.
 static DFBQuiescenceProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
+    SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
     const HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents,
-    const LaunchNodeDomainState &domainState) {
-  DFBPerNodeLifetime &lifetime = logicalDFB.nodeLifetimes.emplace_back();
+    const LaunchNodeDomainState &domainState,
+    const AccessExecutionCounts *reportedExecutionCounts,
+    bool includeUnknownDomains = false) {
+  DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
   lifetime.node = node;
   SmallVector<const DFBAccessOccurrence *> reserves;
   SmallVector<const DFBAccessOccurrence *> pushes;
   SmallVector<const DFBAccessOccurrence *> waits;
   SmallVector<const DFBAccessOccurrence *> pops;
   SmallVector<const DFBAccessOccurrence *> activeAccesses;
+  DenseMap<const DFBAccessOccurrence *, std::optional<std::uint64_t>>
+      executionCounts;
   for (auto [accessIndex, access] : llvm::enumerate(logicalDFB.accesses)) {
-    if (!knownLaunchNodeDomainContains(access.launchDomain, node)) {
+    if (!mayContainLaunchNode(access.launchDomain, node,
+                              includeUnknownDomains)) {
       continue;
     }
-    lifetime.occurrenceIndices.push_back(accessIndex);
+    std::optional<std::uint64_t> executionCount;
+    if (reportedExecutionCounts) {
+      auto executionCountIt = reportedExecutionCounts->find(&access);
+      assert(executionCountIt != reportedExecutionCounts->end() &&
+             "every reported DFB access must have an execution-count fact");
+      executionCount = executionCountIt->second;
+      lifetime.reportedOccurrences.push_back(
+          {static_cast<unsigned>(accessIndex), executionCount});
+    }
+    if (includeUnknownDomains && executionCount && *executionCount == 0) {
+      continue;
+    }
     activeAccesses.push_back(&access);
     if (!access.protocolEffect) {
       continue;
     }
+    if (!reportedExecutionCounts) {
+      executionCount = getExactExecutionCountAtLaunchNode(access.operation,
+                                                          node, domainState);
+    }
+    executionCounts[&access] = executionCount;
     switch (*access.protocolEffect) {
     case DFBProtocolEffectKind::Reserve:
       reserves.push_back(&access);
@@ -616,6 +746,11 @@ static DFBQuiescenceProof computePerNodeLifetime(
     }
   }
 
+  if (includeUnknownDomains && activeAccesses.empty()) {
+    lifetime.mayBeActive = false;
+    return {};
+  }
+
   if (reserves.empty() || pushes.empty() || waits.empty() || pops.empty()) {
     return {DFBQuiescenceFailureReason::MissingProtocolEffect,
             activeAccesses.empty() ? logicalDFB.declarations.front()
@@ -630,9 +765,10 @@ static DFBQuiescenceProof computePerNodeLifetime(
   for (const DFBAccessOccurrence *protocolAccess :
        llvm::concat<const DFBAccessOccurrence *>(reserves, pushes, waits,
                                                  pops)) {
-    std::optional<std::uint64_t> executionCount =
-        getExactExecutionCountAtLaunchNode(protocolAccess->operation, node,
-                                           domainState);
+    auto executionCountIt = executionCounts.find(protocolAccess);
+    assert(executionCountIt != executionCounts.end() &&
+           "active protocol access must have an execution count fact");
+    std::optional<std::uint64_t> executionCount = executionCountIt->second;
     if (!executionCount || *executionCount != 1) {
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
               protocolAccess->operation};
@@ -730,9 +866,23 @@ static DFBQuiescenceProof computePerNodeLifetime(
               activeAccess->operation};
     }
   }
-  lifetime.earliestEntryEvents = findMinimalEntryEvents(
-      activeAccesses, graph, operationEvents, accessEvents);
+  SmallVector<const DFBAccessOccurrence *> earliestAccesses =
+      findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
+                               accessEvents);
+  for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
+    std::optional<EventPair> earliestEvents =
+        getAccessEvents(*earliestAccess, operationEvents, accessEvents);
+    assert(earliestEvents && "minimal access must have modeled events");
+    if (!llvm::is_contained(lifetime.earliestEntryEvents,
+                            earliestEvents->entry)) {
+      lifetime.earliestEntryEvents.push_back(earliestEvents->entry);
+    }
+    lifetime.earliestAccessOccurrenceIndices.push_back(
+        static_cast<unsigned>(earliestAccess - logicalDFB.accesses.data()));
+  }
   lifetime.terminalCompletionEvents = {terminalEvents->completion};
+  lifetime.terminalAccessOccurrenceIndices = {
+      static_cast<unsigned>(pops.back() - logicalDFB.accesses.data())};
   if (lifetime.earliestEntryEvents.empty()) {
     return {DFBQuiescenceFailureReason::IncompleteUseOrder,
             pops.back()->operation};
@@ -883,42 +1033,23 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
   orderedBeforeByNode.reserve(launchNodes.size());
+  bool collectAllocationDiagnostics = false;
+  LLVM_DEBUG(collectAllocationDiagnostics = true);
   for (LaunchNodeCoord node : launchNodes) {
+    std::optional<AccessExecutionCounts> reportedExecutionCounts;
+    if (collectAllocationDiagnostics) {
+      reportedExecutionCounts.emplace(
+          collectAccessExecutionCounts(logicalDFBs, node, domainState));
+    }
     HappensBeforeGraph graph;
     DenseMap<Operation *, EventPair> operationEvents;
     DenseMap<const DFBAccessOccurrence *, EventPair> accessEvents;
     buildProgramOrderGraph(module, logicalDFBs, node, graph, operationEvents,
-                           accessEvents);
-
-    for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-      SmallVector<const DFBAccessOccurrence *> pushes;
-      SmallVector<const DFBAccessOccurrence *> waits;
-      for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-        if (!knownLaunchNodeDomainContains(access.launchDomain, node)) {
-          continue;
-        }
-        if (access.protocolEffect == DFBProtocolEffectKind::Push) {
-          pushes.push_back(&access);
-        } else if (access.protocolEffect == DFBProtocolEffectKind::Wait) {
-          waits.push_back(&access);
-        }
-      }
-      if (pushes.size() == waits.size()) {
-        for (auto [push, wait] : llvm::zip_equal(pushes, waits)) {
-          if (push->numTiles != wait->numTiles) {
-            continue;
-          }
-          std::optional<EventPair> pushEvents =
-              getAccessEvents(*push, operationEvents, accessEvents);
-          std::optional<EventPair> waitEvents =
-              getAccessEvents(*wait, operationEvents, accessEvents);
-          if (!pushEvents || !waitEvents) {
-            continue;
-          }
-          graph.addEdge(pushEvents->completion, waitEvents->completion);
-        }
-      }
-    }
+                           accessEvents, /*executionCounts=*/nullptr,
+                           /*includeUnknownDomains=*/false);
+    addMatchedPushWaitEdges(logicalDFBs, node, graph, operationEvents,
+                            accessEvents, /*executionCounts=*/nullptr,
+                            /*includeUnknownDomains=*/false);
     graph.computeReachability();
 
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -926,7 +1057,9 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         continue;
       }
       DFBQuiescenceProof proof = computePerNodeLifetime(
-          logicalDFB, node, graph, operationEvents, accessEvents, domainState);
+          logicalDFB, node, logicalDFB.nodeLifetimes, graph, operationEvents,
+          accessEvents, domainState,
+          reportedExecutionCounts ? &*reportedExecutionCounts : nullptr);
       logicalDFB.nodeLifetimes.back().quiescence = proof;
     }
 
@@ -949,6 +1082,33 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       }
     }
     orderedBeforeByNode.push_back(std::move(nodeOrdering));
+
+    if (!collectAllocationDiagnostics) {
+      continue;
+    }
+    HappensBeforeGraph diagnosticGraph;
+    DenseMap<Operation *, EventPair> diagnosticOperationEvents;
+    DenseMap<const DFBAccessOccurrence *, EventPair> diagnosticAccessEvents;
+    buildProgramOrderGraph(module, logicalDFBs, node, diagnosticGraph,
+                           diagnosticOperationEvents, diagnosticAccessEvents,
+                           &*reportedExecutionCounts,
+                           /*includeUnknownDomains=*/true);
+    addMatchedPushWaitEdges(logicalDFBs, node, diagnosticGraph,
+                            diagnosticOperationEvents, diagnosticAccessEvents,
+                            &*reportedExecutionCounts,
+                            /*includeUnknownDomains=*/true);
+    diagnosticGraph.computeReachability();
+    for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+      if (logicalDFB.launchDomain.known) {
+        continue;
+      }
+      DFBQuiescenceProof proof = computePerNodeLifetime(
+          logicalDFB, node, logicalDFB.diagnosticNodeLifetimes, diagnosticGraph,
+          diagnosticOperationEvents, diagnosticAccessEvents, domainState,
+          &*reportedExecutionCounts,
+          /*includeUnknownDomains=*/true);
+      logicalDFB.diagnosticNodeLifetimes.back().quiescence = proof;
+    }
   }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {

@@ -6,6 +6,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   IntermediateDFBPlanning.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBAllocationDebugReport.cpp
   DFBAllocationLimits.cpp
   DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
