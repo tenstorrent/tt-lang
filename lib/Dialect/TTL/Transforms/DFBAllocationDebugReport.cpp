@@ -228,11 +228,12 @@ static void printTransactions(llvm::raw_ostream &output,
   output << ']';
 }
 
-static bool hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
-                                    const DFBPerNodeLifetime &rhs) {
+static bool hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
+                                  const DFBPerNodeLifetime &rhs) {
   if (lhs.quiescence.failure != rhs.quiescence.failure ||
       lhs.quiescence.evidence != rhs.quiescence.evidence ||
       lhs.mayBeActive != rhs.mayBeActive ||
+      lhs.conditionalExecutionProven != rhs.conditionalExecutionProven ||
       lhs.reportedOccurrences.size() != rhs.reportedOccurrences.size() ||
       lhs.earliestAccessOccurrenceIndices !=
           rhs.earliestAccessOccurrenceIndices ||
@@ -253,18 +254,18 @@ static bool hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
                      });
 }
 
-struct DiagnosticLifetimeGroup {
+struct PossibleLifetimeGroup {
   const DFBPerNodeLifetime *representative = nullptr;
   SmallVector<LaunchNodeCoord> nodes;
 };
 
-static void printDiagnosticLifetimes(
+static void printPossibleLifetimes(
     llvm::raw_ostream &output,
-    llvm::ArrayRef<const DFBPerNodeLifetime *> diagnosticLifetimes) {
-  SmallVector<DiagnosticLifetimeGroup> groups;
-  for (const DFBPerNodeLifetime *lifetime : diagnosticLifetimes) {
+    llvm::ArrayRef<const DFBPerNodeLifetime *> possibleLifetimes) {
+  SmallVector<PossibleLifetimeGroup> groups;
+  for (const DFBPerNodeLifetime *lifetime : possibleLifetimes) {
     auto groupIt = llvm::find_if(groups, [&](const auto &group) {
-      return hasEqualDiagnosticFacts(*group.representative, *lifetime);
+      return hasEqualPossibleFacts(*group.representative, *lifetime);
     });
     if (groupIt == groups.end()) {
       groups.push_back({lifetime, {lifetime->node}});
@@ -273,12 +274,14 @@ static void printDiagnosticLifetimes(
     }
   }
 
-  for (const DiagnosticLifetimeGroup &group : groups) {
+  for (const PossibleLifetimeGroup &group : groups) {
     const DFBPerNodeLifetime &lifetime = *group.representative;
-    output << "  diagnostic_nodes quiescence="
+    output << "  possible_nodes quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
-           << " domain_assumption=unknown-may-be-active may_be_active="
-           << lifetime.mayBeActive << " node_count=" << group.nodes.size();
+           << " domain_assumption=unknown-possible may_be_active="
+           << lifetime.mayBeActive
+           << " conditional_execution=" << lifetime.conditionalExecutionProven
+           << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
       llvm::interleaveComma(group.nodes, output, [&](LaunchNodeCoord node) {
@@ -314,7 +317,8 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     printNode(output, lifetime.node);
     output << " quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
-           << " domain_assumption=exact evidence=";
+           << " domain_assumption=exact conditional_execution="
+           << lifetime.conditionalExecutionProven << " evidence=";
     printOperation(output, lifetime.quiescence.evidence);
     output << " occurrences=";
     printOccurrences(output, lifetime);
@@ -330,12 +334,11 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     printValues(output, lifetime.terminalAccessOccurrenceIndices);
     output << '\n';
   }
-  SmallVector<const DFBPerNodeLifetime *> diagnosticLifetimes;
-  for (const DFBPerNodeLifetime &lifetime :
-       logicalDFB.diagnosticNodeLifetimes) {
-    diagnosticLifetimes.push_back(&lifetime);
+  SmallVector<const DFBPerNodeLifetime *> possibleLifetimes;
+  for (const DFBPerNodeLifetime &lifetime : logicalDFB.possibleNodeLifetimes) {
+    possibleLifetimes.push_back(&lifetime);
   }
-  printDiagnosticLifetimes(output, diagnosticLifetimes);
+  printPossibleLifetimes(output, possibleLifetimes);
 }
 
 static void printConflictEvidence(llvm::raw_ostream &output,
@@ -368,7 +371,9 @@ void printDFBAllocationDebugReport(
        liveness.getLogicalDFBLifecycles()) {
     output << "DFB logical_id=" << logicalDFB.logicalId
            << " bounded=" << logicalDFB.bounded
-           << " compiler_created=" << logicalDFB.compilerCreated << " type=";
+           << " compiler_created=" << logicalDFB.compilerCreated
+           << " conditionally_bounded=" << logicalDFB.conditionallyBounded
+           << " type=";
     logicalDFB.type.print(output);
     output << " tensor_backing=";
     if (logicalDFB.tensorBacking) {
