@@ -1030,12 +1030,13 @@ def TTLFinalizeDFBIndices
     a proven lifetime order conflicts with every other DFB.
 
     An access whose launch domain is otherwise unknown is refined to an exact
-    empty domain only when execution-count analysis proves zero executions on
-    every base launch node. A logical DFB is inactive when the union of all its
-    access domains is empty. An inactive scratch DFB may share a compatible
-    physical descriptor without a lifetime-order proof because no launched
-    node accesses it. Tensor-backed empty domains retain their existing
-    allocation diagnostic.
+    domain when execution-count analysis proves a count on every base launch
+    node. Nodes with positive counts belong to the domain; nodes with zero
+    counts do not. The logical DFB domain is exact only when every access has an
+    exact domain. A logical DFB is inactive when the union of all its access
+    domains is empty. An inactive scratch DFB may share a compatible physical
+    descriptor without a lifetime-order proof because no launched node accesses
+    it. Tensor-backed empty domains retain their existing allocation diagnostic.
 
     The allocator represents each logical DFB as a vertex, each pair that
     cannot share as an edge, and each physical index as a color. First-fit

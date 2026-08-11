@@ -110,26 +110,29 @@ struct LivenessDomainState : LaunchNodeDomainState {
 using AccessExecutionCounts =
     DenseMap<const DFBAccessOccurrence *, std::optional<std::uint64_t>>;
 
-static AccessDomain
-refineExactInactiveAccessDomain(Operation *operation, AccessDomain accessDomain,
-                                const LivenessDomainState &domainState) {
+static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
+    Operation *operation, AccessDomain accessDomain,
+    const LivenessDomainState &domainState) {
   if (accessDomain.domain.known) {
     return accessDomain;
   }
-  bool inactive =
-      llvm::all_of(domainState.baseDomain.nodes, [&](LaunchNodeCoord node) {
-        std::optional<std::uint64_t> executionCount =
-            getExactExecutionCountAtLaunchNode(operation, node, domainState);
-        return executionCount && *executionCount == 0;
-      });
-  if (!inactive) {
-    return accessDomain;
+
+  LaunchNodeDomain exactDomain;
+  for (LaunchNodeCoord node : domainState.baseDomain.nodes) {
+    std::optional<std::uint64_t> executionCount =
+        getExactExecutionCountAtLaunchNode(operation, node, domainState);
+    if (!executionCount) {
+      return accessDomain;
+    }
+    if (*executionCount > 0) {
+      exactDomain.nodes.insert(node);
+    }
   }
-  return {LaunchNodeDomain{}, nullptr};
+  return {std::move(exactDomain), nullptr};
 }
 
-/// Unknown membership means the access may execute on the node. Exact-zero
-/// execution facts remove accesses before lifetime and ordering construction.
+/// Unknown membership means the access may execute on the node. Exact counts
+/// establish membership before lifetime and ordering construction.
 static bool mayContainLaunchNode(const LaunchNodeDomain &domain,
                                  LaunchNodeCoord node,
                                  bool includeUnknownDomains) {
@@ -1058,8 +1061,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       } else {
         accessDomain = domainIt->second;
       }
-      accessDomain = refineExactInactiveAccessDomain(access.operation,
-                                                     accessDomain, domainState);
+      accessDomain = refineUnknownAccessDomainFromExecutionCounts(
+          access.operation, accessDomain, domainState);
       access.launchDomain = accessDomain.domain;
       access.unanalyzableDomainOperation = accessDomain.unanalyzableOperation;
       logicalDFB.launchDomain =
@@ -1073,8 +1076,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         domainIt == domainState.accessDomains.end()
             ? AccessDomain{LaunchNodeDomain::unknown(), unknownAccess}
             : domainIt->second;
-    accessDomain = refineExactInactiveAccessDomain(unknownAccess, accessDomain,
-                                                   domainState);
+    accessDomain = refineUnknownAccessDomainFromExecutionCounts(
+        unknownAccess, accessDomain, domainState);
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
       if (logicalDFB.compilerCreated) {
         continue;
