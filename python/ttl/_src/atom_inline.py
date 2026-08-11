@@ -13,6 +13,7 @@ import inspect
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from ttl.kernel import Kernel
+from ttl.scalar import ScalarType
 
 _NESTED_SCOPES = (
     ast.FunctionDef,
@@ -300,7 +301,13 @@ def _expand_call(
     spec = callee._spec
     bindings = _bind_args_to_params(spec, call, caller_name)
     suffix = _inline_suffix(spec, call, inline_discriminators)
-    _add_capture_bindings(spec, bindings)
+    _add_capture_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        suffix,
+    )
     _add_external_pipenet_bindings(
         spec,
         bindings,
@@ -354,11 +361,23 @@ def _inline_suffix(spec, call: ast.Call, discriminators: Dict[str, int]) -> str:
     return f"__{spec.name}_inl_{digest}_{occurrence}"
 
 
-def _add_capture_bindings(spec, bindings: Dict[str, ast.expr]) -> None:
+def _add_capture_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    suffix: str,
+) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
     for name, value in spec.compile_time_captures.items():
         if name in loaded_names and name not in bindings:
-            bindings[name] = _literal_node(value)
+            bindings[name] = _literal_node(
+                value,
+                scope=scope,
+                reserved_names=reserved_names,
+                suffix=suffix,
+                name_hint=name,
+            )
 
 
 def _add_external_pipenet_bindings(
@@ -405,12 +424,44 @@ def _add_logical_kernel_bindings(
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
-def _literal_node(value: object) -> ast.expr:
+def _literal_node(
+    value: object,
+    *,
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    suffix: str,
+    name_hint: str,
+) -> ast.expr:
+    if value is ScalarType or isinstance(value, ScalarType):
+        type_name = "class" if value is ScalarType else value.name.lower()
+        fresh_name = _fresh_name(
+            f"{name_hint}__scalar_type_{type_name}", suffix, reserved_names
+        )
+        scope[fresh_name] = value
+        return ast.Name(id=fresh_name, ctx=ast.Load())
     if isinstance(value, tuple):
-        elements = [_literal_node(element) for element in value]
+        elements = [
+            _literal_node(
+                element,
+                scope=scope,
+                reserved_names=reserved_names,
+                suffix=suffix,
+                name_hint=f"{name_hint}_{index}",
+            )
+            for index, element in enumerate(value)
+        ]
         return ast.Tuple(elts=elements, ctx=ast.Load())
     if isinstance(value, list):
-        elements = [_literal_node(element) for element in value]
+        elements = [
+            _literal_node(
+                element,
+                scope=scope,
+                reserved_names=reserved_names,
+                suffix=suffix,
+                name_hint=f"{name_hint}_{index}",
+            )
+            for index, element in enumerate(value)
+        ]
         return ast.List(elts=elements, ctx=ast.Load())
     return ast.Constant(value=value)
 

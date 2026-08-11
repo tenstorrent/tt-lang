@@ -135,6 +135,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     kernel_runner.py
     pipe.py
     runtime_resources.py
+    scalar.py
     ttl.py
     ttl_api.py
     ttl_math.py
