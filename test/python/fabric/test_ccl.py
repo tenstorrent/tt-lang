@@ -47,6 +47,14 @@ ONE_DIMENSIONAL_ROUTE_CONFIGS = [
     pytest.param(ttnn.FabricConfig.FABRIC_1D, id="linear"),
     pytest.param(ttnn.FabricConfig.FABRIC_1D_RING, id="ring"),
 ]
+requires_two_device_forwarding_link_indices = pytest.mark.xfail(
+    condition=(
+        ttnn.get_num_devices() == 2 and not hasattr(ttnn, "get_forwarding_link_indices")
+    ),
+    reason="requires TTNN get_forwarding_link_indices() on a two-device mesh",
+    run=False,
+    strict=True,
+)
 
 
 @dataclass(frozen=True)
@@ -1211,6 +1219,7 @@ def test_axis_neighbor(
 
 # Verify that a wrapped axis-neighbor relation crosses the logical boundary
 # when the selected fabric configuration enables torus routing.
+@requires_two_device_forwarding_link_indices
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_axis_neighbor_wrap(
     fabric_mesh_shape,
@@ -1439,6 +1448,7 @@ def test_all_reduce(
 
 # Verify that each destination receives and reduces its corresponding tile
 # from every source device.
+@requires_two_device_forwarding_link_indices
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_REDUCTION_DTYPES)
 def test_reduce_scatter(
     fabric_mesh_shape,
@@ -1466,6 +1476,7 @@ def test_reduce_scatter(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+@requires_two_device_forwarding_link_indices
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_gather(
     fabric_mesh_shape,
@@ -1493,6 +1504,7 @@ def test_all_gather(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+@requires_two_device_forwarding_link_indices
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_to_all(
     fabric_mesh_shape,
