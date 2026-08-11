@@ -211,6 +211,55 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// A logical-not predicate complements an analyzable launch-node domain, so
+// the two consumer kernels remain disjoint.
+// CHECK-LABEL: func.func @logical_not_consumer_x0
+// CHECK-LABEL: func.func @logical_not_consumer_x1
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @logical_not_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 22 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @logical_not_consumer_x0() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 22 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %is_x0 = arith.cmpi eq, %core_x, %zero : index
+    scf.if %is_x0 {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @logical_not_consumer_x1() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 22 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %is_x0 = arith.cmpi eq, %core_x, %zero : index
+    %is_not_x0 = emitc.logical_not %is_x0 : i1
+    scf.if %is_not_x0 {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Hidden producer and consumer actions participate in SPSC verification
 // through the shared DFB access interface.
 // CHECK-LABEL: func.func @hidden_producer

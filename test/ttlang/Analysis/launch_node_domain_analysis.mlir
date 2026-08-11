@@ -6,6 +6,7 @@
 // CHECK:      entry = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: x_zero = {(0,0), (0,1)}
 // CHECK-NEXT: x_nonzero = {(1,0), (1,1)}
+// CHECK-NEXT: logical_not_x_zero = {(1,0), (1,1)}
 // CHECK-NEXT: joined = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: empty = {}
 // CHECK-NEXT: unknown = <unknown>
@@ -22,6 +23,11 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       "test.observe"() {test.label = "x_zero"} : () -> ()
     } else {
       "test.observe"() {test.label = "x_nonzero"} : () -> ()
+    }
+
+    %is_not_x_zero = emitc.logical_not %is_x_zero : i1
+    scf.if %is_not_x_zero {
+      "test.observe"() {test.label = "logical_not_x_zero"} : () -> ()
     }
     "test.observe"() {test.label = "joined"} : () -> ()
 

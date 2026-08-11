@@ -16,6 +16,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
@@ -1183,6 +1184,11 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
       return {current.intersectWith(roleDomain), current};
     }
     return exactBranches(roleDomain, current, state.baseDomain);
+  }
+  if (auto logicalNot = condition.getDefiningOp<emitc::LogicalNotOp>()) {
+    BranchLaunchNodeDomains operand = getBranchDomainsImpl(
+        logicalNot.getOperand(), current, state, coordCache);
+    return {operand.elseDomain, operand.thenDomain, operand.unanalyzableOp};
   }
   if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {
     BranchLaunchNodeDomains lhs =
