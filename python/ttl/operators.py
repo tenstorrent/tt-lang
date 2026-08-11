@@ -27,6 +27,7 @@ from ._src.ttl_ast import syntax
 from .constants import DEFAULT_TILE_SIZE
 from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
+from .scalar import ScalarType
 
 
 def call_extern_func(
@@ -40,12 +41,17 @@ def call_extern_func(
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
-) -> None:
+    result_type: Optional[ScalarType] = None,
+) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
     ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``. A
     nonempty tuple emits the call once in each selected logical kernel. The
     unified-operation splitter removes the selector before AST lowering.
+
+    ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
+    ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
+    function.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 

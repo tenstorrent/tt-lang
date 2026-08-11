@@ -9,6 +9,7 @@ Covers:
 - Struct-based compute header with DFB IDs as template args and direct DFB
   operands (negate).
 - int/bool/float values as both template_args and func_args.
+- Typed i32/i64 scalar results used by logical compute kernels.
 - A DFB passed directly as a func_arg (CB index via get_compile_time_arg_val).
 - A real ttnn GlobalSemaphore captured into template_args and func_args.
 """
@@ -20,7 +21,8 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
+from utils.correctness import assert_allclose as assert_numeric_allclose
 
 import ttl
 from ttl.diagnostics import TTLangCompileError
@@ -32,6 +34,9 @@ TYPED_ARGS_HEADER = os.path.join(
 )
 SEMAPHORE_TEMPLATE_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "semaphore_template_op.hpp"
+)
+SCALAR_RESULT_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "scalar_result_op.hpp"
 )
 MODULE_GLOBAL_SEMAPHORE = None
 
@@ -126,6 +131,112 @@ TYPED_ARGS_POSITIVE = _make_typed_args_extern(False)
 TYPED_ARGS_NEGATIVE = _make_typed_args_extern(True)
 
 
+def _make_scalar_result_operation(result_type):
+    bit_width = result_type.bit_width
+
+    @ttl.operation(grid=(1, 1))
+    def scalar_result_operation(inp, out):
+        input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with input_dfb.wait() as input_block, output_dfb.reserve() as output_block:
+                predicate = ttl.call_extern_func(
+                    SCALAR_RESULT_HEADER,
+                    "scalar_result",
+                    template_args=[bit_width],
+                    result_type=result_type,
+                )
+                if predicate:
+                    ttl.call_extern_func(
+                        NEGATE_HEADER,
+                        "negate_tile_shim",
+                        template_args=[
+                            ttl.get_dfb_id(input_dfb),
+                            ttl.get_dfb_id(output_dfb),
+                        ],
+                        func_args=[input_dfb, output_dfb],
+                    )
+
+        @ttl.datamovement()
+        def reader():
+            input_block = input_dfb.reserve()
+            ttl.copy(inp[0, 0], input_block).wait()
+            input_block.push()
+
+        @ttl.datamovement()
+        def writer():
+            output_block = output_dfb.wait()
+            ttl.copy(output_block, out[0, 0]).wait()
+            output_block.pop()
+
+    return scalar_result_operation
+
+
+def _make_data_movement_scalar_result_operation(result_type):
+    bit_width = result_type.bit_width
+
+    @ttl.operation(grid=(1, 1))
+    def data_movement_scalar_result_operation(inp, out):
+        input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with input_dfb.wait() as input_block, output_dfb.reserve() as output_block:
+                ttl.call_extern_func(
+                    NEGATE_HEADER,
+                    "negate_tile_shim",
+                    template_args=[
+                        ttl.get_dfb_id(input_dfb),
+                        ttl.get_dfb_id(output_dfb),
+                    ],
+                    func_args=[input_dfb, output_dfb],
+                )
+
+        @ttl.datamovement()
+        def reader():
+            predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[bit_width],
+                result_type=result_type,
+            )
+            if predicate:
+                input_block = input_dfb.reserve()
+                ttl.copy(inp[0, 0], input_block).wait()
+                input_block.push()
+
+        @ttl.datamovement()
+        def writer():
+            output_block = output_dfb.wait()
+            ttl.copy(output_block, out[0, 0]).wait()
+            output_block.pop()
+
+    return data_movement_scalar_result_operation
+
+
+SCALAR_RESULT_OPERATIONS = [
+    pytest.param(
+        _make_scalar_result_operation(ttl.ScalarType.I32),
+        id="compute-i32",
+    ),
+    pytest.param(
+        _make_scalar_result_operation(ttl.ScalarType.I64),
+        id="compute-i64",
+    ),
+    pytest.param(
+        _make_data_movement_scalar_result_operation(ttl.ScalarType.I32),
+        id="data-movement-i32",
+    ),
+    pytest.param(
+        _make_data_movement_scalar_result_operation(ttl.ScalarType.I64),
+        id="data-movement-i64-high-bits",
+    ),
+]
+
+
 def test_negate_extern(device):
     inp_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
 
@@ -155,6 +266,32 @@ def test_typed_args_extern(device, operation, sign):
     result = ttnn.to_torch(out)
     expected = sign * inp_torch * 6.0
     assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize("operation", SCALAR_RESULT_OPERATIONS)
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.bfloat16, torch.float32],
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize(
+    "to_tensor",
+    [to_dram, to_l1],
+    ids=["dram", "l1"],
+)
+def test_typed_scalar_result(device, operation, dtype, to_tensor):
+    host_input = torch.full((32, 32), 3.0, dtype=dtype)
+    input_tensor = to_tensor(host_input, device)
+    output_tensor = to_tensor(torch.zeros_like(host_input), device)
+
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = -host_input.float()
+    if dtype is torch.bfloat16:
+        assert_numeric_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_numeric_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 def _make_semaphore_template_extern(global_sem):
