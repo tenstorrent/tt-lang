@@ -1413,8 +1413,9 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         add previous completion -> entry
 
     for each logical DFB active on the node:
-      if exactly one reserve, push, wait, and pop form a matched lifecycle:
-        DFB.nodeLifetime.transactionTileCount = transactionTileCount
+      if statically counted reserve, push, wait, and pop runs match, or one
+         reserve, push, wait, and pop share one at-most-once condition:
+        DFB.nodeLifetime.transactionRuns = normalized counted transactions
         DFB.nodeLifetime.pointerOwners = read and write hardware processors
         add DFB.push.completion -> DFB.wait.completion
 
@@ -1427,8 +1428,14 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         DFB.nodeLifetime.terminalEvents = {DFB.pop.completion}
         DFB.nodeLifetime.quiescence = proven
 
+    build a second graph with every unknown access domain treated as possible
+    prove conditionally bounded lifetimes only for one complete conditional
+      transaction on every possible node
+    retain possible-domain order separately from exact-domain order
+
   return logical DFB lifecycles, per-node quiescence, pointer owners,
-         source evidence, and pairwise per-node lifetime order
+         conditional boundedness, source evidence, and pairwise per-node
+         exact and possible-domain lifetime order
 ```
 
 `DFBPhysicalAllocationPlanner` consumes those immutable facts and constructs a
@@ -1459,17 +1466,17 @@ numbered access records and their source locations. Each conflict records both
 logical IDs, the typed reason, an applicable launch node, and source
 operations.
 
-An unknown launch-node domain is itself sufficient to prevent reuse. For
-diagnosis, the report also evaluates each base launch node while assuming that
-unknown-domain accesses may be active. An exact-zero execution count still
-proves that an access is inactive and excludes its ordering edges. These rows
-use `domain_assumption=unknown-may-be-active`; they identify the next missing
-proof, such as a protocol effect, exact execution count, matched transaction,
-or complete use order. `may_be_active` is present only on these counterfactual
-rows and is false when every included access has an exact-zero count. They are
-counterfactual evidence only. They do not mark the DFB bounded, add lifetime
-ordering, or change the conflict relation. Nodes with identical diagnostic
-facts are grouped to keep large launch grids readable.
+The report evaluates each base launch node with every unknown-domain access
+treated as possible. Exact-zero execution excludes an access. These rows use
+`domain_assumption=unknown-possible`. A row records
+`conditional_execution=1` only when every unresolved active access shares one
+structured at-most-once condition and forms one complete transaction. A
+logical DFB becomes `conditionally_bounded=1` only when the proof succeeds on
+every possible node. Two conditionally bounded unknown-domain DFBs may share
+when their descriptors, transaction runs, pointer owners, and possible-domain
+lifetimes are compatible. Unknown/exact-domain pairs and all other unknown
+pairs retain an `unknown-launch-node-domain` conflict. Nodes with identical
+facts are grouped for deterministic bounded output.
 
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
@@ -1497,7 +1504,8 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
 
   for each logical DFB pair A, B:
     add descriptor mismatch if A.type != B.type
-    add unknown-domain conflict if either launch-node domain is unknown
+    add unknown-domain conflict unless both unknown domains are conditionally
+      bounded
     for each node where A and B both execute:
       add unproven-quiescence conflict unless both node lifetimes are proven
       add transaction conflict unless their transaction sizes match
