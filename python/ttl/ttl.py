@@ -30,6 +30,7 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
     make_dfb,
@@ -59,6 +60,7 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "ScalarType",
     "compute",
     "datamovement",
     "make_dataflow_buffer_like",

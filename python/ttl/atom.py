@@ -68,6 +68,7 @@ from .kernel import (
 from .operators import _set_current_grid
 from .pipe import PipeNet
 from .runtime_resources import ProgramRuntimeResources
+from .scalar import ScalarType
 from .ttl_api import (
     Program,
     _BackendKernelSlot,
@@ -330,7 +331,9 @@ def _bind_logical_kernels(
 
 
 def _is_compile_time_literal(value: Any) -> bool:
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is ScalarType:
+        return True
+    if value is None or isinstance(value, (bool, int, float, str, ScalarType)):
         return True
     if isinstance(value, (tuple, list)):
         return all(_is_compile_time_literal(element) for element in value)

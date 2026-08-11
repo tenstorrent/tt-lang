@@ -14,7 +14,7 @@ import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
 
@@ -88,6 +88,7 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
+from .scalar import ScalarType
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -1501,7 +1502,7 @@ def _build_pipenet_graph(nets):
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, DataflowBuffer, Pipe]]:
+) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
 
@@ -1518,6 +1519,8 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
+        if val is None:
+            return val
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_global_semaphore(val):
@@ -1529,6 +1532,8 @@ def _collect_captures(
         elif isinstance(val, Pipe):
             return val
         elif isinstance(val, PipeNet):
+            return val
+        elif val is ScalarType or isinstance(val, ScalarType):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")

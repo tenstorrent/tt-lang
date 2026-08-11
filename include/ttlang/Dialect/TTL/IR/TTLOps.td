@@ -2032,8 +2032,8 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     does not declare a call-level DFB access. If the callee consumes that index,
     the same DFB must be returned by `getDFBDependencyOperands()`.
 
-    Results are optional; when absent the call is treated as a void function
-    invocation.
+    The optional result is a signless i32 or i64 scalar. When absent the call
+    is treated as a void function invocation.
 
     Example:
     ```mlir
@@ -2055,7 +2055,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
     UnitAttr:$unknown_dfb_access
   );
-  let results = (outs Variadic<AnyType>);
+  let results = (outs Optional<AnyTypeOf<[I32, I64]>>:$result);
   let assemblyFormat = [{
     $callee (`template_args` $template_args^)?
     (`template_dfbs` `(` $template_dfb_operands^ `:`
