@@ -208,6 +208,13 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
 
+/// Prove that two operations have the same unresolved conditional execution
+/// at their launch nodes. The proof accepts only structured conditions whose
+/// bodies execute at most once; unresolved loops are rejected.
+bool proveEquivalentConditionalExecutionAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state);
+
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share
 /// equivalent unresolved control flow that does not require call-site values.
