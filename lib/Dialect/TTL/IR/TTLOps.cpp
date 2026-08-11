@@ -2692,12 +2692,11 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 /// Verify the thread, dataflow buffer acquisition, and coordinates shared by
 /// scalar block accesses. The returned scalar type lets each operation enforce
 /// its distinct type contract without repeating those invariants.
-template <typename ExpectedAcquireOp>
+template <typename... ExpectedAcquireOps>
 static mlir::FailureOr<mlir::Type>
 verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
-                       mlir::RankedTensorType blockTy,
-                       mlir::ValueRange coords) {
-  llvm::StringRef acquireName = ExpectedAcquireOp::getOperationName();
+                       mlir::RankedTensorType blockTy, mlir::ValueRange coords,
+                       llvm::StringRef expectedAcquisition) {
   auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
   if (!func) {
     return op->emitOpError()
@@ -2714,12 +2713,13 @@ verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
 
   mlir::Operation *acquireOp = mlir::tt::ttl::findCBAcquireOp(block);
   if (!acquireOp) {
-    return op->emitOpError()
-           << "block must be a tensor view acquired from " << acquireName;
+    return op->emitOpError() << "block must be a tensor view acquired from "
+                             << expectedAcquisition;
   }
-  if (!mlir::isa<ExpectedAcquireOp>(acquireOp)) {
-    return op->emitOpError() << "block must be acquired from " << acquireName
-                             << ", but traces to " << acquireOp->getName();
+  if (!mlir::isa<ExpectedAcquireOps...>(acquireOp)) {
+    return op->emitOpError()
+           << "block must be acquired from " << expectedAcquisition
+           << ", but traces to " << acquireOp->getName();
   }
 
   int64_t blockRank = blockTy.getRank();
@@ -2735,8 +2735,10 @@ verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
 
 mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
-  FailureOr<Type> expectedScalarTy = verifyRawElementAccess<CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords());
+  FailureOr<Type> expectedScalarTy =
+      verifyRawElementAccess<CBWaitOp, CBReserveOp>(
+          getOperation(), getBlock(), blockTy, getCoords(),
+          "ttl.cb_wait or ttl.cb_reserve");
   if (failed(expectedScalarTy)) {
     return failure();
   }
@@ -2751,7 +2753,7 @@ mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> scalarTy = verifyRawElementAccess<CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords());
+      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait");
   if (failed(scalarTy)) {
     return failure();
   }
@@ -2773,7 +2775,7 @@ mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> expectedScalarTy = verifyRawElementAccess<CBReserveOp>(
-      getOperation(), getBlock(), blockTy, getCoords());
+      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_reserve");
   if (failed(expectedScalarTy)) {
     return failure();
   }

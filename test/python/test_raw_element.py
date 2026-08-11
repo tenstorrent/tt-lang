@@ -5,7 +5,7 @@
 """
 End-to-end tests for raw_element_read/write on f32 and bf16 tensors.
 
-Covers subtile face addressing and seven access patterns:
+Covers subtile face addressing and nine access patterns:
 
   1. Element copy -- read one position, write to another
      (datamovement-only, compute is a no-op).
@@ -21,6 +21,10 @@ Covers subtile face addressing and seven access patterns:
      a modified value; compute negates the modified tile.
   7. Row-scan argmax -- scan 32 elements and write the maximum.
      Includes a ttnn.max comparison.
+  8. Float equality -- verifies ordered equality and unordered inequality,
+     including signed zero and NaN behavior.
+  9. Correlated loop state -- verifies that multiple conditionally updated
+     scalars remain synchronized across loop iterations.
 """
 
 import pytest
@@ -65,6 +69,32 @@ def subtile_endpoint_swap_kernel(inp, out):
                 transaction.wait()
 
 
+@ttl.operation(grid=(1, 1))
+def reserved_scratch_swap_kernel(out):
+    """Read values previously written to a reserved 1x32 block."""
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.reserve() as output_block:
+            ttl.raw_element_write(output_block, 0, 0, 11.0)
+            ttl.raw_element_write(output_block, 0, 31, 29.0)
+            first = ttl.raw_element_read(output_block, 0, 0)
+            last = ttl.raw_element_read(output_block, 0, 31)
+            ttl.raw_element_write(output_block, 0, 0, last)
+            ttl.raw_element_write(output_block, 0, 31, first)
+            transaction = ttl.copy(output_block, out[0, 0])
+            transaction.wait()
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("memory", ["dram", "l1"])
 def test_subtile_endpoint_swap(device, dtype, memory):
@@ -81,6 +111,136 @@ def test_subtile_endpoint_swap(device, dtype, memory):
 
     assert result[0, 0].item() == torch_input[0, 31].item()
     assert result[0, 31].item() == torch_input[0, 0].item()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_reserved_scratch_swap(device, dtype, memory):
+    """Raw reads use the producer pointer for a reserved block."""
+    torch_output = torch.zeros((1, 32), dtype=dtype)
+    converter = to_dram if memory == "dram" else to_l1
+    output_tensor = converter(torch_output, device, tile=[1, 32])
+
+    reserved_scratch_swap_kernel(output_tensor)
+    result = ttnn.to_torch(output_tensor)
+
+    assert result[0, 0].item() == 29.0
+    assert result[0, 31].item() == 11.0
+
+
+@ttl.operation(grid=(1, 1))
+def float_equality_kernel(inp, out):
+    """Write the equality and inequality results for two scalar floats."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as input_block:
+            transaction = ttl.copy(inp[0, 0], input_block)
+            transaction.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as input_block:
+            lhs_value = ttl.raw_element_read(input_block, 0, 0)
+            rhs_value = ttl.raw_element_read(input_block, 0, 1)
+            with out_dfb.reserve() as output_block:
+                ttl.raw_element_write(output_block, 0, 0, 0.0)
+                ttl.raw_element_write(output_block, 0, 1, 0.0)
+                if lhs_value == rhs_value:
+                    ttl.raw_element_write(output_block, 0, 0, 1.0)
+                if lhs_value != rhs_value:
+                    ttl.raw_element_write(output_block, 0, 1, 1.0)
+                transaction = ttl.copy(output_block, out[0, 0])
+                transaction.wait()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+@pytest.mark.parametrize(
+    "lhs_value,rhs_value,expected_equal",
+    [
+        pytest.param(7.5, 7.5, True, id="equal"),
+        pytest.param(-2.0, 3.0, False, id="unequal"),
+        pytest.param(0.0, -0.0, True, id="signed-zero"),
+        pytest.param(float("nan"), 1.0, False, id="nan-lhs"),
+        pytest.param(1.0, float("nan"), False, id="nan-rhs"),
+    ],
+)
+def test_float_equality(device, dtype, memory, lhs_value, rhs_value, expected_equal):
+    """Scalar equality follows Python/IEEE semantics for supported dtypes."""
+    torch_input = torch.zeros((1, 32), dtype=dtype)
+    torch_input[0, 0] = lhs_value
+    torch_input[0, 1] = rhs_value
+    converter = to_dram if memory == "dram" else to_l1
+    input_tensor = converter(torch_input, device, tile=[1, 32])
+    output_tensor = converter(torch.zeros_like(torch_input), device, tile=[1, 32])
+
+    float_equality_kernel(input_tensor, output_tensor)
+    result = ttnn.to_torch(output_tensor)
+
+    assert bool(result[0, 0].item()) is expected_equal
+    assert bool(result[0, 1].item()) is (not expected_equal)
+
+
+@ttl.operation(grid=(1, 1))
+def correlated_loop_state_kernel(inp, out):
+    """Select the maximum value and its correlated identifier."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as input_block:
+            transaction = ttl.copy(inp[0, 0], input_block)
+            transaction.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as input_block:
+            selected_value = ttl.raw_element_read(input_block, 0, 0)
+            selected_identifier = ttl.raw_element_read(input_block, 0, 1)
+            for value_column in range(2, 8, 2):
+                candidate_value = ttl.raw_element_read(input_block, 0, value_column)
+                candidate_identifier = ttl.raw_element_read(
+                    input_block, 0, value_column + 1
+                )
+                if candidate_value > selected_value:
+                    selected_value = candidate_value
+                    selected_identifier = candidate_identifier
+            with out_dfb.reserve() as output_block:
+                ttl.raw_element_write(output_block, 0, 0, selected_value)
+                ttl.raw_element_write(output_block, 0, 1, selected_identifier)
+                transaction = ttl.copy(output_block, out[0, 0])
+                transaction.wait()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_correlated_loop_state(device, dtype, memory):
+    """SCF carries both members of conditionally updated scalar state."""
+    torch_input = torch.zeros((1, 32), dtype=dtype)
+    torch_input[0, :8] = torch.tensor(
+        [1.0, 40.0, 7.0, 41.0, 3.0, 42.0, 9.0, 43.0], dtype=dtype
+    )
+    converter = to_dram if memory == "dram" else to_l1
+    input_tensor = converter(torch_input, device, tile=[1, 32])
+    output_tensor = converter(torch.zeros_like(torch_input), device, tile=[1, 32])
+
+    correlated_loop_state_kernel(input_tensor, output_tensor)
+    result = ttnn.to_torch(output_tensor)
+
+    assert result[0, 0].item() == 9.0
+    assert result[0, 1].item() == 43.0
 
 
 # =============================================================================

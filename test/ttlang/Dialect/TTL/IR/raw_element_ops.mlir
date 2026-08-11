@@ -1,5 +1,5 @@
 // Verifier acceptance tests for ttl.raw_element_read and ttl.raw_element_write.
-// Reads require a cb_wait block (consumer); writes require a cb_reserve block (producer).
+// Reads accept cb_wait and cb_reserve blocks; writes require cb_reserve.
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s
 
 // -----
@@ -31,6 +31,23 @@ func.func @raw_element_read_bf16()
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %val = ttl.raw_element_read %block[%c0, %c1] : tensor<2x3x!ttcore.tile<32x32, bf16>> -> bf16
+  func.return
+}
+
+// -----
+
+// Read data previously written to a reserved producer block.
+// CHECK-LABEL: func.func @raw_element_read_from_reserve
+// CHECK: %[[VIEW:.*]] = ttl.cb_reserve
+// CHECK: ttl.raw_element_write %[[VIEW]][%{{.*}}, %{{.*}}], %{{.*}}
+// CHECK: ttl.raw_element_read %[[VIEW]][%{{.*}}, %{{.*}}] : tensor<1x1x!ttcore.tile<1x32, f32>> -> f32
+func.func @raw_element_read_from_reserve(%value: f32)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x32, f32>, 2>
+  %block = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<1x32, f32>, 2> -> tensor<1x1x!ttcore.tile<1x32, f32>>
+  %c0 = arith.constant 0 : index
+  ttl.raw_element_write %block[%c0, %c0], %value : tensor<1x1x!ttcore.tile<1x32, f32>>, f32
+  %read = ttl.raw_element_read %block[%c0, %c0] : tensor<1x1x!ttcore.tile<1x32, f32>> -> f32
   func.return
 }
 

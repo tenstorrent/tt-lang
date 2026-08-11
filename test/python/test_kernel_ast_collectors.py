@@ -80,6 +80,17 @@ def _collect_assignments(source):
             ["x", "acc"],
             ["acc"],
         ),
+        (
+            "if candidate_value > retained_value:\n"
+            "    candidate_value = retained_value\n"
+            "    candidate_index = retained_index\n"
+            "if candidate_value == retained_value:\n"
+            "    if candidate_index < retained_index:\n"
+            "        candidate_value = retained_value\n"
+            "        candidate_index = retained_index",
+            ["candidate_value", "candidate_index"],
+            ["candidate_value", "candidate_index"],
+        ),
     ],
 )
 def test_assignment_collector_detects_loop_carried_recurrences(

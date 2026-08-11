@@ -4,25 +4,12 @@
 
 // -----
 
-// Unsupported predicate oeq.
-module {
-  func.func @cmpf_oeq_unsupported(%a_int: i32, %b_int: i32) -> i1 {
-    %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
-    %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
-    %cmp = arith.cmpf oeq, %a, %b : f32
-    return %cmp : i1
-  }
-}
-
-// -----
-
 // Unsupported predicate one.
 module {
   func.func @cmpf_one_unsupported(%a_int: i32, %b_int: i32) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
     %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
+    // expected-error @below {{'arith.cmpf' op unsupported scalar float comparison predicate; supported predicates are ogt, olt, oeq, and une}}
     %cmp = arith.cmpf one, %a, %b : f32
     return %cmp : i1
   }
@@ -35,7 +22,7 @@ module {
   func.func @cmpf_oge_unsupported(%a_int: i32, %b_int: i32) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
     %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
+    // expected-error @below {{'arith.cmpf' op unsupported scalar float comparison predicate; supported predicates are ogt, olt, oeq, and une}}
     %cmp = arith.cmpf oge, %a, %b : f32
     return %cmp : i1
   }
@@ -48,7 +35,7 @@ module {
   func.func @cmpf_ole_unsupported(%a_int: i32, %b_int: i32) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
     %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
+    // expected-error @below {{'arith.cmpf' op unsupported scalar float comparison predicate; supported predicates are ogt, olt, oeq, and une}}
     %cmp = arith.cmpf ole, %a, %b : f32
     return %cmp : i1
   }
@@ -74,7 +61,7 @@ module {
   func.func @cmpf_oge_bf16_unsupported(%a_int: i16, %b_int: i16) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16
     %b = builtin.unrealized_conversion_cast %b_int : i16 to bf16
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
+    // expected-error @below {{'arith.cmpf' op unsupported scalar float comparison predicate; supported predicates are ogt, olt, oeq, and une}}
     %cmp = arith.cmpf oge, %a, %b : bf16
     return %cmp : i1
   }
@@ -87,7 +74,7 @@ module {
   func.func @cmpf_uno_unsupported(%a_int: i32, %b_int: i32) -> i1 {
     %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
     %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
-    // expected-error @below {{failed to legalize operation 'arith.cmpf'}}
+    // expected-error @below {{'arith.cmpf' op unsupported scalar float comparison predicate; supported predicates are ogt, olt, oeq, and une}}
     %cmp = arith.cmpf uno, %a, %b : f32
     return %cmp : i1
   }

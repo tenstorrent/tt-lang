@@ -31,6 +31,60 @@ static Value createGreaterOp(ConversionPatternRewriter &rewriter, Location loc,
                                         lhs, rhs);
 }
 
+static bool isSupportedCmpFPredicate(arith::CmpFPredicate predicate) {
+  return predicate == arith::CmpFPredicate::OGT ||
+         predicate == arith::CmpFPredicate::OLT ||
+         predicate == arith::CmpFPredicate::OEQ ||
+         predicate == arith::CmpFPredicate::UNE;
+}
+
+static Value createOrderedEqualOp(ConversionPatternRewriter &rewriter,
+                                  Location loc, unsigned bitWidth, Value lhs,
+                                  Value rhs) {
+  uint64_t magnitudeMask = bitWidth == 32 ? 0x7FFFFFFF : 0x7FFF;
+  uint64_t exponentMask = bitWidth == 32 ? 0x7F800000 : 0x7F80;
+  uint64_t mantissaMask = bitWidth == 32 ? 0x007FFFFF : 0x007F;
+
+  auto constant = [&](uint64_t value) {
+    return Value(arith::ConstantIntOp::create(rewriter, loc, value, bitWidth));
+  };
+  Value zero = constant(0);
+  Value magnitude = constant(magnitudeMask);
+  Value exponent = constant(exponentMask);
+  Value mantissa = constant(mantissaMask);
+
+  Value bitPatternsEqual =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq, lhs, rhs);
+  Value lhsMagnitude = arith::AndIOp::create(rewriter, loc, lhs, magnitude);
+  Value rhsMagnitude = arith::AndIOp::create(rewriter, loc, rhs, magnitude);
+  Value lhsIsZero = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, lhsMagnitude, zero);
+  Value rhsIsZero = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, rhsMagnitude, zero);
+  Value bothZero = arith::AndIOp::create(rewriter, loc, lhsIsZero, rhsIsZero);
+  Value numericallyEqual =
+      arith::OrIOp::create(rewriter, loc, bitPatternsEqual, bothZero);
+
+  auto createIsNaN = [&](Value bits) {
+    Value exponentBits = arith::AndIOp::create(rewriter, loc, bits, exponent);
+    Value hasMaxExponent = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, exponentBits, exponent);
+    Value mantissaBits = arith::AndIOp::create(rewriter, loc, bits, mantissa);
+    Value hasMantissa = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::ne, mantissaBits, zero);
+    return Value(
+        arith::AndIOp::create(rewriter, loc, hasMaxExponent, hasMantissa));
+  };
+
+  Value eitherIsNaN =
+      arith::OrIOp::create(rewriter, loc, createIsNaN(lhs), createIsNaN(rhs));
+  Value falseValue =
+      arith::ConstantIntOp::create(rewriter, loc, rewriter.getI1Type(), 0);
+  Value neitherIsNaN = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, eitherIsNaN, falseValue);
+  return arith::AndIOp::create(rewriter, loc, numericallyEqual, neitherIsNaN);
+}
+
 struct CmpFToSoftFloat : OpConversionPattern<arith::CmpFOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -60,10 +114,21 @@ struct CmpFToSoftFloat : OpConversionPattern<arith::CmpFOp> {
     case arith::CmpFPredicate::OLT:
       result = createGreaterOp(rewriter, loc, bitWidth, rhsInt, lhsInt);
       break;
+    case arith::CmpFPredicate::OEQ:
+      result = createOrderedEqualOp(rewriter, loc, bitWidth, lhsInt, rhsInt);
+      break;
+    case arith::CmpFPredicate::UNE: {
+      Value orderedEqual =
+          createOrderedEqualOp(rewriter, loc, bitWidth, lhsInt, rhsInt);
+      Value falseValue =
+          arith::ConstantIntOp::create(rewriter, loc, rewriter.getI1Type(), 0);
+      result = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                     orderedEqual, falseValue);
+      break;
+    }
     default:
       return rewriter.notifyMatchFailure(
-          op, "unsupported cmpf predicate for soft-float lowering; only ogt "
-              "and olt are currently supported");
+          op, "unsupported cmpf predicate for soft-float lowering");
     }
 
     rewriter.replaceOp(op, result);
@@ -180,6 +245,12 @@ struct TTKernelLowerScalarFpTypesPass
       if (!floatTy.isF32() && !floatTy.isBF16()) {
         op.emitOpError("unsupported float type for scalar comparison; "
                        "only f32 and bf16 are supported");
+        hasUnsupportedCmpF = true;
+        return;
+      }
+      if (!isSupportedCmpFPredicate(op.getPredicate())) {
+        op.emitOpError("unsupported scalar float comparison predicate; "
+                       "supported predicates are ogt, olt, oeq, and une");
         hasUnsupportedCmpF = true;
       }
     });
