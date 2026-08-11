@@ -2005,15 +2005,17 @@ def TTL_ReadIndexOp : TTL_Op<"read_index",
     [MemoryEffects<[MemRead]>, TTL_DataMovementOpTrait]> {
   let summary = "Read a nonnegative scalar element as an index";
   let description = [{
-    `ttl.read_index` reads a single f32 or bf16 scalar element from a block
-    acquired from a dataflow buffer by `ttl.cb_wait` and converts it to an
-    index. Coordinates are flat scalar-element positions and follow the same
-    layout-independent rules as `ttl.raw_element_read`.
+    `ttl.read_index` reads a single f32, bf16, ui8, ui16, or ui32 scalar
+    element from a block acquired from a dataflow buffer by `ttl.cb_wait` and
+    converts it to an index. Unsigned integers are zero-extended. Floating-
+    point values are truncated toward zero. Coordinates are flat
+    scalar-element positions and follow the same layout-independent rules as
+    `ttl.raw_element_read`.
 
-    Conversion truncates fractional values toward zero. The source value must
-    be finite, nonnegative, and no greater than INT32_MAX; behavior is
-    undefined otherwise. This operation is intended for tensor-provided
-    offsets such as table indices and positions.
+    The source value must be no greater than INT32_MAX. Floating-point values
+    must also be finite and nonnegative. Behavior is undefined when these
+    preconditions are violated. This operation is intended for
+    tensor-provided offsets such as table indices and positions.
 
     This operation is restricted to data movement (noc) threads.
 

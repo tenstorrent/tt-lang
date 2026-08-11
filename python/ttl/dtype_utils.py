@@ -159,6 +159,8 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
             return ttnn.DataType.UINT32
         case torch.uint16:
             return ttnn.DataType.UINT16
+        case torch.uint8:
+            return ttnn.DataType.UINT8
         case _:
             raise ValueError(
                 f"Unsupported torch dtype for ttnn.DataType: {torch_dtype}"

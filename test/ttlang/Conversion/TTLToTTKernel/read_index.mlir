@@ -35,6 +35,64 @@ module {
 
 // -----
 
+// Unsigned subword values are zero-extended before conversion to index.
+// CHECK-LABEL: func.func @read_index_ui8
+// CHECK: %[[UI8:.*]] = ttkernel.load_from_l1({{.*}}) : (!ttkernel.l1_addr_ptr<8>, i32) -> i8
+// CHECK-NEXT: %[[UI8_I32:.*]] = arith.extui %[[UI8]] : i8 to i32
+// CHECK-NEXT: %[[UI8_INDEX:.*]] = arith.index_cast %[[UI8_I32]] : i32 to index
+// CHECK-NEXT: return %[[UI8_INDEX]] : index
+module {
+  func.func @read_index_ui8() -> index
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x32, u8>, 2>
+    %block = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<1x32, u8>, 2> -> tensor<1x1x!ttcore.tile<1x32, u8>>
+    %row = arith.constant 0 : index
+    %column = arith.constant 15 : index
+    %index = ttl.read_index %block[%row, %column] : tensor<1x1x!ttcore.tile<1x32, u8>> -> index
+    func.return %index : index
+  }
+}
+
+// -----
+
+// CHECK-LABEL: func.func @read_index_ui16
+// CHECK: %[[UI16:.*]] = ttkernel.load_from_l1({{.*}}) : (!ttkernel.l1_addr_ptr<16>, i32) -> i16
+// CHECK-NEXT: %[[UI16_I32:.*]] = arith.extui %[[UI16]] : i16 to i32
+// CHECK-NEXT: %[[UI16_INDEX:.*]] = arith.index_cast %[[UI16_I32]] : i32 to index
+// CHECK-NEXT: return %[[UI16_INDEX]] : index
+module {
+  func.func @read_index_ui16() -> index
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x32, u16>, 2>
+    %block = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<1x32, u16>, 2> -> tensor<1x1x!ttcore.tile<1x32, u16>>
+    %row = arith.constant 0 : index
+    %column = arith.constant 7 : index
+    %index = ttl.read_index %block[%row, %column] : tensor<1x1x!ttcore.tile<1x32, u16>> -> index
+    func.return %index : index
+  }
+}
+
+// -----
+
+// Full-width unsigned values require no extension.
+// CHECK-LABEL: func.func @read_index_ui32
+// CHECK: %[[UI32:.*]] = ttkernel.load_from_l1({{.*}}) : (!ttkernel.l1_addr_ptr, i32) -> i32
+// CHECK-NEXT: %[[UI32_INDEX:.*]] = arith.index_cast %[[UI32]] : i32 to index
+// CHECK-NEXT: return %[[UI32_INDEX]] : index
+module {
+  func.func @read_index_ui32() -> index
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x32, u32>, 2>
+    %block = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<1x32, u32>, 2> -> tensor<1x1x!ttcore.tile<1x32, u32>>
+    %row = arith.constant 0 : index
+    %column = arith.constant 3 : index
+    %index = ttl.read_index %block[%row, %column] : tensor<1x1x!ttcore.tile<1x32, u32>> -> index
+    func.return %index : index
+  }
+}
+
+// -----
+
 // Zero-extend bf16 storage before applying the same integer conversion.
 // CHECK-LABEL: func.func @read_index_bf16
 // CHECK-DAG: %[[BF16_MANTISSA_WIDTH:.*]] = arith.constant 7 : i32
