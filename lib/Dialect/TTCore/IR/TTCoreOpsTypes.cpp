@@ -80,7 +80,7 @@ SystemDescAttr createDefaultBlackholeSystemDesc(
   constexpr auto dramUnreservedBase = 64;
   constexpr auto dramUnreservedEnd = 4276383744;
   constexpr auto dstPhysicalSizeTiles = 16;
-  constexpr auto numCBs = 32;
+  constexpr auto numCBs = 64;
   constexpr auto numComputeThreads = 1;
   constexpr auto numDatamovementThreads = 2;
 
