@@ -163,6 +163,11 @@ constexpr llvm::StringLiteral
 /// CTA layout is [CBs, TAs], so this equals the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
+/// Function attribute recording physical CB indices referenced by the final
+/// TTKernel body after per-core specialization and canonicalization.
+constexpr llvm::StringLiteral
+    kUsedCBIndicesAttrName("ttl.used_cb_indices");
+
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
 class TTLDataMovementOpTrait

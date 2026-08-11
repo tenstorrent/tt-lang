@@ -125,6 +125,9 @@ class KernelSpec:
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
+        used_cb_indices: Physical CB slots referenced by the final kernel body.
+            None means metadata is unavailable and conservatively uses every CB;
+            an empty list means this kernel uses no CBs.
         compiler_include_paths: Additional -I paths for the JIT compiler.
     """
 
@@ -133,6 +136,7 @@ class KernelSpec:
     tensor_indices: List[int]
     config: Any
     core_ranges: Optional[Any] = None
+    used_cb_indices: Optional[List[int]] = None
     compiler_include_paths: List[str] = field(default_factory=list)
 
 
@@ -617,6 +621,7 @@ def validate_cb_descriptors_override(
     program_core_ranges: Any,
     tensors: List[Any],
     num_cbs: int,
+    required_cb_ids: Optional[set[int]] = None,
 ) -> List[Any]:
     """Validate an exact, possibly per-core CB descriptor replacement.
 
@@ -710,7 +715,19 @@ def validate_cb_descriptors_override(
             bytes_by_core[core] += total_size
             claim_sizes_by_core[core].append((cb_id, total_size))
 
-    missing_ids = sorted(set(range(num_cbs)) - set(format_by_id))
+    required_ids = (
+        set(range(num_cbs))
+        if required_cb_ids is None
+        else set(required_cb_ids)
+    )
+    invalid_required = sorted(
+        cb_id for cb_id in required_ids if cb_id < 0 or cb_id >= num_cbs
+    )
+    if invalid_required:
+        raise ValueError(
+            f"required CB ids are outside [0, {num_cbs}): {invalid_required}"
+        )
+    missing_ids = sorted(required_ids - set(format_by_id))
     if missing_ids:
         raise ValueError(
             "CB descriptor override does not describe every configured CB id; "
@@ -810,11 +827,67 @@ def _core_ranges_from_coordinates(coordinates: set[Tuple[int, int]]):
     return ttnn.CoreRangeSet(rectangles)
 
 
+def _used_cb_indices_by_core(
+    kernel_specs: Optional[List[KernelSpec]],
+    program_core_ranges: Any,
+    num_cbs: int,
+) -> Optional[Dict[Tuple[int, int], set[int]]]:
+    """Union specialized kernel CB use on each logical core.
+
+    Returns None when no kernel carries the annotation, preserving the
+    historical whole-grid descriptor behavior. In a mixed set, an unannotated
+    kernel conservatively uses every configured slot on its own launch cores.
+    """
+
+    if not kernel_specs or not any(
+        spec.used_cb_indices is not None for spec in kernel_specs
+    ):
+        return None
+
+    program_cores = _core_range_coordinates(
+        program_core_ranges, label="program core ranges"
+    )
+    used_by_core = {core: set() for core in program_cores}
+    all_indices = set(range(num_cbs))
+    for spec_index, spec in enumerate(kernel_specs):
+        spec_ranges = (
+            spec.core_ranges
+            if spec.core_ranges is not None
+            else program_core_ranges
+        )
+        spec_cores = _core_range_coordinates(
+            spec_ranges, label=f"kernel spec {spec_index} core ranges"
+        )
+        outside = spec_cores - program_cores
+        if outside:
+            raise ValueError(
+                f"kernel spec {spec_index} claims cores outside the program "
+                f"grid: {sorted(outside)}"
+            )
+        indices = (
+            all_indices
+            if spec.used_cb_indices is None
+            else {int(index) for index in spec.used_cb_indices}
+        )
+        invalid = sorted(
+            index for index in indices if index < 0 or index >= num_cbs
+        )
+        if invalid:
+            raise ValueError(
+                f"kernel spec {spec_index} uses CB ids outside "
+                f"[0, {num_cbs}): {invalid}"
+            )
+        for core in spec_cores:
+            used_by_core[core].update(indices)
+    return used_by_core
+
+
 def build_cb_descriptors_by_core(
     tensors: List[Any],
     cb_configs: List[Any],
     core_ranges: Any,
     pages_by_core: Dict[int, List[Tuple[Any, int]]],
+    kernel_specs: Optional[List[KernelSpec]] = None,
 ) -> List[Any]:
     """Build a full descriptor table with selected per-core capacities."""
     _ensure_ttnn()
@@ -895,17 +968,28 @@ def build_cb_descriptors_by_core(
             )
         specialized[index] = pages_for_core
 
-    # TT-Metal keeps one allocation cursor per descriptor CoreRange. A single
-    # whole-grid descriptor overlaps every later specialized subset and makes
-    # that whole-grid cursor conservatively accumulate all subset capacities.
-    # Refine every descriptor onto one common disjoint partition instead.
-    # Uniform descriptors still receive identical sizes in identical order on
-    # every partition, preserving the common bases required by remote users.
-    specialized_indices = tuple(specialized)
+    used_by_core = _used_cb_indices_by_core(
+        kernel_specs, core_ranges, len(geometries)
+    )
+    # TT-Metal keeps one allocation cursor per descriptor CoreRange. Refine
+    # every descriptor onto one common disjoint partition, keyed by the complete
+    # per-core page signature. A zero page count means the specialized kernels
+    # on that partition never access this hardware slot, so no descriptor is
+    # emitted there.
     cores_by_signature = {}
     for core in sorted(program_cores):
         signature = tuple(
-            specialized[index][core] for index in specialized_indices
+            (
+                0
+                if used_by_core is not None
+                and index not in used_by_core[core]
+                else (
+                    specialized[index][core]
+                    if index in specialized
+                    else geometry.num_pages
+                )
+            )
+            for index, geometry in enumerate(geometries)
         )
         cores_by_signature.setdefault(signature, set()).add(core)
     partitions = [
@@ -914,26 +998,29 @@ def build_cb_descriptors_by_core(
     ]
 
     descriptors = []
-    for index, geometry in enumerate(geometries):
-        if index in specialized:
-            continue
-        for _, partition_ranges in partitions:
-            descriptors.append(
-                _cb_descriptor(
-                    index,
-                    geometry,
-                    geometry.total_size,
-                    partition_ranges,
-                )
-            )
-    for signature_position, index in enumerate(specialized_indices):
+    required_cb_ids = set()
+    descriptor_indices = (
+        [
+            index
+            for index in range(len(geometries))
+            if index not in specialized
+        ]
+        + list(specialized)
+        if used_by_core is None
+        else list(range(len(geometries)))
+    )
+    for index in descriptor_indices:
         geometry = geometries[index]
         for signature, partition_ranges in partitions:
+            pages = signature[index]
+            if pages == 0:
+                continue
+            required_cb_ids.add(index)
             descriptors.append(
                 _cb_descriptor(
                     index,
                     geometry,
-                    signature[signature_position] * geometry.page_size,
+                    pages * geometry.page_size,
                     partition_ranges,
                 )
             )
@@ -942,6 +1029,7 @@ def build_cb_descriptors_by_core(
         program_core_ranges=core_ranges,
         tensors=tensors,
         num_cbs=len(cb_configs),
+        required_cb_ids=required_cb_ids,
     )
 
 
@@ -949,6 +1037,7 @@ def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
     core_ranges: Any,
+    kernel_specs: Optional[List[KernelSpec]] = None,
 ) -> List[Any]:
     """
     Build circular buffer descriptors for ttnn.generic_op.
@@ -967,6 +1056,17 @@ def build_cb_descriptors(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+
+    if _used_cb_indices_by_core(
+        kernel_specs, core_ranges, len(cb_configs)
+    ) is not None:
+        return build_cb_descriptors_by_core(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            pages_by_core={},
+            kernel_specs=kernel_specs,
+        )
 
     # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
     geometries = [cb_geometry(i, cb) for i, cb in enumerate(cb_configs)]
@@ -990,6 +1090,72 @@ def build_cb_descriptors(
         _cb_descriptor(i, geometry, geometry.total_size, core_ranges)
         for i, geometry in enumerate(geometries)
     ]
+
+
+def build_cb_descriptors_from_layouts(
+    tensors: List[Any],
+    cb_layouts: List[Tuple[Any, int, Any, int, int]],
+    core_ranges: Any,
+    kernel_specs: Optional[List[KernelSpec]] = None,
+) -> List[Any]:
+    """Rebuild live descriptor scoping from serialized emitted-runner layouts."""
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    geometries = []
+    for shape, block_count, data_format, page_size, total_size in cb_layouts:
+        geometries.append(
+            CBGeometry(
+                data_format=data_format,
+                page_size=int(page_size),
+                num_pages=int(total_size) // int(page_size),
+                total_size=int(total_size),
+                tile_descriptor=None,
+                tile=None,
+                shape=tuple(shape),
+                block_count=int(block_count),
+                breakdown="",
+            )
+        )
+
+    used_by_core = _used_cb_indices_by_core(
+        kernel_specs, core_ranges, len(geometries)
+    )
+    if used_by_core is None:
+        return [
+            _cb_descriptor(index, geometry, geometry.total_size, core_ranges)
+            for index, geometry in enumerate(geometries)
+        ]
+
+    cores_by_signature = {}
+    for core, used_indices in sorted(used_by_core.items()):
+        signature = tuple(index in used_indices for index in range(len(geometries)))
+        cores_by_signature.setdefault(signature, set()).add(core)
+    partitions = [
+        (signature, _core_ranges_from_coordinates(coordinates))
+        for signature, coordinates in cores_by_signature.items()
+    ]
+    descriptors = []
+    required_cb_ids = set()
+    for index, geometry in enumerate(geometries):
+        for signature, partition_ranges in partitions:
+            if not signature[index]:
+                continue
+            required_cb_ids.add(index)
+            descriptors.append(
+                _cb_descriptor(
+                    index, geometry, geometry.total_size, partition_ranges
+                )
+            )
+    return validate_cb_descriptors_override(
+        descriptors=descriptors,
+        program_core_ranges=core_ranges,
+        tensors=tensors,
+        num_cbs=len(geometries),
+        required_cb_ids=required_cb_ids,
+    )
 
 
 def build_generic_op_io_tensors(
@@ -1124,12 +1290,14 @@ def run_kernel_on_device(
             cb_configs=cb_configs,
             core_ranges=core_ranges,
             pages_by_core=program_resources.cb_pages_by_core,
+            kernel_specs=kernel_specs,
         )
     else:
         cb_descriptors = build_cb_descriptors(
             tensors=tensors,
             cb_configs=cb_configs,
             core_ranges=core_ranges,
+            kernel_specs=kernel_specs,
         )
 
     semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
@@ -1255,6 +1423,7 @@ def emit_runner_source(
     lines.append("")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelSpec,")
+    lines.append("    build_cb_descriptors_from_layouts,")
     lines.append("    build_generic_op_io_tensors,")
     lines.append("    build_kernel_descriptors,")
     lines.append("    build_pipe_runtime_resources,")
@@ -1291,6 +1460,14 @@ def emit_runner_source(
     for spec in kernel_specs:
         lines.append(
             f"    {_serialize_core_ranges(spec.core_ranges)!r},  # {spec.thread_type}"
+        )
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_USED_CB_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(
+            f"    {spec.used_cb_indices!r},  # {spec.thread_type}"
         )
     lines.append("]")
     lines.append("")
@@ -1356,23 +1533,6 @@ def emit_runner_source(
     lines.append("    )")
     lines.append("")
 
-    lines.append("    cb_descriptors = []")
-    lines.append(
-        "    for i, (shape, block_count, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
-    )
-    lines.append("        cb_format = ttnn.CBFormatDescriptor(")
-    lines.append("            buffer_index=i,")
-    lines.append("            data_format=dtype,")
-    lines.append("            page_size=page_size,")
-    lines.append("        )")
-    lines.append("        cb_desc = ttnn.CBDescriptor(")
-    lines.append("            total_size=total_size,")
-    lines.append("            core_ranges=core_ranges,")
-    lines.append("            format_descriptors=[cb_format],")
-    lines.append("        )")
-    lines.append("        cb_descriptors.append(cb_desc)")
-    lines.append("")
-
     lines.append("    def _core_ranges_from_spec(ranges_spec):")
     lines.append("        if ranges_spec is None:")
     lines.append("            return None")
@@ -1406,8 +1566,17 @@ def emit_runner_source(
         "                core_ranges=_core_ranges_from_spec("
         "KERNEL_CORE_RANGES[kernel_idx]),"
     )
+    lines.append(
+        "                used_cb_indices=KERNEL_USED_CB_INDICES[kernel_idx],"
+    )
     lines.append("            )")
     lines.append("        )")
+    lines.append("    cb_descriptors = build_cb_descriptors_from_layouts(")
+    lines.append("        tensors=tensors,")
+    lines.append("        cb_layouts=CB_CONFIGS,")
+    lines.append("        core_ranges=core_ranges,")
+    lines.append("        kernel_specs=kernel_specs,")
+    lines.append("    )")
     lines.append("    kernel_descriptors = build_kernel_descriptors(")
     lines.append("        kernel_specs=kernel_specs,")
     lines.append("        tensors=tensors,")

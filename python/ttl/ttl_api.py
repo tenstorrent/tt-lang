@@ -554,6 +554,7 @@ class CompiledTTNNKernel:
         core_ranges,
         kernel_tensor_indices,
         kernel_core_ranges=None,
+        kernel_used_cb_indices=None,
         cb_configs=None,
         cb_names=None,
         program_hash=None,
@@ -581,6 +582,9 @@ class CompiledTTNNKernel:
                 with kernel_paths. Set by the per-core specialization path so
                 each specialized clone is dispatched only to its own core; None
                 entries fall back to the whole-grid core_ranges.
+            kernel_used_cb_indices: Optional per-kernel lists of physical CB
+                slots surviving specialization. A None entry conservatively
+                means all configured CBs; an empty list means no CBs.
             cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
             cb_names: Dict mapping final CB index to the logical DFB names that
                 landed on it, including the ones reuse coloring merged away
@@ -603,6 +607,11 @@ class CompiledTTNNKernel:
         self.core_ranges = core_ranges
         self.kernel_tensor_indices = kernel_tensor_indices
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
+        self.kernel_used_cb_indices = (
+            kernel_used_cb_indices
+            if kernel_used_cb_indices is not None
+            else [None] * len(kernel_paths)
+        )
         self.cb_configs = cb_configs or []
         self.cb_names = cb_names or {}
         self.program_hash = program_hash
@@ -646,6 +655,7 @@ class CompiledTTNNKernel:
                 tensor_indices=tensor_indices,
                 config=config,
                 core_ranges=self.kernel_core_ranges[kernel_idx],
+                used_cb_indices=self.kernel_used_cb_indices[kernel_idx],
                 compiler_include_paths=self.opaque_include_paths,
             )
             kernel_specs.append(spec)
@@ -688,6 +698,10 @@ class _CompiledTTNNKernelTemplate:
             list(indices) for indices in kernel.kernel_tensor_indices
         ]
         self.kernel_core_ranges = list(kernel.kernel_core_ranges)
+        self.kernel_used_cb_indices = [
+            None if indices is None else list(indices)
+            for indices in kernel.kernel_used_cb_indices
+        ]
         self.cb_configs = [self._detach_cb(config) for config in kernel.cb_configs]
         self.cb_names = dict(kernel.cb_names)
         self.program_hash = kernel.program_hash
@@ -722,6 +736,10 @@ class _CompiledTTNNKernelTemplate:
                 list(indices) for indices in self.kernel_tensor_indices
             ],
             kernel_core_ranges=list(self.kernel_core_ranges),
+            kernel_used_cb_indices=[
+                None if indices is None else list(indices)
+                for indices in self.kernel_used_cb_indices
+            ],
             cb_configs=list(self.cb_configs),
             cb_names=dict(self.cb_names),
             program_hash=self.program_hash,
@@ -871,6 +889,22 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
         return []
+    if not isinstance(attr, DenseI32ArrayAttr):
+        raise ValueError(
+            f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    return list(attr)
+
+
+def _get_kernel_optional_i32_array_attr(
+    module, kernel_name: str, attr_name: str
+):
+    """Read an optional ``DenseI32ArrayAttr`` without losing missing/empty."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(attr_name, None)
+    if attr is None:
+        return None
     if not isinstance(attr, DenseI32ArrayAttr):
         raise ValueError(
             f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
@@ -1084,6 +1118,7 @@ def _compile_ttnn_kernel(
     # below so one Metal descriptor can cover every core with the same role.
     kernel_coord_groups = []
     specialized_tensor_indices = []
+    kernel_used_cb_indices = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -1131,6 +1166,9 @@ def _compile_ttnn_kernel(
             runtime_arg_spec = []
 
         config_attrs = kernel_config_attrs[name]
+        used_cb_indices = _get_kernel_optional_i32_array_attr(
+            module, name, "ttl.used_cb_indices"
+        )
         equivalence_ir = _get_kernel_equivalence_ir(module, name)
         group_key = (
             thread_type,
@@ -1139,6 +1177,11 @@ def _compile_ttnn_kernel(
             config_attrs["fp32_dest_acc_en"],
             config_attrs["dst_full_sync_en"],
             tuple(config_attrs["unpack_to_dest_fp32"]),
+            (
+                None
+                if used_cb_indices is None
+                else tuple(used_cb_indices)
+            ),
             tuple(tensor_indices or ()),
             str(runtime_arg_spec),
         )
@@ -1200,6 +1243,7 @@ def _compile_ttnn_kernel(
         kernel_configs.append(config)
         kernel_arg_specs.append(runtime_arg_spec)
         kernel_coord_groups.append(list(coords) if coords is not None else None)
+        kernel_used_cb_indices.append(used_cb_indices)
         if specialize_cores:
             specialized_tensor_indices.append(tensor_indices)
 
@@ -1235,6 +1279,7 @@ def _compile_ttnn_kernel(
         core_ranges=core_ranges,
         kernel_tensor_indices=kernel_tensor_indices,
         kernel_core_ranges=kernel_core_ranges,
+        kernel_used_cb_indices=kernel_used_cb_indices,
         cb_configs=cb_configs,
         cb_names=cb_names,
         program_hash=program_hash,
@@ -2136,6 +2181,7 @@ def _lower_program_to_kernel(
                 "ttkernel-specialize-cores",
                 "canonicalize",
                 "cse",
+                "ttkernel-annotate-cb-use",
             ]
         pipeline_passes += [
             "func.func(convert-ttkernel-to-emitc)",

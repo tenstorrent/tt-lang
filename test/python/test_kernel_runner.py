@@ -434,6 +434,260 @@ def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):
     assert descriptors[0].runtime_args == [("core-1", [11])]
 
 
+def test_specialized_cb_descriptor_follows_active_kernel_core(monkeypatch):
+
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    full_grid = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    active_core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    inactive_core = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=4,
+        total_size=128,
+        tile_descriptor=SimpleNamespace(height=1, width=32),
+    )
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda _index, _cb: geometry
+    )
+    specs = [
+        kernel_runner.KernelSpec(
+            path="/tmp/active_core_uses_cb.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=active_core,
+            used_cb_indices=[0],
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/inactive_core_has_cb_branch_elided.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=inactive_core,
+            used_cb_indices=[],
+        ),
+    ]
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=specs,
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object()],
+        core_ranges=full_grid,
+    )
+
+    assert [descriptor.core_ranges for descriptor in result["program"].kernels] == [
+        active_core,
+        inactive_core,
+    ]
+    assert len(result["program"].cbs) == 1
+    assert result["program"].cbs[0].total_size == 128
+    assert kernel_runner._core_range_coordinates(
+        result["program"].cbs[0].core_ranges, label="CB[0]"
+    ) == {(0, 0)}
+
+
+def test_unannotated_kernel_keeps_whole_grid_cb_descriptor(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=1,
+        total_size=32,
+        tile_descriptor=None,
+    )
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda _index, _cb: geometry
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object()],
+        core_ranges=full_grid,
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/unspecialized.cpp",
+                thread_type="noc",
+                tensor_indices=[],
+                config=fake_ttnn.ReaderConfigDescriptor(),
+                core_ranges=full_grid,
+            )
+        ],
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].core_ranges is full_grid
+
+
+def test_specialized_cb_descriptors_allow_sparse_physical_ids(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=1,
+        total_size=32,
+        tile_descriptor=None,
+    )
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda _index, _cb: geometry
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object(), object(), object()],
+        core_ranges=full_grid,
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/sparse_cb.cpp",
+                thread_type="noc",
+                tensor_indices=[],
+                config=fake_ttnn.ReaderConfigDescriptor(),
+                core_ranges=full_grid,
+                used_cb_indices=[2],
+            )
+        ],
+    )
+
+    assert [
+        descriptor.format_descriptors[0].buffer_index
+        for descriptor in descriptors
+    ] == [2]
+
+
+def test_specialized_cb_use_intersects_per_role_capacities(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges(((0, 0), (2, 0)))
+    shared = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    routed = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    inactive = _FakeExplicitCoreRanges(((2, 0), (2, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=3,
+        total_size=96,
+        tile_descriptor=None,
+    )
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda _index, _cb: geometry
+    )
+    specs = [
+        kernel_runner.KernelSpec(
+            path="/tmp/shared_situ.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=shared,
+            used_cb_indices=[0],
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/routed_situ.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=routed,
+            used_cb_indices=[0],
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/inactive.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=inactive,
+            used_cb_indices=[],
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors_by_core(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object()],
+        core_ranges=full_grid,
+        pages_by_core={0: [(shared, 2), (routed, 3), (inactive, 1)]},
+        kernel_specs=specs,
+    )
+
+    claims = {
+        next(
+            iter(
+                kernel_runner._core_range_coordinates(
+                    descriptor.core_ranges, label="CB[0]"
+                )
+            )
+        ): descriptor.total_size
+        for descriptor in descriptors
+    }
+    assert claims == {(0, 0): 64, (1, 0): 96}
+
+
+def test_serialized_layout_builder_matches_live_specialized_ranges(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    active = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    inactive = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=2,
+        total_size=64,
+        tile_descriptor=None,
+    )
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda _index, _cb: geometry
+    )
+    specs = [
+        kernel_runner.KernelSpec(
+            path="/tmp/active.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=active,
+            used_cb_indices=[0],
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/inactive.cpp",
+            thread_type="noc",
+            tensor_indices=[],
+            config=fake_ttnn.ReaderConfigDescriptor(),
+            core_ranges=inactive,
+            used_cb_indices=[],
+        ),
+    ]
+
+    live = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object()],
+        core_ranges=full_grid,
+        kernel_specs=specs,
+    )
+    emitted = kernel_runner.build_cb_descriptors_from_layouts(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_layouts=[((1, 2), 1, "bf16", 32, 64)],
+        core_ranges=full_grid,
+        kernel_specs=specs,
+    )
+
+    def descriptor_contract(descriptors):
+        return [
+            (
+                descriptor.format_descriptors[0].buffer_index,
+                descriptor.total_size,
+                kernel_runner._core_range_coordinates(
+                    descriptor.core_ranges, label="CB"
+                ),
+            )
+            for descriptor in descriptors
+        ]
+
+    assert descriptor_contract(emitted) == descriptor_contract(live)
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -910,6 +1164,33 @@ def test_emit_runner_source_omits_program_hash_by_default():
     )
 
     assert "PROGRAM_HASH = None" in source
+
+
+def test_emit_runner_source_preserves_specialized_cb_use(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/sparse.cpp",
+                thread_type="noc",
+                tensor_indices=[],
+                config=fake_ttnn.ReaderConfigDescriptor(),
+                core_ranges=_FakeExplicitCoreRanges(((1, 0), (1, 0))),
+                used_cb_indices=[2],
+            )
+        ],
+        cb_configs=[],
+        grid_cols=2,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "KERNEL_USED_CB_INDICES = [" in source
+    assert "    [2],  # noc" in source
+    assert "used_cb_indices=KERNEL_USED_CB_INDICES[kernel_idx]" in source
+    assert "build_cb_descriptors_from_layouts(" in source
+    compile(source, "<emitted-runner>", "exec")
 
 
 def test_emit_runner_source_preserves_positional_options():
