@@ -20,7 +20,8 @@ def _as_ranked_tensor_type(ty):
     maybe_downcast = getattr(RankedTensorType, "maybe_downcast", None)
     if maybe_downcast is None:
         return None
-    return maybe_downcast(ty)
+    downcast = maybe_downcast(ty)
+    return downcast if isinstance(downcast, RankedTensorType) else None
 
 
 def _format_tensor_shape(shape: tuple[int, ...]) -> str:

@@ -5039,6 +5039,57 @@ def TTKernel_GetDataFormatOp: TTKernel_Op<"get_dataformat"> {
 // TTKernel Numeric operations
 //===----------------------------------------------------------------------===//
 
+def TTKernel_Float32AddOp : TTKernel_Op<"float32_add", [Pure]> {
+    let summary = "Add two float32 values represented as integer bits.";
+    let description = [{
+      Interprets both i32 operands as IEEE-754 float32 bit patterns, performs
+      float32 addition, and returns the result's i32 bit pattern. This permits
+      scalar arithmetic in data-movement kernels whose registers carry raw
+      tensor element bits.
+    }];
+
+    let arguments = (ins I32:$lhs_bits, I32:$rhs_bits);
+    let results = (outs I32:$result_bits);
+
+    let assemblyFormat = [{
+      `(` $lhs_bits `,` $rhs_bits `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_Float32MulOp : TTKernel_Op<"float32_mul", [Pure]> {
+    let summary = "Multiply two float32 values represented as integer bits.";
+    let description = [{
+      Interprets both i32 operands as IEEE-754 float32 bit patterns, performs
+      float32 multiplication, and returns the result's i32 bit pattern. This
+      permits scalar arithmetic in data-movement kernels whose registers carry
+      raw tensor element bits.
+    }];
+
+    let arguments = (ins I32:$lhs_bits, I32:$rhs_bits);
+    let results = (outs I32:$result_bits);
+
+    let assemblyFormat = [{
+      `(` $lhs_bits `,` $rhs_bits `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_Float32SubOp : TTKernel_Op<"float32_sub", [Pure]> {
+    let summary = "Subtract two float32 values represented as integer bits.";
+    let description = [{
+      Interprets both i32 operands as IEEE-754 float32 bit patterns, subtracts
+      the second value from the first, and returns the result's i32 bit
+      pattern. This permits scalar arithmetic in data-movement kernels whose
+      registers carry raw tensor element bits.
+    }];
+
+    let arguments = (ins I32:$lhs_bits, I32:$rhs_bits);
+    let results = (outs I32:$result_bits);
+
+    let assemblyFormat = [{
+      `(` $lhs_bits `,` $rhs_bits `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
 def TTKernel_Bfloat16GreaterOp : TTKernel_Op<"bfloat16_greater", [Pure]> {
     let summary = "Compare two bfloat16 values using integer arithmetic.";
     let description = [{
