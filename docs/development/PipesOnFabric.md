@@ -647,15 +647,27 @@ Validation also includes the complete existing `test/python/pipe` suite and
 the affected MLIR tests. A source-level C++ match or a smaller-system hardware
 pass does not establish correctness without the full-system result.
 
-### Required remaining work
+### Remaining capability work
 
-The POC still requires:
+The current implementation supports identity-mapped logical devices and
+programs whose concurrent connection requests fit the available forwarding
+links. It validates the complete target-binding plan before modifying program
+descriptors and rejects unsupported resource schedules. General fabric support
+still requires:
 
-- explicit logical `DeviceRef` to `MeshCoordinate` binding;
-- program-wide connection lifetime, router reuse, barrier, and link-scoring
-  plans using contention and workload estimates;
+- explicit target binding from each logical `DeviceRef` to a
+  `MeshCoordinate`;
+- a program-wide fabric resource schedule covering connection lifetimes,
+  intentional router reuse, conflicts, barriers, close obligations, and
+  worker-to-forwarder aggregation;
 - multicast lowering for graph transfers with device-range destinations;
-- receiver-published address support beyond the verified computed-address
-  requirement for fabric receivers;
-- performance comparison of destination-table decoding and connection reuse
-  against specialized communication kernels.
+- a receiver-address publication protocol for schedules that cannot prove
+  computed receiver addresses.
+
+### Remaining optimization and validation work
+
+- Jointly score legal routes and links by hop count, availability, estimated
+  contention, connection reuse, and barrier cost.
+- Measure destination-table decoding, host connection setup, connection reuse,
+  packetization, and worker placement against specialized communication
+  kernels.
