@@ -140,9 +140,11 @@ public:
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
       }
-      if (callee == "experimental::routing_plane_atomic_inc") {
+      if (callee == "experimental::routing_plane_atomic_inc" ||
+          callee == "experimental::routing_plane_fused_write_atomic_inc") {
         emitLlk(experimental_routing_plane_generated,
                 experimental_routing_plane_generated_len);
+        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||

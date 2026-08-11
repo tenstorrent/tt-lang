@@ -3,11 +3,24 @@
 // RUN: ttlang-translate --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
+// CHECK: #include "tt_metal/fabric/hw/inc/fabric_config.h"
 // CHECK: #include "tt_metal/fabric/hw/inc/linear/api.h"
 // CHECK: static __attribute__((noinline)) void
 // CHECK: routing_plane_atomic_inc(
 // CHECK: packet_header->to_noc_unicast_atomic_inc(
 // CHECK: sender.send_payload_flush_blocking_from_address(
+// CHECK-LABEL: static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
+// CHECK: const uint32_t [[MAX_PACKET_SIZE:.*]] = tt::tt_fabric::get_fabric_max_packet_size();
+// CHECK: while (sizeBytes > [[MAX_PACKET_SIZE]]) {
+// CHECK: packetHeader->to_noc_unicast_write(
+// CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
+// CHECK-NEXT: [[MAX_PACKET_SIZE]]);
+// CHECK: sourceAddress += [[MAX_PACKET_SIZE]];
+// CHECK-NEXT: destinationAddress += [[MAX_PACKET_SIZE]];
+// CHECK-NEXT: sizeBytes -= [[MAX_PACKET_SIZE]];
+// CHECK: packetHeader->to_noc_fused_unicast_write_atomic_inc(
+// CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
+// CHECK-NEXT: sizeBytes);
 // CHECK-LABEL: void kernel_main() {
 // CHECK: tt::tt_fabric::RoutingPlaneConnectionManager [[MANAGER:.*]];
 // CHECK: size_t [[ARG_INDEX:.*]] = 4;
@@ -17,22 +30,9 @@
 // CHECK-NEXT: PacketHeaderPool::reset();
 // CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n([[COUNT]]);
 // CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]],
-// CHECK: auto *packet_header = PacketHeaderPool::header_table[[[ROUTE_ID]]].first + [[INDEX]];
-// CHECK-NEXT: #if defined(FABRIC_2D)
-// CHECK-NEXT: tt::tt_fabric::fabric_set_unicast_route(
-// CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]), static_cast<uint16_t>([[DEST_MESH]]));
-// CHECK-NEXT: #else
-// CHECK-NEXT: tt::tt_fabric::fabric_set_unicast_route(
-// CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]));
-// CHECK-NEXT: #endif
-// CHECK-NEXT: auto &sender = [[MANAGER]].get(static_cast<uint8_t>([[INDEX]])).sender;
-// CHECK: packet_header->to_noc_fused_unicast_write_atomic_inc(tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader{
-// CHECK: sender.send_payload_without_header_non_blocking_from_address(
-// CHECK: sender.send_payload_flush_blocking_from_address(
+// CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]],
 // CHECK: if ([[COUNT]] != 0) {
 // CHECK-NEXT: close_connections([[MANAGER]]);
-// CHECK-NOT: }});
-// CHECK-NOT:   }}
 
 module {
   func.func @routing_plane() attributes {ttkernel.thread = #ttkernel.thread<noc>} {

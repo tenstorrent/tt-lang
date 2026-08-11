@@ -2628,42 +2628,9 @@ public:
   LogicalResult
   matchAndRewrite(Op op, Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    emitc::VerbatimOp::create(
-        rewriter, op.getLoc(),
-        rewriter.getStringAttr(
-            "{{\n"
-            "  auto *packet_header = PacketHeaderPool::header_table[{}].first "
-            "+ {};\n"
-            "#if defined(FABRIC_2D)\n"
-            "  tt::tt_fabric::fabric_set_unicast_route(\n"
-            "      packet_header, static_cast<uint16_t>({}), "
-            "static_cast<uint16_t>({}));\n"
-            "#else\n"
-            "  tt::tt_fabric::fabric_set_unicast_route(\n"
-            "      packet_header, static_cast<uint16_t>({}));\n"
-            "#endif\n"
-            "  auto &sender = {}.get(static_cast<uint8_t>({})).sender;\n"
-            "  packet_header->to_noc_fused_unicast_write_atomic_inc("
-            "tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader{{{}, {}, "
-            "static_cast<uint32_t>({}), "
-            "true}, {});\n"
-            "  sender.wait_for_empty_write_slot();\n"
-            "  "
-            "sender.send_payload_without_header_non_blocking_from_address({}, "
-            "{});\n"
-            "  sender.send_payload_flush_blocking_from_address("
-            "reinterpret_cast<uint32_t>(packet_header), "
-            "sizeof(PACKET_HEADER_TYPE));\n"
-            "}"),
-        ValueRange{
-            adaptor.getRouteId(), adaptor.getConnectionIndex(),
-            adaptor.getDestinationDeviceId(), adaptor.getDestinationMeshId(),
-            adaptor.getDestinationDeviceId(), adaptor.getManager(),
-            adaptor.getConnectionIndex(), adaptor.getDestinationAddress(),
-            adaptor.getSemaphoreAddress(), adaptor.getIncrement(),
-            adaptor.getSizeBytes(), adaptor.getSourceAddress(),
-            adaptor.getSizeBytes()});
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_fused_write_atomic_inc",
+        nullptr, nullptr, adaptor.getOperands());
     return success();
   }
 };

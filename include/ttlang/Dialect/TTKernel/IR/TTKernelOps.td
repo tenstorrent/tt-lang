@@ -4506,11 +4506,12 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
   let summary = "Write a payload and increment a remote semaphore";
   let description = [{
-    Sends one payload to `destinationAddress` and atomically increments
-    `semaphoreAddress` through the connection selected by `connectionIndex`.
-    `destinationDeviceId` identifies the final destination;
+    Sends `sizeBytes` from local L1 memory to `destinationAddress` through the
+    connection selected by `connectionIndex`. Payloads larger than the active
+    fabric packet limit are split into consecutive packets. The final packet
+    atomically increments `semaphoreAddress`, so the increment observes the
+    complete transfer. `destinationDeviceId` identifies the final destination;
     `destinationMeshId` also selects the mesh when mesh routing is enabled.
-    The increment flushes the payload before the remote semaphore is updated.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
