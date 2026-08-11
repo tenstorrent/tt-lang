@@ -1203,10 +1203,16 @@ def TTKernelLowerScalarFpTypes
     2. **arith.truncf**: Converts float truncation (e.g. f32 -> bf16) to
        integer bit extraction via `arith.shrui` + `arith.trunci`.
 
-    3. **arith.constant**: Converts float constants to their integer bit-pattern
+    3. **arith.extf**: Converts bf16-to-f32 scalar promotion to zero extension
+       plus a 16-bit left shift of the IEEE-754 bit pattern.
+
+    4. **arith.addf/arith.subf/arith.mulf**: Converts f32 scalar arithmetic to
+       TTKernel operations that preserve integer bit-pattern register storage.
+
+    5. **arith.constant**: Converts float constants to their integer bit-pattern
        equivalents.
 
-    4. **SCF control flow**: Propagates integer types through `scf.if`,
+    6. **SCF control flow**: Propagates integer types through `scf.if`,
        `scf.for`, `scf.while`, and `scf.yield` using upstream SCF structural
        type conversion patterns.
   }];

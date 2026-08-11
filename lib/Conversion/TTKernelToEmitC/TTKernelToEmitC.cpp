@@ -1453,6 +1453,66 @@ private:
 
 namespace {
 template <typename SourceOp>
+class TTKernelFloat32BinaryOpRewriter : public OpConversionPattern<SourceOp> {
+public:
+  TTKernelFloat32BinaryOpRewriter(const TypeConverter &typeConverter,
+                                  MLIRContext *context,
+                                  TTKernelToEmitCConversionState &state)
+      : OpConversionPattern<SourceOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    static_assert(std::is_same_v<SourceOp, ttkernel::Float32AddOp> ||
+                  std::is_same_v<SourceOp, ttkernel::Float32MulOp> ||
+                  std::is_same_v<SourceOp, ttkernel::Float32SubOp>);
+    constexpr StringLiteral operation =
+        std::is_same_v<SourceOp, ttkernel::Float32AddOp>
+            ? "+"
+            : (std::is_same_v<SourceOp, ttkernel::Float32SubOp> ? "-" : "*");
+
+    ValueRange operands = adaptor.getOperands();
+    TT_assert(operands.size() == 2u);
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+
+    std::string variableName =
+        getResultVariableName(op.getResult(), state, "scalar_fp32_");
+    std::string lhsBitsName = variableName + "_lhs_bits";
+    std::string rhsBitsName = variableName + "_rhs_bits";
+    std::string lhsName = variableName + "_lhs";
+    std::string rhsName = variableName + "_rhs";
+    std::string resultName = variableName + "_result";
+    std::string code =
+        "uint32_t " + lhsBitsName +
+        " = static_cast<uint32_t>({}); "
+        "uint32_t " +
+        rhsBitsName + " = static_cast<uint32_t>({}); float " + lhsName +
+        "; float " + rhsName + "; __builtin_memcpy(&" + lhsName + ", &" +
+        lhsBitsName + ", sizeof(" + lhsName + ")); __builtin_memcpy(&" +
+        rhsName + ", &" + rhsBitsName + ", sizeof(" + rhsName + ")); float " +
+        resultName + " = " + lhsName + " " + operation.str() + " " + rhsName +
+        "; uint32_t " + variableName + "; __builtin_memcpy(&" + variableName +
+        ", &" + resultName + ", sizeof(" + variableName + "));";
+    rewriter.create<emitc::VerbatimOp>(op.getLoc(),
+                                       rewriter.getStringAttr(code), operands);
+    rewriter.replaceOp(
+        op,
+        rewriter.create<emitc::LiteralOp>(op.getLoc(), resultType, variableName)
+            .getResult());
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+} // namespace
+
+namespace {
+template <typename SourceOp>
 class TTKernelToEmitCArgValRewriter : public OpConversionPattern<SourceOp> {
 public:
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -3106,6 +3166,10 @@ public:
     populateMemRefToEmitCConversionPatterns(patterns, typeConverter);
 
     patterns.add<TTKernelBitcastOpRewriter>(typeConverter, context, &state);
+    patterns.add<TTKernelFloat32BinaryOpRewriter<ttkernel::Float32AddOp>,
+                 TTKernelFloat32BinaryOpRewriter<ttkernel::Float32MulOp>,
+                 TTKernelFloat32BinaryOpRewriter<ttkernel::Float32SubOp>>(
+        typeConverter, context, state);
     patterns.add<TTKernelConstantTableLookupOpRewriter>(typeConverter, context);
     patterns
         .add<TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulInitOp>,

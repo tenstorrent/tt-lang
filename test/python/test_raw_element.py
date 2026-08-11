@@ -5,7 +5,7 @@
 """
 End-to-end tests for raw_element_read/write on f32 and bf16 tensors.
 
-Covers subtile face addressing and nine access patterns:
+Covers subtile face addressing and ten access patterns:
 
   1. Element copy -- read one position, write to another
      (datamovement-only, compute is a no-op).
@@ -25,6 +25,8 @@ Covers subtile face addressing and nine access patterns:
      including signed zero and NaN behavior.
   9. Correlated loop state -- verifies that multiple conditionally updated
      scalars remain synchronized across loop iterations.
+ 10. Scalar arithmetic -- verifies f32 addition, subtraction, multiplication,
+     and multiply-add after raw element reads from bf16 and f32 tensors.
 """
 
 import pytest
@@ -34,6 +36,7 @@ import ttl
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_dram, to_l1
+from utils.correctness import assert_allclose
 
 
 # =============================================================================
@@ -241,6 +244,61 @@ def test_correlated_loop_state(device, dtype, memory):
 
     assert result[0, 0].item() == 9.0
     assert result[0, 1].item() == 43.0
+
+
+@ttl.operation(grid=(1, 1))
+def scalar_arithmetic_kernel(input_tensor, output_tensor):
+    """Apply scalar float arithmetic to three raw tensor elements."""
+    input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(
+        output_tensor, shape=(1, 1), block_count=2
+    )
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with input_dfb.reserve() as input_block:
+            transaction = ttl.copy(input_tensor[0, 0], input_block)
+            transaction.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with input_dfb.wait() as input_block:
+            lhs_value = ttl.raw_element_read(input_block, 0, 0)
+            rhs_value = ttl.raw_element_read(input_block, 0, 1)
+            addend_value = ttl.raw_element_read(input_block, 0, 2)
+            with output_dfb.reserve() as output_block:
+                ttl.raw_element_write(output_block, 0, 0, lhs_value + rhs_value)
+                ttl.raw_element_write(output_block, 0, 1, lhs_value - rhs_value)
+                ttl.raw_element_write(output_block, 0, 2, lhs_value * rhs_value)
+                ttl.raw_element_write(
+                    output_block,
+                    0,
+                    3,
+                    lhs_value * rhs_value + addend_value,
+                )
+                transaction = ttl.copy(output_block, output_tensor[0, 0])
+                transaction.wait()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_scalar_arithmetic(device, dtype, memory):
+    """Raw bf16 and f32 values support scalar arithmetic in data movement."""
+    torch_input = torch.zeros((1, 32), dtype=dtype)
+    torch_input[0, :3] = torch.tensor([1.5, -2.0, 0.25], dtype=dtype)
+    torch_expected = torch.tensor([-0.5, 3.5, -3.0, -2.75], dtype=dtype)
+    converter = to_dram if memory == "dram" else to_l1
+    input_tensor = converter(torch_input, device, tile=[1, 32])
+    output_tensor = converter(torch.zeros_like(torch_input), device, tile=[1, 32])
+
+    scalar_arithmetic_kernel(input_tensor, output_tensor)
+    result = ttnn.to_torch(output_tensor).float()
+
+    assert_allclose(result[0, :4], torch_expected.float(), rtol=0.0, atol=0.0)
 
 
 # =============================================================================

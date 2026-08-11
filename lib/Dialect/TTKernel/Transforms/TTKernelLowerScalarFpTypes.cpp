@@ -38,6 +38,14 @@ static bool isSupportedCmpFPredicate(arith::CmpFPredicate predicate) {
          predicate == arith::CmpFPredicate::UNE;
 }
 
+static Value promoteBf16BitsToF32(ConversionPatternRewriter &rewriter,
+                                  Location loc, Value bf16Bits) {
+  Type i32Type = rewriter.getI32Type();
+  Value extended = arith::ExtUIOp::create(rewriter, loc, i32Type, bf16Bits);
+  Value shift = arith::ConstantIntOp::create(rewriter, loc, 16, 32);
+  return arith::ShLIOp::create(rewriter, loc, extended, shift);
+}
+
 static Value createOrderedEqualOp(ConversionPatternRewriter &rewriter,
                                   Location loc, unsigned bitWidth, Value lhs,
                                   Value rhs) {
@@ -176,6 +184,42 @@ struct TruncFToBitExtract : OpConversionPattern<arith::TruncFOp> {
   }
 };
 
+struct ExtFToBitPromotion : OpConversionPattern<arith::ExtFOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(arith::ExtFOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto sourceType = dyn_cast<FloatType>(op.getIn().getType());
+    auto resultType = dyn_cast<FloatType>(op.getOut().getType());
+    if (!sourceType || !resultType || !sourceType.isBF16() ||
+        !resultType.isF32()) {
+      return rewriter.notifyMatchFailure(
+          op, "only bf16 -> f32 scalar promotion is supported");
+    }
+    rewriter.replaceOp(
+        op, promoteBf16BitsToF32(rewriter, op.getLoc(), adaptor.getIn()));
+    return success();
+  }
+};
+
+template <typename ArithOp, typename TTKernelOp>
+struct F32BinaryToTTKernel : OpConversionPattern<ArithOp> {
+  using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resultType = dyn_cast<FloatType>(op.getResult().getType());
+    if (!resultType || !resultType.isF32()) {
+      return rewriter.notifyMatchFailure(op, "expected scalar f32 arithmetic");
+    }
+    rewriter.replaceOpWithNewOp<TTKernelOp>(op, adaptor.getLhs(),
+                                            adaptor.getRhs());
+    return success();
+  }
+};
+
 /// Convert arith.constant with a FloatAttr into an integer constant holding
 /// the IEEE-754 bit pattern.  Skip constants whose users are ALL TTKernel ops,
 /// which legitimately operate on scalar floats (e.g. ttkernel.fill_tile).
@@ -263,6 +307,10 @@ struct TTKernelLowerScalarFpTypesPass
     target.addLegalDialect<ttk::TTKernelDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
     target.addIllegalOp<arith::CmpFOp>();
+    target.addIllegalOp<arith::AddFOp>();
+    target.addIllegalOp<arith::MulFOp>();
+    target.addIllegalOp<arith::SubFOp>();
+    target.addIllegalOp<arith::ExtFOp>();
     target.addIllegalOp<arith::TruncFOp>();
     target.addDynamicallyLegalOp<arith::ConstantOp>([](arith::ConstantOp op) {
       if (!mlir::isa<FloatAttr>(op.getValue())) {
@@ -282,8 +330,11 @@ struct TTKernelLowerScalarFpTypesPass
         [&](Operation *op) { return typeConverter.isLegal(op); });
 
     RewritePatternSet patterns(&ctx);
-    patterns.add<CmpFToSoftFloat, TruncFToBitExtract, ConstantOpConversion>(
-        typeConverter, &ctx);
+    patterns.add<CmpFToSoftFloat, ExtFToBitPromotion,
+                 F32BinaryToTTKernel<arith::AddFOp, ttk::Float32AddOp>,
+                 F32BinaryToTTKernel<arith::MulFOp, ttk::Float32MulOp>,
+                 F32BinaryToTTKernel<arith::SubFOp, ttk::Float32SubOp>,
+                 TruncFToBitExtract, ConstantOpConversion>(typeConverter, &ctx);
     scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter,
                                                          patterns, target);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
