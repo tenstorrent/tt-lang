@@ -4,6 +4,7 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 
+#include "DFBAllocationDebugReport.h"
 #include "DFBAllocationLimits.h"
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
@@ -22,6 +23,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -29,6 +31,8 @@
 #include <limits>
 #include <optional>
 #include <string>
+
+#define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
 namespace mlir::tt::ttl {
 
@@ -800,6 +804,8 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   }
   DFBAnalysisFailure analysisFailure;
   plan.conflictModel = DFBPhysicalConflictModelBuilder::build(liveness);
+  LLVM_DEBUG(printDFBAllocationDebugReport(llvm::dbgs(), liveness,
+                                           plan.conflictModel));
 
   auto computeAllocation =
       [&](bool requireMinimum) -> FailureOr<PhysicalAllocationCandidate> {
