@@ -46,7 +46,7 @@ func.func @malformed_unpack_policy()
 
 // -----
 
-// expected-error @below {{'func.func' op ttl.unpack_to_dest_fp32 must contain dataflow buffer indices in range [0, 31]}}
+// expected-error @below {{'func.func' op ttl.unpack_to_dest_fp32 must contain dataflow buffer indices in range [0, 31] for the conservative 32-DFB-index capacity used when target metadata is absent}}
 func.func @out_of_range_unpack_policy()
     attributes {ttl.unpack_to_dest_fp32 = array<i32: 32>} {
   return
@@ -224,7 +224,7 @@ func.func @dataflow_buffer_index_out_of_range(
   %zero = arith.constant 0 : index
   %input_tile = tensor.extract %input_attached[%zero, %zero]
       : tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{'ttl.tile_exp' op uses dataflow buffer index 32 outside the supported range [0, 31]}}
+  // expected-error @below {{'ttl.tile_exp' op uses dataflow buffer index 32 outside the supported range [0, 31] for the conservative 32-DFB-index capacity used when target metadata is absent}}
   %exp = ttl.tile_exp %input_tile into dst[%zero]
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   return

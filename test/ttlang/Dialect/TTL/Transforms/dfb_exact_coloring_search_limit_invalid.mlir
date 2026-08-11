@@ -7,7 +7,7 @@
 // first-fit result uses 33 indices, but an exact assignment can use 32. A
 // one-state limit must report an inconclusive search, not a capacity failure.
 
-// expected-error @below {{'builtin.module' op deterministic first-fit uses 33 physical DFB indices; exact allocation search explored 1 states and reached the 1-state limit without proving whether the allocation fits the 32-index hardware limit; increase `exact-coloring-search-limit`}}
+// expected-error @below {{'builtin.module' op deterministic first-fit uses 33 physical DFB indices; exact allocation search explored 1 states and reached the 1-state limit without proving whether the allocation fits the conservative 32-DFB-index capacity used when target metadata is absent; increase `exact-coloring-search-limit`}}
 module {
   func.func @bounded_exact_search()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
