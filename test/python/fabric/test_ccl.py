@@ -43,6 +43,10 @@ TWO_DIMENSIONAL_ROUTE_CASES = [
     pytest.param(ttnn.FabricConfig.FABRIC_2D_TORUS_Y, (0,), 3, id="torus-y"),
     pytest.param(ttnn.FabricConfig.FABRIC_2D_TORUS_XY, (0, 1), 3, id="torus-xy"),
 ]
+ONE_DIMENSIONAL_ROUTE_CONFIGS = [
+    pytest.param(ttnn.FabricConfig.FABRIC_1D, id="linear"),
+    pytest.param(ttnn.FabricConfig.FABRIC_1D_RING, id="ring"),
+]
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,7 @@ class FabricOperations:
     point_to_point: Callable[..., None]
     product_point_to_point: Callable[..., None]
     axis_neighbor: Callable[..., None]
+    axis_neighbor_wrap: Callable[..., None]
     stencil_nearest_neighbors: Callable[..., None]
     broadcast: Callable[..., None]
     scatter: Callable[..., None]
@@ -59,6 +64,39 @@ class FabricOperations:
     reduce_scatter: Callable[..., None]
     all_gather: Callable[..., None]
     all_to_all: Callable[..., None]
+
+
+def _make_axis_neighbor_operation(device_domain, axis_neighbor_net):
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def exchange_axis_neighbor(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            axis_neighbor_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[0, 0]).wait()
+
+            axis_neighbor_net.if_dst(receive)
+
+    return exchange_axis_neighbor
 
 
 def _make_stencil_direction_operation(device_domain, stencil_net):
@@ -246,6 +284,13 @@ def _make_fabric_operations(
     axis_neighbor_net = ttl.PipeNet(
         graph=ttl.TransferGraph.axis_neighbor(device_domain, axis=ring_axis)
     )
+    axis_neighbor_wrap_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.axis_neighbor(device_domain, axis=ring_axis, wrap=True)
+    )
+    axis_neighbor = _make_axis_neighbor_operation(device_domain, axis_neighbor_net)
+    axis_neighbor_wrap = _make_axis_neighbor_operation(
+        device_domain, axis_neighbor_wrap_net
+    )
     stencil_direction_nets = tuple(
         ttl.PipeNet(graph=ttl.TransferGraph.stencil(device_domain, offsets=[offset]))
         for offset in stencil_offsets
@@ -302,35 +347,6 @@ def _make_fabric_operations(
                     ttl.copy(receive_block, out[0, 0]).wait()
 
             product_point_to_point_net.if_dst(receive)
-
-    @ttl.operation(grid=(1, 1), device_domain=device_domain)
-    def axis_neighbor(inp, out):
-        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-
-        @ttl.compute()
-        def idle_compute():
-            pass
-
-        @ttl.datamovement()
-        def sender_node():
-            def send(pipe):
-                with send_dfb.reserve() as send_block:
-                    ttl.copy(inp[0, 0], send_block).wait()
-                with send_dfb.wait() as send_block:
-                    ttl.copy(send_block, pipe).wait()
-
-            axis_neighbor_net.if_src(send)
-
-        @ttl.datamovement()
-        def receiver_node():
-            def receive(pipe):
-                with receive_dfb.reserve() as receive_block:
-                    ttl.copy(pipe, receive_block).wait()
-                with receive_dfb.wait() as receive_block:
-                    ttl.copy(receive_block, out[0, 0]).wait()
-
-            axis_neighbor_net.if_dst(receive)
 
     def stencil_nearest_neighbors(inp, out):
         for exchange_direction in stencil_direction_operations:
@@ -711,6 +727,7 @@ def _make_fabric_operations(
         point_to_point=point_to_point,
         product_point_to_point=product_point_to_point,
         axis_neighbor=axis_neighbor,
+        axis_neighbor_wrap=axis_neighbor_wrap,
         stencil_nearest_neighbors=stencil_nearest_neighbors,
         broadcast=broadcast,
         scatter=scatter,
@@ -1002,6 +1019,158 @@ def test_two_dimensional_route(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+# Verify that a routing-enabled 1D fabric transfers across one logical mesh
+# axis using a validated adjacent connection and explicit hop count.
+@pytest.mark.parametrize("fabric_config", ONE_DIMENSIONAL_ROUTE_CONFIGS)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_one_dimensional_route(
+    fabric_mesh_shape,
+    fabric_config,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    line_axis = max(
+        range(len(fabric_mesh_shape)), key=lambda axis: fabric_mesh_shape[axis]
+    )
+    line_shape = tuple(
+        extent if axis == line_axis else 1
+        for axis, extent in enumerate(fabric_mesh_shape)
+    )
+    if prod(line_shape) < 2:
+        pytest.skip("requires a multi-device fabric line")
+
+    source_device = tuple(0 for _extent in line_shape)
+    destination_device = tuple(extent - 1 for extent in line_shape)
+    point_to_point = _make_point_to_point_operation(
+        line_shape, source_device, destination_device
+    )
+    device_count = prod(line_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with open_fabric_mesh(
+        requested_mesh_shape=fabric_mesh_shape,
+        fabric_config=fabric_config,
+    ) as parent_mesh:
+        mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
+        try:
+            inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+            out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+            point_to_point(inp, out)
+
+            result = _compose(mesh, out)
+        finally:
+            ttnn.close_mesh_device(mesh)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[-TILE_SIZE:, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify that neighbor-exchange mode accepts an adjacent transfer without
+# depending on fabric-router forwarding.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_one_dimensional_neighbor_exchange(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    line_axis = next(
+        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
+    )
+    line_shape = tuple(
+        2 if axis == line_axis else 1 for axis in range(len(fabric_mesh_shape))
+    )
+    source_device = tuple(0 for _extent in line_shape)
+    destination_device = tuple(
+        1 if axis == line_axis else 0 for axis in range(len(line_shape))
+    )
+    point_to_point = _make_point_to_point_operation(
+        line_shape, source_device, destination_device
+    )
+    logical_shape = (2 * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with open_fabric_mesh(
+        requested_mesh_shape=fabric_mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_1D_NEIGHBOR_EXCHANGE,
+    ) as parent_mesh:
+        mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
+        try:
+            inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+            out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+            point_to_point(inp, out)
+
+            result = _compose(mesh, out)
+        finally:
+            ttnn.close_mesh_device(mesh)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[-TILE_SIZE:, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Reusing a compiled operation after reopening fabric must resolve routes for
+# the active mesh and fabric configuration rather than cached prior state.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_reopen_with_different_fabric_config(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    if len(fabric_mesh_shape) != 2 or max(fabric_mesh_shape) < 3:
+        pytest.skip("requires a full 2D mesh with a torus boundary")
+
+    route_axis = max(
+        range(len(fabric_mesh_shape)), key=lambda axis: fabric_mesh_shape[axis]
+    )
+    source_device = tuple(0 for _extent in fabric_mesh_shape)
+    destination_device = tuple(
+        extent - 1 if axis == route_axis else 0
+        for axis, extent in enumerate(fabric_mesh_shape)
+    )
+    point_to_point = _make_point_to_point_operation(
+        fabric_mesh_shape, source_device, destination_device
+    )
+    device_count = prod(fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    for fabric_config in (
+        ttnn.FabricConfig.FABRIC_2D,
+        ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
+    ):
+        with open_fabric_mesh(
+            requested_mesh_shape=fabric_mesh_shape,
+            fabric_config=fabric_config,
+        ) as mesh:
+            inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+            out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+            point_to_point(inp, out)
+
+            result = _compose(mesh, out)
+
+        destination_index = _flatten_device_index(destination_device, fabric_mesh_shape)
+        expected = torch.zeros_like(inp_torch)
+        expected[
+            destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE,
+            :,
+        ] = inp_torch[:TILE_SIZE, :]
+        assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
 # Verify that an axis-neighbor relation transfers from each logical device to
 # its successor without crossing the domain boundary.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
@@ -1037,6 +1206,46 @@ def test_axis_neighbor(
     boundary[ring_axis] = 0
     expected_shards[tuple(boundary)] = 0
     expected = expected_shards.reshape(logical_shape)
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify that a wrapped axis-neighbor relation crosses the logical boundary
+# when the selected fabric configuration enables torus routing.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_axis_neighbor_wrap(
+    fabric_mesh_shape,
+    fabric_operations,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    if len(fabric_mesh_shape) != 2:
+        pytest.skip("requires a 2D fabric mesh")
+
+    device_count = prod(fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+    ring_axis = next(
+        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
+    )
+
+    with open_fabric_mesh(
+        requested_mesh_shape=fabric_mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
+    ) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        fabric_operations.axis_neighbor_wrap(inp, out)
+
+        result = _compose(mesh, out)
+
+    shard_shape = (*fabric_mesh_shape, TILE_SIZE, TILE_SIZE)
+    expected = torch.roll(
+        inp_torch.reshape(shard_shape), shifts=1, dims=ring_axis
+    ).reshape(logical_shape)
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
