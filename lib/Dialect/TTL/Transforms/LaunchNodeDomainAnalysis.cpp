@@ -751,16 +751,20 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
 
 namespace {
 
-/// Structured-control frames and values that determine an unresolved count.
+enum class UnresolvedControlFrameKind { ScfIf, AffineIf, ScfFor };
+
+/// One structured-control frame that determines an unresolved count.
+struct UnresolvedControlFrame {
+  UnresolvedControlFrameKind kind = UnresolvedControlFrameKind::ScfIf;
+  Operation *operation = nullptr;
+  std::size_t regionNumber = 0;
+  SmallVector<Value, 3> controlValues;
+};
+
+/// Structured-control frames that determine an unresolved count.
 struct UnresolvedExecutionCountContext {
   func::FuncOp function;
-  SmallVector<std::pair<Operation *, std::size_t>> frames;
-  SmallVector<Value> controlValues;
-
-  bool operator==(const UnresolvedExecutionCountContext &rhs) const {
-    return function == rhs.function && frames == rhs.frames &&
-           controlValues == rhs.controlValues;
-  }
+  SmallVector<UnresolvedControlFrame> frames;
 };
 
 static std::optional<UnresolvedExecutionCountContext>
@@ -816,8 +820,10 @@ getUnresolvedExecutionCountContext(Operation *op,
         current = parent;
         continue;
       }
-      context.frames.push_back({parent, region->getRegionNumber()});
-      context.controlValues.push_back(ifOp.getCondition());
+      context.frames.push_back({UnresolvedControlFrameKind::ScfIf,
+                                parent,
+                                region->getRegionNumber(),
+                                {ifOp.getCondition()}});
     } else if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent);
                affineIfOp && state.hasLaunchGrid) {
       LaunchNodeDomainResult trueDomain =
@@ -831,13 +837,17 @@ getUnresolvedExecutionCountContext(Operation *op,
         current = parent;
         continue;
       }
-      context.frames.push_back({parent, region->getRegionNumber()});
-      llvm::append_range(context.controlValues, affineIfOp.getOperands());
+      UnresolvedControlFrame &frame = context.frames.emplace_back();
+      frame.kind = UnresolvedControlFrameKind::AffineIf;
+      frame.operation = parent;
+      frame.regionNumber = region->getRegionNumber();
+      llvm::append_range(frame.controlValues, affineIfOp.getOperands());
     } else if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      context.frames.push_back({parent, region->getRegionNumber()});
-      context.controlValues.push_back(forOp.getLowerBound());
-      context.controlValues.push_back(forOp.getUpperBound());
-      context.controlValues.push_back(forOp.getStep());
+      context.frames.push_back(
+          {UnresolvedControlFrameKind::ScfFor,
+           parent,
+           region->getRegionNumber(),
+           {forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep()}});
     } else if (isa<scf::ExecuteRegionOp>(parent)) {
       current = parent;
       continue;
@@ -868,6 +878,13 @@ static bool proveEqualValuesAtLaunchLocations(
     return it->second;
   }
   cache[cacheKey] = false;
+
+  // Identical SSA at one launch location is equal even when its producer has
+  // effects and cannot be reconstructed from its operands.
+  if (lhsValue == rhsValue && lhsLocation == rhsLocation) {
+    cache[cacheKey] = true;
+    return true;
+  }
 
   std::optional<llvm::APInt> maybeLhsValue =
       createLaunchLocationIntegerEvaluator(lhsLocation, &state)
@@ -972,6 +989,46 @@ static bool proveEqualValuesAtLaunchLocations(
   return equal;
 }
 
+static bool proveEquivalentUnresolvedExecutionContexts(
+    const UnresolvedExecutionCountContext &lhsContext,
+    const LaunchExecutionLocation &lhsLocation,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    const UnresolvedExecutionCountContext &rhsContext,
+    const LaunchExecutionLocation &rhsLocation,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument,
+    const LaunchNodeDomainState &state, bool requireConditionalExecution) {
+  if (lhsContext.function != rhsContext.function ||
+      lhsContext.frames.size() != rhsContext.frames.size()) {
+    return false;
+  }
+
+  llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
+  for (auto &&[lhsFrame, rhsFrame] :
+       llvm::zip_equal(lhsContext.frames, rhsContext.frames)) {
+    if (lhsFrame.kind != rhsFrame.kind ||
+        (!requireConditionalExecution &&
+         lhsFrame.operation != rhsFrame.operation) ||
+        lhsFrame.regionNumber != rhsFrame.regionNumber ||
+        lhsFrame.controlValues.size() != rhsFrame.controlValues.size() ||
+        (requireConditionalExecution &&
+         lhsFrame.kind == UnresolvedControlFrameKind::ScfFor)) {
+      return false;
+    }
+    for (auto &&[lhsValue, rhsValue] :
+         llvm::zip_equal(lhsFrame.controlValues, rhsFrame.controlValues)) {
+      if (!proveEqualValuesAtLaunchLocations(
+              lhsValue, lhsLocation, resolveLhsFunctionArgument, rhsValue,
+              rhsLocation, resolveRhsFunctionArgument, state,
+              equalValueCache)) {
+        return false;
+      }
+    }
+  }
+  return !requireConditionalExecution || !lhsContext.frames.empty();
+}
+
 } // namespace
 
 bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
@@ -999,16 +1056,34 @@ bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
       getUnresolvedExecutionCountContext(lhs, lhsLocation, state);
   std::optional<UnresolvedExecutionCountContext> maybeRhsContext =
       getUnresolvedExecutionCountContext(rhs, rhsLocation, state);
-  if (!maybeLhsContext || !maybeRhsContext ||
-      !(*maybeLhsContext == *maybeRhsContext)) {
+  if (!maybeLhsContext || !maybeRhsContext) {
     return false;
   }
-  llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
-  return llvm::all_of(maybeLhsContext->controlValues, [&](Value value) {
-    return proveEqualValuesAtLaunchLocations(
-        value, lhsLocation, resolveLhsFunctionArgument, value, rhsLocation,
-        resolveRhsFunctionArgument, state, equalValueCache);
-  });
+  return proveEquivalentUnresolvedExecutionContexts(
+      *maybeLhsContext, lhsLocation, resolveLhsFunctionArgument,
+      *maybeRhsContext, rhsLocation, resolveRhsFunctionArgument, state,
+      /*requireConditionalExecution=*/false);
+}
+
+bool proveEquivalentConditionalExecutionAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state) {
+  LaunchExecutionLocation lhsLocation(lhsCoord);
+  LaunchExecutionLocation rhsLocation(rhsCoord);
+  std::optional<UnresolvedExecutionCountContext> maybeLhsContext =
+      getUnresolvedExecutionCountContext(lhs, lhsLocation, state);
+  std::optional<UnresolvedExecutionCountContext> maybeRhsContext =
+      getUnresolvedExecutionCountContext(rhs, rhsLocation, state);
+  if (!maybeLhsContext || !maybeRhsContext) {
+    return false;
+  }
+  auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
+    return std::nullopt;
+  };
+  return proveEquivalentUnresolvedExecutionContexts(
+      *maybeLhsContext, lhsLocation, resolveNoFunctionArguments,
+      *maybeRhsContext, rhsLocation, resolveNoFunctionArguments, state,
+      /*requireConditionalExecution=*/true);
 }
 
 bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,

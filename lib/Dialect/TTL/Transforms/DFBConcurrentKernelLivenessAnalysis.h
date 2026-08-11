@@ -84,7 +84,7 @@ struct DFBPerNodeAccessOccurrence {
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
-  bool assumesUnknownDomainsActive = false;
+  bool includesUnknownDomains = false;
   bool mayBeActive = true;
   SmallVector<DFBPerNodeAccessOccurrence> occurrences;
   SmallVector<unsigned> earliestEntryEvents;
@@ -92,6 +92,8 @@ struct DFBPerNodeLifetime {
   SmallVector<int64_t> transactionTileCounts;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  /// Every unresolved active access shares one structured 0-or-1 condition.
+  bool conditionalExecutionProven = false;
   DFBQuiescenceProof quiescence;
 };
 
@@ -106,6 +108,8 @@ struct DFBLogicalLifecycle {
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   bool bounded = false;
+  /// Possible-domain lifetimes are conditionally complete on every base node.
+  bool conditionallyBounded = false;
 
   /// Returns the lifetime for `node`, or null when the DFB is inactive there.
   const DFBPerNodeLifetime *findNodeLifetime(LaunchNodeCoord node) const;
@@ -136,6 +140,11 @@ public:
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
 
+  /// Returns conditional ordering proved with every unknown launch domain
+  /// treated as possible on `node`.
+  bool isConditionallyOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
+                                    LaunchNodeCoord node) const;
+
 private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
@@ -143,6 +152,7 @@ private:
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
+  SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

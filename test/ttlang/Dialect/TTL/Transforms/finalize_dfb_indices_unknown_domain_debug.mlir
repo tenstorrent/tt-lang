@@ -1,4 +1,4 @@
-// Tests counterfactual lifetime diagnostics for an unknown launch-node domain.
+// Tests possible-domain lifetime diagnostics for an unknown launch-node domain.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s
 
 // CHECK: DFB allocation liveness report
@@ -8,11 +8,13 @@
 // CHECK: access 4 effect=none tiles=0 sequence=0 domain=unknown
 // CHECK-SAME: operation=ttl.opaque_call kernel=@unknown_domain
 // CHECK-SAME: unresolved_at=arith.cmpi kernel=@unknown_domain
-// CHECK: diagnostic_nodes quiescence=unsupported-control-flow domain_assumption=all-unknown-active may_be_active=1 node_count=2 nodes={(0,0), (1,0)}
+// CHECK: diagnostic_nodes quiescence=none domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(0,0)}
+// CHECK-SAME: occurrences=[0:unresolved, 1:unresolved, 2:unresolved, 3:unresolved, 4:unresolved]
+// CHECK: diagnostic_nodes quiescence=unsupported-control-flow domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=1 nodes={(1,0)}
 // CHECK-SAME: occurrences=[0:unresolved, 1:unresolved, 2:unresolved, 3:unresolved, 4:unresolved]
 // CHECK: DFB logical_id=1 bounded=0 compiler_created=0
 // CHECK-SAME: domain=unknown
-// CHECK: diagnostic_nodes quiescence=missing-protocol-effect domain_assumption=all-unknown-active may_be_active=1 node_count=2 nodes={(0,0), (1,0)}
+// CHECK: diagnostic_nodes quiescence=missing-protocol-effect domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=2 nodes={(0,0), (1,0)}
 // CHECK-SAME: occurrences=[0:unresolved]
 // CHECK: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain node=none
 // CHECK: DFB allocation liveness report end
