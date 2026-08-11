@@ -4486,7 +4486,8 @@ def TTKernel_RoutingPlaneAtomicIncOp :
     Sends a non-posted atomic increment to `semaphoreAddress` through the
     connection selected by `connectionIndex`. `destinationDeviceId` identifies
     the final destination; `destinationMeshId` also selects the mesh when mesh
-    routing is enabled.
+    routing is enabled. `destinationHopCount` selects the route when
+    one-dimensional fabric routing is enabled.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
@@ -4494,6 +4495,7 @@ def TTKernel_RoutingPlaneAtomicIncOp :
     I32:$connectionIndex,
     I32:$destinationDeviceId,
     I32:$destinationMeshId,
+    I32:$destinationHopCount,
     TTKernel_NocAddr:$semaphoreAddress,
     I32:$increment
   );
@@ -4512,6 +4514,8 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     atomically increments `semaphoreAddress`, so the increment observes the
     complete transfer. `destinationDeviceId` identifies the final destination;
     `destinationMeshId` also selects the mesh when mesh routing is enabled.
+    `destinationHopCount` selects the route when one-dimensional fabric routing
+    is enabled.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
@@ -4519,6 +4523,7 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     I32:$connectionIndex,
     I32:$destinationDeviceId,
     I32:$destinationMeshId,
+    I32:$destinationHopCount,
     I32:$sourceAddress,
     I32:$sizeBytes,
     TTKernel_NocAddr:$destinationAddress,
