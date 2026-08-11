@@ -1220,6 +1220,14 @@ Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
 unknown execution remains unproven.
 
+An access with an unknown launch-node domain is refined to an exact empty
+domain only when execution-count analysis proves zero executions on every base
+launch node. The proof applies per access before their domains are combined.
+One unresolved or nonzero count preserves the unknown result. A logical DFB
+whose access-domain union is empty has no runtime storage access and may share
+a type-compatible scratch descriptor without a lifetime-order proof.
+Tensor-backed empty domains retain the issue #813 allocation diagnostic.
+
 The pass runs after `ttl-insert-copy-wait`. A transfer into or out of a DFB
 completes at its `ttl.wait`, whose transfer-handle operand does not identify the
 DFB. Inserting that wait before the corresponding push or pop ensures the
@@ -1395,6 +1403,8 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
   logicalDFBs = group bind_cb declarations by logical dfb_id
   collect every lifecycle operation and direct runtime use
   compute the launch-node domain of every access
+  refine an unknown access domain to empty only when its exact execution count
+    is zero on every base launch node
 
   for each launched physical node:
     graph = empty happens-before graph
