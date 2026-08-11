@@ -1003,6 +1003,17 @@ class TTCompilerBase(PyKernelAstBase):
         return chained_op
 
     def _coerce_binary_operands(self, left_value, right_value, left_node, right_node):
+        f32_type = F32Type.get(self.ctx)
+        bf16_type = BF16Type.get(self.ctx)
+        if left_value.type in (f32_type, bf16_type) and right_value.type in (
+            f32_type,
+            bf16_type,
+        ):
+            if left_value.type == bf16_type:
+                left_value = arith.ExtFOp(f32_type, left_value).result
+            if right_value.type == bf16_type:
+                right_value = arith.ExtFOp(f32_type, right_value).result
+            return left_value, right_value
         if left_value.type != right_value.type:
             right_value = _cast(right_value, left_value.type)
         return left_value, right_value
@@ -1128,6 +1139,15 @@ class TTCompilerBase(PyKernelAstBase):
         lhs, rhs = self._coerce_binary_operands(lhs, rhs, node.left, node.right)
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
         mlir_type = _get_type_str(lhs.type)
+
+        if isinstance(lhs.type, FloatType):
+            match node.op:
+                case ast.Add():
+                    return arith.AddFOp(lhs, rhs).result
+                case ast.Sub():
+                    return arith.SubFOp(lhs, rhs).result
+                case ast.Mult():
+                    return arith.MulFOp(lhs, rhs).result
 
         def qualified_or(attr, otherwise, *args, **kwargs):
             qualified_object_syntax = f"{mlir_type}.{attr}"
