@@ -24,6 +24,7 @@ from ..layouts import (
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
 from ..kernel import _DFB_RELEASE_METHODS
+from ..scalar import ScalarType
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -34,6 +35,9 @@ from .global_semaphore import (
     is_ttnn_global_semaphore,
 )
 from .tensor_registry import get_tensor_global_index, get_tensor_source
+
+
+_MISSING_STATIC_VALUE = object()
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,45 @@ class TTLGenericCompiler(TTCompilerBase):
             if not isinstance(elt, ast.Name):
                 raise ValueError("Tuple unpacking requires simple variable names")
             self._set_var(elt.id, val)
+
+    def visit_AnnAssign(self, node):
+        """Keep expressions derived from external scalar results as SSA."""
+        if node.value is not None and self._contains_external_scalar_result(node.value):
+            if not isinstance(node.target, ast.Name):
+                self._raise_error(
+                    node.target,
+                    "an annotated external scalar result requires a name target",
+                )
+            value = self.visit(node.value)
+            if value is None:
+                self._raise_error(
+                    node.value,
+                    "an annotated external scalar expression must produce a value",
+                )
+            self._set_var(node.target.id, value)
+            return
+        return super().visit_AnnAssign(node)
+
+    def _contains_external_scalar_result(self, root):
+        for candidate in ast.walk(root):
+            if not isinstance(candidate, ast.Call) or not self._is_ttl_api_call(
+                candidate, "call_extern_func"
+            ):
+                continue
+            result_type_node = next(
+                (
+                    keyword.value
+                    for keyword in candidate.keywords
+                    if keyword.arg == "result_type"
+                ),
+                None,
+            )
+            if (
+                result_type_node is not None
+                and self._resolve_scalar_type(result_type_node) is not None
+            ):
+                return True
+        return False
 
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
@@ -597,6 +640,31 @@ class TTLGenericCompiler(TTCompilerBase):
             ttl.yield_([])
 
         return None  # Statement, no return value
+
+    def _coerce_binary_operands(self, left_value, right_value, left_node, right_node):
+        if (
+            left_value.type != right_value.type
+            and isinstance(left_value.type, IntegerType)
+            and isinstance(right_value.type, IntegerType)
+        ):
+            raise TypeError(
+                "integer operands require matching widths, got "
+                f"{left_value.type} and {right_value.type}"
+            )
+        return super()._coerce_binary_operands(
+            left_value, right_value, left_node, right_node
+        )
+
+    def _materialize_integer_literal(self, node, value: int, integer_type: IntegerType):
+        bit_width = integer_type.width
+        minimum = -(1 << (bit_width - 1))
+        maximum = (1 << (bit_width - 1)) - 1
+        if not minimum <= value <= maximum:
+            self._raise_error(
+                node,
+                f"integer literal {value} does not fit in signed i{bit_width}",
+            )
+        return arith.ConstantOp(integer_type, value).result
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""
@@ -1060,6 +1128,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 if is_ttnn_tensor(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
+                if val is None:
+                    continue
                 if type(val) is bool:
                     self._set_var(
                         name,
@@ -1082,6 +1152,8 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
+                elif val is ScalarType or isinstance(val, ScalarType):
+                    continue
                 elif is_ttnn_global_semaphore(val):
                     sem_addr = get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
@@ -1747,6 +1819,39 @@ class TTLGenericCompiler(TTCompilerBase):
             "resolvable bool",
         )
 
+    def _resolve_static_reference(self, node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            for namespace in (self.captures, self.fn_globals):
+                if node.id in namespace:
+                    return namespace[node.id]
+            return _MISSING_STATIC_VALUE
+        if not isinstance(node, ast.Attribute):
+            return _MISSING_STATIC_VALUE
+        owner = self._resolve_static_reference(node.value)
+        if owner is _MISSING_STATIC_VALUE:
+            return _MISSING_STATIC_VALUE
+        return inspect.getattr_static(owner, node.attr, _MISSING_STATIC_VALUE)
+
+    def _resolve_scalar_type(self, node):
+        """Resolve a statically known ScalarType without emitting SSA."""
+        result_type = self._resolve_static_reference(node)
+        if result_type is None:
+            return None
+        if not isinstance(result_type, ScalarType):
+            type_detail = (
+                ""
+                if result_type is _MISSING_STATIC_VALUE
+                else f", got {type(result_type).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() result_type must be "
+                "ttl.ScalarType.I32 or ttl.ScalarType.I64" + type_detail,
+            )
+        return result_type
+
     def _resolve_dfb_value(self, node, param_name):
         """Resolve one DFB expression and reject other SSA values."""
         value = self.visit(node)
@@ -1909,6 +2014,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 ],
                 unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
+                result_type=ttl.ScalarType.I64, # optional scalar result
             )
 
         DFBs use explicit forms in template_args and may appear directly in
@@ -1955,6 +2061,7 @@ class TTLGenericCompiler(TTCompilerBase):
             "dfb_effects",
             "unknown_dfb_access",
             "include_paths",
+            "result_type",
         }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
@@ -2031,6 +2138,14 @@ class TTLGenericCompiler(TTCompilerBase):
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
+        result_types = []
+        if "result_type" in kw_map:
+            result_type = self._resolve_scalar_type(kw_map["result_type"])
+            if result_type is not None:
+                result_types.append(
+                    IntegerType.get_signless(result_type.bit_width, self.ctx)
+                )
+
         template_dfb_operands = []
         template_arg_attrs = []
         dfb_kinds = {
@@ -2098,8 +2213,8 @@ class TTLGenericCompiler(TTCompilerBase):
         effects_attr = ArrayAttr.get(effect_attrs) if effect_attrs else None
         unknown_dfb_access_attr = UnitAttr.get(self.ctx) if unknown_dfb_access else None
 
-        ttl.opaque_call(
-            [],
+        opaque_call = ttl.opaque_call(
+            result_types[0] if result_types else None,
             callee,
             header,
             func_args,
@@ -2110,6 +2225,8 @@ class TTLGenericCompiler(TTCompilerBase):
             dfb_effects=effects_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
         )
+        if result_types:
+            return opaque_call
 
     def visit_With(self, node):
         """

@@ -1,8 +1,9 @@
 # External Functions
 
-`ttl.call_extern_func` invokes a void C++ function declared in a custom header.
-It supports static template arguments, runtime function arguments, custom
-include directories, and portable logical-kernel selection.
+`ttl.call_extern_func` invokes a C++ function declared in a custom header. It
+supports static template arguments, runtime function arguments, an optional
+typed scalar result, custom include directories, and portable logical-kernel
+selection.
 
 ```python
 ttl.call_extern_func(
@@ -16,12 +17,41 @@ ttl.call_extern_func(
     unknown_dfb_access=False,
     include_paths=None,
     kernel=None,
+    result_type=None,
 )
 ```
 
 `header` and `callee` are compile-time strings. `template_args`, `func_args`,
-and `include_paths` preserve source order. External functions currently return
-no value, and the compiler does not validate the C++ signature.
+and `include_paths` preserve source order. The compiler does not validate the
+C++ signature.
+
+## Scalar results
+
+`result_type=ttl.ScalarType.I32` and `result_type=ttl.ScalarType.I64` declare
+one signless scalar integer result. Omitting `result_type` or passing `None`
+declares a void function. Raw strings, integers, and the `ScalarType` class are
+invalid result declarations.
+
+```python
+predicate = ttl.call_extern_func(
+    HEADER,
+    "is_enabled",
+    result_type=ttl.ScalarType.I64,
+    kernel=ttl.KernelKind.COMPUTE,
+)
+if predicate:
+    ttl.call_extern_func(
+        HEADER,
+        "execute_enabled_work",
+        kernel=ttl.KernelKind.COMPUTE,
+    )
+```
+
+A scalar-result call may be assigned directly in a unified operation. A call
+selected for multiple logical kernels creates an independent local result in
+each selected kernel. Enclosing structured control is retained only in logical
+kernels that retain work in its regions. Composition preserves captured
+`ScalarType` members and includes them in deterministic operation identity.
 
 ## Logical-kernel selection
 

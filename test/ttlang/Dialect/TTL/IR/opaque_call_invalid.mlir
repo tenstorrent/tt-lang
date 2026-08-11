@@ -140,3 +140,19 @@ func.func @effect_tile_count_exceeds_capacity() attributes {ttl.kernel_thread = 
   ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>] () {header = "h.hpp"} : () -> ()
   return
 }
+
+// -----
+// Test: an external call produces at most one scalar result.
+func.func @multiple_results() {
+  // expected-error @below {{'ttl.opaque_call' op result group starting at #0 requires 0 or 1 element, but found 2}}
+  %results:2 = ttl.opaque_call "foo" () {header = "h.hpp"} : () -> (i32, i64)
+  return
+}
+
+// -----
+// Test: an external call result uses a declared signless integer carrier.
+func.func @unsupported_result_type() {
+  // expected-error @below {{'ttl.opaque_call' op result #0 must be 32-bit signless integer or 64-bit signless integer, but got 'f32'}}
+  %result = ttl.opaque_call "foo" () {header = "h.hpp"} : () -> f32
+  return
+}
