@@ -312,29 +312,16 @@ def test_factory_instances_with_different_callees_keep_distinct_kernels():
     assert first_reader != second_reader
 
 
-def test_operation_identity_encodes_pipe_topology():
-    """Pipe topology distinguishes factory-created operations."""
+@pytest.mark.parametrize("capture_kind", ["pipe", "pipenet"])
+def test_operation_identity_encodes_pipe_topology(capture_kind):
+    """Pipe and PipeNet topology distinguish factory-created operations."""
 
     def identity_for(destination):
         pipe = ttl.Pipe(src=(0, 0), dst=destination)
+        capture = pipe if capture_kind == "pipe" else ttl.PipeNet([pipe])
 
         def selected_operation():
-            return pipe
-
-        return _operation_identity(selected_operation)
-
-    assert identity_for((1, 0)) == identity_for((1, 0))
-    assert identity_for((1, 0)) != identity_for((2, 0))
-
-
-def test_operation_identity_encodes_pipenet_topology():
-    """Local PipeNet topology distinguishes factory-created operations."""
-
-    def identity_for(destination):
-        pipe_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=destination)])
-
-        def selected_operation():
-            return pipe_net
+            return capture
 
         return _operation_identity(selected_operation)
 
