@@ -444,8 +444,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// A coordinate-dependent condition with an unevaluable operand makes the
-// receiver-post domain unknown. The schedule pass must not omit that event.
+// A receiver post under an unknown predicate remains a possible event. It
+// cannot be paired one-to-one with an unconditional send.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_receiver_domain(%offset: index)
@@ -454,20 +454,29 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %sum = arith.addi %core_x, %offset : index
     %c1 = arith.constant 1 : index
-    // expected-note @below {{this coordinate-dependent condition cannot be evaluated statically}}
     %is_receiver = arith.cmpi eq, %sum, %c1 : index
     scf.if %is_receiver {
       %reserve = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-error @below {{cannot verify PipeNet synchronization because this receiver post has an unknown launch-node domain}}
+      // expected-note @below {{matching receiver post occurrence is here}}
       %receive = ttl.copy %pipe, %reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-error @below {{cannot prove a one-to-one synchronization schedule}}
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
     }
     func.return
   }
