@@ -40,6 +40,7 @@ def test_ttl_passes_registered():
         "ttl-verify-pipenet-guards",
         "ttl-verify-pipenet-schedule",
         "ttl-erase-pipenet-scopes",
+        "ttkernel-annotate-cb-use",
     ]
     for pass_name in module_passes:
         PassManager.parse(f"builtin.module({pass_name})", context=ctx)
@@ -48,6 +49,7 @@ def test_ttl_passes_registered():
         # CHECK: ttl-verify-pipenet-guards pass registered
         # CHECK: ttl-verify-pipenet-schedule pass registered
         # CHECK: ttl-erase-pipenet-scopes pass registered
+        # CHECK: ttkernel-annotate-cb-use pass registered
 
 
 if __name__ == "__main__":

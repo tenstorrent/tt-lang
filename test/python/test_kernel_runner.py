@@ -171,6 +171,13 @@ class _MalformedCoreRanges:
         return (object(),)
 
 
+class _FakeExplicitCoreRanges:
+    def __init__(self, start, end):
+        self.ranges = (
+            _FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(*start), _FakeTTNN.CoreCoord(*end)),
+        )
+
+
 class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
@@ -2912,6 +2919,251 @@ def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
     assert format_descriptor.tile.tile.tile_shape == (16, 16)
 
 
+def _descriptor_cores(descriptor):
+    ranges = descriptor.core_ranges.ranges
+    if callable(ranges):
+        ranges = ranges()
+    return {
+        (x, y)
+        for core_range in ranges
+        for y in range(core_range.start.y, core_range.end.y + 1)
+        for x in range(core_range.start.x, core_range.end.x + 1)
+    }
+
+
+def _specialized_spec(core_ranges, used_cb_indices):
+    return kernel_runner.KernelSpec(
+        path="/tmp/specialized.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        config=object(),
+        core_ranges=core_ranges,
+        used_cb_indices=used_cb_indices,
+    )
+
+
+def test_specialized_cb_descriptor_follows_active_kernel_core(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    active = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    inactive = _FakeExplicitCoreRanges((1, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))],
+        core_ranges=full_grid,
+        kernel_specs=[
+            _specialized_spec(active, [0]),
+            _specialized_spec(inactive, []),
+        ],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(0, 0)}
+
+
+def test_unannotated_kernel_keeps_whole_grid_cb_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))],
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].core_ranges is full_grid
+
+
+def test_unannotated_kernel_remains_conservative_with_annotated_peer(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    core_1 = _FakeExplicitCoreRanges((1, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))],
+        core_ranges=full_grid,
+        kernel_specs=[
+            _specialized_spec(core_0, []),
+            _specialized_spec(core_1, None),
+        ],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(1, 0)}
+
+
+def test_specialized_cb_descriptors_allow_sparse_physical_ids(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    configs = [
+        PhysicalDFBConfig(index, 1, "bfloat16", 1, 2048, (32, 32)) for index in range(3)
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, [2])],
+    )
+
+    assert [
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
+    ] == [2]
+
+
+def test_specialized_cb_budget_is_computed_per_core(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 2048)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    core_1 = _FakeExplicitCoreRanges((1, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(index, 1, "bfloat16", 1, 2048, (32, 32)) for index in range(2)
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[
+            _specialized_spec(core_0, [0]),
+            _specialized_spec(core_1, [1]),
+        ],
+    )
+
+    assert len(descriptors) == 2
+    assert {_descriptor_cores(descriptor).pop() for descriptor in descriptors} == {
+        (0, 0),
+        (1, 0),
+    }
+
+
+def test_specialized_cb_budget_uses_each_cores_remaining_l1(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_get_remaining_l1_by_core_for_device",
+        lambda _device, _cores: {(0, 0): 2048, (1, 0): 1024},
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    core_1 = _FakeExplicitCoreRanges((1, 0), (1, 0))
+
+    with pytest.raises(
+        ValueError,
+        match=r"core \(1, 0\).*2048 bytes.*L1 budget \(1024 bytes\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=[
+                PhysicalDFBConfig(index, 1, "bfloat16", 1, 2048, (32, 32))
+                for index in range(2)
+            ],
+            core_ranges=full_grid,
+            kernel_specs=[
+                _specialized_spec(core_0, [0]),
+                _specialized_spec(core_1, [1]),
+            ],
+        )
+
+
+def test_computed_address_backing_uses_specialized_cb_cores(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    allocations = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda ranges, size, device: allocations.append((ranges, size, device))
+        or object(),
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    core_1 = _FakeExplicitCoreRanges((1, 0), (1, 0))
+    device = object()
+
+    kernel_runner.build_pipe_computed_address_dfb_tensors(
+        tensors=[],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))],
+        core_ranges=full_grid,
+        pipe_computed_address_dfb_indices=[0],
+        device=device,
+        kernel_specs=[
+            _specialized_spec(core_0, [0]),
+            _specialized_spec(core_1, []),
+        ],
+    )
+
+    assert len(allocations) == 1
+    assert _descriptor_cores(
+        type("Allocation", (), {"core_ranges": allocations[0][0]})()
+    ) == {(0, 0)}
+    assert allocations[0][1:] == (2048, device)
+
+
+def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": object()})
+    fake_ttnn.TensorMemoryLayout = type(
+        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": object()}
+    )
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": object()})
+    fake_ttnn.float32 = object()
+    fake_ttnn.ROW_MAJOR_LAYOUT = object()
+    empty_calls = []
+    fake_ttnn.empty = (
+        lambda shape, **kwargs: empty_calls.append((shape, kwargs)) or object()
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    sparse_ranges = _FakeTTNN.CoreRangeSet(
+        (
+            _FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(0, 0)),
+            _FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(2, 0), _FakeTTNN.CoreCoord(2, 0)),
+        )
+    )
+
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        sparse_ranges, num_bytes=2048, device=object()
+    )
+
+    assert empty_calls[0][0] == (2, 512)
+
+
+def test_specialized_cb_use_intersects_storage_segments(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    active = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    inactive = _FakeExplicitCoreRanges((1, 0), (1, 0))
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0), (1, 0))),),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[config],
+        core_ranges=full_grid,
+        kernel_specs=[
+            _specialized_spec(active, [0]),
+            _specialized_spec(inactive, []),
+        ],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(0, 0)}
+
+
 def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -3692,6 +3944,31 @@ def test_emit_runner_source_omits_program_hash_by_default():
     )
 
     assert "PROGRAM_HASH = None" in source
+
+
+def test_emit_runner_source_preserves_specialized_cb_use(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/sparse.cpp",
+                thread_type="compute",
+                tensor_indices=[],
+                config=object(),
+                used_cb_indices=[2],
+            )
+        ],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "KERNEL_USED_CB_INDICES = [" in source
+    assert "    [2],  # compute" in source
+    assert "used_cb_indices=KERNEL_USED_CB_INDICES[kernel_idx]" in source
+    assert "kernel_specs=kernel_specs" in source
+    compile(source, "<emitted-runner>", "exec")
 
 
 def test_emit_runner_source_preserves_positional_options():
