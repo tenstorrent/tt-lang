@@ -77,7 +77,6 @@ jobs:
       RUNS_ON: ${{ inputs.runs-on }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
-      HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
 
     steps:
       - name: Checkout tt-lang
@@ -112,6 +111,31 @@ jobs:
           source build/env/activate
           pip install -r dev-requirements.txt
 
+      - name: Full Galaxy fabric topology pytests
+        if: inputs.runs-on == 'galaxy-bh'
+        run: |
+          source build/env/activate
+          unset TT_VISIBLE_DEVICES
+          set -o pipefail
+          if ! timeout --signal=TERM --kill-after=15s 1800 \
+              python3 -m pytest \
+                -c build/test/pytest.ini \
+                --rootdir="$GITHUB_WORKSPACE/test" \
+                test/python/fabric \
+                -v -x --tb=long --timeout=300 --timeout-method=thread \
+                --junitxml=build/test/pytest-report-fabric-full.xml \
+              2>&1 | tee /tmp/device_test.log; then
+            python3 - /tmp/device_test.log <<'PY'
+          import pathlib
+          import sys
+
+          failure = "".join(pathlib.Path(sys.argv[1]).read_text().splitlines(True)[-80:])
+          failure = failure[-6000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Full Galaxy fabric pytest failure::{failure}")
+          PY
+            exit 1
+          fi
+
       - name: Smoketest
         run: |
           source build/env/activate
@@ -142,22 +166,30 @@ jobs:
           .github/scripts/run-hardware-lit.sh build/test/python build/test/python-lit-report
 
       - name: Pytests (Python DSL end-to-end tests)
+        env:
+          HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
         run: |
           source build/env/activate
           .github/scripts/run-hardware-pytests.sh test/python build/test/pytest-report
 
       - name: ME2E tests (MLIR input end-to-end tests)
+        env:
+          HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
         run: |
           source build/env/activate
           .github/scripts/run-hardware-pytests.sh test/me2e build/test/me2e-report
 
       - name: Hardware compiler example scripts
+        env:
+          HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
         run: |
           set -eo pipefail
           source build/env/activate
           bash .github/scripts/compile-and-run-examples.sh
 
       - name: Tutorial examples
+        env:
+          HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
         run: |
           source build/env/activate
           .github/scripts/run-hardware-pytests.sh test/tutorial build/test/tutorial-report

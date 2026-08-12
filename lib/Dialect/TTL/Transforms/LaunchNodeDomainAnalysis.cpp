@@ -12,6 +12,7 @@
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -29,7 +30,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <tuple>
 #include <utility>
@@ -63,6 +66,58 @@ bool LaunchNodeCoord::operator<(const LaunchNodeCoord &rhs) const {
 
 bool LaunchNodeCoord::operator==(const LaunchNodeCoord &rhs) const {
   return x == rhs.x && y == rhs.y;
+}
+
+LaunchExecutionLocation::LaunchExecutionLocation(LaunchNodeCoord node)
+    : node(node) {}
+
+LaunchExecutionLocation::LaunchExecutionLocation(LaunchNodeCoord node,
+                                                 DeviceDomainAttr deviceDomain,
+                                                 DeviceRefAttr device)
+    : node(node), deviceDomain(deviceDomain), device(device) {
+  assert(deviceDomain && device &&
+         "device-aware launch location requires a domain and device");
+}
+
+bool LaunchExecutionLocation::operator<(
+    const LaunchExecutionLocation &rhs) const {
+  if (node < rhs.node) {
+    return true;
+  }
+  if (rhs.node < node) {
+    return false;
+  }
+  std::less<const void *> less;
+  if (deviceDomain != rhs.deviceDomain) {
+    return less(deviceDomain ? deviceDomain.getAsOpaquePointer() : nullptr,
+                rhs.deviceDomain ? rhs.deviceDomain.getAsOpaquePointer()
+                                 : nullptr);
+  }
+  return less(device ? device.getAsOpaquePointer() : nullptr,
+              rhs.device ? rhs.device.getAsOpaquePointer() : nullptr);
+}
+
+bool LaunchExecutionLocation::operator==(
+    const LaunchExecutionLocation &rhs) const {
+  return node == rhs.node && deviceDomain == rhs.deviceDomain &&
+         device == rhs.device;
+}
+
+FailureOr<LaunchExecutionLocation>
+getPipeExecutionLocation(LaunchNodeCoord node, DeviceTransferAttr transfer,
+                         PipeRole role) {
+  if (!transfer) {
+    return LaunchExecutionLocation(node);
+  }
+  assert((role == PipeRole::Source || role == PipeRole::Destination) &&
+         "pipe execution location requires an endpoint role");
+  DeviceRefAttr device = role == PipeRole::Source
+                             ? transfer.getEdge().getSource()
+                             : transfer.getEdge().getDestination();
+  if (!device) {
+    return failure();
+  }
+  return LaunchExecutionLocation(node, transfer.getDomain(), device);
 }
 
 LaunchNodeDomain LaunchNodeDomain::unknown() { return {/*known=*/false, {}}; }
@@ -166,20 +221,15 @@ bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
   return domain.known && domain.nodes.find(coord) != domain.nodes.end();
 }
 
-LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record) {
+LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(PipeRecordAttr record,
+                                                   PipeRole role) {
   LaunchNodeDomain result;
-  result.nodes.insert({record.getSrcX(), record.getSrcY()});
-  return result;
-}
-
-LaunchNodeDomain
-getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record) {
-  LaunchNodeDomain result;
-  for (int64_t nodeX = record.getDstStartX(); nodeX <= record.getDstEndX();
-       ++nodeX) {
-    for (int64_t nodeY = record.getDstStartY(); nodeY <= record.getDstEndY();
-         ++nodeY) {
-      result.nodes.insert({nodeX, nodeY});
+  for (const PipeRecordRoleFacts &facts :
+       getPipeRecordRoleFacts(record, role)) {
+    for (int64_t nodeX = facts.minX; nodeX <= facts.maxX; ++nodeX) {
+      for (int64_t nodeY = facts.minY; nodeY <= facts.maxY; ++nodeY) {
+        result.nodes.insert({nodeX, nodeY});
+      }
     }
   }
   return result;
@@ -190,9 +240,7 @@ LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
   LaunchNodeDomain result;
   for (PipeRecordAttr record : records.getPipes()) {
     LaunchNodeDomain recordDomain =
-        role == PipeRole::Source
-            ? getPipeRecordSourceLaunchNodeDomain(record)
-            : getPipeRecordDestinationLaunchNodeDomain(record);
+        getPipeRecordRoleLaunchNodeDomain(record, role);
     result = result.unionWith(recordDomain);
   }
   return result;
@@ -309,7 +357,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
 }
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
-  executionCountAnalysesByFunctionAndCoord.clear();
+  executionCountAnalysesByFunctionAndLocation.clear();
   if (!module->hasAttr(kLaunchGridAttrName)) {
     hasLaunchGrid = false;
   } else {
@@ -359,6 +407,9 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
   }
   if (state) {
     if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+      if (predicate.getReferencedRecords()) {
+        return std::nullopt;
+      }
       bool selected = knownLaunchNodeDomainContains(
           state->getRoleDomain(predicate.getReferencedPipeNetId(),
                                predicate.getReferencedRole()),
@@ -369,32 +420,145 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
   return std::nullopt;
 }
 
+std::optional<bool>
+pipeRecordRoleMatchesAtLaunchLocation(PipeRecordAttr record, PipeRole role,
+                                      const LaunchExecutionLocation &location) {
+  bool hasUnknownDeviceMatch = false;
+  for (const PipeRecordRoleFacts &facts :
+       getPipeRecordRoleFacts(record, role)) {
+    bool nodeMatches =
+        location.node.x >= facts.minX && location.node.x <= facts.maxX &&
+        location.node.y >= facts.minY && location.node.y <= facts.maxY;
+    if (!nodeMatches) {
+      continue;
+    }
+    if (!facts.device) {
+      return true;
+    }
+    if (!location.device || location.deviceDomain != facts.deviceDomain) {
+      hasUnknownDeviceMatch = true;
+      continue;
+    }
+    if (location.device == facts.device) {
+      return true;
+    }
+  }
+  return hasUnknownDeviceMatch ? std::nullopt : std::optional<bool>(false);
+}
+
+static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
+    PipeNetPredicateOpInterface predicate,
+    const LaunchExecutionLocation &location) {
+  PipeNetRecordsAttr records = predicate.getReferencedRecords();
+  if (!records) {
+    return std::nullopt;
+  }
+  bool selected = false;
+  for (PipeRecordAttr record : records.getPipes()) {
+    std::optional<bool> recordMatches = pipeRecordRoleMatchesAtLaunchLocation(
+        record, predicate.getReferencedRole(), location);
+    if (!recordMatches) {
+      return std::nullopt;
+    }
+    selected |= *recordMatches;
+  }
+  return selected;
+}
+
+static std::optional<llvm::APInt>
+evaluateLaunchLocationContextValue(Value value,
+                                   const LaunchExecutionLocation &location,
+                                   const LaunchNodeDomainState *state) {
+  if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+    if (predicate.getReferencedRecords()) {
+      std::optional<bool> selected =
+          evaluatePipeNetPredicateAtLaunchLocation(predicate, location);
+      return selected ? std::optional<llvm::APInt>(llvm::APInt(
+                            /*numBits=*/1, *selected))
+                      : std::nullopt;
+    }
+  }
+  if (std::optional<llvm::APInt> nodeValue =
+          evaluateLaunchNodeContextValue(value, location.node, state)) {
+    return nodeValue;
+  }
+  if (auto isDeviceOp = value.getDefiningOp<IsDeviceOp>()) {
+    if (!location.device || location.deviceDomain != isDeviceOp.getDomain()) {
+      return std::nullopt;
+    }
+    return llvm::APInt(/*numBits=*/1,
+                       location.device == isDeviceOp.getDevice());
+  }
+  if (auto isDeviceInRangeOp = value.getDefiningOp<IsDeviceInRangeOp>()) {
+    if (!location.device ||
+        location.deviceDomain != isDeviceInRangeOp.getDomain()) {
+      return std::nullopt;
+    }
+    return llvm::APInt(
+        /*numBits=*/1,
+        deviceRangeContains(isDeviceInRangeOp.getRange(), location.device));
+  }
+  if (auto currentDeviceOp = value.getDefiningOp<CurrentDeviceIndexOp>()) {
+    if (!location.device ||
+        location.deviceDomain != currentDeviceOp.getDomain()) {
+      return std::nullopt;
+    }
+    return llvm::APInt(
+        IndexType::kInternalStorageBitWidth,
+        getLogicalDeviceIndex(currentDeviceOp.getDomain(), location.device));
+  }
+  return std::nullopt;
+}
+
 /// Use shared integer folding for every launch-domain expression.
+static IntegerExpressionEvaluator createLaunchLocationIntegerEvaluator(
+    const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState *state = nullptr) {
+  return IntegerExpressionEvaluator(
+      [location, state](Value value) -> std::optional<llvm::APInt> {
+        return evaluateLaunchLocationContextValue(value, location, state);
+      });
+}
+
 static IntegerExpressionEvaluator
 createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord,
                                  const LaunchNodeDomainState *state = nullptr) {
-  return IntegerExpressionEvaluator(
-      [coord, state](Value value) -> std::optional<llvm::APInt> {
-        return evaluateLaunchNodeContextValue(value, coord, state);
-      });
+  return createLaunchLocationIntegerEvaluator(LaunchExecutionLocation(coord),
+                                              state);
 }
 
 std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state) {
+  return evaluatePredicateAtLaunchLocation(
+      value, LaunchExecutionLocation(coord), state);
+}
+
+std::optional<bool>
+evaluatePredicateAtLaunchLocation(Value value,
+                                  const LaunchExecutionLocation &location,
+                                  const LaunchNodeDomainState &state) {
   std::optional<llvm::APInt> maybeValue =
-      createLaunchNodeIntegerEvaluator(coord, &state).evaluate(value);
+      evaluateIntegerAtLaunchLocation(value, location, state);
   if (!maybeValue || maybeValue->getBitWidth() != 1) {
     return std::nullopt;
   }
   return maybeValue->getBoolValue();
 }
 
+std::optional<llvm::APInt>
+evaluateIntegerAtLaunchLocation(Value value,
+                                const LaunchExecutionLocation &location,
+                                const LaunchNodeDomainState &state) {
+  return createLaunchLocationIntegerEvaluator(location, &state).evaluate(value);
+}
+
 namespace {
 
 static std::optional<std::uint64_t>
-getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
-                                     const LaunchNodeDomainState &state) {
+evaluateRegionInvocationCountAtLaunchLocation(
+    Region &region, const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState &state) {
   Operation *parent = region.getParentOp();
   if (isa<PipeNetScopeOp>(parent)) {
     return 1;
@@ -402,7 +566,7 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
   if (auto ifSrcOp = dyn_cast<IfSrcOp>(parent)) {
     auto pipeType = cast<PipeType>(ifSrcOp.getPipe().getType());
     return knownLaunchNodeDomainContains(
-               getPipeSourceLaunchNodeDomain(pipeType), coord)
+               getPipeSourceLaunchNodeDomain(pipeType), location.node)
                ? 1
                : 0;
   }
@@ -410,24 +574,33 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
     auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
     return knownLaunchNodeDomainContains(
                getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
-               coord)
+               location.node)
                ? 1
                : 0;
   }
   if (auto foreachSrcOp = dyn_cast<PipeNetForeachSrcOp>(parent)) {
-    return llvm::count_if(
-        foreachSrcOp.getRecords().getPipes(), [&](PipeRecordAttr record) {
-          return record.getSrcX() == coord.x && record.getSrcY() == coord.y;
-        });
+    std::uint64_t count = 0;
+    for (PipeRecordAttr record : foreachSrcOp.getRecords().getPipes()) {
+      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
+          record, PipeRole::Source, location);
+      if (!matches) {
+        return std::nullopt;
+      }
+      count += *matches;
+    }
+    return count;
   }
   if (auto foreachDstOp = dyn_cast<PipeNetForeachDstOp>(parent)) {
-    return llvm::count_if(foreachDstOp.getRecords().getPipes(),
-                          [&](PipeRecordAttr record) {
-                            return coord.x >= record.getDstStartX() &&
-                                   coord.x <= record.getDstEndX() &&
-                                   coord.y >= record.getDstStartY() &&
-                                   coord.y <= record.getDstEndY();
-                          });
+    std::uint64_t count = 0;
+    for (PipeRecordAttr record : foreachDstOp.getRecords().getPipes()) {
+      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
+          record, PipeRole::Destination, location);
+      if (!matches) {
+        return std::nullopt;
+      }
+      count += *matches;
+    }
+    return count;
   }
   if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent)) {
     LaunchNodeDomainResult trueDomain =
@@ -435,7 +608,8 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
     if (!trueDomain.domain.known) {
       return std::nullopt;
     }
-    bool selectsThen = knownLaunchNodeDomainContains(trueDomain.domain, coord);
+    bool selectsThen =
+        knownLaunchNodeDomainContains(trueDomain.domain, location.node);
     return (selectsThen == (region.getRegionNumber() == 0)) ? 1 : 0;
   }
   return std::nullopt;
@@ -443,26 +617,43 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
 
 } // namespace
 
+std::optional<std::uint64_t> getRegionInvocationCountAtLaunchLocation(
+    Region &region, const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState &state) {
+  return evaluateRegionInvocationCountAtLaunchLocation(region, location, state);
+}
+
 std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
                                    const LaunchNodeDomainState &state) {
+  return getExactExecutionCountAtLaunchLocation(
+      op, LaunchExecutionLocation(coord), state);
+}
+
+std::optional<std::uint64_t>
+getExactExecutionCountAtLaunchLocation(Operation *op,
+                                       const LaunchExecutionLocation &location,
+                                       const LaunchNodeDomainState &state) {
   func::FuncOp function = op->getParentOfType<func::FuncOp>();
   if (!function) {
     return std::nullopt;
   }
-  auto &analysesByCoord =
-      state.executionCountAnalysesByFunctionAndCoord[function.getOperation()];
-  auto analysisIt = analysesByCoord.find(coord);
-  if (analysisIt == analysesByCoord.end()) {
+  auto &analysesByLocation =
+      state
+          .executionCountAnalysesByFunctionAndLocation[function.getOperation()];
+  auto analysisIt = analysesByLocation.find(location);
+  if (analysisIt == analysesByLocation.end()) {
     auto analysis = std::make_unique<ExecutionCountAnalysis>(
         function.getBody(),
-        [coord, &state](Value value) {
-          return evaluateLaunchNodeContextValue(value, coord, &state);
+        [location, &state](Value value) {
+          return evaluateLaunchLocationContextValue(value, location, &state);
         },
-        [coord, &state](Region &region) {
-          return getRegionInvocationCountAtLaunchNode(region, coord, state);
+        [location, &state](Region &region) {
+          return getRegionInvocationCountAtLaunchLocation(region, location,
+                                                          state);
         });
-    analysisIt = analysesByCoord.emplace(coord, std::move(analysis)).first;
+    analysisIt =
+        analysesByLocation.emplace(location, std::move(analysis)).first;
   }
   return analysisIt->second->getExecutionCount(op);
 }
@@ -565,7 +756,8 @@ struct UnresolvedExecutionCountContext {
 };
 
 static std::optional<UnresolvedExecutionCountContext>
-getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
+getUnresolvedExecutionCountContext(Operation *op,
+                                   const LaunchExecutionLocation &location,
                                    const LaunchNodeDomainState &state) {
   UnresolvedExecutionCountContext context;
   Operation *current = op;
@@ -590,7 +782,7 @@ getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
     if (auto ifSrcOp = dyn_cast<IfSrcOp>(parent)) {
       auto pipeType = cast<PipeType>(ifSrcOp.getPipe().getType());
       if (!knownLaunchNodeDomainContains(
-              getPipeSourceLaunchNodeDomain(pipeType), coord)) {
+              getPipeSourceLaunchNodeDomain(pipeType), location.node)) {
         return std::nullopt;
       }
       current = parent;
@@ -600,15 +792,15 @@ getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
       auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
       if (!knownLaunchNodeDomainContains(
               getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
-              coord)) {
+              location.node)) {
         return std::nullopt;
       }
       current = parent;
       continue;
     }
     if (auto ifOp = dyn_cast<scf::IfOp>(parent)) {
-      std::optional<bool> maybeSelected =
-          evaluatePredicateAtLaunchNode(ifOp.getCondition(), coord, state);
+      std::optional<bool> maybeSelected = evaluatePredicateAtLaunchLocation(
+          ifOp.getCondition(), location, state);
       if (maybeSelected) {
         if (region->getRegionNumber() != (*maybeSelected ? 0 : 1)) {
           return std::nullopt;
@@ -624,7 +816,7 @@ getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
           getAffineIfLaunchNodeDomain(affineIfOp, state.baseDomain);
       if (trueDomain.domain.known) {
         bool selectsThen =
-            knownLaunchNodeDomainContains(trueDomain.domain, coord);
+            knownLaunchNodeDomainContains(trueDomain.domain, location.node);
         if (region->getRegionNumber() != (selectsThen ? 0 : 1)) {
           return std::nullopt;
         }
@@ -653,12 +845,12 @@ getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
 }
 
 /// Return true when two SSA values have the same runtime value at their launch
-/// nodes and active call sites.
-static bool proveEqualValuesAtLaunchNodes(
-    Value lhsValue, LaunchNodeCoord lhsCoord,
+/// locations and active call sites.
+static bool proveEqualValuesAtLaunchLocations(
+    Value lhsValue, const LaunchExecutionLocation &lhsLocation,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveLhsFunctionArgument,
-    Value rhsValue, LaunchNodeCoord rhsCoord,
+    Value rhsValue, const LaunchExecutionLocation &rhsLocation,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument,
     const LaunchNodeDomainState &state,
@@ -670,9 +862,11 @@ static bool proveEqualValuesAtLaunchNodes(
   cache[cacheKey] = false;
 
   std::optional<llvm::APInt> maybeLhsValue =
-      createLaunchNodeIntegerEvaluator(lhsCoord, &state).evaluate(lhsValue);
+      createLaunchLocationIntegerEvaluator(lhsLocation, &state)
+          .evaluate(lhsValue);
   std::optional<llvm::APInt> maybeRhsValue =
-      createLaunchNodeIntegerEvaluator(rhsCoord, &state).evaluate(rhsValue);
+      createLaunchLocationIntegerEvaluator(rhsLocation, &state)
+          .evaluate(rhsValue);
   if (maybeLhsValue && maybeRhsValue) {
     bool equal = *maybeLhsValue == *maybeRhsValue;
     cache[cacheKey] = equal;
@@ -718,30 +912,31 @@ static bool proveEqualValuesAtLaunchNodes(
       if (!maybeLhsOperand || !maybeRhsOperand) {
         return false;
       }
-      bool equal = proveEqualValuesAtLaunchNodes(
-          *maybeLhsOperand, lhsCoord, resolveLhsFunctionArgument,
-          *maybeRhsOperand, rhsCoord, resolveRhsFunctionArgument, state, cache);
+      bool equal = proveEqualValuesAtLaunchLocations(
+          *maybeLhsOperand, lhsLocation, resolveLhsFunctionArgument,
+          *maybeRhsOperand, rhsLocation, resolveRhsFunctionArgument, state,
+          cache);
       cache[cacheKey] = equal;
       return equal;
     }
 
     auto lhsForOp = dyn_cast_if_present<scf::ForOp>(lhsOwner->getParentOp());
     auto rhsForOp = dyn_cast_if_present<scf::ForOp>(rhsOwner->getParentOp());
-    bool equal =
-        lhsForOp && rhsForOp && lhsValue == lhsForOp.getInductionVar() &&
-        rhsValue == rhsForOp.getInductionVar() &&
-        proveEqualValuesAtLaunchNodes(
-            lhsForOp.getLowerBound(), lhsCoord, resolveLhsFunctionArgument,
-            rhsForOp.getLowerBound(), rhsCoord, resolveRhsFunctionArgument,
-            state, cache) &&
-        proveEqualValuesAtLaunchNodes(
-            lhsForOp.getUpperBound(), lhsCoord, resolveLhsFunctionArgument,
-            rhsForOp.getUpperBound(), rhsCoord, resolveRhsFunctionArgument,
-            state, cache) &&
-        proveEqualValuesAtLaunchNodes(lhsForOp.getStep(), lhsCoord,
-                                      resolveLhsFunctionArgument,
-                                      rhsForOp.getStep(), rhsCoord,
-                                      resolveRhsFunctionArgument, state, cache);
+    bool equal = lhsForOp && rhsForOp &&
+                 lhsValue == lhsForOp.getInductionVar() &&
+                 rhsValue == rhsForOp.getInductionVar() &&
+                 proveEqualValuesAtLaunchLocations(
+                     lhsForOp.getLowerBound(), lhsLocation,
+                     resolveLhsFunctionArgument, rhsForOp.getLowerBound(),
+                     rhsLocation, resolveRhsFunctionArgument, state, cache) &&
+                 proveEqualValuesAtLaunchLocations(
+                     lhsForOp.getUpperBound(), lhsLocation,
+                     resolveLhsFunctionArgument, rhsForOp.getUpperBound(),
+                     rhsLocation, resolveRhsFunctionArgument, state, cache) &&
+                 proveEqualValuesAtLaunchLocations(
+                     lhsForOp.getStep(), lhsLocation,
+                     resolveLhsFunctionArgument, rhsForOp.getStep(),
+                     rhsLocation, resolveRhsFunctionArgument, state, cache);
     cache[cacheKey] = equal;
     return equal;
   }
@@ -761,8 +956,8 @@ static bool proveEqualValuesAtLaunchNodes(
     return false;
   }
   bool equal = llvm::all_of(lhsDefiningOp->getOperands(), [&](Value operand) {
-    return proveEqualValuesAtLaunchNodes(
-        operand, lhsCoord, resolveLhsFunctionArgument, operand, rhsCoord,
+    return proveEqualValuesAtLaunchLocations(
+        operand, lhsLocation, resolveLhsFunctionArgument, operand, rhsLocation,
         resolveRhsFunctionArgument, state, cache);
   });
   cache[cacheKey] = equal;
@@ -778,18 +973,32 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument) {
+  return proveEqualUnresolvedExecutionCountAtLaunchLocations(
+      lhs, LaunchExecutionLocation(lhsCoord), rhs,
+      LaunchExecutionLocation(rhsCoord), state, resolveLhsFunctionArgument,
+      resolveRhsFunctionArgument);
+}
+
+bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
+    Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
+    const LaunchExecutionLocation &rhsLocation,
+    const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument) {
   std::optional<UnresolvedExecutionCountContext> maybeLhsContext =
-      getUnresolvedExecutionCountContext(lhs, lhsCoord, state);
+      getUnresolvedExecutionCountContext(lhs, lhsLocation, state);
   std::optional<UnresolvedExecutionCountContext> maybeRhsContext =
-      getUnresolvedExecutionCountContext(rhs, rhsCoord, state);
+      getUnresolvedExecutionCountContext(rhs, rhsLocation, state);
   if (!maybeLhsContext || !maybeRhsContext ||
       !(*maybeLhsContext == *maybeRhsContext)) {
     return false;
   }
   llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
   return llvm::all_of(maybeLhsContext->controlValues, [&](Value value) {
-    return proveEqualValuesAtLaunchNodes(
-        value, lhsCoord, resolveLhsFunctionArgument, value, rhsCoord,
+    return proveEqualValuesAtLaunchLocations(
+        value, lhsLocation, resolveLhsFunctionArgument, value, rhsLocation,
         resolveRhsFunctionArgument, state, equalValueCache);
   });
 }
@@ -799,18 +1008,27 @@ bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
                                            Operation *rhs,
                                            LaunchNodeCoord rhsCoord,
                                            const LaunchNodeDomainState &state) {
+  return proveEqualExecutionCountAtLaunchLocations(
+      lhs, LaunchExecutionLocation(lhsCoord), rhs,
+      LaunchExecutionLocation(rhsCoord), state);
+}
+
+bool proveEqualExecutionCountAtLaunchLocations(
+    Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
+    const LaunchExecutionLocation &rhsLocation,
+    const LaunchNodeDomainState &state) {
   std::optional<std::uint64_t> maybeLhsCount =
-      getExactExecutionCountAtLaunchNode(lhs, lhsCoord, state);
+      getExactExecutionCountAtLaunchLocation(lhs, lhsLocation, state);
   std::optional<std::uint64_t> maybeRhsCount =
-      getExactExecutionCountAtLaunchNode(rhs, rhsCoord, state);
+      getExactExecutionCountAtLaunchLocation(rhs, rhsLocation, state);
   if (maybeLhsCount && maybeRhsCount) {
     return *maybeLhsCount == *maybeRhsCount;
   }
   auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
     return std::nullopt;
   };
-  return proveEqualUnresolvedExecutionCountAtLaunchNodes(
-      lhs, lhsCoord, rhs, rhsCoord, state, resolveNoFunctionArguments,
+  return proveEqualUnresolvedExecutionCountAtLaunchLocations(
+      lhs, lhsLocation, rhs, rhsLocation, state, resolveNoFunctionArguments,
       resolveNoFunctionArguments);
 }
 
@@ -878,6 +1096,9 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
     LaunchNodeDomain roleDomain = state.getRoleDomain(
         pred.getReferencedPipeNetId(), pred.getReferencedRole());
+    if (pred.getReferencedRecords()) {
+      return {current.intersectWith(roleDomain), current};
+    }
     return exactBranches(roleDomain, current, state.baseDomain);
   }
   if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {

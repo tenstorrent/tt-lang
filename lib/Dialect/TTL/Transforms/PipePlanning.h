@@ -26,6 +26,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <optional>
 #include <variant>
 
@@ -49,6 +50,9 @@ struct PipePlanningOptions {
   /// Select storage for compiler-managed synchronization counters.
   PipeCounterAllocationPolicy counterAllocationPolicy =
       PipeCounterAllocationPolicy::LocalThenGlobal;
+
+  /// Select routing-plane fabric synchronization for routed transfers.
+  const FabricRoutePlan *fabricRoutePlan = nullptr;
 };
 
 /// Protocol selection used while allocating readiness resources.
@@ -57,13 +61,17 @@ public:
   /// Return whether `op` uses sender-side capacity synchronization.
   bool usesCapacityProtocol(Operation *op) const;
 
+  /// Return whether `op` uses routing-plane fabric synchronization.
+  bool usesFabricProtocol(Operation *op) const;
+
 private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
                       const PipeTransferIndex &, const PipeGraph &,
-                      const PipePlanningOptions &);
+                      const PipeNetIndex &, const PipePlanningOptions &);
 
   llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
+  llvm::SmallPtrSet<Operation *, 16> fabricTransferOps;
 };
 
 /// Capacity consumed by one sender before issuing a payload write.
@@ -156,6 +164,7 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
 struct PipeSendPlan {
   bool usesReadPointer = false;
   int64_t payloadSizeBytes = 0;
+  SmallVector<std::size_t> fabricRouteIndices;
 };
 
 /// Receiver information needed to publish a destination DFB address.
@@ -167,6 +176,8 @@ struct PipeReceiverAddressPublicationPlan {
 /// Receiver-side address publication for one transfer post.
 struct PipePostPlan {
   std::optional<PipeReceiverAddressPublicationPlan> addressPublication;
+  SmallVector<PipeAddressMode> addressModes;
+  SmallVector<std::size_t> fabricRouteIndices;
 };
 
 /// Receiver-wait lowering has no operation-specific decisions.
@@ -233,7 +244,7 @@ private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
                       const PipeTransferIndex &, const PipeGraph &,
-                      const PipePlanningOptions &);
+                      const PipeNetIndex &, const PipePlanningOptions &);
 
   using Resources =
       std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
@@ -285,7 +296,7 @@ private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
                       const PipeTransferIndex &, const PipeGraph &,
-                      const PipePlanningOptions &);
+                      const PipeNetIndex &, const PipePlanningOptions &);
 
   PipeResourcePlan resourcePlan;
   PipeCapacityPlan capacityPlan;
@@ -297,11 +308,10 @@ private:
 };
 
 /// Compute all PipeNet decisions required after transfer IR expansion.
-FailureOr<PipeModulePlan>
-buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
-                    const PipeTransferIndex &transferIndex,
-                    const PipeGraph &pipeGraph,
-                    const PipePlanningOptions &options);
+FailureOr<PipeModulePlan> buildPipeModulePlan(
+    ModuleOp module, ValueOriginAnalysis &analysis,
+    const PipeTransferIndex &transferIndex, const PipeGraph &pipeGraph,
+    const PipeNetIndex &pipeNetIndex, const PipePlanningOptions &options);
 
 /// Materialize the module and function attributes recorded by `plan`.
 void applyPipeModuleAttributes(ModuleOp module, const PipeModulePlan &plan);

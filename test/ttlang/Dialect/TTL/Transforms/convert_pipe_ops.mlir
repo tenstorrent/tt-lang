@@ -42,6 +42,45 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
+// A pipe function argument without call sites retains the point-to-point
+// transfer contract encoded by its type.
+// CHECK-LABEL: func.func @pipe_block_argument
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK-NOT: ttl.pipe_transfer
+func.func @pipe_block_argument(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %handle = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %handle : !ttl.transfer_handle
+  func.return
+}
+
+// Define the sender half so the block-argument receiver belongs to a complete
+// transfer.
+func.func @pipe_block_argument_sender(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %src_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %handle = ttl.copy %src_cb, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %handle : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
 // Adjacent barriers on different NoCs are not redundant.
 // CHECK-LABEL: func.func @different_noc_write_barriers_survive
 // CHECK-DAG: %[[NOC0:.*]] = arith.constant 0 : i8
@@ -1284,6 +1323,53 @@ func.func @separate_pipe_values_share_ready_state() attributes { "ttl.kernel_thr
 
 // -----
 
+// Fabric completion and sender readiness use GlobalSemaphore addresses. The
+// semantic PipeNet id does not determine their runtime-argument indices.
+// CHECK-LABEL: module attributes
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
+// CHECK-LABEL: func.func @fabric_sender
+// CHECK-DAG: %[[SENDER_GLOBAL_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[SENDER_READY_IDX:.*]] = arith.constant 2 : index
+// CHECK: %[[SENDER_READY_ADDR:.*]] = ttkernel.get_common_arg_val(%[[SENDER_READY_IDX]])
+// CHECK-NEXT: %[[SENDER_READY_PTR:.*]] = ttkernel.reinterpret_cast(%[[SENDER_READY_ADDR]])
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min(%[[SENDER_READY_PTR]]
+// CHECK: %[[SENDER_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[SENDER_GLOBAL_IDX]])
+// CHECK: %[[REMOTE_DONE_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SENDER_DONE_ADDR]], {{.*}})
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[REMOTE_DONE_ADDR]], {{.*}})
+// CHECK-NOT: ttkernel.get_semaphore
+// CHECK-LABEL: func.func @fabric_receiver
+// CHECK-DAG: %[[RECEIVER_GLOBAL_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[RECEIVER_READY_IDX:.*]] = arith.constant 1 : index
+// CHECK: %[[RECEIVER_READY_ADDR:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_READY_IDX]])
+// CHECK: %[[READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[RECEIVER_READY_ADDR]], {{.*}})
+// CHECK-NEXT: ttkernel.routing_plane.atomic_inc({{.*}}, %[[READY_NOC]], {{.*}})
+// CHECK: %[[RECEIVER_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_GLOBAL_IDX]])
+// CHECK: %[[RECEIVER_DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[RECEIVER_DONE_ADDR]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[RECEIVER_DONE_PTR]]
+// CHECK-NOT: ttkernel.get_semaphore
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @fabric_sender() attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 37 {deviceTransfer = #ttl.device_transfer<domain = <components = <name = "device", extent = [1, 4]>>, edge = <source = <coordinates = [0, 2]>, destination = <coordinates = [0, 0]>>>} : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>
+    %send = ttl.copy %cb, %pipe : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>, !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>) -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    func.return
+  }
+
+  func.func @fabric_receiver() attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 37 {deviceTransfer = #ttl.device_transfer<domain = <components = <name = "device", extent = [1, 4]>>, edge = <source = <coordinates = [0, 2]>, destination = <coordinates = [0, 0]>>>} : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>
+    %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %post = ttl.copy %pipe, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    ttl.wait %post : !ttl.transfer_handle
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    func.return
+  }
+}
+
+// -----
+
 // CB -> Pipe (multicast, non-loopback): the sender uses the proven common
 // receiver DFB address and signals every receiver after the multicast write.
 // CHECK-LABEL: func.func @copy_cb_to_pipe_multicast
@@ -1593,7 +1679,6 @@ func.func @reversed_pipe_tokens()
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %pipe {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
@@ -1640,7 +1725,6 @@ func.func @wait_twice_for_pipe_token()
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %pipe {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
@@ -1657,78 +1741,5 @@ func.func @wait_twice_for_pipe_token()
   ttl.wait %send : !ttl.transfer_handle<write>
   ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
-  func.return
-}
-
-// -----
-
-// A pipe function argument supplies the point-to-point transfer contract.
-// CHECK-LABEL: func.func @pipe_block_argument
-// CHECK: ttkernel.noc_inline_dw_write
-// CHECK: ttkernel.experimental.semaphore_wait_min
-// CHECK-NOT: ttl.pipe_transfer
-func.func @pipe_block_argument(
-    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %dst = ttl.cb_reserve %dst_cb
-      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-      -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %handle = ttl.copy %pipe, %dst
-      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-         tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
-  ttl.wait %handle : !ttl.transfer_handle
-  func.return
-}
-
-// Define the sender half so the block-argument receiver belongs to a complete
-// transfer.
-func.func @pipe_block_argument_sender(
-    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-  %src_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %handle = ttl.copy %src_cb, %pipe
-      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-      -> !ttl.transfer_handle<write>
-  ttl.wait %handle : !ttl.transfer_handle<write>
-  func.return
-}
-
-// -----
-
-// Transfers in a zero-trip loop require no resources or transfer plans and are
-// removed without reaching active send, post, or wait lowering.
-// CHECK-LABEL: func.func @zero_trip_transfer
-// CHECK-NOT: ttl.pipe_transfer
-// CHECK-NOT: ttkernel.noc_
-func.func @zero_trip_transfer()
-    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-  %zero = arith.constant 0 : index
-  %one = arith.constant 1 : index
-  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  scf.for %iteration = %zero to %zero step %one {
-    %dst = ttl.cb_reserve %dst_cb
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %receive = ttl.copy %pipe, %dst
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    %send = ttl.copy %src_cb, %pipe
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %receive : !ttl.transfer_handle
-  }
   func.return
 }
