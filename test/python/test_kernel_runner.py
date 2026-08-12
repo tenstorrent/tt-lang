@@ -127,6 +127,21 @@ class _CopyingRuntimeArgumentRow(defaultdict):
         super().__setitem__(key, list(value))
 
 
+class _SparseRuntimeArgumentRow(dict):
+    def __getitem__(self, coordinate):
+        if coordinate not in self:
+            raise IndexError(f"No runtime args for coordinate {coordinate}")
+        return super().__getitem__(coordinate)
+
+    def __setitem__(self, coordinate, values):
+        super().__setitem__(coordinate, list(values))
+
+
+class _SparseRuntimeArguments(defaultdict):
+    def __init__(self):
+        super().__init__(_SparseRuntimeArgumentRow)
+
+
 class _MalformedCoreRanges:
     def ranges(self):
         return (object(),)
@@ -2128,6 +2143,33 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     assert fake_ttnn.fabric_config_calls == 1
     assert fake_ttnn.fabric_direction_calls == [
         (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+    ]
+
+
+def test_routing_plane_materializes_sparse_runtime_args(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].runtime_args = _SparseRuntimeArguments()
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].runtime_args[0][0] == [
+        1,
+        0,
+        1,
+        0,
+        0,
+        0xA0,
+        0xB0,
     ]
 
 
