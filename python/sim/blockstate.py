@@ -12,6 +12,8 @@ transition table used by Block to validate correct usage patterns.
 from enum import IntEnum, auto
 from typing import AbstractSet, Callable, Dict, FrozenSet, Iterable, Optional, Tuple
 
+from .kernel import KernelKind
+
 # Type alias for the lazy callsite used in error messages.  Block-level access
 # transitions are on the simulator's hottest path; passing a callable instead
 # of an already-resolved ``(file, line)`` tuple lets ``validate()`` skip the
@@ -47,13 +49,6 @@ class AccessState(IntEnum):
     )  # Read-Only while Reading: block has N copies in flight; N is tracked separately
     NAW = auto()  # No Access while Writing: block is being asynchronously written to
     OS = auto()  # Out of Scope: block was pushed or popped
-
-
-class KernelType(IntEnum):
-    """Kernel role for block operations (compute vs datamovement)."""
-
-    DM = auto()  # Data Movement
-    COMPUTE = auto()  # Compute
 
 
 class BlockAcquisition(IntEnum):
@@ -118,7 +113,7 @@ def _validate_mismatch_hint(
     expected_ops: AbstractSet[ExpectedOp],
     access: AccessState,
     acquisition: BlockAcquisition,
-    kernel: KernelType,
+    kernel: KernelKind,
 ) -> Optional[str]:
     """What the mistake usually means; None selects the generic secondary sentence."""
     if attempted == ExpectedOp.PUSH and acquisition == BlockAcquisition.WAIT:
@@ -129,13 +124,13 @@ def _validate_mismatch_hint(
         AccessState.MR,
         AccessState.RW,
     ):
-        if kernel == KernelType.DM:
+        if kernel == KernelKind.DATA_MOVEMENT:
             if attempted == ExpectedOp.COPY_DST and ExpectedOp.COPY_SRC in expected_ops:
                 return (
                     "After wait(), data is already in the block: copy *from* it first, not into it (unless the "
                     "state machine already allows a destination copy)."
                 )
-        if kernel == KernelType.COMPUTE:
+        if kernel == KernelKind.COMPUTE:
             if attempted == ExpectedOp.STORE and ExpectedOp.STORE_SRC in expected_ops:
                 return (
                     "A wait() block is not written in place with store(...); pass this block as the source to "
@@ -163,7 +158,7 @@ def format_validate_mismatch(
     expected_ops: AbstractSet[ExpectedOp],
     access: AccessState,
     acquisition: BlockAcquisition,
-    kernel: KernelType,
+    kernel: KernelKind,
     pending_copy_location: Optional[Tuple[str, int]] = None,
 ) -> str:
     expected_names = _sorted_op_names(expected_ops)
@@ -342,14 +337,14 @@ _OPS_STORE_SRC_PUSH: FrozenSet[ExpectedOp] = frozenset(
 # Organized by (acquisition, kernel_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
 # This structure makes it easy to see all transitions for a particular acquisition/kernel-role combination
 STATE_TRANSITIONS: Dict[
-    Tuple[BlockAcquisition, KernelType],
+    Tuple[BlockAcquisition, KernelKind],
     Dict[
         Tuple[str, AccessState],
         Tuple[AccessState, FrozenSet[ExpectedOp]],
     ],
 ] = {
     # DM kernel, WAIT acquisition
-    (BlockAcquisition.WAIT, KernelType.DM): {
+    (BlockAcquisition.WAIT, KernelKind.DATA_MOVEMENT): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
         ("copy_src", AccessState.MR): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
         ("copy_src", AccessState.RW): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
@@ -361,7 +356,7 @@ STATE_TRANSITIONS: Dict[
         ("tx_wait", AccessState.NAW): (AccessState.MR, _OPS_COPY_SRC),
     },
     # DM kernel, RESERVE acquisition
-    (BlockAcquisition.RESERVE, KernelType.DM): {
+    (BlockAcquisition.RESERVE, KernelKind.DATA_MOVEMENT): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
         ("copy_src", AccessState.MR): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
         ("copy_src", AccessState.RW): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
@@ -374,7 +369,7 @@ STATE_TRANSITIONS: Dict[
         ("tx_wait", AccessState.ROR): (AccessState.RW, _OPS_COPY_DST_SRC_PUSH),
     },
     # COMPUTE kernel, WAIT acquisition
-    (BlockAcquisition.WAIT, KernelType.COMPUTE): {
+    (BlockAcquisition.WAIT, KernelKind.COMPUTE): {
         # Assign as arithmetic source: MR/RW -> RW; POP now allowed but store
         # confirmation is deferred and tracked until program termination.
         ("assign_src", AccessState.MR): (AccessState.RW, _OPS_STORE_RW_POP),
@@ -386,7 +381,7 @@ STATE_TRANSITIONS: Dict[
         ("store_dst", AccessState.RW): (AccessState.MR, _OPS_STORE_SRC),
     },
     # COMPUTE kernel, RESERVE acquisition
-    (BlockAcquisition.RESERVE, KernelType.COMPUTE): {
+    (BlockAcquisition.RESERVE, KernelKind.COMPUTE): {
         # Store read complete: MR/RW -> RW with store ops + push
         ("store_src", AccessState.MR): (AccessState.RW, _OPS_STORE_RW_PUSH),
         ("store_src", AccessState.RW): (AccessState.RW, _OPS_STORE_RW_PUSH),
@@ -430,9 +425,9 @@ class BlockStateMachine:
         "_ctx_transitions",
     )
 
-    def __init__(self, acquisition: BlockAcquisition, kernel_type: KernelType) -> None:
+    def __init__(self, acquisition: BlockAcquisition, kernel_type: KernelKind) -> None:
         self.acquisition: BlockAcquisition = acquisition
-        self.kernel_type: KernelType = kernel_type
+        self.kernel_type: KernelKind = kernel_type
         self.access_state: AccessState = AccessState.OS
         # Module-level shared frozenset; ``initialize()`` / transitions
         # overwrite this with another shared frozenset, so no per-instance
@@ -467,13 +462,13 @@ class BlockStateMachine:
         """Set the initial state based on acquisition method and kernel role."""
         if self.acquisition == BlockAcquisition.RESERVE:
             self.access_state = AccessState.MW
-            if self.kernel_type == KernelType.DM:
+            if self.kernel_type == KernelKind.DATA_MOVEMENT:
                 self.expected_ops = _INIT_RESERVE_DM
             else:
                 self.expected_ops = _INIT_RESERVE_COMPUTE
         elif self.acquisition == BlockAcquisition.WAIT:
             self.access_state = AccessState.MR
-            if self.kernel_type == KernelType.DM:
+            if self.kernel_type == KernelKind.DATA_MOVEMENT:
                 self.expected_ops = _INIT_WAIT_DM
             else:
                 self.expected_ops = _INIT_WAIT_COMPUTE
