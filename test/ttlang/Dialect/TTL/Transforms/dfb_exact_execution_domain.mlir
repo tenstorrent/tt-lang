@@ -241,18 +241,19 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// A count greater than one establishes domain membership but does not turn a
-// repeated protocol into a single bounded lifecycle.
+// A statically counted protocol under a launch-node condition that executes
+// once normalizes into repeated transactions.
 
 // REUSE-LABEL: func.func @repeated_exact_count
 // REUSE: %[[REPEATED:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 18 : index}
 // REUSE-NEXT: %[[AFTER_REPEATED:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 19 : index}
 
-// REPORT: DFB logical_id=18 bounded=0 compiler_created=0
+// REPORT: DFB logical_id=18 bounded=1 compiler_created=0
 // REPORT-SAME: domain={(0,0), (1,0)}
-// REPORT: node (0,0) quiescence=unsupported-control-flow
+// REPORT: node (0,0) quiescence=none
 // REPORT-SAME: occurrences=[0:2, 1:2, 2:2, 3:2]
-// REPORT: DFB conflict lhs=18 rhs=19 reason=unproven-quiescence node=(0,0)
+// REPORT-SAME: transactions=[1, 1]
+// REPORT: DFB conflict lhs=18 rhs=19 reason=transaction-mismatch node=(0,0)
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @repeated_exact_count(%runtime_offset: index)
