@@ -29,37 +29,12 @@ from .auto_profile import (
     get_line_mapper,
     is_auto_profile_enabled,
 )
+from .global_semaphore import (
+    get_ttnn_global_semaphore_address,
+    is_ttnn_global_semaphore,
+)
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 from ..pipe import DstPipeIdentity, SrcPipeIdentity
-
-
-def is_ttnn_global_semaphore(value) -> bool:
-    """Require the exact TTNN type so local and lookalike objects are rejected."""
-    try:
-        from ttnn._ttnn.global_semaphore import global_semaphore
-    except ImportError:
-        return False
-    return isinstance(value, global_semaphore)
-
-
-def _get_ttnn_global_semaphore_address(value) -> int:
-    """Return one GlobalSemaphore address without suppressing TTNN failures."""
-    if not is_ttnn_global_semaphore(value):
-        raise TypeError(f"expected ttnn GlobalSemaphore, got {type(value)}")
-    import ttnn
-
-    address = ttnn.get_global_semaphore_address(value)
-    if type(address) is not int:
-        raise TypeError(
-            "ttnn.get_global_semaphore_address() must return one integer "
-            f"address, got {type(address)}"
-        )
-    if not 0 <= address < (1 << 32):
-        raise ValueError(
-            "ttnn.get_global_semaphore_address() result must fit in uint32_t, "
-            f"got {address}"
-        )
-    return address
 
 
 @dataclass(frozen=True)
@@ -1492,7 +1467,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 elif isinstance(val, DeviceDomain):
                     self._set_var(name, val)
                 elif is_ttnn_global_semaphore(val):
-                    sem_addr = _get_ttnn_global_semaphore_address(val)
+                    sem_addr = get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
                     self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
                 else:
@@ -2031,7 +2006,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
             if is_ttnn_global_semaphore(val):
-                sem_addr = _get_ttnn_global_semaphore_address(val)
+                sem_addr = get_ttnn_global_semaphore_address(val)
                 return _unsigned_integer(sem_addr)
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:

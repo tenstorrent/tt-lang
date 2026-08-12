@@ -17,6 +17,7 @@ import textwrap
 
 import pytest
 import ttl
+import ttl.kernel as kernel_module
 
 from ttl._src.atom_split import split_function_body
 from ttl.atom import (
@@ -347,6 +348,36 @@ def test_operation_identity_encodes_graph_pipenet_topology():
 
     assert identity_for((0, 1)) == identity_for((0, 1))
     assert identity_for((0, 1)) != identity_for((0, 2))
+
+
+def test_operation_identity_encodes_global_semaphore_address(monkeypatch):
+    """Global semaphore addresses distinguish compiled template identities."""
+
+    class GlobalSemaphore:
+        def __init__(self, address):
+            self.address = address
+
+    monkeypatch.setattr(
+        kernel_module,
+        "is_ttnn_global_semaphore",
+        lambda value: isinstance(value, GlobalSemaphore),
+    )
+    monkeypatch.setattr(
+        kernel_module,
+        "get_ttnn_global_semaphore_address",
+        lambda value: value.address,
+    )
+
+    def identity_for(address):
+        global_semaphore = GlobalSemaphore(address)
+
+        def selected_operation():
+            return global_semaphore
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for(0x1000) == identity_for(0x1000)
+    assert identity_for(0x1000) != identity_for(0x2000)
 
 
 def test_operation_identity_rejects_unsupported_nonlocal_capture():

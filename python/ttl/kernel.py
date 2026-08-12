@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
 
+from ._src.global_semaphore import (
+    get_ttnn_global_semaphore_address,
+    is_ttnn_global_semaphore,
+)
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 
 
@@ -233,6 +237,9 @@ def _encode_identity_capture(
         return encoded
     if isinstance(value, Kernel):
         return f"kernel-kind:{value.kind.value}".encode("utf-8")
+    if is_ttnn_global_semaphore(value):
+        address = get_ttnn_global_semaphore_address(value)
+        return f"global-semaphore:{address}".encode("ascii")
 
     semantic_identity = getattr(value, "_operation_identity_capture", None)
     if callable(semantic_identity):
