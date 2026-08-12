@@ -151,8 +151,7 @@ private:
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (lhsLifetime->transactionTileCounts !=
-          rhsLifetime->transactionTileCounts) {
+      if (lhsLifetime->transactionRuns != rhsLifetime->transactionRuns) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::TransactionMismatch, node,
                     getLifetimeEvidence(lhsLifetime, lhs),

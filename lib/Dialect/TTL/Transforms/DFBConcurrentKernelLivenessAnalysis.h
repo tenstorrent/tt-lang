@@ -129,6 +129,17 @@ struct DFBPerNodeLifetimeDiagnostics {
   }
 };
 
+/// Consecutive normalized transactions with one tile count.
+struct DFBTransactionRun {
+  std::uint64_t executionCount = 0;
+  int64_t tilesPerExecution = 0;
+
+  bool operator==(const DFBTransactionRun &rhs) const {
+    return executionCount == rhs.executionCount &&
+           tilesPerExecution == rhs.tilesPerExecution;
+  }
+};
+
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
@@ -139,8 +150,8 @@ struct DFBPerNodeLifetime {
   /// Completion event IDs after which the DFB is quiescent.
   SmallVector<unsigned> terminalCompletionEvents;
 
-  /// One tile count per transaction tuple, paired by occurrence order.
-  SmallVector<int64_t> transactionTileCounts;
+  /// Normalized transaction runs in occurrence order.
+  SmallVector<DFBTransactionRun> transactionRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   DFBQuiescenceProof quiescence;
