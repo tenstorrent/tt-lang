@@ -91,14 +91,13 @@ getOptionalUnpackConstraint(func::FuncOp function) {
   return std::optional<SmallVector<int32_t>>(std::move(dataflowBufferIndices));
 }
 
-/// Return the attached DFB index, or `std::nullopt` when no DFB is attached.
-FailureOr<std::optional<int64_t>>
-resolveDataflowBufferIndex(Value value, Operation *consumer) {
+/// Return the attached DFB after resolving a compute-region argument.
+Value resolveDataflowBuffer(Value value) {
   if (auto blockArgument = dyn_cast<BlockArgument>(value)) {
     auto computeOp =
         dyn_cast_or_null<ComputeOp>(blockArgument.getOwner()->getParentOp());
     if (!computeOp) {
-      return std::optional<int64_t>();
+      return {};
     }
     unsigned argumentNumber = blockArgument.getArgNumber();
     if (argumentNumber < computeOp.getNumInputs()) {
@@ -106,25 +105,24 @@ resolveDataflowBufferIndex(Value value, Operation *consumer) {
     } else {
       unsigned outputNumber = argumentNumber - computeOp.getNumInputs();
       if (outputNumber >= computeOp.getNumOutputs()) {
-        return std::optional<int64_t>();
+        return {};
       }
       value = computeOp.getOutputs()[outputNumber];
     }
   }
 
-  Value dfb = getAttachedCB(value);
+  return getAttachedCB(value);
+}
+
+/// Return the attached DFB index, or `std::nullopt` when no DFB is attached.
+FailureOr<std::optional<int64_t>>
+resolveDataflowBufferIndex(Value value, Operation *consumer) {
+  Value dfb = resolveDataflowBuffer(value);
+
   if (dfb) {
     std::optional<int64_t> dfbIndex = getCBIndex(dfb);
     if (!dfbIndex) {
       consumer->emitOpError("uses a dataflow buffer without a finalized index");
-      return failure();
-    }
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(consumer);
-    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-      consumer->emitOpError()
-          << "uses dataflow buffer index " << *dfbIndex
-          << " outside the supported range [0, " << targetMaxDFBIndices - 1
-          << "] for " << getTargetDFBIndexCapacityDescription(consumer);
       return failure();
     }
     return dfbIndex;
@@ -206,7 +204,8 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
       return failure();
     }
     if (*dataflowBufferIndex) {
-      dfbInputUses.push_back({**dataflowBufferIndex, operation,
+      dfbInputUses.push_back({**dataflowBufferIndex,
+                              resolveDataflowBuffer(operand.get()), operation,
                               operand.getOperandNumber(), info.primitive, route,
                               *elementType});
     }
@@ -880,6 +879,12 @@ KernelConfigPolicy::get(func::FuncOp function, StringRef fp32Selection,
 }
 
 FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
+  return collectKernelRequirements(function, [](Operation *) { return true; });
+}
+
+FailureOr<KernelRequirements> collectKernelRequirements(
+    func::FuncOp function,
+    llvm::function_ref<bool(Operation *)> includeOperation) {
   KernelRequirements requirements;
   WalkResult result = function.walk([&](Operation *operation) {
     auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
@@ -888,6 +893,9 @@ FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
         operation->emitOpError("does not implement TileExecutionOpInterface");
         return WalkResult::interrupt();
       }
+      return WalkResult::advance();
+    }
+    if (!includeOperation(operation)) {
       return WalkResult::advance();
     }
     if (!executionOp.getLegalExecutionStrategies().empty()) {
@@ -927,9 +935,180 @@ FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
   return requirements;
 }
 
+namespace {
+
+using DFBConfigurationMask = std::uint8_t;
+constexpr DFBConfigurationMask kAllDFBConfigurations = 0xF;
+
+DFBConfigurationMask
+getDFBConfigurationMask(const KernelTargetEnvironment &target,
+                        const DFBInputUse &use) {
+  DFBConfigurationMask mask = 0;
+  for (const DFBHardwareConfiguration &configuration :
+       target.getSupportedDFBConfigurations(use.primitive, use.route,
+                                            use.elementType)) {
+    unsigned widthOffset =
+        configuration.destinationElementWidth == DestinationElementWidth::Bits32
+            ? 2
+            : 0;
+    unsigned modeOffset =
+        configuration.unpackMode == DFBUnpackMode::UnpackToDestination ? 1 : 0;
+    mask |= DFBConfigurationMask{1} << (widthOffset + modeOffset);
+  }
+  return mask;
+}
+
+void appendUniqueMask(SmallVectorImpl<DFBConfigurationMask> &masks,
+                      DFBConfigurationMask mask) {
+  if (mask != 0 && !llvm::is_contained(masks, mask)) {
+    masks.push_back(mask);
+  }
+}
+
+struct DFBConfigurationProfile {
+  Value dfb;
+  Operation *evidence = nullptr;
+  SmallVector<DFBConfigurationMask, 4> alternatives;
+};
+
+DFBConfigurationProfile
+buildDFBConfigurationProfile(Value dfb, Operation *evidence,
+                             const KernelTargetEnvironment &target,
+                             const KernelRequirements &requirements) {
+  DFBConfigurationMask fixedMask = kAllDFBConfigurations;
+  for (const DFBInputUse &use : requirements.dfbInputUses) {
+    if (use.dfb == dfb) {
+      fixedMask &= getDFBConfigurationMask(target, use);
+    }
+  }
+
+  SmallVector<DFBConfigurationMask, 4> alternatives;
+  appendUniqueMask(alternatives, fixedMask);
+  for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
+    SmallVector<DFBConfigurationMask, 2> choiceMasks;
+    for (const TileExecutionOption &option : choice.options) {
+      DFBConfigurationMask optionMask = kAllDFBConfigurations;
+      for (const DFBInputUse &use : option.dfbInputUses) {
+        if (use.dfb == dfb) {
+          optionMask &= getDFBConfigurationMask(target, use);
+        }
+      }
+      appendUniqueMask(choiceMasks, optionMask);
+    }
+
+    SmallVector<DFBConfigurationMask, 4> nextAlternatives;
+    for (DFBConfigurationMask priorMask : alternatives) {
+      for (DFBConfigurationMask choiceMask : choiceMasks) {
+        appendUniqueMask(nextAlternatives, priorMask & choiceMask);
+      }
+    }
+    alternatives = std::move(nextAlternatives);
+  }
+  return {dfb, evidence, std::move(alternatives)};
+}
+
+bool canAlwaysShareDFBConfiguration(const DFBConfigurationProfile &lhs,
+                                    const DFBConfigurationProfile &rhs) {
+  constexpr DFBConfigurationMask kBits16Configurations = 0x3;
+  constexpr DFBConfigurationMask kBits32Configurations = 0xC;
+  for (DFBConfigurationMask lhsMask : lhs.alternatives) {
+    for (DFBConfigurationMask rhsMask : rhs.alternatives) {
+      for (DFBConfigurationMask widthMask :
+           {kBits16Configurations, kBits32Configurations}) {
+        DFBConfigurationMask lhsWidthMask = lhsMask & widthMask;
+        DFBConfigurationMask rhsWidthMask = rhsMask & widthMask;
+        if (lhsWidthMask != 0 && rhsWidthMask != 0 &&
+            (lhsWidthMask & rhsWidthMask) == 0) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+SmallVector<DFBConfigurationAliasConflict>
+collectDFBConfigurationAliasConflicts(const KernelTargetEnvironment &target,
+                                      const KernelRequirements &requirements) {
+  llvm::MapVector<Value, Operation *> evidenceByDFB;
+  auto collectUses = [&](ArrayRef<DFBInputUse> uses) {
+    for (const DFBInputUse &use : uses) {
+      evidenceByDFB.try_emplace(use.dfb, use.consumer);
+    }
+  };
+  collectUses(requirements.dfbInputUses);
+  for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
+    for (const TileExecutionOption &option : choice.options) {
+      collectUses(option.dfbInputUses);
+    }
+  }
+
+  SmallVector<DFBConfigurationProfile> profiles;
+  profiles.reserve(evidenceByDFB.size());
+  for (const auto &[dfb, evidence] : evidenceByDFB) {
+    DFBConfigurationProfile profile =
+        buildDFBConfigurationProfile(dfb, evidence, target, requirements);
+    if (!profile.alternatives.empty()) {
+      profiles.push_back(std::move(profile));
+    }
+  }
+
+  SmallVector<DFBConfigurationAliasConflict> conflicts;
+  for (unsigned lhsIndex = 0; lhsIndex < profiles.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < profiles.size();
+         ++rhsIndex) {
+      const DFBConfigurationProfile &lhs = profiles[lhsIndex];
+      const DFBConfigurationProfile &rhs = profiles[rhsIndex];
+      if (!canAlwaysShareDFBConfiguration(lhs, rhs)) {
+        conflicts.push_back({lhs.dfb, rhs.dfb, lhs.evidence, rhs.evidence});
+      }
+    }
+  }
+  return conflicts;
+}
+
+namespace {
+
+LogicalResult
+validateFinalizedDFBIndices(func::FuncOp function,
+                            const KernelRequirements &requirements) {
+  int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(function);
+  auto validateUses = [&](ArrayRef<DFBInputUse> uses) {
+    for (const DFBInputUse &use : uses) {
+      if (use.dfbIndex < 0 || use.dfbIndex >= targetMaxDFBIndices) {
+        use.consumer->emitOpError()
+            << "uses dataflow buffer index " << use.dfbIndex
+            << " outside the supported range [0, " << targetMaxDFBIndices - 1
+            << "] for " << getTargetDFBIndexCapacityDescription(function);
+        return failure();
+      }
+    }
+    return success();
+  };
+
+  if (failed(validateUses(requirements.dfbInputUses))) {
+    return failure();
+  }
+  for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
+    for (const TileExecutionOption &option : choice.options) {
+      if (failed(validateUses(option.dfbInputUses))) {
+        return failure();
+      }
+    }
+  }
+  return success();
+}
+
+} // namespace
+
 FailureOr<KernelConfigPlan> resolveKernelConfig(
     func::FuncOp function, const KernelTargetEnvironment &target,
     const KernelConfigPolicy &policy, const KernelRequirements &requirements) {
+  if (failed(validateFinalizedDFBIndices(function, requirements))) {
+    return failure();
+  }
   ConfigConstraintState initialState;
   if (policy.fp32DestAccumulation == ConfigSelection::Enabled) {
     llvm::erase_if(initialState.candidates,
