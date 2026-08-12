@@ -1363,6 +1363,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
   using PipeTransferIdentity = std::pair<PipeKey, DeviceTransferAttr>;
   llvm::MapVector<PipeTransferIdentity, PipeTransferCandidates>
       candidatesByPipe;
+  // Pipe references bound unknown launch predicates to finite endpoints. The
+  // exact-zero and one-to-one proofs below refine or reject those candidates.
   for (Operation *op : analysisState.transferProtocolOps) {
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
       PipeTransferCreateOp createOp =
@@ -1376,11 +1378,6 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           createOp.getDeviceTransferAttr();
       LaunchNodeDomain sendDomain =
           lookupOperationLaunchDomain(sendOp.getOperation(), analysisState);
-      if (!sendDomain.known && analysisState.hasLaunchGrid) {
-        sendOp.emitError("cannot determine whether the pipe source executes "
-                         "this send");
-        return failure();
-      }
       if (failed(forEachPipeReferenceRecord(
               sendOp.getContext(), *pipeRef, staticDeviceTransfer,
               [&](std::uint64_t recordIndex, PipeType pipeType,
@@ -1436,11 +1433,6 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     DeviceTransferAttr staticDeviceTransfer = createOp.getDeviceTransferAttr();
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
-    if (!postDomain.known && analysisState.hasLaunchGrid) {
-      postOp.emitError(
-          "cannot determine which pipe receivers execute this post");
-      return failure();
-    }
     if (failed(forEachPipeReferenceRecord(
             postOp.getContext(), *pipeRef, staticDeviceTransfer,
             [&](std::uint64_t recordIndex, PipeType pipeType,
