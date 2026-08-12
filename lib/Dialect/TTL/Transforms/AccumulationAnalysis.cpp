@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTL/Transforms/AccumulationAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
@@ -346,10 +347,16 @@ AccumulationCostModel::AccumulationCostModel(AccumulationTargetArch targetArch)
     : targetArch(targetArch), weights(getCostWeights(targetArch)) {}
 
 AccumulationCostModel AccumulationCostModel::forOperation(Operation *op) {
-  if (isBlackholeTarget(op)) {
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveComputeTargetArch(op, failureReason);
+  if (failed(targetArch) || !*targetArch) {
+    return AccumulationCostModel(AccumulationTargetArch::Unknown);
+  }
+  if (**targetArch == ttcore::Arch::Blackhole) {
     return AccumulationCostModel(AccumulationTargetArch::Blackhole);
   }
-  if (isWormholeB0Target(op)) {
+  if (**targetArch == ttcore::Arch::WormholeB0) {
     return AccumulationCostModel(AccumulationTargetArch::WormholeB0);
   }
   return AccumulationCostModel(AccumulationTargetArch::Unknown);
