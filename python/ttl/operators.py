@@ -24,6 +24,7 @@ from ttl.ir import (
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from .condition import DispatchCondition
 from .constants import DEFAULT_TILE_SIZE
 from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
@@ -42,6 +43,7 @@ def call_extern_func(
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
     result_type: Optional[ScalarType] = None,
+    condition_result: Optional[DispatchCondition] = None,
 ) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
@@ -74,6 +76,10 @@ def call_extern_func(
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
     function.
+
+    ``condition_result`` declares that the result evaluates one immutable
+    dispatch-stable condition. Its scalar type comes from the declaration. The
+    call must be repeat-safe and cannot access DFB state.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 

@@ -16,6 +16,7 @@ from ._src.global_semaphore import (
     get_ttnn_global_semaphore_address,
     is_ttnn_global_semaphore,
 )
+from .condition import DispatchCondition
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
 
@@ -285,8 +286,18 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
 
     try:
         encoded_captures = []
+        condition_ordinals = {}
         for name, value in sorted(nonlocal_captures.items()):
-            encoded = _encode_identity_capture(name, value, active_functions)
+            if isinstance(value, DispatchCondition):
+                condition_identity = id(value)
+                ordinal = condition_ordinals.setdefault(
+                    condition_identity, len(condition_ordinals)
+                )
+                encoded = (
+                    f"dispatch-condition:{ordinal}:{value.scalar_type.name}"
+                ).encode("ascii")
+            else:
+                encoded = _encode_identity_capture(name, value, active_functions)
             encoded_name = name.encode("utf-8")
             encoded_captures.append(
                 f"{len(encoded_name)}:".encode("ascii")

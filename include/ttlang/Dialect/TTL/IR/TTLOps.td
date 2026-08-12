@@ -2035,6 +2035,12 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     The optional result is a signless i32 or i64 scalar. When absent the call
     is treated as a void function invocation.
 
+    `condition_result` states that the scalar result evaluates one immutable
+    dispatch-stable condition. Calls using the same typed identity may be
+    evaluated independently in different logical kernels. Such a call cannot
+    access a DFB, declare DFB effects, or declare unknown DFB access because
+    condition evaluation is stable and repeat-safe rather than stateful.
+
     Example:
     ```mlir
     ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
@@ -2053,7 +2059,8 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<ArrayAttr>:$template_args,
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
-    UnitAttr:$unknown_dfb_access
+    UnitAttr:$unknown_dfb_access,
+    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result
   );
   let results = (outs Optional<AnyTypeOf<[I32, I64]>>:$result);
   let assemblyFormat = [{

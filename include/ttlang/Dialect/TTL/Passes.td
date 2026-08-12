@@ -982,12 +982,15 @@ def TTLFinalizeDFBIndices
     launch node. These requirements preserve hardware counter and ring-pointer
     state. One unresolved structured condition is supported when every active
     DFB access belongs to one reserve, push, wait, and pop transaction
-    controlled by equivalent `scf.if` or `affine.if` frames in one kernel
-    function. Branch polarity, nesting, and control SSA values must match.
-    Unresolved loops, repeated conditional transactions, and separately
-    evaluated opaque predicates remain unsupported. A logical DFB without a
-    matched lifecycle or a proven lifetime order conflicts with every other
-    DFB.
+    controlled by equivalent `scf.if` or `affine.if` frames. Branch polarity,
+    nesting, and control values must match. Within one kernel function, ordinary
+    SSA equality can establish equivalence. Separately evaluated `scf.if`
+    conditions can match across logical kernels when every unresolved frame is
+    a structurally equal expression rooted in the same typed dispatch-condition
+    identities at the same launch coordinate. Untyped evaluations, mixed typed
+    and untyped nesting, and unresolved loops remain conservative. A logical
+    DFB without a matched lifecycle or a proven lifetime order conflicts with
+    every other DFB.
 
     Two DFBs used by one compute kernel may share a physical index only when
     every target-supported destination width assigns compatible static unpack

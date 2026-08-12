@@ -1477,7 +1477,9 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
 
     build a second graph with every unknown access domain treated as possible
     prove conditionally bounded lifetimes only for one complete conditional
-      transaction on every possible node
+      transaction on every possible node; separately evaluated conditions
+      match across logical kernels only through typed dispatch-condition
+      identities at one launch coordinate
     retain possible-domain order separately from exact-domain order
 
   return logical DFB lifecycles, per-node quiescence, pointer owners,
@@ -1528,6 +1530,58 @@ facts are grouped for deterministic bounded output.
 If node-dependent IR has no launch grid, no base launch nodes are available
 for the possible-domain evaluation. The report retains logical DFB and access
 facts but omits per-node rows.
+
+#### Dispatch-stable condition identity
+
+An external predicate can be evaluated independently in multiple logical
+kernels when the frontend records one typed condition declaration:
+
+```python
+def make_conditional_operation():
+    active = ttl.DispatchCondition(ttl.ScalarType.I64)
+    producer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    consumer_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def conditional_operation(input_tensor):
+        producer_active = ttl.call_extern_func(
+            "condition.hpp",
+            "evaluate_for_producer",
+            condition_result=active,
+            kernel=producer_kernel,
+        )
+        consumer_active = ttl.call_extern_func(
+            "condition.hpp",
+            "evaluate_for_consumer",
+            condition_result=active,
+            kernel=consumer_kernel,
+        )
+```
+
+`DispatchCondition` is immutable and must be captured from an enclosing
+operation factory. Its declaration selects the i32 or i64 external result
+carrier. Zero is false and nonzero is true. The declared truth value must be
+stable for one dispatch and launch coordinate, and each evaluation must be
+repeat-safe. A condition-result call cannot access a DFB, declare DFB protocol
+effects, or declare unknown DFB access. DFB arguments, indices, and descriptors
+are all invalid on the call.
+
+The frontend assigns deterministic ordinals by declaration identity within the
+module compiled for an operation. Composition, unified-operation splitting,
+and explicit logical-kernel replication preserve those ordinals. Equal IR
+attributes identify the same condition; distinct conditions in one module use
+distinct ordinals. The attribute on `ttl.opaque_call` has no runtime effect and
+disappears with the opaque call during lowering.
+
+The liveness analysis proves equality from the typed identity and the actual
+structured condition expression. It preserves branch polarity and ordered
+nesting and supports exact `arith.andi`, `arith.ori`, and `arith.xori`
+expression trees over i1 values. Cross-function proof also requires the same
+launch coordinate and a typed expression for every unresolved conditional
+frame. Distinct identities, missing identities, mixed typed and untyped
+nesting, differing expressions, and unresolved loops remain conservative.
+Callee names, source locations, generated C++, template arguments, and textual
+equality do not establish condition identity.
 
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB

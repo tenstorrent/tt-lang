@@ -69,6 +69,21 @@ llvm::LogicalResult LogicalKernelAttr::verify(
   return llvm::success();
 }
 
+llvm::LogicalResult DispatchConditionAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    Type scalarType) {
+  if (ordinal < 0) {
+    return emitError() << "dispatch condition ordinal must be nonnegative";
+  }
+  auto integerType = dyn_cast<IntegerType>(scalarType);
+  if (!integerType || !integerType.isSignless() ||
+      (integerType.getWidth() != 32 && integerType.getWidth() != 64)) {
+    return emitError()
+           << "dispatch condition scalar type must be signless i32 or i64";
+  }
+  return success();
+}
+
 void TTLDialect::registerAttributes() {
   addAttributes<
 #define GET_ATTRDEF_LIST
@@ -2615,6 +2630,20 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                << " exceeds dependency " << effect.getDependencyIndex()
                << " capacity " << dfbType.getTotalElements();
       }
+    }
+  }
+  if (DispatchConditionAttr condition = getConditionResultAttr()) {
+    if (!getResult()) {
+      return emitOpError("condition result requires one scalar result");
+    }
+    if (getResult().getType() != condition.getScalarType()) {
+      return emitOpError("condition result type ")
+             << getResult().getType() << " does not match declared scalar type "
+             << condition.getScalarType();
+    }
+    if (!getTemplateDfbOperands().empty() || !dependencies.empty() ||
+        getDfbEffects() || getUnknownDfbAccess()) {
+      return emitOpError("condition result call cannot access DFB state");
     }
   }
   return success();
