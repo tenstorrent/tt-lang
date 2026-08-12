@@ -94,13 +94,40 @@ struct PipeEvent {
   PipeType pipeType;
   DeviceTransferAttr deviceTransfer;
   PipeEventKind kind;
+  /// Exact analyzed domain, or unknown when a predicate cannot be evaluated.
   LaunchNodeDomain domain;
+  /// Known conservative domain used to enumerate possible schedule events.
+  LaunchNodeDomain scheduleDomain;
   Operation *unanalyzableOp = nullptr;
   /// Receive post whose token is observed by a receive-wait event.
   Operation *receivePost = nullptr;
   Operation *selectedForeachOp = nullptr;
   int64_t selectedRecordIndex = -1;
 };
+
+/// Construct a pipe event with a finite schedule bound from its static role.
+PipeEvent makePipeEvent(Operation *op, Value pipe, PipeType pipeType,
+                        DeviceTransferAttr deviceTransfer, PipeEventKind kind,
+                        const LaunchNodeDomain &domain,
+                        const LaunchNodeDomain &roleDomain,
+                        Operation *unanalyzableOp, Operation *receivePost,
+                        Operation *selectedForeachOp,
+                        int64_t selectedRecordIndex) {
+  LaunchNodeDomain exactDomain = domain.intersectWith(roleDomain);
+  LaunchNodeDomain scheduleDomain =
+      exactDomain.known ? exactDomain : roleDomain;
+  return PipeEvent{op,
+                   pipe,
+                   pipeType,
+                   deviceTransfer,
+                   kind,
+                   std::move(exactDomain),
+                   std::move(scheduleDomain),
+                   unanalyzableOp,
+                   receivePost,
+                   selectedForeachOp,
+                   selectedRecordIndex};
+}
 
 /// Return the source or destination execution location for `event`.
 FailureOr<LaunchExecutionLocation>
@@ -195,10 +222,10 @@ struct ModuleState {
           record.getDstEndY(), records.getPipeNetId());
       LaunchNodeDomain roleDomain =
           getPipeRecordRoleLaunchNodeDomain(record, role);
-      events.push_back(PipeEvent{op, pipe, pipeType, record.getDeviceTransfer(),
-                                 kind, domain.intersectWith(roleDomain),
-                                 unanalyzableOp, receivePost, foreachOp,
-                                 static_cast<int64_t>(recordIndex)});
+      events.push_back(
+          makePipeEvent(op, pipe, pipeType, record.getDeviceTransfer(), kind,
+                        domain, roleDomain, unanalyzableOp, receivePost,
+                        foreachOp, static_cast<int64_t>(recordIndex)));
     });
   }
 
@@ -209,11 +236,12 @@ struct ModuleState {
     SmallVector<PipeEvent> events;
     Operation *op = copyOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
-      events.push_back(PipeEvent{
-          op, copyOp.getDst(), pipeType, DeviceTransferAttr(),
-          PipeEventKind::Send,
-          domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType)),
-          unanalyzableOp, nullptr, nullptr, -1});
+      events.push_back(
+          makePipeEvent(op, copyOp.getDst(), pipeType, DeviceTransferAttr(),
+                        PipeEventKind::Send, domain,
+                        getPipeSourceLaunchNodeDomain(pipeType), unanalyzableOp,
+                        /*receivePost=*/nullptr, /*selectedForeachOp=*/nullptr,
+                        /*selectedRecordIndex=*/-1));
       return events;
     }
     FailureOr<SelectedPipeRecords> selectedDst =
@@ -232,12 +260,13 @@ struct ModuleState {
     }
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       if (isPipeReceiveCopy(copyOp)) {
-        events.push_back(
-            PipeEvent{op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
-                      PipeEventKind::ReceivePost,
-                      domain.intersectWith(getPipeDestinationLaunchNodeDomain(
-                          pipeType, launchDomains.baseDomain)),
-                      unanalyzableOp, nullptr, nullptr, -1});
+        events.push_back(makePipeEvent(
+            op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
+            PipeEventKind::ReceivePost, domain,
+            getPipeDestinationLaunchNodeDomain(pipeType,
+                                               launchDomains.baseDomain),
+            unanalyzableOp, /*receivePost=*/nullptr,
+            /*selectedForeachOp=*/nullptr, /*selectedRecordIndex=*/-1));
       }
       return events;
     }
@@ -275,12 +304,13 @@ struct ModuleState {
     SmallVector<PipeEvent> events;
     Operation *op = waitOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      events.push_back(
-          PipeEvent{op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
-                    PipeEventKind::ReceiveWait,
-                    domain.intersectWith(getPipeDestinationLaunchNodeDomain(
-                        pipeType, launchDomains.baseDomain)),
-                    unanalyzableOp, copyOp.getOperation(), nullptr, -1});
+      events.push_back(makePipeEvent(
+          op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
+          PipeEventKind::ReceiveWait, domain,
+          getPipeDestinationLaunchNodeDomain(pipeType,
+                                             launchDomains.baseDomain),
+          unanalyzableOp, copyOp.getOperation(),
+          /*selectedForeachOp=*/nullptr, /*selectedRecordIndex=*/-1));
     } else {
       FailureOr<SelectedPipeRecords> selected =
           getSelectedPipeRecords(copyOp.getSrc());
@@ -1663,12 +1693,12 @@ LogicalResult verifyPipeEventRegionsHaveOneBlock(
   return result;
 }
 
-/// Reject events whose launch-node set is not known exactly. Omitting such an
-/// event from coordinate-specific schedules could accept an invalid program.
+/// Reject events without a finite static role domain. An unknown predicate is
+/// conservatively bounded by the endpoint role so no possible event is omitted.
 LogicalResult verifyPipeEventDomainsKnown(const ModuleState &state) {
   LogicalResult result = success();
   for (const PipeEvent &event : state.pipeEvents) {
-    if (event.domain.known) {
+    if (event.scheduleDomain.known) {
       continue;
     }
     auto diag = event.op->emitOpError()
@@ -1713,7 +1743,7 @@ WalkResult walkPipeEventsInProgramOrder(
     if (eventIt != state.pipeEventIndices.end()) {
       for (std::size_t eventIndex : eventIt->second) {
         const PipeEvent &event = state.pipeEvents[eventIndex];
-        if (!knownLaunchNodeDomainContains(event.domain, coord)) {
+        if (!knownLaunchNodeDomainContains(event.scheduleDomain, coord)) {
           continue;
         }
         if (event.selectedForeachOp) {
@@ -1854,7 +1884,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   std::map<LaunchExecutionLocation, std::size_t> scheduleNodeCounts;
   LaunchNodeDomain eventDomain;
   for (const PipeEvent &event : state.pipeEvents) {
-    eventDomain = eventDomain.unionWith(event.domain);
+    eventDomain = eventDomain.unionWith(event.scheduleDomain);
   }
   const std::set<LaunchNodeCoord> &scheduleCoords = eventDomain.nodes;
 

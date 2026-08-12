@@ -46,6 +46,39 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// An unknown predicate is bounded by the static destination role. The
+// schedule includes the possible receiver post instead of omitting it.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @bounded_unknown_receiver_domain
+  func.func @bounded_unknown_receiver_domain(%offset: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %sum = arith.addi %core_x, %offset : index
+    %c1 = arith.constant 1 : index
+    %is_receiver = arith.cmpi eq, %sum, %c1 : index
+    // CHECK: scf.if
+    scf.if %is_receiver {
+      %reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // CHECK: ttl.copy %[[PIPE]]
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Multiple waits on one receive token observe the same completed transfer;
 // they do not require additional sends.
 
