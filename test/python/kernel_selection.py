@@ -50,7 +50,7 @@ def selected_external_calls(inp):
     ttl.call_extern_func(
         FAKE_HEADER,
         "shared_entry",
-        kernel=(KernelKind.COMPUTE, reader),
+        kernel=KernelKind.COMPUTE | KernelKind.DATA_MOVEMENT,
     )
     ttl.call_extern_func(FAKE_HEADER, "alias_entry", kernel=KK.COMPUTE)
 

@@ -57,6 +57,20 @@ def test_explicit_kernel_decorator_rejects_wrong_kind():
             pass
 
 
+def test_explicit_kernel_decorator_rejects_wrong_named_kernel_kind():
+    """A named selector's kind must match its thread decorator."""
+    data_movement_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    with pytest.raises(
+        ValueError,
+        match="compute thread kernel kind must be compute, got data_movement",
+    ):
+
+        @ttl.compute(kernel=data_movement_kernel)
+        def compute_thread():
+            pass
+
+
 def test_explicit_kernel_decorator_rejects_invalid_type():
     """A thread decorator accepts only one logical selector."""
     with pytest.raises(

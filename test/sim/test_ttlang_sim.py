@@ -123,6 +123,10 @@ class TestDefaultGrid:
     def test_explicit_kernel_selectors_are_inert(self):
         """Simulator thread decorators accept logical selectors."""
         data_movement_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        assert ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT == (
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+        )
 
         @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
