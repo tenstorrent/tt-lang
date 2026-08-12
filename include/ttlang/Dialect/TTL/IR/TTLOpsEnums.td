@@ -15,6 +15,18 @@ include "mlir/IR/EnumAttr.td"
 // Note: TTL uses TTKernel's ThreadType enum (#ttkernel.thread<noc>) for
 // kernel thread annotations on functions.
 
+def TTL_LogicalKernelKind_Compute :
+    I32EnumAttrCase<"Compute", 0, "compute">;
+def TTL_LogicalKernelKind_DataMovement :
+    I32EnumAttrCase<"DataMovement", 1, "data_movement">;
+
+def TTL_LogicalKernelKind : I32EnumAttr<
+    "LogicalKernelKind", "Target-independent logical kernel kind",
+    [TTL_LogicalKernelKind_Compute, TTL_LogicalKernelKind_DataMovement]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_TransferKind : I32EnumAttr<
     "TransferKind", "TTL transfer kind",
     [

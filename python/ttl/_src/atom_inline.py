@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import inspect
-import itertools
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from ttl.kernel import Kernel
 
-_inline_counter = itertools.count()
 _NESTED_SCOPES = (
     ast.FunctionDef,
     ast.AsyncFunctionDef,
@@ -124,17 +124,21 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
-) -> Dict[str, object]:
+) -> Tuple[Dict[str, object], Dict[str, Kernel]]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
+    logical_kernels = {}
+    inline_discriminators = {}
     fn_def.body = _inline_statements(
         fn_def.body,
         fn_globals,
         caller_name,
         reserved_names,
         external_pipenets,
+        logical_kernels,
+        inline_discriminators,
     )
-    return external_pipenets
+    return external_pipenets, logical_kernels
 
 
 def _inline_statements(
@@ -143,6 +147,8 @@ def _inline_statements(
     caller_name: str,
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    logical_kernels: Dict[str, Kernel],
+    inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
     for statement in statements:
@@ -152,6 +158,8 @@ def _inline_statements(
             caller_name,
             reserved_names,
             external_pipenets,
+            logical_kernels,
+            inline_discriminators,
         )
         match = _standalone_operation_call(statement, scope)
         if match is None:
@@ -167,6 +175,8 @@ def _inline_statements(
                 scope,
                 reserved_names,
                 external_pipenets,
+                logical_kernels,
+                inline_discriminators,
             )
         )
     return result
@@ -178,6 +188,8 @@ def _inline_compound_bodies(
     caller_name: str,
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    logical_kernels: Dict[str, Kernel],
+    inline_discriminators: Dict[str, int],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
         body = getattr(statement, attribute, None)
@@ -191,6 +203,8 @@ def _inline_compound_bodies(
             caller_name,
             reserved_names,
             external_pipenets,
+            logical_kernels,
+            inline_discriminators,
         )
         setattr(statement, attribute, inlined)
 
@@ -205,6 +219,8 @@ def _inline_compound_bodies(
                 caller_name,
                 reserved_names,
                 external_pipenets,
+                logical_kernels,
+                inline_discriminators,
             )
 
 
@@ -278,10 +294,12 @@ def _expand_call(
     scope: Dict[str, object],
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    logical_kernels: Dict[str, Kernel],
+    inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
     bindings = _bind_args_to_params(spec, call, caller_name)
-    suffix = f"__{spec.name}_inl{next(_inline_counter)}"
+    suffix = _inline_suffix(spec, call, inline_discriminators)
     _add_capture_bindings(spec, bindings)
     _add_external_pipenet_bindings(
         spec,
@@ -290,6 +308,13 @@ def _expand_call(
         reserved_names,
         external_pipenets,
         suffix,
+    )
+    _add_logical_kernel_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        logical_kernels,
     )
 
     local_names = _collect_local_names(spec.fn_ast)
@@ -318,6 +343,17 @@ def _expand_call(
     return result
 
 
+def _inline_suffix(spec, call: ast.Call, discriminators: Dict[str, int]) -> str:
+    """Return a deterministic, caller-local suffix for one composed call."""
+    call_text = ast.dump(call, annotate_fields=True, include_attributes=False)
+    digest = hashlib.sha256(
+        f"{spec.operation_identity}\0{call_text}".encode("utf-8")
+    ).hexdigest()[:12]
+    occurrence = discriminators.get(digest, 0)
+    discriminators[digest] = occurrence + 1
+    return f"__{spec.name}_inl_{digest}_{occurrence}"
+
+
 def _add_capture_bindings(spec, bindings: Dict[str, ast.expr]) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
     for name, value in spec.compile_time_captures.items():
@@ -341,6 +377,32 @@ def _add_external_pipenet_bindings(
         bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
         scope[fresh_name] = pipenet
         external_pipenets[fresh_name] = pipenet
+
+
+def _add_logical_kernel_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    logical_kernels: Dict[str, Kernel],
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, kernel in spec.logical_kernels.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in logical_kernels.items()
+                if candidate == kernel
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = kernel
+            logical_kernels[existing_name] = kernel
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
 def _literal_node(value: object) -> ast.expr:

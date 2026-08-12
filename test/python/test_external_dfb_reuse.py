@@ -52,6 +52,7 @@ def _external_eltwise_mul(lhs: ttl.DFB, rhs: ttl.DFB, result: ttl.DFB):
             dfb_descriptor(rhs),
             dfb_descriptor(result),
         ],
+        kernel=ttl.KernelKind.COMPUTE,
     )
 
 

@@ -42,6 +42,33 @@
 
 namespace mlir::tt::ttl {
 
+llvm::LogicalResult LogicalKernelAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, LogicalKernelKind,
+    StringAttr identity, StringAttr operation, StringAttr role) {
+  if (identity && identity.getValue().empty()) {
+    return emitError() << "logical kernel identity must be nonempty";
+  }
+  if (operation && operation.getValue().empty()) {
+    return emitError() << "logical kernel operation must be nonempty";
+  }
+  if (role && role.getValue().empty()) {
+    return emitError() << "logical kernel role must be nonempty";
+  }
+
+  bool hasIdentity = static_cast<bool>(identity);
+  bool hasOperation = static_cast<bool>(operation);
+  bool hasRole = static_cast<bool>(role);
+  if (!hasIdentity && (hasOperation || hasRole)) {
+    return emitError()
+           << "canonical logical kernel cannot have an operation or role";
+  }
+  if (hasIdentity && hasOperation == hasRole) {
+    return emitError() << "named logical kernel requires exactly one of an "
+                          "operation or compiler-owned role";
+  }
+  return llvm::success();
+}
+
 void TTLDialect::registerAttributes() {
   addAttributes<
 #define GET_ATTRDEF_LIST
