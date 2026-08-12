@@ -10,6 +10,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Transforms/ComputeKernelConfigAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 namespace mlir::tt::ttl {
 
@@ -37,8 +38,10 @@ struct TTLSetComputeKernelConfigPass
       return;
     }
 
+    LaunchNodeDomainState launchDomains;
+    launchDomains.initialize(function->getParentOfType<ModuleOp>());
     FailureOr<KernelRequirements> requirements =
-        collectKernelRequirements(function);
+        collectKernelRequirements(function, launchDomains);
     if (failed(requirements)) {
       signalPassFailure();
       return;

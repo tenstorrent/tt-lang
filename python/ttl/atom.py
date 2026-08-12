@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import copy
 import functools
+import hashlib
 import inspect
 import os
 import textwrap
@@ -42,6 +43,11 @@ from ._src.atom_inline import inline_atom_calls
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
 from .compiler_options import CompilerOptions
+from .condition import (
+    DispatchCondition,
+    _bind_dispatch_conditions,
+    _dispatch_condition_topology,
+)
 from .dataflow_buffer import (
     DataflowBuffer,
     _reset_cb_counter,
@@ -195,6 +201,7 @@ class _AtomSpec:
     frozen_scope: Dict[str, Any]
     external_pipenets: Dict[str, PipeNet]
     logical_kernels: Dict[str, Kernel]
+    dispatch_conditions: Dict[str, DispatchCondition]
 
 
 class _ReturnFinder(ast.NodeVisitor):
@@ -357,8 +364,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets, inlined_logical_kernels = inline_atom_calls(
-        fn_def, scope, caller_name=name
+    inlined_pipenets, inlined_logical_kernels, inlined_dispatch_conditions = (
+        inline_atom_calls(fn_def, scope, caller_name=name)
     )
     _validate_resource_declarations(fn_def, name)
 
@@ -368,9 +375,13 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             loaded_names.add(node.id)
 
     captured_values = _captured_values(fn)
+    closure_values = inspect.getclosurevars(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
+    dispatch_conditions: Dict[str, DispatchCondition] = dict(
+        inlined_dispatch_conditions
+    )
     captured_logical_kernels: Dict[str, Kernel] = {}
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
@@ -385,6 +396,13 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif isinstance(value, Kernel):
             if not any(value is kernel for kernel in logical_kernels.values()):
                 captured_logical_kernels[capture_name] = value
+        elif isinstance(value, DispatchCondition):
+            if capture_name in closure_values.globals:
+                raise ValueError(
+                    f"@ttl.operation {name!r}: DispatchCondition "
+                    f"{capture_name!r} must be created by an enclosing factory"
+                )
+            dispatch_conditions[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -394,12 +412,25 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
+    topology = _dispatch_condition_topology(dispatch_conditions)
+    if topology:
+        encoded_topology = ";".join(
+            f"{ordinal}:{scalar_type.name}" for ordinal, scalar_type in topology
+        )
+        topology_digest = hashlib.sha256(encoded_topology.encode("ascii")).hexdigest()[
+            :16
+        ]
+        operation_identity = (
+            f"{operation_identity}[dispatch_conditions={topology_digest}]"
+        )
+
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
 
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
     frozen_scope.update(logical_kernels)
+    frozen_scope.update(dispatch_conditions)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -417,6 +448,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         frozen_scope=frozen_scope,
         external_pipenets=external_pipenets,
         logical_kernels=logical_kernels,
+        dispatch_conditions=dispatch_conditions,
     )
 
 
@@ -660,8 +692,10 @@ def _compile_atom(
     # The shared operation wrapper supplies values in signature order.
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
     logical_kernels = dict(spec.logical_kernels)
+    bound_dispatch_conditions = _bind_dispatch_conditions(spec.dispatch_conditions)
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(logical_kernels)
+    eval_scope.update(bound_dispatch_conditions)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -731,6 +765,7 @@ def _compile_atom(
     captures.update(dfbs)
     captures.update(nets)
     captures.update(spec.external_pipenets)
+    captures.update(bound_dispatch_conditions)
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.
@@ -919,6 +954,19 @@ def operation(
 
     def _decorator(fn):
         _validate_operation_interface(fn)
+        function_definition = _parse_function_definition(fn)
+        if function_definition is not None:
+            loaded_names = {
+                node.id
+                for node in ast.walk(function_definition)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            for name in sorted(loaded_names):
+                if isinstance(fn.__globals__.get(name), DispatchCondition):
+                    raise ValueError(
+                        f"@ttl.operation {fn.__name__!r}: DispatchCondition "
+                        f"{name!r} must be created by an enclosing factory"
+                    )
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
             prepare_call = functools.partial(_canonical_tensor_args, fn)

@@ -22,6 +22,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
@@ -1005,6 +1006,104 @@ static bool proveEqualValuesAtLaunchLocations(
   return equal;
 }
 
+static std::optional<llvm::APInt> getIntegerConstant(Value value) {
+  Attribute constant;
+  if (!matchPattern(value, m_Constant(&constant))) {
+    return std::nullopt;
+  }
+  auto integer = dyn_cast<IntegerAttr>(constant);
+  if (!integer) {
+    return std::nullopt;
+  }
+  return integer.getValue();
+}
+
+// Prove equality between expressions rooted in typed dispatch conditions.
+// Polarity tracks whether the caller observes zero or nonzero as true.
+static bool proveEquivalentDispatchConditionExpressions(Value lhsValue,
+                                                        bool lhsNonzeroIsTrue,
+                                                        Value rhsValue,
+                                                        bool rhsNonzeroIsTrue) {
+  std::optional<llvm::APInt> lhsConstant = getIntegerConstant(lhsValue);
+  std::optional<llvm::APInt> rhsConstant = getIntegerConstant(rhsValue);
+  if (lhsConstant || rhsConstant) {
+    return lhsConstant && rhsConstant &&
+           (lhsConstant->isZero() != lhsNonzeroIsTrue) ==
+               (rhsConstant->isZero() != rhsNonzeroIsTrue);
+  }
+
+  auto lhsComparison = lhsValue.getDefiningOp<arith::CmpIOp>();
+  auto rhsComparison = rhsValue.getDefiningOp<arith::CmpIOp>();
+  if (lhsComparison || rhsComparison) {
+    if (!lhsComparison || !rhsComparison) {
+      return false;
+    }
+    auto stripZeroComparison =
+        [](arith::CmpIOp comparison) -> std::optional<std::pair<Value, bool>> {
+      arith::CmpIPredicate predicate = comparison.getPredicate();
+      if (predicate != arith::CmpIPredicate::eq &&
+          predicate != arith::CmpIPredicate::ne) {
+        return std::nullopt;
+      }
+      if (std::optional<llvm::APInt> lhs =
+              getIntegerConstant(comparison.getLhs());
+          lhs && lhs->isZero()) {
+        return std::pair<Value, bool>{comparison.getRhs(),
+                                      predicate == arith::CmpIPredicate::ne};
+      }
+      if (std::optional<llvm::APInt> rhs =
+              getIntegerConstant(comparison.getRhs());
+          rhs && rhs->isZero()) {
+        return std::pair<Value, bool>{comparison.getLhs(),
+                                      predicate == arith::CmpIPredicate::ne};
+      }
+      return std::nullopt;
+    };
+    std::optional<std::pair<Value, bool>> lhsExpression =
+        stripZeroComparison(lhsComparison);
+    std::optional<std::pair<Value, bool>> rhsExpression =
+        stripZeroComparison(rhsComparison);
+    if (!lhsExpression || !rhsExpression) {
+      return false;
+    }
+    return proveEquivalentDispatchConditionExpressions(
+        lhsExpression->first, lhsNonzeroIsTrue == lhsExpression->second,
+        rhsExpression->first, rhsNonzeroIsTrue == rhsExpression->second);
+  }
+
+  auto lhsCall = lhsValue.getDefiningOp<OpaqueCallOp>();
+  auto rhsCall = rhsValue.getDefiningOp<OpaqueCallOp>();
+  if (lhsCall || rhsCall) {
+    return lhsCall && rhsCall && lhsNonzeroIsTrue == rhsNonzeroIsTrue &&
+           lhsCall.getResult() == lhsValue && rhsCall.getResult() == rhsValue &&
+           lhsCall.getConditionResultAttr() &&
+           lhsCall.getConditionResultAttr() == rhsCall.getConditionResultAttr();
+  }
+
+  if (lhsNonzeroIsTrue != rhsNonzeroIsTrue) {
+    return false;
+  }
+  auto proveBinaryOperands = [&](auto lhsOperation, auto rhsOperation) {
+    return lhsOperation && rhsOperation &&
+           lhsOperation.getType().isInteger(1) &&
+           rhsOperation.getType().isInteger(1) &&
+           proveEquivalentDispatchConditionExpressions(
+               lhsOperation.getLhs(), true, rhsOperation.getLhs(), true) &&
+           proveEquivalentDispatchConditionExpressions(
+               lhsOperation.getRhs(), true, rhsOperation.getRhs(), true);
+  };
+  if (auto lhsAnd = lhsValue.getDefiningOp<arith::AndIOp>()) {
+    return proveBinaryOperands(lhsAnd, rhsValue.getDefiningOp<arith::AndIOp>());
+  }
+  if (auto lhsOr = lhsValue.getDefiningOp<arith::OrIOp>()) {
+    return proveBinaryOperands(lhsOr, rhsValue.getDefiningOp<arith::OrIOp>());
+  }
+  if (auto lhsXor = lhsValue.getDefiningOp<arith::XOrIOp>()) {
+    return proveBinaryOperands(lhsXor, rhsValue.getDefiningOp<arith::XOrIOp>());
+  }
+  return false;
+}
+
 static bool proveEquivalentUnresolvedExecutionContexts(
     const UnresolvedExecutionCountContext &lhsContext,
     const LaunchExecutionLocation &lhsLocation,
@@ -1015,8 +1114,11 @@ static bool proveEquivalentUnresolvedExecutionContexts(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument,
     const LaunchNodeDomainState &state, bool requireConditionalExecution) {
-  if (lhsContext.function != rhsContext.function ||
-      lhsContext.frames.size() != rhsContext.frames.size()) {
+  bool sameFunction = lhsContext.function == rhsContext.function;
+  if (lhsContext.frames.size() != rhsContext.frames.size() ||
+      (!requireConditionalExecution && !sameFunction) ||
+      (requireConditionalExecution && !sameFunction &&
+       !(lhsLocation == rhsLocation))) {
     return false;
   }
 
@@ -1030,15 +1132,25 @@ static bool proveEquivalentUnresolvedExecutionContexts(
         lhsFrame.affinePredicate != rhsFrame.affinePredicate ||
         lhsFrame.controlValues.size() != rhsFrame.controlValues.size() ||
         (requireConditionalExecution &&
-         lhsFrame.kind == UnresolvedControlFrameKind::ScfFor)) {
+         lhsFrame.kind == UnresolvedControlFrameKind::ScfFor) ||
+        (requireConditionalExecution && !sameFunction &&
+         lhsFrame.kind == UnresolvedControlFrameKind::AffineIf)) {
       return false;
     }
     for (auto &&[lhsValue, rhsValue] :
          llvm::zip_equal(lhsFrame.controlValues, rhsFrame.controlValues)) {
-      if (!proveEqualValuesAtLaunchLocations(
+      bool equalValue =
+          sameFunction &&
+          proveEqualValuesAtLaunchLocations(
               lhsValue, lhsLocation, resolveLhsFunctionArgument, rhsValue,
-              rhsLocation, resolveRhsFunctionArgument, state,
-              equalValueCache)) {
+              rhsLocation, resolveRhsFunctionArgument, state, equalValueCache);
+      if (!equalValue && lhsLocation == rhsLocation &&
+          requireConditionalExecution &&
+          lhsFrame.kind == UnresolvedControlFrameKind::ScfIf) {
+        equalValue = proveEquivalentDispatchConditionExpressions(
+            lhsValue, true, rhsValue, true);
+      }
+      if (!equalValue) {
         return false;
       }
     }

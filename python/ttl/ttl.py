@@ -30,6 +30,7 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .condition import DispatchCondition
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -60,6 +61,7 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "DispatchCondition",
     "ScalarType",
     "compute",
     "datamovement",
