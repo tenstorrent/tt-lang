@@ -983,10 +983,10 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
           if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
             return;
           }
-          if (!knownLaunchNodeDomainContains(
-                  pushDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
-              !isNocKernelThread(pushOp)) {
-            reject("push is not in the receiver NOC domain");
+          // Unresolved outer control is safe only when the ownership and
+          // receiver-context checks below prove the complete protocol.
+          if (!isNocKernelThread(pushOp)) {
+            reject("push is not in a receiver NOC thread");
             return;
           }
           std::optional<int64_t> maybePushedBlocks =
