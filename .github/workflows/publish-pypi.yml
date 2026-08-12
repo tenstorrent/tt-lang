@@ -80,6 +80,29 @@ jobs:
     with:
       ttlang_sha_override: ${{ inputs.ttlang_sha }}
 
+  # Release-tag pushes publish the dist and IRD images under the release tag.
+  # ci.yml's probe requires the IRD image to exist at that tag, and rebuilding it
+  # from a PR or main commit would overwrite the release with newer content.
+  #
+  # Deliberately does not depend on preflight. preflight decides whether the
+  # release is publishable to public PyPI, which an S3-only pin fails by design;
+  # gating image publication on it would leave those releases without the image
+  # ci.yml needs. The image tag comes from get-version-tag.sh at checkout, not
+  # from preflight, and on.push.tags already restricts this event to release tags.
+  #
+  # No ttlang_sha_override: on a tag push github.sha is already the tagged commit,
+  # and the reusable workflow resolves from the same ref as this caller.
+  build-docker:
+    if: ${{ github.event_name == 'push' }}
+    permissions:
+      checks: write
+      contents: read
+      packages: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: true
+
   build-wheels:
     needs: [preflight, build-wheel-images]
     if: ${{ always() && needs.preflight.result == 'success' && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') }}

@@ -21,7 +21,7 @@ set -euo pipefail
 TOOLCHAIN="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
 # Pinned to a release ABI-compatible with the tt-metal built into the toolchain;
 # bump alongside tt-metal submodule uplifts.
-TTSIM_VERSION="${TTSIM_VERSION:-v1.9.6}"
+TTSIM_VERSION="${TTSIM_VERSION:-v1.9.9}"
 TTSIM_CHIP="${TTSIM_CHIP:-wh}"
 SIM_DIR="$TOOLCHAIN/sim"
 mkdir -p "$SIM_DIR"
