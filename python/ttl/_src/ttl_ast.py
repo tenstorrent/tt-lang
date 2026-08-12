@@ -14,6 +14,7 @@ from ttl.dialects import arith, func, ttcore, ttkernel
 from ttl.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
+from ..condition import DispatchCondition, _BoundDispatchCondition
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
@@ -305,7 +306,15 @@ class TTLGenericCompiler(TTCompilerBase):
                 ),
                 None,
             )
-            if (
+            condition_result_node = next(
+                (
+                    keyword.value
+                    for keyword in candidate.keywords
+                    if keyword.arg == "condition_result"
+                ),
+                None,
+            )
+            if condition_result_node is not None or (
                 result_type_node is not None
                 and self._resolve_scalar_type(result_type_node) is not None
             ):
@@ -1177,7 +1186,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
-                elif val is ScalarType or isinstance(val, ScalarType):
+                elif (
+                    val is ScalarType
+                    or isinstance(val, ScalarType)
+                    or isinstance(val, _BoundDispatchCondition)
+                ):
                     continue
                 elif is_ttnn_global_semaphore(val):
                     sem_addr = _get_ttnn_global_semaphore_address(val)
@@ -1877,6 +1890,28 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return result_type
 
+    def _resolve_dispatch_condition(self, node):
+        """Resolve an operation-local dispatch condition declaration."""
+        condition = self._resolve_static_reference(node)
+        if isinstance(condition, DispatchCondition):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() condition_result must be captured by "
+                "an enclosing @ttl.operation factory",
+            )
+        if not isinstance(condition, _BoundDispatchCondition):
+            type_detail = (
+                ""
+                if condition is _MISSING_STATIC_VALUE
+                else f", got {type(condition).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() condition_result must be a "
+                "ttl.DispatchCondition" + type_detail,
+            )
+        return condition
+
     def _resolve_dfb_value(self, node, param_name):
         """Resolve one DFB expression and reject other SSA values."""
         value = self.visit(node)
@@ -1987,6 +2022,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
                 result_type=ttl.ScalarType.I64, # optional scalar result
+                condition_result=active,        # dispatch-stable condition
             )
 
         DFBs use explicit forms in template_args and may appear directly in
@@ -2034,6 +2070,7 @@ class TTLGenericCompiler(TTCompilerBase):
             "unknown_dfb_access",
             "include_paths",
             "result_type",
+            "condition_result",
         }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
@@ -2117,13 +2154,30 @@ class TTLGenericCompiler(TTCompilerBase):
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
+        if "result_type" in kw_map and "condition_result" in kw_map:
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() cannot combine result_type and "
+                "condition_result",
+            )
+
         result_types = []
+        condition_result_attr = None
         if "result_type" in kw_map:
             result_type = self._resolve_scalar_type(kw_map["result_type"])
             if result_type is not None:
                 result_types.append(
                     IntegerType.get_signless(result_type.bit_width, self.ctx)
                 )
+        elif "condition_result" in kw_map:
+            condition = self._resolve_dispatch_condition(kw_map["condition_result"])
+            result_type = IntegerType.get_signless(
+                condition.scalar_type.bit_width, self.ctx
+            )
+            result_types.append(result_type)
+            condition_result_attr = ttl.ir.DispatchConditionAttr.get(
+                self.ctx, condition.ordinal, result_type
+            )
 
         template_dfb_operands = []
         template_arg_attrs = []
@@ -2162,6 +2216,18 @@ class TTLGenericCompiler(TTCompilerBase):
                 "distinct dependency-only DFBs",
             )
         ordered_dependencies = automatic_dependencies + dependency_dfb_operands
+
+        if condition_result_attr is not None and (
+            template_dfb_operands
+            or ordered_dependencies
+            or resolved_dfb_effects
+            or unknown_dfb_access
+        ):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() condition_result call cannot access "
+                "DFB state",
+            )
 
         effect_attrs = []
         for effect in resolved_dfb_effects:
@@ -2203,6 +2269,7 @@ class TTLGenericCompiler(TTCompilerBase):
             unsigned_arg_indices=unsigned_arg_indices_attr,
             dfb_effects=effects_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
+            condition_result=condition_result_attr,
         )
         if result_types:
             return opaque_call
