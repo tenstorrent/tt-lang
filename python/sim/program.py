@@ -275,7 +275,9 @@ def run_operation(
     _schedule_and_run(
         node_plan_for=lambda n: node_plans[n],
         candidate_nodes=range(total_nodes),
-        analysis_templates=node_plans[0][1],
+        analysis_templates=tuple(
+            template for _, ordered in node_plans.values() for template in ordered
+        ),
         pipenets=pipenets,
         grid=grid,
         node_footprints=node_footprints,
@@ -350,10 +352,12 @@ def _schedule_and_run(
     ``node_plan_for(node)`` returns ``(node_context, ordered_templates)`` for a
     node: the context is the bind context (and the source of DataflowBuffers for
     end-of-run cleanup/validation), and ``ordered_templates`` is (compute, dm0,
-    dm1).  ``analysis_templates`` is any representative (compute, dm0, dm1)
-    triple used once for copy-pattern analysis (kernel code objects are shared
-    across nodes).  ``node_footprints`` carries each node's DataflowBuffer
-    footprint for the hardware-limit warnings; see
+    dm1).  ``analysis_templates`` is every node's templates: a body that picks
+    its kernels by ``ttl.node()`` gives different nodes different code, so one
+    node's triple would leave the rest without copy-wait injection points.
+    Nodes that do share code cost nothing, because the analysis is keyed by code
+    object and skips what it has already visited.  ``node_footprints`` carries
+    each node's DataflowBuffer footprint for the hardware-limit warnings; see
     :func:`_warn_over_hardware_limits`.
     """
     _warn_over_hardware_limits(node_footprints)
@@ -361,10 +365,10 @@ def _schedule_and_run(
     scheduler = GreenletScheduler()
     set_scheduler(scheduler)
 
-    # Analyse the three kernel functions (and any reachable helpers) once.  A
-    # shared visited set prevents duplicate analysis when helpers are called by
-    # more than one kernel.  Kernel code objects are identical across nodes, so
-    # a single representative triple covers every node.
+    # Analyse the kernel functions (and any reachable helpers) of every node.  A
+    # shared visited set prevents duplicate analysis -- and duplicate violation
+    # reports -- when helpers are called by more than one kernel, or when nodes
+    # run the same code, which is the common case.
     _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
     _visited: set[int] = set()
     injection_map: dict[types.CodeType, KernelAnalysis] = {}

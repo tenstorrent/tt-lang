@@ -1117,5 +1117,79 @@ class TestProgramInternals:
         op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
 
 
+class TestPerNodeKernelAnalysis:
+    """Kernel analysis covers the kernels of every node, not just node 0's.
+
+    The operation body is re-run per node, so a body that chooses its kernels by
+    ``ttl.node()`` hands different nodes different code. Analysing one node's
+    kernels would leave the rest without the copy-wait injection points their
+    code needs, and would not see the patterns their code is refused for.
+    """
+
+    def test_a_pattern_only_a_later_node_writes_is_reported(self) -> None:
+        """A refused ``ttl.copy()`` position on node 1 fails the run."""
+
+        @ttl.operation(grid=(1, 2))
+        def op(a: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass
+
+            if ttl.node(dims=1) == 0:
+
+                @ttl.datamovement()
+                def dm0() -> None:
+                    block = dfb.reserve()
+                    ttl.copy(a[0:1, 0:1], block).wait()
+                    block.push()
+
+            else:
+
+                @ttl.datamovement()
+                def dm0_other_node() -> None:
+                    block = dfb.reserve()
+                    # A copy inside a container is a position the simulator
+                    # refuses; only node 1 reaches this definition.
+                    pending = [ttl.copy(a[0:1, 0:1], block)]
+                    pending[0].wait()
+                    block.push()
+
+        with pytest.raises(RuntimeError, match="unsupported pattern"):
+            op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
+
+    def test_shared_kernel_code_is_reported_once(self) -> None:
+        """Nodes running the same code do not each report the same violation."""
+
+        @ttl.operation(grid=(1, 4))
+        def op(a: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm0() -> None:
+                block = dfb.reserve()
+                pending = [ttl.copy(a[0:1, 0:1], block)]
+                pending[0].wait()
+                block.push()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
+
+        assert "Found 1 unsupported pattern" in str(excinfo.value), str(excinfo.value)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
