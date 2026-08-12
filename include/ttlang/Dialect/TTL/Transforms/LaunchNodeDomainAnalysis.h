@@ -209,8 +209,11 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
         resolveRhsFunctionArgument);
 
 /// Prove that two operations have the same unresolved conditional execution
-/// at their launch nodes. The proof accepts only structured conditions whose
-/// bodies execute at most once; unresolved loops are rejected.
+/// at their launch nodes. Same-function conditions may share SSA values;
+/// cross-function conditions require equivalent typed dispatch-condition
+/// expressions at the same launch coordinate. The proof accepts only
+/// structured conditions whose bodies execute at most once; unresolved loops
+/// are rejected.
 bool proveEquivalentConditionalExecutionAtLaunchNodes(
     Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
     LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state);
