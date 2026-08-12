@@ -15,6 +15,7 @@ from ttl.constants import validate_math_fidelity
 
 from .typedefs import Shape
 from .context import get_context, cleanup_run_context
+from .kernel import KernelKind
 
 
 def set_default_grid(grid: Shape) -> None:

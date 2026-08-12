@@ -16,7 +16,7 @@ from greenlet import getcurrent
 
 from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
-from .blockstate import KernelType
+from .kernel import KernelKind
 from .context import get_context
 from .greenlet_scheduler import (
     GreenletScheduler,
@@ -106,7 +106,7 @@ def _total_nodes(grid: Shape) -> int:
 
 # The roles of the three kernels an operation runs, in the order _order_kernels
 # returns them.
-_KERNEL_ROLES = (KernelType.COMPUTE, KernelType.DM, KernelType.DM)
+_KERNEL_ROLES = (KernelKind.COMPUTE, KernelKind.DATA_MOVEMENT, KernelKind.DATA_MOVEMENT)
 
 
 def _order_kernels(kernels: List[BindableTemplate]) -> tuple[BindableTemplate, ...]:
@@ -121,10 +121,12 @@ def _order_kernels(kernels: List[BindableTemplate]) -> tuple[BindableTemplate, .
             f"Operation must define exactly 3 kernels (compute, dm0, dm1), got {len(kernels)}"
         )
     compute_kernels = [
-        t for t in kernels if getattr(t, "kernel_type", None) == KernelType.COMPUTE
+        t for t in kernels if getattr(t, "kernel_type", None) == KernelKind.COMPUTE
     ]
     dm_kernels = [
-        t for t in kernels if getattr(t, "kernel_type", None) == KernelType.DM
+        t
+        for t in kernels
+        if getattr(t, "kernel_type", None) == KernelKind.DATA_MOVEMENT
     ]
     if len(compute_kernels) != 1:
         raise ValueError(
@@ -428,7 +430,6 @@ def _schedule_and_run(
 
             node_context, ordered = node_plan_for(node)
             all_node_contexts.append((node, node_context))
-
             # Add kernels to scheduler (one compute + two DM per node).
             # Identity is (node, kind, __name__); the two DM kernels on a node
             # must have distinct __name__s -- the scheduler rejects duplicates

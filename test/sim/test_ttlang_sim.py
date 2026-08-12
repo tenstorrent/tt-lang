@@ -120,6 +120,30 @@ class TestDefaultGrid:
         finally:
             set_default_grid(original)
 
+    def test_explicit_kernel_selectors_are_inert(self):
+        """Simulator thread decorators accept logical selectors."""
+        data_movement_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        assert ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT == (
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+        )
+
+        @ttl.operation(grid=(1, 1))
+        def test_kernel(a: ttnn.Tensor):
+            @ttl.compute(kernel=ttl.KernelKind.COMPUTE)
+            def compute():
+                pass
+
+            @ttl.datamovement(kernel=data_movement_kernel)
+            def data_movement():
+                pass
+
+            @ttl.datamovement()
+            def second_data_movement():
+                pass
+
+        test_kernel(make_zeros_tensor(32, 32))
+
 
 class TestGridCommandLineOption:
     """Test --grid command-line option in tt-lang-sim."""

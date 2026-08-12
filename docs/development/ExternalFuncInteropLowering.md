@@ -14,6 +14,88 @@ inside C++.
 
 The Python interface currently supports void calls.
 
+## Logical-kernel selection
+
+A `call_extern_func` in a unified `@ttl.operation` accepts a `kernel=` selector.
+`KernelKind.COMPUTE` and `KernelKind.DATA_MOVEMENT` select the compiler-owned
+canonical kernel of that kind:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "compute_entry",
+    kernel=ttl.KernelKind.COMPUTE,
+)
+```
+
+Canonical kernel kinds may be combined with `|`:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "shared_entry",
+    kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
+An operation-local `Kernel` distinguishes multiple logical kernels of the same
+kind. Its declaration is a static top-level operation resource:
+
+```python
+reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+ttl.call_extern_func(HEADER, "reader_entry", kernel=reader)
+ttl.call_extern_func(
+    HEADER,
+    "shared_entry",
+    kernel=(ttl.KernelKind.COMPUTE, reader),
+)
+```
+
+An external call accepts one selector or multiple distinct selectors. The `|`
+syntax combines `KernelKind` values. A nonempty tuple supports selections that
+include operation-local `Kernel` handles. Multiple selectors emit the call once
+in every selected logical kernel. A call may omit `kernel=` when its enclosing
+callback already determines one logical kernel. Otherwise, omission is invalid
+because opaque code cannot be assigned by inspecting its implementation.
+
+`TensorBlock.push` and `TensorBlock.pop` also accept `kernel=`, but only one
+selector. An explicit selector assigns an otherwise-unused DFB transaction:
+
+```python
+unused = input_dfb.wait()
+unused.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
+```
+
+`reserve` and `wait` do not accept a selector. Their ownership comes from the
+acquired block's uses and release. The selector is consumed during unified-body
+splitting and does not alter the external-call IR or C++ interface.
+
+### Planning and identity invariants
+
+Unified-body splitting analyzes immutable source AST before cloning or pruning
+statements. Its immutable split plan records every statement selection, inferred
+and explicit DFB transaction ownership, required kernel counts, and target
+capacities. Split application consumes this plan without recomputing placement
+from mutated AST. Retaining the required counts and capacities makes the
+target-feasibility decision auditable after analysis.
+
+Operation registration binds each `Kernel` handle in place exactly once to its
+source name and owning operation. Equality and hashing require this binding and
+include the kernel kind and complete logical identity. Equality or hashing of an
+unbound handle is an error because Python object identity is not a stable logical
+kernel identity. A deterministic fingerprint of immutable nonlocal captures
+distinguishes factory-created operations whose generated code differs.
+Composition retains the callee-owned bound handle, and repeated sequential calls
+to the same callee share it. The bound identity is retained as typed function
+metadata and remains available on `KernelSpec` after composition and core
+specialization.
+
+One target-indexed backend slot table supplies logical capacity validation,
+logical-to-processor assignment, and final TTNN interop validation. Explicit and
+unified operations therefore report capacity failures with the same logical
+kernel kinds and identities.
+
 ## Argument contract
 
 | Source argument | Generated C++ interface | Restrictions |
@@ -44,6 +126,7 @@ ttl.call_extern_func(
         ttl.dfb_descriptor(source),
         ttl.dfb_descriptor(destination),
     ],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
@@ -84,6 +167,7 @@ ttl.call_extern_func(
     "legacy_copy",
     template_args=[ttl.get_dfb_id(source)],
     func_args=[source],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 

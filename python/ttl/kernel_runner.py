@@ -42,6 +42,7 @@ from .dataflow_buffer import (
 )
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
+from .kernel import KernelSelector
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ class KernelSpec:
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
+        logical_kernel: Target-independent selector retained across kernel cloning.
     """
 
     path: str
@@ -167,6 +169,7 @@ class KernelSpec:
     compiler_include_paths: List[str] = field(default_factory=list)
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
+    logical_kernel: Optional[KernelSelector] = None
 
 
 @dataclass

@@ -29,6 +29,8 @@ else:
     from ttl.ttl import (
         operation,
         DFB,
+        Kernel,
+        KernelKind,
         compute,
         datamovement,
         make_dataflow_buffer_like,
@@ -62,6 +64,8 @@ else:
         "build_info",
         "operation",
         "DFB",
+        "Kernel",
+        "KernelKind",
         "compute",
         "datamovement",
         "DataflowBuffer",

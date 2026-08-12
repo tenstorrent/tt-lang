@@ -20,7 +20,7 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from sim import TILE_SHAPE, copy, ttl, ttnn
-from sim.blockstate import KernelType
+from sim.kernel import KernelKind
 from sim.dfb import Block
 from sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
 from sim.program import _order_kernels  # type: ignore[reportPrivateUsage]
@@ -477,8 +477,8 @@ class TestKernelSetShape:
         role must not be handed to a data-movement thread, where it would run as
         one.
         """
-        compute = SimpleNamespace(kernel_type=KernelType.COMPUTE, __name__="compute")
-        dm = SimpleNamespace(kernel_type=KernelType.DM, __name__="dm0")
+        compute = SimpleNamespace(kernel_type=KernelKind.COMPUTE, __name__="compute")
+        dm = SimpleNamespace(kernel_type=KernelKind.DATA_MOVEMENT, __name__="dm0")
         roleless = SimpleNamespace(kernel_type=None, __name__="stranger")
 
         with pytest.raises(ValueError, match="exactly 2 datamovement kernels, got 1"):

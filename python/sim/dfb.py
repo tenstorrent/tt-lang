@@ -35,7 +35,6 @@ from .blockstate import (
     BlockAcquisition,
     BlockStateMachine,
     ExpectedOp,
-    KernelType,
     format_cannot_read_block,
     format_cannot_write_block,
 )
@@ -44,6 +43,7 @@ from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
+from .kernel import KernelKind, KernelSelector
 from .ttnnsim import (
     ROW_MAJOR_LAYOUT,
     TILE_LAYOUT,
@@ -95,7 +95,7 @@ def _dry_run_result(shape: Shape, *sources: "Block") -> "Block":
         tensor=_dry_run_sentinel(layout),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, *sources)
@@ -148,7 +148,7 @@ class Block:
         tensor: Tensor,
         shape: Shape,
         acquisition: BlockAcquisition,
-        kernel_type: KernelType,
+        kernel_type: KernelKind,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
         name: Optional[str] = None,
@@ -219,14 +219,16 @@ class Block:
             f"expected={expected})"
         )
 
-    def pop(self) -> None:
+    def pop(self, *, kernel: Optional[KernelSelector] = None) -> None:
+        del kernel
         if self.dfb is None:
             raise RuntimeError(
                 "Block.pop() is only valid for blocks acquired from a DataflowBuffer."
             )
         self.dfb.pop_block()
 
-    def push(self) -> None:
+    def push(self, *, kernel: Optional[KernelSelector] = None) -> None:
+        del kernel
         if self.dfb is None:
             raise RuntimeError(
                 "Block.push() is only valid for blocks acquired from a DataflowBuffer."
@@ -546,7 +548,7 @@ class Block:
                 tensor=Tensor(elem_tensor, ROW_MAJOR_LAYOUT),
                 shape=shape,
                 acquisition=BlockAcquisition.RESERVE,
-                kernel_type=KernelType.COMPUTE,
+                kernel_type=KernelKind.COMPUTE,
                 is_temporary=True,
             )
             return block
@@ -574,7 +576,7 @@ class Block:
             tensor=Tensor(elem_tensor),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.COMPUTE,
+            kernel_type=KernelKind.COMPUTE,
             is_temporary=True,
         )
         return block
@@ -607,7 +609,7 @@ class Block:
                 tensor=t,
                 shape=t.padded_shape,
                 acquisition=BlockAcquisition.RESERVE,
-                kernel_type=KernelType.COMPUTE,
+                kernel_type=KernelKind.COMPUTE,
                 is_temporary=True,
             )
 
@@ -633,7 +635,7 @@ class Block:
             tensor=t,
             shape=tile_shape,
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.COMPUTE,
+            kernel_type=KernelKind.COMPUTE,
             is_temporary=True,
         )
 
@@ -697,7 +699,7 @@ class Block:
         # Track wait() Compute source blocks for state machine
         if (
             items._sm.acquisition == BlockAcquisition.WAIT
-            and items._sm.kernel_type == KernelType.COMPUTE
+            and items._sm.kernel_type == KernelKind.COMPUTE
             and ExpectedOp.STORE_SRC in items._sm.expected_ops
         ):
             source_blocks_to_mark.append(items)
@@ -759,7 +761,7 @@ class Block:
             if (
                 not source._is_temporary
                 and source._sm.acquisition == BlockAcquisition.WAIT
-                and source._sm.kernel_type == KernelType.COMPUTE
+                and source._sm.kernel_type == KernelKind.COMPUTE
             ):
                 if result_block._source_blocks is None:
                     result_block._source_blocks = []
@@ -792,7 +794,7 @@ class Block:
             tensor=result_tensor,
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.COMPUTE,
+            kernel_type=KernelKind.COMPUTE,
             is_temporary=True,
         )
         # Track all source blocks (self + any additional)
@@ -924,7 +926,7 @@ class Block:
         return self._sm.acquisition
 
     @property
-    def kernel_type(self) -> KernelType:
+    def kernel_type(self) -> KernelKind:
         """Get the kernel role (DM or Compute) that acquired this block."""
         return self._sm.kernel_type
 
@@ -1526,7 +1528,7 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
         if (
             not is_temporary
             and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
-            and getattr(block, "kernel_type", None) == KernelType.COMPUTE
+            and getattr(block, "kernel_type", None) == KernelKind.COMPUTE
         ):
             # ``_source_blocks`` is now lazy-init on Block (``None`` until
             # the first source append) to skip ~17M empty-list allocations
@@ -1637,7 +1639,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         tensor=result_tensor,
         shape=result_shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, a, b)

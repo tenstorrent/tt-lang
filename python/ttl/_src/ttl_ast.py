@@ -23,41 +23,17 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
+from ..kernel import _DFB_RELEASE_METHODS
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
     is_auto_profile_enabled,
 )
+from .global_semaphore import (
+    get_ttnn_global_semaphore_address,
+    is_ttnn_global_semaphore,
+)
 from .tensor_registry import get_tensor_global_index, get_tensor_source
-
-
-def is_ttnn_global_semaphore(value) -> bool:
-    """Require the exact TTNN type so local and lookalike objects are rejected."""
-    try:
-        from ttnn._ttnn.global_semaphore import global_semaphore
-    except ImportError:
-        return False
-    return isinstance(value, global_semaphore)
-
-
-def _get_ttnn_global_semaphore_address(value) -> int:
-    """Return one GlobalSemaphore address without suppressing TTNN failures."""
-    if not is_ttnn_global_semaphore(value):
-        raise TypeError(f"expected ttnn GlobalSemaphore, got {type(value)}")
-    import ttnn
-
-    address = ttnn.get_global_semaphore_address(value)
-    if type(address) is not int:
-        raise TypeError(
-            "ttnn.get_global_semaphore_address() must return one integer "
-            f"address, got {type(address)}"
-        )
-    if not 0 <= address < (1 << 32):
-        raise ValueError(
-            "ttnn.get_global_semaphore_address() result must fit in uint32_t, "
-            f"got {address}"
-        )
-    return address
 
 
 @dataclass(frozen=True)
@@ -353,6 +329,8 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
+                self._strip_explicit_release_kernel_selector(node)
+
                 # Intercept print() to handle keyword arguments.
                 if (
                     not isinstance(node.func, ast.Attribute)
@@ -385,6 +363,25 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def _strip_explicit_release_kernel_selector(self, node: ast.Call) -> None:
+        """Remove release placement because the thread decorator owns it."""
+        if not isinstance(node.func, ast.Attribute):
+            return
+        if node.func.attr not in _DFB_RELEASE_METHODS:
+            return
+        if not isinstance(node.func.value, ast.Name):
+            return
+        receiver_table = self._var_exists(node.func.value.id)
+        if not receiver_table:
+            return
+        from ..operators import _is_block
+
+        if not _is_block(receiver_table[node.func.value.id]):
+            return
+        node.keywords = [
+            keyword for keyword in node.keywords if keyword.arg != "kernel"
+        ]
 
     def visit_AugAssign(self, node):
         """Handle augmented assignment on tensor values.
@@ -1077,7 +1074,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
                 elif is_ttnn_global_semaphore(val):
-                    sem_addr = _get_ttnn_global_semaphore_address(val)
+                    sem_addr = get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
                     self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
                 else:
@@ -1615,7 +1612,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
             if is_ttnn_global_semaphore(val):
-                sem_addr = _get_ttnn_global_semaphore_address(val)
+                sem_addr = get_ttnn_global_semaphore_address(val)
                 return _unsigned_integer(sem_addr)
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
