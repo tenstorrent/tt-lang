@@ -37,6 +37,8 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "DFBVerification.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -2230,7 +2232,9 @@ struct TTLVerifyPipeNetGuardsPass
       }
     });
 
-    verifyCBWaits(state);
+    if (!isDFBProtocolDomainVerificationRelaxed()) {
+      verifyCBWaits(state);
+    }
     if (state.sawError) {
       signalPassFailure();
       return;
