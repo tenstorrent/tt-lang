@@ -6,6 +6,43 @@
 // Each split module includes the finalization metadata required by the
 // verifier; its descriptor contents are irrelevant to guard analysis.
 
+// An unknown predicate remains safe when every launch node is a source in the
+// selected record table. The unknown domain is a subset of the launch grid,
+// which is itself contained in the allowed PipeNet source domain.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @unknown_guard_full_source_domain
+  // CHECK: scf.if
+  // CHECK: ttl.pipenet_foreach_src
+  // CHECK: ttl.copy
+  func.func @unknown_guard_full_source_domain(%runtime: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %scaled = arith.muli %core_x, %runtime : index
+    %zero = arith.constant 0 : index
+    %cond = arith.cmpi eq, %scaled, %zero : index
+    scf.if %cond {
+      ttl.pipenet_foreach_src attributes {
+          records = #ttl.pipenet_records<net 0 name "full_sources" pipes [
+            #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+            #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+          ]>} {
+      ^bb0(%pipe: !ttl.selected_pipe_src):
+        %send = ttl.copy %cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.selected_pipe_src)
+            -> !ttl.transfer_handle<write>
+        ttl.yield
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A copy into a pipe is valid only on the source node. A copy out of a pipe is
 // valid only on destination nodes. Existing ttl.if_src/ttl.if_dst regions
 // provide those execution domains.

@@ -462,6 +462,10 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       Operation *unanalyzableOp, Twine primaryMessage,
                       ArrayRef<std::pair<int64_t, PipeRole>> roles,
                       ModuleState &state) {
+  if (current.isSubsetOf(allowed) ||
+      state.launchDomains.baseDomain.isSubsetOf(allowed)) {
+    return;
+  }
   if (!current.known) {
     auto diag = op->emitOpError()
                 << "could not statically analyze the PipeNet guard "
@@ -474,9 +478,6 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
           << "this expression is not statically analyzable";
     }
     state.sawError = true;
-    return;
-  }
-  if (current.isSubsetOf(allowed)) {
     return;
   }
   LaunchNodeDomain extra = current.subtract(allowed);
