@@ -61,7 +61,15 @@ constexpr size_t kMaxListedOpsPerLane = 30;
 
 using Lane = CostEstimator::Lane;
 
-/// One measured per-tile cost from the nightly tt-llk perf run.
+/// What a cost is charged per.
+///
+/// Kept because the two are not interchangeable and the distinction cannot be
+/// recovered once dropped: the perf run measures a tile loop per tile and an
+/// init zone per call. Nothing consumes it yet -- every cost is charged once per
+/// call, which is right only for an operation processing one tile per call.
+enum class Unit : uint8_t { PerCall, PerTile };
+
+/// One measured cost from the nightly tt-llk perf run.
 ///
 /// The key is everything the measurement depends on, because a cost is only
 /// meaningful for the configuration it was taken in: the same LLK at 2 faces
@@ -69,12 +77,13 @@ using Lane = CostEstimator::Lane;
 /// across math fidelities. A lookup that cannot match every field it needs has
 /// to miss rather than borrow a neighbouring configuration.
 ///
+/// Carries neither the operation nor the lane: a row is reached only through the
+/// lane slot that slices it, so both are implied by where it sits.
+///
 /// `variant` holds the benchmark-specific knobs as a `k=v;k=v` string, in the
 /// order gen_cost_table.py declared them, so a benchmark that sweeps something
 /// unusual does not silently average unlike measurements together.
-struct PerfWorkEntry {
-  llvm::StringRef op;
-  Lane lane;
+struct MeasuredCost {
   llvm::StringRef inFormat;
   llvm::StringRef outFormat;
   bool destAcc;
@@ -83,326 +92,98 @@ struct PerfWorkEntry {
   unsigned faces;
   llvm::StringRef variant;
 
-  /// Cycles per tile, and a per-call constant for entries fitted against a
-  /// block dimension (zero otherwise). Kept as measured: rounding to the
-  /// estimator's integer cost is the caller's decision.
-  double perTile;
+  /// What `cost` is charged per. Recorded but not yet consumed: the estimator
+  /// charges every cost once per call, which is right only for an operation
+  /// processing one tile per call. Operand-dependent scaling is what makes the
+  /// distinction load-bearing.
+  Unit unit;
+
+  /// Kept as measured; rounding to the estimator's integer cost is the caller's
+  /// decision. `fixed` is the intercept of a fit against a block dimension, and
+  /// zero for a plain measurement. A row carrying one is refused rather than
+  /// used as a scalar, since the intercept has nowhere to go until scaling
+  /// lands.
+  double cost;
   double fixed;
 };
 
-/// One operation's contiguous run of entries, from the generated index.
+/// What one operation costs on one lane.
 ///
-/// A lookup happens once per placement, and a kernel whose loops unroll places
-/// hundreds of thousands, so narrowing the scan from the whole table to one
-/// operation is what keeps the estimate off the critical path of a compile.
-struct PerfOpRange {
-  llvm::StringRef op;
-  unsigned first;
-  unsigned count;
+/// `placeholder` is always present and always invented -- measurements live only
+/// in `kMeasured`, so there is never a question which of the two a number is. It
+/// answers whenever no measured row matches the kernel's configuration, which
+/// for most of the table is always.
+///
+/// `count == 0` means no measurement exists for this (operation, lane) at all,
+/// as distinct from one existing that this kernel cannot match.
+struct LaneCost {
+  uint64_t placeholder;
+  Unit unit;
+  unsigned first = 0;
+  unsigned count = 0;
 };
 
-/// One measured init-zone cost. The benchmark takes a single measurement per
-/// lane covering every init block in the zone, so it is attributed to the
-/// group's primary operation and the other inits in that group cost nothing.
-struct PerfInitEntry {
+/// One operation's entry: the lanes it runs on, and what it costs on each.
+///
+/// A lane with no value is a lane the operation does not run on. Every lane
+/// empty is an operation that runs nowhere -- known and free, as opposed to
+/// absent from the table, which is unknown and fails the estimate.
+///
+/// `dm` is one slot rather than one per data-movement RISC, because an operation
+/// does not choose which core it runs on: `ttl.noc_index` on the enclosing
+/// function does. NCRISC and BRISC read the same slot.
+struct OpCost {
   llvm::StringRef op;
-  Lane lane;
-  llvm::StringRef inFormat;
-  llvm::StringRef outFormat;
-  bool destAcc;
-  llvm::StringRef fidelity;
-  llvm::StringRef dstSync;
-  unsigned faces;
-  llvm::StringRef variant;
-  double cost;
+  std::optional<LaneCost> dm;
+  std::optional<LaneCost> unpack;
+  std::optional<LaneCost> math;
+  std::optional<LaneCost> pack;
 };
 
 #include "CostTableBlackhole.inc"
 
-/// What one TTKernel operation costs on each lane it runs on.
+/// The measured rows belonging to one lane slot; empty when it has none.
+llvm::ArrayRef<MeasuredCost> measuredRows(const LaneCost &slot) {
+  return llvm::ArrayRef(kMeasured).slice(slot.first, slot.count);
+}
+
+/// The slot an operation uses for `lane`, or nullopt when it does not run there.
+const std::optional<LaneCost> &laneSlot(const OpCost &entry, Lane lane) {
+  switch (lane) {
+  case Lane::Ncrisc:
+  case Lane::Brisc:
+    return entry.dm;
+  case Lane::Trisc0Unpack:
+    return entry.unpack;
+  case Lane::Trisc1Math:
+    return entry.math;
+  case Lane::Trisc2Pack:
+    return entry.pack;
+  }
+  llvm_unreachable("unhandled lane");
+}
+
+/// Whether the operation runs on no lane at all: known, and costing nothing.
+bool runsNowhere(const OpCost &entry) {
+  return !entry.dm && !entry.unpack && !entry.math && !entry.pack;
+}
+
+/// The cost table, keyed by operation name.
 ///
-/// An empty slot means the operation does no work on that lane: it is not
-/// placed there, has no resource effect there and takes no time there. A value
-/// means it is what the operation costs there.
-///
-/// A lane with no measurement behind it carries 1, not 0. One is what the
-/// scheduler charges as its floor, so the cost a lane declares and the span it
-/// occupies agree, and it never makes the claim a 0 would: that the lane does
-/// no work and an operation placed there is free.
-///
-/// `dm` is one slot rather than one per data-movement core because the
-/// operation does not choose which core it runs on: `ttl.noc_index` on the
-/// enclosing function does. The other three are the per-TRISC halves inside a
-/// compute kernel.
-///
-/// Lanes and costs are one table because a lane is exactly what a cost is
-/// keyed on. The `llk_*` calls an operation expands to are not recorded: cost
-/// is measured per operation per lane (see scripts/gen_cost_table.py), and a
-/// resource effect is a property of the operation rather than of any one call
-/// it makes.
-///
-/// The `= std::nullopt` defaults let an entry name only the lanes it uses;
-/// without them -Wmissing-field-initializers rejects the omitted trailing
-/// members.
-struct ThreadWork {
-  std::optional<uint64_t> dm = std::nullopt;
-  std::optional<uint64_t> unpack = std::nullopt;
-  std::optional<uint64_t> math = std::nullopt;
-  std::optional<uint64_t> pack = std::nullopt;
-
-  /// True when the operation runs on no lane at all. Distinct from being absent
-  /// from the table, which means unknown, and from a zero cost, which still
-  /// places the operation so that its resource effect applies.
-  bool isFree() const { return !dm && !unpack && !math && !pack; }
-};
-
-/// Per-lane work for TTKernel operations, keyed by operation name.
-///
-/// >>> THE CYCLE COUNTS ARE PLACEHOLDERS, NOT MEASUREMENTS. <<<
-///
-/// They are ordered sensibly relative to each other -- a semaphore poll is
-/// cheaper than a tile of unpack, which is cheaper than a tile of FPU work --
-/// and nothing else, so the shape of a report is meaningful while its
-/// magnitudes are not. Replace with the measured per-operation, per-lane
-/// numbers from scripts/gen_cost_table.py before any decision depends on them.
-///
-/// Known inaccuracy: a cost here is flat per operation, but some operations
-/// scale with a tile count taken from an operand. pack_tile_block in particular
-/// packs `ntiles` tiles in a loop, so a flat cost is wrong for any block bigger
-/// than one tile. The measured data is keyed on the same operation and lane but
-/// carries a per-tile term, so operand-dependent scaling arrives with it.
-///
-/// Which lanes an operation runs on is a fact about the compiled program rather
-/// than a measurement. A compute kernel is one source file compiled three
-/// times, once per TRISC, with -DTRISC_UNPACK / -DTRISC_MATH / -DTRISC_PACK.
-/// The UNPACK(), MATH() and PACK() macros in api/compute/common_globals.h keep
-/// only the calls belonging to the thread being compiled and erase the rest, so
-/// the wrapper around a call is what decides which TRISC runs it. An operation
-/// is on a lane below when its wrapper keeps at least one call for that thread.
-/// Read off the non-Quasar branch of the tt-metal headers:
-///
-///   circular_buffer.h:31-69 (COMPILE_FOR_TRISC path)
-///     wait_front, pop_front    -> UNPACK
-///     reserve_back, push_back  -> PACK
-///
-///   reg_api.h:45-89
-///     tile_regs_acquire, tile_regs_commit -> MATH
-///     tile_regs_wait, tile_regs_release   -> PACK
-///
-///   eltwise_binary.h:31-55   binary_op_init_common -> UNPACK, MATH, PACK
-///   eltwise_binary.h:72-83, 128-132  add_tiles_init -> UNPACK, MATH
-///     (UNPACK only because binary_tiles_init passes full_init = true, which
-///     keeps the call inside its `if constexpr (full_init)` guard)
-///   eltwise_binary.h:206-214 add_tiles -> UNPACK, MATH
-///   pack.h:128-135           pack_tile_block -> PACK
-///
-/// `state_configure()` and `LLK_SAN_FUNCTION()` appear in several of these but
-/// are sentinel/sanitizer hooks that compile to nothing in a normal build, so
-/// an operation whose wrapper keeps only those counts as free rather than as
-/// work.
-const llvm::StringMap<ThreadWork> &getThreadWorkTable() {
-  static const llvm::StringMap<ThreadWork> table = [] {
-    // Keys omit the `ttkernel.` prefix; the lookup strips it. That avoids a
-    // string concatenation and allocation per entry at first use.
-    llvm::StringMap<ThreadWork> t;
-
-    // Slot order is dm, unpack, math, pack; trailing slots left off are empty,
-    // and `{}` is an empty slot the entry has to name to reach a later one.
-    // Written with /*name=*/ comments because designated initializers are C++20
-    // and this builds as C++17.
-
-    // -- Circular buffers, api/dataflow/circular_buffer.h:31-69 -------------
-    // Under COMPILE_FOR_TRISC the four methods are wrapped PACK/PACK/UNPACK/
-    // UNPACK; otherwise they call the plain dataflow functions.
-    //
-    // These and the DST lifecycle below are unmeasured: no benchmark in the LLK
-    // perf suite isolates a handshake, and none of them touches a circular
-    // buffer. What matters about them is not the call anyway, it is the credit
-    // they move -- the waiting is derived by the scheduler -- so they carry the
-    // unmeasured value of one and let their resource effect do the work.
-    t["cb_wait_front"] = {/*dm=*/1, /*unpack=*/1};
-    t["cb_pop_front"] = {/*dm=*/1, /*unpack=*/1};
-    t["cb_reserve_back"] = {/*dm=*/1, /*unpack=*/{}, /*math=*/{}, /*pack=*/1};
-    t["cb_push_back"] = {/*dm=*/1, /*unpack=*/{}, /*math=*/{}, /*pack=*/1};
-
-    // -- DST lifecycle, api/compute/reg_api.h:45-89 ------------------------
-    t["tile_regs_acquire"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/1};
-    t["tile_regs_commit"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/1};
-    t["tile_regs_wait"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{}, /*pack=*/1};
-    t["tile_regs_release"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                              /*pack=*/1};
-
-    // -- Eltwise binary, api/compute/eltwise_binary.h ----------------------
-    t["binary_op_init_common"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/100,
-                                  /*pack=*/140};
-    t["add_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-    t["add_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
-
-    // -- Pack, api/compute/pack.h -----------------------------------------
-    // pack_tile, lines 86-94: one tile. pack_tile_block, lines 128-135: the
-    // same packer work hoisted out of a loop over ntiles. Both forms occur:
-    // ttkernel-combine-pack-tiles fuses a run of pack_tile into one
-    // pack_tile_block, but only when the CB indices step by one starting from
-    // zero, so a subblocked compute keeps separate pack_tile ops for every
-    // round after the first.
-    t["pack_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{}, /*pack=*/200};
-    t["pack_tile_block"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                            /*pack=*/260};
-
-    // -- Data movement, api/dataflow/{noc,dataflow_api,circular_buffer}.h --
-    // A barrier's cost is the transfer it waits on, not the call itself.
-    t["noc_async_read_tile"] = {/*dm=*/60};
-    t["noc_async_write_tile"] = {/*dm=*/60};
-    t["noc_async_read_barrier"] = {/*dm=*/30};
-    t["noc_async_write_barrier"] = {/*dm=*/30};
-    t["get_common_arg_val"] = {/*dm=*/10};
-    t["get_write_ptr"] = {/*dm=*/5};
-    t["get_read_ptr"] = {/*dm=*/5};
-    t["TensorAccessor"] = {/*dm=*/20};
-
-    // -- Known to be free --------------------------------------------------
-    // Present on no lane, which is how the table says "costs nothing", as
-    // opposed to being absent, which means unknown. get_compile_time_arg_val
-    // is a compile-time constant that only constructs a CircularBuffer handle
-    // holding an id; TensorAccessorArgs is a template instantiation.
-    t["get_compile_time_arg_val"] = {};
-    t["TensorAccessorArgs"] = {};
-    t["my_logical_x_"] = {};
-    t["my_logical_y_"] = {};
-
-    // -- SFPU binary ops that call through a macro -------------------------
-    // eltwise_binary_sfpu.h:73 and :214 do not name an llk_ function directly:
-    // they go through SFPU_BINARY_CALL / SFPU_BINARY_INIT_FN
-    // (llk_math_eltwise_binary_sfpu_macros.h:49, :81). Both expand under
-    // MATH(), so the lane is unambiguous either way.
-    t["add_binary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["add_binary_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-
-    // -- Remaining compute-API ops -----------------------------------------
-    // Extracted from the non-Quasar branches of api/compute/**.h by matching
-    // each op mnemonic to its ALWI wrapper and recording which of UNPACK(),
-    // MATH() and PACK() appear in it, resolving one level of delegation
-    // (add_tiles_init -> binary_tiles_init).
-    //
-    // Ops whose wrapper contains mutually exclusive branches are still absent:
-    // matmul_block, mm_block_init, mm_block_init_short,
-    // pack_reconfig_data_format, tilize_init, transpose_wh_init,
-    // transpose_wh_tile, unary_bcast, unary_bcast_init and untilize_uninit.
-    // Lane membership is often the same in every arm, so these are now more
-    // tractable than they were at call granularity -- but each still needs its
-    // header read, and the arms differ in cost even where they agree on lanes,
-    // so they report as unknown rather than guessed.
-
-    // -- api/compute/add_int_sfpu.h ------------------------------------------
-    t["add_int_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["add_int_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-
-    // -- api/compute/binary_max_min.h ----------------------------------------
-    t["binary_max_int32_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["binary_max_int32_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-    t["binary_max_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["binary_max_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-    t["binary_min_int32_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["binary_min_int32_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-    t["binary_min_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["binary_min_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-
-    // -- api/compute/binop_with_scalar.h -------------------------------------
-    t["binop_with_scalar_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-    t["mul_unary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-
-    // -- api/compute/compute_kernel_hw_startup.h -----------------------------
-    t["compute_kernel_hw_startup"] = {/*dm=*/{}, /*unpack=*/60, /*math=*/100,
-                                      /*pack=*/140};
-
-    // -- api/compute/eltwise_binary.h ----------------------------------------
-    t["binary_dest_reuse_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
-    t["binary_dest_reuse_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-    t["mul_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
-    t["mul_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-    t["sub_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
-    t["sub_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-
-    // -- api/compute/eltwise_binary_sfpu.h -----------------------------------
-    t["div_binary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["div_binary_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-    t["mul_binary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["mul_binary_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-
-    // -- api/compute/eltwise_unary.h -----------------------------------------
-    t["init_sfpu"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/140, /*pack=*/140};
-    t["unary_op_init_common"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/140,
-                                 /*pack=*/140};
-
-    // -- api/compute/matmul.h ------------------------------------------------
-    t["matmul_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/400};
-    t["mm_init"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/140, /*pack=*/140};
-    t["mm_init_short"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-
-    // -- api/compute/mul_int_sfpu.h ------------------------------------------
-    t["mul_int_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
-    t["mul_int_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-
-    // -- api/compute/pack.h --------------------------------------------------
-    t["pack_reconfig_l1_acc"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                                 /*pack=*/200};
-
-    // -- api/compute/pack_untilize.h -----------------------------------------
-    t["pack_untilize_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-    t["pack_untilize_uninit"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                                 /*pack=*/480};
-
-    // -- api/compute/reduce.h ------------------------------------------------
-    t["reduce_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40, /*pack=*/200};
-    t["reduce_tile"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
-    t["reduce_uninit"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300, /*pack=*/200};
-
-    // -- api/compute/tile_move_copy.h ----------------------------------------
-    t["copy_block_matmul_partials"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/150};
-    t["copy_tile"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/150};
-    t["copy_tile_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-
-    // -- api/compute/tilize.h ------------------------------------------------
-    // tilize_block and untilize_block run the DST handshake themselves: their
-    // MATH halves call llk_math_wait_for_dest_available and
-    // llk_math_dest_section_done, and their PACK halves the packer's matching
-    // pair. getResourceEffect keys the DST effects on the tile_regs_* ops only,
-    // so those internal acquires are not modelled -- a pre-existing gap that
-    // the per-call lists used to make visible and this comment now carries.
-    t["tilize_block"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/190, /*pack=*/240};
-    t["tilize_uninit"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/{}, /*pack=*/40};
-
-    // -- api/compute/untilize.h ----------------------------------------------
-    t["untilize_block"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/40,
-                           /*pack=*/240};
-    t["untilize_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
-
-    // -- api/compute/where.h -------------------------------------------------
-    t["where_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/350};
-    t["where_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
-
+/// Built once instead of binary-searched, because a lookup happens per placement
+/// and a kernel whose loops unroll places hundreds of thousands of them. 296
+/// entries pointing at static data; nothing is copied.
+const llvm::StringMap<const OpCost *> &getCostTable() {
+  static const llvm::StringMap<const OpCost *> table = [] {
+    llvm::StringMap<const OpCost *> t;
+    for (const OpCost &entry : kCostTable) {
+      t[entry.op] = &entry;
+    }
     return t;
   }();
   return table;
 }
 
-/// Cost of one operation on one lane.
-///
-/// >>> PLACEHOLDER VALUES, NOT MEASUREMENTS. <<<
-///
-/// Each number is the sum of the placeholder per-call costs this table held
-/// when it was keyed on `llk_*` names, so a report keeps the shape it had at
-/// call granularity while its magnitudes stay invented. They are ordered
-/// sensibly relative to each other -- a semaphore poll is cheaper than a tile
-/// of unpack, which is cheaper than a tile of FPU work -- and nothing else.
-/// Replace with the measured per-operation, per-lane numbers from
-/// scripts/gen_cost_table.py before any decision depends on them.
-///
-/// Known inaccuracy: a cost here is flat per operation, but some operations
-/// scale with a tile count taken from an operand. pack_tile_block in particular
-/// packs `ntiles` tiles in a loop, so a flat cost is wrong for any block bigger
-/// than one tile. The measured table is keyed on the same operation and lane
-/// but carries a per-tile term, so operand-dependent scaling arrives with it.
 using ResourceEffect = CostEstimator::ResourceEffect;
 
 /// Resource effect of one TTKernel operation, read from its operands.
@@ -433,8 +214,8 @@ const llvm::StringSet<> &getNonFpuSrcCouplingOps() {
 /// lanes that only configures the unpacker -- can no longer be checked, because
 /// `add_tiles` and `add_tiles_init` are indistinguishable once the call names
 /// are gone.
-bool lanesAllowSrcCoupling(const ThreadWork &work) {
-  return work.unpack && work.math;
+bool lanesAllowSrcCoupling(const OpCost &entry) {
+  return entry.unpack && entry.math;
 }
 
 /// Operations whose MATH half re-initializes the DST pipeline.
@@ -478,10 +259,10 @@ ResourceEffect getResourceEffect(Operation *op, Lane lane) {
   // `lane`.
   bool coupled = op->hasTrait<ttkernel::TTKernelFPUOpTrait>() ||
                  getNonFpuSrcCouplingOps().contains(name);
-  const llvm::StringMap<ThreadWork> &table = getThreadWorkTable();
+  const llvm::StringMap<const OpCost *> &table = getCostTable();
   auto entry = table.find(name);
   assert((!coupled || entry == table.end() ||
-          lanesAllowSrcCoupling(entry->second)) &&
+          lanesAllowSrcCoupling(*entry->second)) &&
          "Src coupling disagrees with the operation's lanes: an op that feeds "
          "SrcA/SrcB has to run on both UNPACK and MATH");
   if (coupled) {
@@ -615,27 +396,6 @@ Lane getDataMovementLane(func::FuncOp funcOp) {
   return Lane::Ncrisc;
 }
 
-/// The measured tables compiled in from CostTableBlackhole.inc.
-llvm::ArrayRef<PerfWorkEntry> getPerfWorkTable() { return kPerfWorkBlackhole; }
-llvm::ArrayRef<PerfInitEntry> getPerfInitTable() { return kPerfInitBlackhole; }
-
-/// The entries measured for one operation, or empty when it has none.
-///
-/// The generated index is sorted by operation name, so this is a binary search
-/// over it rather than a scan of the table. Both are static data; nothing is
-/// built at startup.
-template <typename Entry>
-llvm::ArrayRef<Entry> entriesForOp(llvm::ArrayRef<Entry> table,
-                                   llvm::ArrayRef<PerfOpRange> index,
-                                   llvm::StringRef op) {
-  const PerfOpRange *found = llvm::partition_point(
-      index, [&](const PerfOpRange &range) { return range.op < op; });
-  if (found == index.end() || found->op != op) {
-    return {};
-  }
-  return table.slice(found->first, found->count);
-}
-
 /// Architecture the compiled-in measurements were taken on. Costs do not
 /// transfer across architectures, so a caller that does not know its target must
 /// not use them.
@@ -686,12 +446,13 @@ constexpr llvm::StringLiteral kDefaultFidelity("HiFi4");
 /// The configuration a measured cost is keyed on, recovered from one kernel
 /// function.
 ///
-/// Everything here is read from the module except `fidelity`, which the pipeline
-/// never sets: ttl_api builds its ComputeConfigDescriptor with only
-/// fp32_dest_acc_en, dst_full_sync_en and unpack_to_dest_fp32, so the math
-/// fidelity is whatever ttnn defaults to. That default is recorded here rather
-/// than guessed per lookup, because the same FPU multiply spans 22 to 88 cycles
-/// across fidelities and a wrong guess is a 4x error.
+/// Everything here is read from the module except `fidelity` and `approxMode`,
+/// which the pipeline never sets. Both are kernel-wide constants that tt-metal
+/// generates into the kernel's descriptor header from the compute config
+/// (jit_build/genfiles.cpp:776-783 emits `MATH_FIDELITY` and `APPROX` together),
+/// and ttl_api sets neither, so both are whatever ttnn defaults to. Recorded
+/// here rather than guessed per lookup: the same FPU multiply spans 22 to 88
+/// cycles across fidelities, so a wrong guess is a 4x error.
 ///
 /// `faces` is 4: the estimator has no subtile path, and the only measurements
 /// taken at 2 faces are the partial-face matmuls, which a 4-face key correctly
@@ -703,26 +464,52 @@ struct KernelConfig {
   llvm::StringRef dstSync;
   unsigned faces = 4;
 
-  /// Whether the unpacker writes straight to DST, skipping SrcA. One of the
-  /// benchmark knobs we can actually answer for, from the kernel's
-  /// unpack_to_dest_fp32 circular buffers.
+  /// ttnn's `math_approx_mode` default (kernel_types.hpp:111). Every SFPU
+  /// wrapper passes this same `APPROX` constant, so it is one value for the
+  /// whole kernel rather than a per-operation choice. It moves the math lane by
+  /// 40-93% on the six approximation-sensitive operations and 0% on the other
+  /// 21, and moves unpack and pack by 0.1-0.4%.
+  bool approxMode = false;
+
+  /// Trip count of the SFPU kernel's inner loop. tt-metal compiles 8 at 87 of
+  /// its 88 SFPU call sites, and the ttkernel dialect documents the same default
+  /// inline on `exp_tile`, which is one of the few operations able to carry the
+  /// attribute at all. So 8 is what a tt-lang kernel runs unless an operation
+  /// overrides it, and reading that override per operation is the remaining
+  /// work; a kernel-wide default is right for every operation that cannot
+  /// express one.
+  unsigned iterations = 8;
+
+  /// Whether the unpacker writes straight to DST, skipping SrcA. Recoverable
+  /// from `ttl.unpack_to_dest_fp32` together with the CB's format and
+  /// `destAcc`, but not read yet; see the keying TODO in
+  /// cost_estimator_issue.md, and note that populating it alone would make an
+  /// fp32 kernel reject the FPU rows that carry `unpack_to_dest=False` for no
+  /// reason, since the mode does not apply to operands read through SrcA/B.
   bool unpackToDest = false;
 };
 
 /// Whether we can answer for every benchmark knob an entry was measured under.
 ///
-/// An entry's `variant` names the knobs its benchmark swept. Some describe the
-/// kernel and we can recover them; the rest -- `approx_mode`, `iterations`,
-/// `fast_mode`, `stable_sort`, `throttle_level` and the matmul dimensions --
-/// describe the benchmark's own configuration and have no counterpart in our IR.
+/// An entry's `variant` names the knobs its benchmark swept. Some are kernel
+/// configuration we can supply; the rest -- `iterations`, `fast_mode`,
+/// `stable_sort`, `throttle_level` and the matmul dimensions -- describe the
+/// benchmark's own setup and have no counterpart in our IR.
 ///
 /// An entry naming one of those cannot be matched, and that is the point rather
 /// than a limitation. It is what stops a `pack_tile` measured inside an SFPU
-/// benchmark, whose variant carries `approx_mode` and `iterations`, from
-/// answering for a `pack_tile` in an FPU kernel: the two measure the same call in
-/// zones of different shape and differ by 15%, and nothing in our IR says which
-/// one applies. Requiring every named knob to be one we can supply picks the
-/// entry whose benchmark we can actually claim to resemble.
+/// benchmark from answering for a `pack_tile` in an FPU kernel: the two measure
+/// the same call in zones of different shape and differ by 13%, and nothing in
+/// our IR says which one applies. Requiring every named knob to be one we can
+/// supply picks the entry whose benchmark we can actually claim to resemble.
+///
+/// `iterations` is worth singling out, because it is the one knob that looks
+/// answerable and is not useful. It is the trip count of the SFPU kernel's
+/// `for (d = 0; d < ITERATIONS; d++)` loop, and every compute-API wrapper bakes
+/// in 8 (53 occurrences across api/compute/eltwise_unary, no other value), while
+/// the sweep measured 32. So answering it correctly rejects 1120 of the 1122
+/// rows that name it: they measure a loop four times longer than any kernel
+/// runs. That coverage needs the benchmark rerun at 8, not a change here.
 bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
   while (!variant.empty()) {
     auto [entry, rest] = variant.split(';');
@@ -730,6 +517,24 @@ bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
     auto [knob, value] = entry.split('=');
     if (knob == "unpack_to_dest") {
       if (value != (config.unpackToDest ? "True" : "False")) {
+        return false;
+      }
+      continue;
+    }
+    // Kernel-wide, from the same descriptor header as MATH_FIDELITY. ttl_api
+    // never sets it, so it is ttnn's default; see KernelConfig::approxMode.
+    if (knob == "approx_mode") {
+      if (value != (config.approxMode ? "Yes" : "No")) {
+        return false;
+      }
+      continue;
+    }
+    // See KernelConfig::iterations. The sweeps now measure the value tt-metal
+    // compiles, so this agrees rather than rejecting the way it did against the
+    // old iterations=32 data.
+    if (knob == "iterations") {
+      unsigned measured = 0;
+      if (value.getAsInteger(10, measured) || measured != config.iterations) {
         return false;
       }
       continue;
@@ -787,79 +592,76 @@ KernelConfig getKernelConfig(func::FuncOp funcOp) {
 /// caller still receives every matching entry rather than the first, so that a
 /// key which cannot separate two different numbers shows up as a disagreement
 /// instead of being resolved by row order.
-bool keyMatches(llvm::StringRef op, Lane lane, llvm::StringRef inFormat,
-                const KernelConfig &config, llvm::StringRef entryOp,
-                Lane entryLane, llvm::StringRef entryIn,
-                llvm::StringRef entryOut, bool entryDestAcc,
-                llvm::StringRef entryFidelity, llvm::StringRef entrySync,
-                unsigned entryFaces, llvm::StringRef entryVariant) {
-  return entryOp == op && entryLane == lane && entryIn == inFormat &&
-         entryOut == config.outFormat && entryDestAcc == config.destAcc &&
-         entryFaces == config.faces &&
-         // The eltwise CSVs carry no dest_sync column, so those entries have an
-         // empty one and match any kernel's mode. Only an entry that names a
-         // mode has to agree with ours.
-         (entrySync.empty() || entrySync == config.dstSync) &&
+bool keyMatches(const MeasuredCost &row, llvm::StringRef inFormat,
+                const KernelConfig &config) {
+  return row.inFormat == inFormat && row.outFormat == config.outFormat &&
+         row.destAcc == config.destAcc && row.faces == config.faces &&
+         // The eltwise CSVs carry no dest_sync column, so those rows have an
+         // empty one and match any kernel's mode. Only a row that names a mode
+         // has to agree with ours.
+         (row.dstSync.empty() || row.dstSync == config.dstSync) &&
          // Likewise fidelity: it is empty for the SFPU benchmarks, whose cost
          // does not depend on it, and for the ops that pin it themselves.
-         (entryFidelity.empty() || entryFidelity == config.fidelity) &&
-         variantMatches(entryVariant, config);
+         (row.fidelity.empty() || row.fidelity == config.fidelity) &&
+         variantMatches(row.variant, config);
 }
 
-/// Measured per-tile cost of one operation on one lane, or nullopt when the
-/// tables do not cover the configuration.
+/// What one operation costs on one lane for one kernel's configuration.
+struct LaneLookup {
+  /// False when the operation does not run on this lane at all, in which case
+  /// the other fields are meaningless and nothing is placed.
+  bool onLane = false;
+  uint64_t cost = 0;
+  /// True when `cost` came from a measured row matching this kernel exactly,
+  /// false when it fell back to the slot's placeholder.
+  bool measured = false;
+};
+
+/// Resolve one (operation, lane) against the table.
 ///
-/// Returns nullopt rather than a nearby number, and also when the matching
-/// entries disagree by more than a hair: two rows matching one key means the key
-/// is missing a field the measurement depended on, which is exactly the mistake
-/// that would put an unverifiable number into a report.
-std::optional<double> lookupPerfWork(llvm::StringRef op, Lane lane,
-                                     llvm::StringRef inFormat,
-                                     const KernelConfig &config) {
-  std::optional<double> found;
-  for (const PerfWorkEntry &entry :
-       entriesForOp(getPerfWorkTable(),
-                    llvm::ArrayRef(kPerfWorkBlackholeIndex), op)) {
-    if (!keyMatches(op, lane, inFormat, config, entry.op, entry.lane,
-                    entry.inFormat, entry.outFormat, entry.destAcc,
-                    entry.fidelity, entry.dstSync, entry.faces,
-                    entry.variant)) {
-      continue;
-    }
-    // Entries fitted against a block dimension carry a per-call constant the
-    // estimator has nowhere to put yet, since it costs an operation without
-    // reading its tile count. Skip them rather than drop the constant silently.
-    if (entry.fixed != 0.0) {
-      return std::nullopt;
-    }
-    if (found && std::abs(*found - entry.perTile) > 0.01 * *found) {
-      return std::nullopt;
-    }
-    found = entry.perTile;
+/// A measured row wins when one matches; otherwise the slot's placeholder
+/// answers, which it always can, since every lane an operation runs on carries
+/// one. There is no third outcome: an operation either does not run here, or has
+/// a cost.
+///
+/// Matching rows that disagree by more than a hair are treated as no match. Two
+/// rows matching one key means the key is missing a field the measurement
+/// depended on, which is exactly the mistake that would put an unverifiable
+/// number into a report.
+LaneLookup lookupLaneCost(const OpCost &entry, Lane lane,
+                          llvm::StringRef inFormat, const KernelConfig &config) {
+  const std::optional<LaneCost> &slot = laneSlot(entry, lane);
+  if (!slot) {
+    return {};
   }
-  return found;
-}
 
-/// Measured init-zone cost, on the same terms as lookupPerfWork.
-std::optional<double> lookupPerfInit(llvm::StringRef op, Lane lane,
-                                     llvm::StringRef inFormat,
-                                     const KernelConfig &config) {
   std::optional<double> found;
-  for (const PerfInitEntry &entry :
-       entriesForOp(getPerfInitTable(),
-                    llvm::ArrayRef(kPerfInitBlackholeIndex), op)) {
-    if (!keyMatches(op, lane, inFormat, config, entry.op, entry.lane,
-                    entry.inFormat, entry.outFormat, entry.destAcc,
-                    entry.fidelity, entry.dstSync, entry.faces,
-                    entry.variant)) {
+  for (const MeasuredCost &row : measuredRows(*slot)) {
+    if (!keyMatches(row, inFormat, config)) {
       continue;
     }
-    if (found && std::abs(*found - entry.cost) > 0.01 * *found) {
-      return std::nullopt;
+    // Rows fitted against a block dimension carry an intercept the estimator
+    // has nowhere to put yet, since it costs an operation without reading its
+    // tile count. Refuse them rather than drop the constant silently.
+    if (row.fixed != 0.0) {
+      found.reset();
+      break;
     }
-    found = entry.cost;
+    if (found && std::abs(*found - row.cost) > 0.01 * *found) {
+      found.reset();
+      break;
+    }
+    found = row.cost;
   }
-  return found;
+
+  // Rounded to the nearest whole cost because the schedule counts in integers;
+  // the fraction dropped is under half a cost per placement, which no ranking
+  // turns on.
+  if (found) {
+    return {/*onLane=*/true, static_cast<uint64_t>(std::llround(*found)),
+            /*measured=*/true};
+  }
+  return {/*onLane=*/true, slot->placeholder, /*measured=*/false};
 }
 
 } // namespace
@@ -899,8 +701,8 @@ std::string CostEstimator::Report::render() const {
   }
   out << ", the rest PLACEHOLDER\n";
   out << "  measured on " << kPerfTableArch << " from "
-      << getPerfWorkTable().size() << " per-tile + " << getPerfInitTable().size()
-      << " init entries; per-operation provenance in the detail view\n";
+      << std::size(kMeasured) << " rows over " << std::size(kCostTable)
+      << " operations; per-operation provenance in the detail view\n";
 
   out << "  kernels:";
   for (llvm::StringRef kernel : kernels) {
@@ -1498,6 +1300,27 @@ private:
     /// The measured table's key fields that come from the enclosing function
     /// rather than from each operation.
     KernelConfig config;
+
+    /// Resolved costs, keyed by everything a lookup depends on.
+    ///
+    /// `config` is fixed for the function and `inFormat` comes from the
+    /// operation, so the answer repeats on every placement of the same
+    /// operation. Without this the scan runs once per placement, and a kernel
+    /// whose loops unroll places hundreds of thousands against slices as long as
+    /// 460 rows, each row costing a `variantMatches` parse. With it the scan
+    /// runs once per distinct key -- a few dozen times per function.
+    llvm::DenseMap<std::tuple<const OpCost *, Lane, const char *>, LaneLookup>
+        resolved;
+
+    LaneLookup resolve(const OpCost &entry, Lane lane,
+                       llvm::StringRef inFormat) {
+      auto key = std::make_tuple(&entry, lane, inFormat.data());
+      auto [it, inserted] = resolved.try_emplace(key);
+      if (inserted) {
+        it->second = lookupLaneCost(entry, lane, inFormat, config);
+      }
+      return it->second;
+    }
   };
 
   /// Record a gap the estimate cannot survive: diagnose it once per distinct
@@ -1643,7 +1466,7 @@ private:
   void placeTTKernelOp(Operation *op, PlaceContext &ctx) {
     Report &report = *ctx.report;
     const std::optional<Lane> dmLane = ctx.dmLane;
-    const llvm::StringMap<ThreadWork> &table = getThreadWorkTable();
+    const llvm::StringMap<const OpCost *> &table = getCostTable();
     {
       llvm::StringRef name = op->getName().getStringRef();
       ++ctx.seen;
@@ -1651,14 +1474,16 @@ private:
       // Messages keep the qualified name so they can be grepped against the IR.
       auto found = table.find(op->getName().stripDialect());
       if (found == table.end()) {
-        // With no entry the operation is placed on no lane at all, so its time
-        // and its resource effects are both missing.
+        // Unreachable while the table covers the dialect, which generation
+        // enforces by reading the op list out of TTKernelOps.td. Kept because a
+        // hand-edited table would otherwise place the operation on no lane at
+        // all, losing both its time and its resource effects.
         failToModel(name, op,
-                    "no per lane work for '" + name +
+                    "no cost table entry for '" + name +
                         "': the operation would be left out of every lane");
         return;
       }
-      const ThreadWork &work = found->second;
+      const OpCost &entry = *found->second;
 
       // Input format comes from the operation's own circular buffer, output
       // format and the rest from the enclosing kernel; see KernelConfig.
@@ -1673,32 +1498,21 @@ private:
         }
       }
 
-      auto place = [&](Lane lane, std::optional<uint64_t> cost) {
-        if (!cost) {
+      auto place = [&](Lane lane) {
+        LaneLookup cost = ctx.resolve(entry, lane, inFormat);
+        if (!cost.onLane) {
           return false;
         }
-
-        // Prefer the measured cost, falling back to the placeholder. Rounded to
-        // the nearest whole cost because the schedule counts in integers; the
-        // fraction dropped is under half a cost per placement, which no ranking
-        // turns on.
-        llvm::StringRef bare = op->getName().stripDialect();
-        std::optional<double> measuredCost =
-            lookupPerfWork(bare, lane, inFormat, ctx.config);
-        if (!measuredCost) {
-          measuredCost = lookupPerfInit(bare, lane, inFormat, ctx.config);
-        }
-        if (measuredCost) {
+        if (cost.measured) {
           ++report.measuredPlacements;
-          cost = static_cast<uint64_t>(std::llround(*measuredCost));
         } else {
           ++report.unmeasuredPlacements;
         }
 
         ResourceEffect effect = getResourceEffect(op, lane);
 
-        PlacedOp placed{name.str(), op->getLoc(), *cost,
-                        /*measured=*/measuredCost.has_value(), effect};
+        PlacedOp placed{name.str(), op->getLoc(), cost.cost, cost.measured,
+                        effect};
         if (placed.effect.kind != ResourceEffect::Kind::None &&
             placed.effect.tiles > 0) {
           if (std::optional<uint64_t> capacity = getCbCapacity(op)) {
@@ -1712,16 +1526,18 @@ private:
 
       bool placed = false;
       if (dmLane) {
-        placed = place(*dmLane, work.dm);
+        // A data-movement kernel compiles for one RISC, so all of its work
+        // lands on that lane; both read the entry's single `dm` slot.
+        placed = place(*dmLane);
       } else {
-        placed |= place(Lane::Trisc0Unpack, work.unpack);
-        placed |= place(Lane::Trisc1Math, work.math);
-        placed |= place(Lane::Trisc2Pack, work.pack);
+        placed |= place(Lane::Trisc0Unpack);
+        placed |= place(Lane::Trisc1Math);
+        placed |= place(Lane::Trisc2Pack);
       }
 
       // The table knows this operation, but not for the kind of kernel it
       // appeared in. Placing nothing would silently report it as free.
-      if (!placed && !work.isFree()) {
+      if (!placed && !runsNowhere(entry)) {
         failToModel(name, op,
                     "'" + name + "' runs on no lane of a " +
                         (dmLane ? "data-movement" : "compute") +
