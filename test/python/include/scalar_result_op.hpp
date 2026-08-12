@@ -26,3 +26,9 @@ inline typename ScalarResult<BitWidth>::Type scalar_result() {
   }
   return 1;
 }
+
+template <std::uint32_t BitWidth, typename Coordinate>
+inline typename ScalarResult<BitWidth>::Type
+scalar_result_from_coordinate(Coordinate) {
+  return 1;
+}
