@@ -78,7 +78,8 @@ from ._src.tensor_registry import (
     register_tensor_name,
     register_tensor_source,
 )
-from ._src.ttl_ast import TTLGenericCompiler, is_ttnn_global_semaphore
+from ._src.global_semaphore import is_ttnn_global_semaphore
+from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
