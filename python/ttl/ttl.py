@@ -23,7 +23,7 @@ Math operations:
 
 from .ttl_api import compute, datamovement, Program
 from .atom import operation, DFB
-from .kernel import Kernel, KernelKind
+from .kernel import Kernel, KernelKind, PIPE_SOURCE_KERNEL
 from .runtime_resources import (
     CoreRuntimeArgs,
     KernelDefine,
@@ -57,6 +57,7 @@ __all__ = [
     "DFB",
     "Kernel",
     "KernelKind",
+    "PIPE_SOURCE_KERNEL",
     "CoreRuntimeArgs",
     "KernelDefine",
     "KernelRuntimeResources",

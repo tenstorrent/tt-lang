@@ -1557,6 +1557,44 @@ def test_direct_external_call_selects_canonical_data_movement_kernel():
     assert "kernel=" not in data_movement
 
 
+def test_public_pipe_source_selector_shares_pipenet_source_kernel():
+    """External transport work can share the compiler-owned PipeNet source."""
+    fn = _fn(
+        """
+        def k(net):
+            net.if_src(lambda pipe: None)
+            ttl.call_extern_func(
+                "transport.hpp",
+                "transport",
+                kernel=ttl.PIPE_SOURCE_KERNEL,
+            )
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    data_movement_kernels = tuple(
+        kernel
+        for kernel in result.kernels
+        if kernel is KernelKind.DATA_MOVEMENT
+        or isinstance(kernel, Kernel)
+        and kernel.kind is KernelKind.DATA_MOVEMENT
+    )
+    assert data_movement_kernels == (ttl.PIPE_SOURCE_KERNEL,)
+    source = _kernel_src(result, ttl.PIPE_SOURCE_KERNEL)
+    assert "net.if_src" in source
+    assert "'transport'" in source
+    assert "kernel=" not in source
+
+    assignments = _assign_backend_kernel_slots(result)
+    brisc_selector = next(
+        selector
+        for slot, selector in assignments.items()
+        if slot.source_name == "brisc"
+    )
+    assert brisc_selector is ttl.PIPE_SOURCE_KERNEL
+
+
 def test_external_call_selects_named_logical_kernel():
     """A logical handle distinguishes a noncanonical kernel of the same kind."""
     reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")

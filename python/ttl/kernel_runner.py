@@ -884,13 +884,6 @@ def plan_program_runtime_resources(
                     "descriptor"
                 )
             descriptor_index = candidate_descriptors[0]
-            if kernel_fabric_routes[descriptor_index]:
-                raise ValueError(
-                    f"@ttl.operation {operation_name!r}: caller runtime "
-                    f"arguments for {_format_logical_kernel(logical_kernel)} "
-                    f"descriptor {descriptor_index} conflict with "
-                    "compiler-managed fabric routes"
-                )
             descriptor_runtime_args.setdefault(descriptor_index, []).append(runtime_arg)
 
     semaphore_fingerprints = _validate_semaphore_descriptors(
