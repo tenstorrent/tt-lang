@@ -1116,6 +1116,25 @@ def dm():
 ```
 
 
+## Control flow
+
+TT-Lang lowers a Python `for` loop over `range(...)` to device control flow.
+Use `ttl.static_range(...)` when every iteration must instead produce a
+separate linear sequence of operations in the compiled kernel:
+
+```py
+for output_block_index in ttl.static_range(output_block_count):
+    # Emitted once for each compile-time output_block_index value.
+    compute_output_block(output_block_index)
+```
+
+`ttl.static_range` accepts the same one-, two-, and three-integer forms as
+`range`. Every argument must resolve to a compile-time integer. Keyword
+arguments, tuple targets, and `for`-`else` clauses are not supported. Code size
+increases in proportion to the number of iterations, so use a regular `range`
+when the body can execute as device control flow.
+
+
 ## Tensor slice
 
 A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension slice or value for each of the tensor's dimensions. A tensor slice can participate in `ttl.copy` as a source or a destination with the corresponding destination and source being a block. Tensor slice is executed on a data movement thread.

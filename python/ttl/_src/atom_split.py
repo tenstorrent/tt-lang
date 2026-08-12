@@ -94,6 +94,7 @@ _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     "cores": _Placement.CONTROL,
     "tile_index": _Placement.CONTROL,
     "signpost": _Placement.CONTROL,
+    "static_range": _Placement.CONTROL,
 }
 
 # ttl.<ns>.<name>(...) -> logical kind for every name in the namespace.
