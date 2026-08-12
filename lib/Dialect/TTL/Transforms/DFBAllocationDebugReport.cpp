@@ -191,6 +191,43 @@ static void printOccurrences(llvm::raw_ostream &output,
   output << ']';
 }
 
+static void printTransactions(llvm::raw_ostream &output,
+                              const DFBPerNodeLifetime &lifetime) {
+  constexpr std::uint64_t maxExpandedTransactions = 64;
+  std::uint64_t remainingExpandedTransactions = maxExpandedTransactions;
+  bool expandTransactions = true;
+  for (const DFBTransactionRun &run : lifetime.transactionRuns) {
+    if (run.executionCount > remainingExpandedTransactions) {
+      expandTransactions = false;
+      break;
+    }
+    remainingExpandedTransactions -= run.executionCount;
+  }
+
+  output << '[';
+  bool first = true;
+  for (const DFBTransactionRun &run : lifetime.transactionRuns) {
+    if (!expandTransactions) {
+      if (!first) {
+        output << ", ";
+      }
+      first = false;
+      output << "run(count=" << run.executionCount
+             << ",tiles=" << run.tilesPerExecution << ')';
+      continue;
+    }
+    for (std::uint64_t transaction = 0; transaction < run.executionCount;
+         ++transaction) {
+      if (!first) {
+        output << ", ";
+      }
+      first = false;
+      output << run.tilesPerExecution;
+    }
+  }
+  output << ']';
+}
+
 static bool hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
                                     const DFBPerNodeLifetime &rhs) {
   if (lhs.quiescence.failure != rhs.quiescence.failure ||
@@ -201,7 +238,7 @@ static bool hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
           rhs.earliestAccessOccurrenceIndices ||
       lhs.terminalAccessOccurrenceIndices !=
           rhs.terminalAccessOccurrenceIndices ||
-      lhs.transactionTileCounts != rhs.transactionTileCounts ||
+      lhs.transactionRuns != rhs.transactionRuns ||
       lhs.writePointerOwner != rhs.writePointerOwner ||
       lhs.readPointerOwner != rhs.readPointerOwner) {
     return false;
@@ -257,7 +294,7 @@ static void printDiagnosticLifetimes(
     output << " occurrences=";
     printOccurrences(output, lifetime);
     output << " transactions=";
-    printValues(output, lifetime.transactionTileCounts);
+    printTransactions(output, lifetime);
     output << " write_owner=";
     printPointerOwner(output, lifetime.writePointerOwner);
     output << " read_owner=";
@@ -282,7 +319,7 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     output << " occurrences=";
     printOccurrences(output, lifetime);
     output << " transactions=";
-    printValues(output, lifetime.transactionTileCounts);
+    printTransactions(output, lifetime);
     output << " write_owner=";
     printPointerOwner(output, lifetime.writePointerOwner);
     output << " read_owner=";
