@@ -554,18 +554,17 @@ rejected.
    push release tag
  or workflow_dispatch
           |
-          v
-   +--------------+
-   |  preflight   |   verify the selected source and release tag
-   +--------------+   (release checks skipped if dry_run=true)
-          |
           +---------------------------+
           |                           v
           |                    +--------------+
-          |                    | build-docker |   call-build-docker.yml
-          |                    +--------------+   (release-tag pushes only;
-          |                                        publishes the dist and IRD
-          |                                        images under the release tag)
+          v                    | build-docker |   call-build-docker.yml
+   +--------------+            +--------------+   (release-tag pushes only;
+   |  preflight   |                                publishes the dist and IRD
+   +--------------+                                images under the release tag;
+          |                                        independent of preflight so
+          |   verify the selected source            an S3-only pin still gets
+          |   and release tag (release              its image)
+          |   checks skipped if dry_run=true)
           v
    +--------------------+
    | build-wheel-images |   call-build-wheel-images.yml
@@ -611,12 +610,22 @@ Job-by-job:
    cache. Unchanged component inputs restore from GHCR instead of recompiling.
 3. **`build-docker`** — calls `call-build-docker.yml` with `push: true` on a
    release-tag push, publishing the dist and IRD images under the release tag.
-   It runs concurrently with `build-wheel-images` and passes no source
-   override, so the images are built from the tagged commit that
-   `github.sha` already points at. Manual PyPI dispatches skip it, because
+   It passes no source override, so the images are built from the tagged commit
+   that `github.sha` already points at. Manual PyPI dispatches skip it, because
    the release images belong to the tag rather than to the dispatch. This job
    is what `ci.yml`'s `resolve-docker-tag` probe depends on: without it, a
    release tag resolves to an IRD image that was never published.
+
+   It declares no `needs`, so it starts immediately and never waits on
+   `preflight`. That independence is required, not incidental: `preflight`
+   decides whether the release is publishable to public PyPI, and an S3-only
+   pin fails that check by design (see [Two-phase
+   uplift](#two-phase-uplift-publishable-release-then-latest-s3-only)). A
+   dependent job is skipped when its `needs` fail, so gating image publication
+   on `preflight` would leave every S3-only release without the image `ci.yml`
+   requires. The image tag comes from `get-version-tag.sh` at checkout rather
+   than from `preflight`, and `on.push.tags` already restricts the event to
+   release tags.
 4. **`build-wheels`** — calls `call-build-manylinux-wheels.yml` against either
    the `docker_tag` input or the image-build output. It builds Python 3.10 and
    3.12 `tt-lang` wheels with an exact public `ttnn` dependency and builds the

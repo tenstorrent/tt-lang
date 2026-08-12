@@ -501,9 +501,12 @@ def test_release_tag_builds_ird_and_manylinux_images_independently() -> None:
     # source would decouple the published image from the release.
     assert "ttlang_sha_override" not in build_docker_job
 
-    # Both depend only on preflight, so neither serializes behind the other.
     assert "needs: preflight" in build_wheel_images_job
-    assert "needs: preflight" in build_docker_job
+    # IRD publication must not depend on preflight. preflight fails the PyPI
+    # alignment check on an S3-only pin (TT_METAL_TAG ahead of the public ttnn
+    # provenance tag), and a dependent job is skipped when its needs fail, which
+    # would leave those releases without the image ci.yml's probe requires.
+    assert "needs:" not in build_docker_job
 
 
 def test_publish_pypi_terminal_jobs_override_skipped_docker_build_status() -> None:
