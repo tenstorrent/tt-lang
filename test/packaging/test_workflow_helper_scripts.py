@@ -471,6 +471,27 @@ def test_publish_pypi_supports_release_sha_from_main() -> None:
     assert "inputs.ttlang_sha" not in publish_job
 
 
+def test_main_push_moves_latest_when_the_image_already_exists() -> None:
+    """:latest must track main when build-docker is skipped as already-built."""
+    workflow = CI_WORKFLOW.read_text()
+    retag_job = workflow.split("\n  retag-latest:", 1)[1].split(
+        "\n  build-wheel-images:", 1
+    )[0]
+
+    assert "needs: resolve-docker-tag" in retag_job
+    assert "github.event_name == 'push'" in retag_job
+    assert "github.ref == 'refs/heads/main'" in retag_job
+    # Runs exactly when build-docker does not.
+    assert "needs.resolve-docker-tag.outputs.needs_rebuild == 'false'" in retag_job
+    assert "packages: write" in retag_job
+    assert ".github/scripts/retag-docker-latest.sh" in retag_job
+
+    script = (SCRIPTS_DIR / "retag-docker-latest.sh").read_text()
+    assert "docker buildx imagetools create" in script
+    assert "tt-lang-ird-ubuntu-24-04" in script
+    assert "tt-lang-dist-ubuntu-24-04" in script
+
+
 def test_release_tag_builds_ird_and_manylinux_images_independently() -> None:
     """A release-tag push must publish the IRD image ci.yml's probe requires.
 
