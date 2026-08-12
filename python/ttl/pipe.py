@@ -252,6 +252,20 @@ class PipeNet:
         except (IndexError, AttributeError):
             pass
 
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "pipenet",
+            tuple(
+                (
+                    tuple(pipe.src),
+                    tuple(pipe.dst_start),
+                    tuple(pipe.dst_end),
+                    pipe.is_collective,
+                )
+                for pipe in self.pipes
+            ),
+        )
+
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
         Execute callback for each pipe where current core is source.
