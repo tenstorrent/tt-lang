@@ -14,9 +14,10 @@ import builtins
 from .context import get_context
 from .ttnnsim import Tensor
 from .dfb import Block, DataflowBuffer
-from .blockstate import AccessState, BlockAcquisition, KernelType
+from .blockstate import AccessState, BlockAcquisition
 from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_node_id
+from .kernel import KernelKind
 
 # Type alias for TT-Lang printable objects
 TTLangObject = Union[Tensor, Block, DataflowBuffer]
@@ -75,7 +76,7 @@ def _format_block(block: Block) -> str:
     # 1. DM kernel + reserve + (MW or NAW)
     # 2. DM kernel + wait + NAW
     if not block.is_temporary:
-        if block.kernel_type == KernelType.DM:
+        if block.kernel_type == KernelKind.DATA_MOVEMENT:
             if block.acquisition == BlockAcquisition.RESERVE:
                 if block.access_state in (AccessState.MW, AccessState.NAW):
                     warning_msg = (

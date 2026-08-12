@@ -112,6 +112,15 @@ jobs:
           source build/env/activate
           pip install -r dev-requirements.txt
 
+      # Galaxy links degrade across jobs and the failure reports as a cluster
+      # lookup error in every device test rather than as a device error.
+      - name: Reset cards and check cluster health
+        if: inputs.runs-on == 'galaxy-bh'
+        timeout-minutes: 45
+        run: |
+          source build/env/activate
+          .github/scripts/reset-tt-cards.sh
+
       - name: Smoketest
         run: |
           source build/env/activate

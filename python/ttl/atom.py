@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unified-body ``@ttl.operation`` kernels with automatic thread splitting.
+"""Unified-body ``@ttl.operation`` kernels with logical-kernel splitting.
 
 The unified form is a single function body instead of one @ttl.compute and
-two @ttl.datamovement thread functions. At decoration time, statement-level
-calls to other unified operations are inlined; at compile time the body is
-split into compute (TRISC) and data-movement
-(NCRISC / BRISC) threads, which then flow through the same MLIR pipeline
-as @ttl.operation.
+two @ttl.datamovement functions. At decoration time, statement-level calls to
+other unified operations are inlined. At compile time, the body is split into
+target-independent compute and data-movement kernels. Backend assignment then
+maps those logical kernels to the target's supported kernel slots.
 
 A unified operation may take TT-NN tensors, compile-time captures, and --
 when intended for composition -- ttl.DFB or ttl.PipeNet parameters. Dataflow
@@ -17,15 +16,11 @@ buffers used within a top-level operation are declared in its body. An
 operation with resource parameters is expand-only and cannot be called as a
 TT-NN operation.
 
-DFB declarations sit inline with the compute/copy work in a unified
-body, so after the split they land inside each thread body. The existing
-per-thread compiler is capture-based (thread functions take no
-parameters; DFBs arrive as closure captures), so before splitting we
-lift the top-level ``name = make_dfb(...)`` assigns out of the body,
-evaluate them to DataflowBuffer objects, and pass them as captures --
-the same shape the @ttl.operation flow produces by running its setup
-body. After that the per-thread compile, CB sizing, pass pipeline, and
-runner are identical to @ttl.operation.
+DFB declarations sit inline with the compute/copy work in a unified body. The
+existing per-kernel compiler is capture-based, so top-level static resource
+assignments are lifted before splitting and supplied as captures. The
+per-kernel compile, DFB sizing, pass pipeline, and runner remain identical to
+the explicit multi-kernel form.
 """
 
 from __future__ import annotations
@@ -38,7 +33,7 @@ import os
 import textwrap
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -55,31 +50,115 @@ from .dataflow_buffer import (
     make_tensor_backed_dfb,
 )
 from .dtype_utils import is_ttnn_tensor
+from .kernel import (
+    Kernel,
+    KernelSelector,
+    _bind_kernel_declarations,
+    _operation_identity,
+    _selector_implicit_role,
+    _selector_kind,
+)
 from .operators import _set_current_grid
 from .pipe import PipeNet
 from .ttl_api import (
     Program,
+    _BackendKernelSlot,
+    _backend_kernel_capacities,
+    _backend_kernel_slots,
     _build_pipenet_graph,
     _canonical_tensor_args,
     _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
     _run_thread_compiler,
+    _slot_idle_kernel,
     _validate_operation_options,
     pykernel_gen,
 )
 
-
-# Names whose top-level ``x = <name>(...)`` assigns are lifted out of the body
-# and evaluated to capture objects (DataflowBuffer / Pipe / PipeNet) before the
-# split, the same way @ttl.operation constructs them in its setup body.
+# Names whose top-level ``x = <name>(...)`` assigns are evaluated as static
+# operation resources before logical-kernel splitting.
 _DFB_FACTORY_NAMES = {
     "make_dfb",
     "make_dataflow_buffer_like",
     "make_tensor_backed_dfb",
 }
 _PIPE_FACTORY_NAMES = {"Pipe", "PipeNet"}
-_SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES
+_KERNEL_FACTORY_NAMES = {"Kernel"}
+_SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES | _KERNEL_FACTORY_NAMES
+
+
+def _assign_backend_kernel_slots(
+    split, target_arch: Optional[str] = None
+) -> Dict[_BackendKernelSlot, KernelSelector]:
+    assignments: Dict[_BackendKernelSlot, KernelSelector] = {}
+    remaining = list(split.kernels)
+    backend_slots = _backend_kernel_slots(target_arch)
+
+    for slot in backend_slots:
+        if slot.implicit_role is None:
+            selector: KernelSelector = slot.kind
+            if selector in remaining:
+                assignments[slot] = selector
+                remaining.remove(selector)
+            continue
+        selector = next(
+            (
+                kernel
+                for kernel in remaining
+                if _selector_implicit_role(kernel) == slot.implicit_role
+            ),
+            None,
+        )
+        if selector is not None:
+            assignments[slot] = selector
+            remaining.remove(selector)
+
+    for selector in remaining:
+        slot = next(
+            (
+                candidate
+                for candidate in backend_slots
+                if candidate not in assignments
+                and candidate.kind == _selector_kind(selector)
+            ),
+            None,
+        )
+        if slot is None:
+            raise AssertionError(
+                f"no backend slot for planned {selector!r}; capacity validation "
+                "must reject this before backend assignment"
+            )
+        assignments[slot] = selector
+    return assignments
+
+
+def _backend_kernel_bodies(
+    split,
+    assignments: Mapping[_BackendKernelSlot, KernelSelector],
+    target_arch: Optional[str],
+) -> Tuple[Tuple[_BackendKernelSlot, KernelSelector, List[ast.stmt]], ...]:
+    """Pair every backend slot with a logical kernel and the body it emits.
+
+    A slot the plan left unassigned still produces a kernel, so it takes its idle
+    logical identity rather than none; runtime resources can then select every
+    emitted kernel by identity.
+    """
+    bodies = []
+    for slot in _backend_kernel_slots(target_arch):
+        logical_kernel = assignments.get(slot)
+        if logical_kernel is None:
+            bodies.append((slot, _slot_idle_kernel(slot), [ast.Pass()]))
+            continue
+        bodies.append((slot, logical_kernel, split.body_for(logical_kernel)))
+
+    selectors = [logical_kernel for _, logical_kernel, _ in bodies]
+    if len(set(selectors)) != len(selectors):
+        raise AssertionError(
+            f"backend slots produced duplicate logical identities {selectors!r}; "
+            "each emitted kernel must be selectable by identity"
+        )
+    return tuple(bodies)
 
 
 class DFB:
@@ -101,6 +180,7 @@ class _ParamInfo:
 @dataclass
 class _AtomSpec:
     name: str
+    operation_identity: str
     fn: Callable
     source: str
     source_file: str
@@ -111,6 +191,7 @@ class _AtomSpec:
     compile_time_captures: Dict[str, Any]
     frozen_scope: Dict[str, Any]
     external_pipenets: Dict[str, PipeNet]
+    logical_kernels: Dict[str, Kernel]
 
 
 class _ReturnFinder(ast.NodeVisitor):
@@ -261,7 +342,6 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif stripped.startswith("def ") or stripped.startswith("async def "):
             break
     line_offset = start_lineno + num_decorator_lines - 1
-
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise ValueError(
@@ -272,7 +352,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets = inline_atom_calls(fn_def, scope, caller_name=name)
+    inlined_pipenets, inlined_logical_kernels = inline_atom_calls(
+        fn_def, scope, caller_name=name
+    )
     _validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -283,7 +365,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     captured_values = _captured_values(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
-    for capture_name in loaded_names & captured_values.keys():
+    logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
+    captured_logical_kernels: Dict[str, Kernel] = {}
+    for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
             raise ValueError(
@@ -293,6 +377,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             )
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
+        elif isinstance(value, Kernel):
+            if not any(value is kernel for kernel in logical_kernels.values()):
+                captured_logical_kernels[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -302,13 +389,19 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
+    operation_identity = _operation_identity(fn)
+    _bind_logical_kernels(captured_logical_kernels, operation_identity)
+    logical_kernels.update(captured_logical_kernels)
+
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
+    frozen_scope.update(logical_kernels)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
     return _AtomSpec(
         name=name,
+        operation_identity=operation_identity,
         fn=fn,
         source=source,
         source_file=source_file,
@@ -319,7 +412,15 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         compile_time_captures=compile_time_captures,
         frozen_scope=frozen_scope,
         external_pipenets=external_pipenets,
+        logical_kernels=logical_kernels,
     )
+
+
+def _bind_logical_kernels(
+    logical_kernels: Dict[str, Kernel], operation_identity: str
+) -> None:
+    """Bind captured declarations in place during operation registration."""
+    _bind_kernel_declarations(logical_kernels, operation_identity)
 
 
 def _is_compile_time_literal(value: Any) -> bool:
@@ -357,10 +458,11 @@ def _is_pipe_list_expr(node: ast.expr) -> bool:
 
 
 def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
-    """If ``stmt`` is a DFB/Pipe/PipeNet construction assign, return its name.
+    """Return the name of a static operation-resource assignment.
 
-    Recognizes ``name = <dfb/pipe-factory>(...)`` and ``name = [<pipes>]``
-    (a pipe list feeding a later PipeNet)."""
+    Recognizes DFB, Pipe, PipeNet, and logical Kernel construction plus a pipe
+    list feeding a later PipeNet.
+    """
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return None
     if not isinstance(stmt.targets[0], ast.Name):
@@ -443,27 +545,30 @@ def _validate_resource_declarations(
 def _lift_setup(
     fn_def: ast.FunctionDef,
     scope: Dict[str, Any],
-) -> Tuple[ast.FunctionDef, Dict[str, DataflowBuffer], Dict[str, PipeNet]]:
-    """Strip and evaluate the top-level DFB / Pipe / PipeNet construction
-    assigns.
+    operation_identity: str,
+) -> Tuple[
+    ast.FunctionDef,
+    Dict[str, DataflowBuffer],
+    Dict[str, PipeNet],
+    Dict[str, Kernel],
+]:
+    """Strip and evaluate top-level static operation-resource assignments.
 
     Returns the kernel body with those statements removed, plus the
-    DataflowBuffer and PipeNet objects keyed by name. Each construction
-    expression is evaluated in source order in a controlled namespace, with
-    results threaded back in so a later ``PipeNet([p0])`` sees an earlier
-    ``p0`` and CB indices are assigned in source order. This runs just the
-    setup statements that @ttl.operation runs as part of executing its whole
-    body; the per-thread compiler consumes the results as captures, not as
-    in-body calls.
+    DataflowBuffer, PipeNet, and bound logical Kernel objects keyed by name.
+    Construction expressions are evaluated in source order so dependencies and
+    DFB indices remain deterministic.
     """
     ns = dict(scope)
     ns.setdefault("make_dfb", make_dfb)
     ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
     ns.setdefault("make_tensor_backed_dfb", make_tensor_backed_dfb)
+    ns.setdefault("Kernel", Kernel)
     ns.setdefault("ttl", _ttl)
 
     dfbs: Dict[str, DataflowBuffer] = {}
     nets: Dict[str, PipeNet] = {}
+    kernels: Dict[str, Kernel] = {}
     kept: List[ast.stmt] = []
     for stmt in fn_def.body:
         name = _setup_assign_target(stmt)
@@ -471,17 +576,19 @@ def _lift_setup(
             kept.append(stmt)
             continue
         value = eval(ast.unparse(stmt.value), ns)  # noqa: S307
-        ns[name] = value
         if isinstance(value, DataflowBuffer):
             dfbs[name] = value
         elif isinstance(value, PipeNet):
             nets[name] = value
-        # A bare Pipe stays in ns for a later PipeNet reference but is not a
-        # capture; only DataflowBuffers and PipeNets are bound on threads.
+        elif isinstance(value, Kernel):
+            value._bind(name, operation_identity)
+            kernels[name] = value
+        ns[name] = value
+        # A bare Pipe remains in ns for a later PipeNet reference.
 
     new_fn = copy.copy(fn_def)
     new_fn.body = kept
-    return new_fn, dfbs, nets
+    return new_fn, dfbs, nets, kernels
 
 
 def _has_real_work(body: List[ast.stmt]) -> bool:
@@ -544,7 +651,9 @@ def _compile_atom(
 
     # The shared operation wrapper supplies values in signature order.
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
+    logical_kernels = dict(spec.logical_kernels)
     eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(logical_kernels)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -564,7 +673,14 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, dfbs, nets = _lift_setup(copy.deepcopy(spec.fn_ast), eval_scope)
+    stripped_fn, dfbs, nets, lifted_logical_kernels = _lift_setup(
+        copy.deepcopy(spec.fn_ast),
+        eval_scope,
+        operation_identity=spec.operation_identity,
+    )
+    logical_kernels.update(lifted_logical_kernels)
+    selector_scope = dict(eval_scope)
+    selector_scope.update(logical_kernels)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
@@ -580,14 +696,19 @@ def _compile_atom(
         fn_def=stripped_fn,
         dfb_param_names=set(spec.dfb_param_names),
         local_dfb_names=set(dfbs),
+        logical_kernels=logical_kernels,
+        selector_scope=selector_scope,
+        kernel_capacities=_backend_kernel_capacities(target_arch),
+    )
+    backend_assignments = _assign_backend_kernel_slots(split, target_arch)
+    backend_bodies = tuple(
+        _backend_kernel_bodies(split, backend_assignments, target_arch)
     )
 
     if os.environ.get("TTLANG_ATOM_DUMP_SPLIT"):
-        for _thread in ("trisc", "ncrisc", "brisc"):
-            _dbg = _synthesize_thread_module(
-                f"{spec.name}__{_thread}", split.body_for(_thread)
-            )
-            print(f"\n===== @ttl.operation split: {_thread} =====")
+        for slot, _, body in backend_bodies:
+            _dbg = _synthesize_thread_module(f"{spec.name}__{slot.source_name}", body)
+            print(f"\n===== @ttl.operation split: {slot.source_name} =====")
             print(ast.unparse(_dbg))
 
     # Captures shared by every thread: ttnn tensors and scalars (bound
@@ -602,22 +723,18 @@ def _compile_atom(
     captures.update(nets)
     captures.update(spec.external_pipenets)
 
-    # TTNN interop requires exactly 3 kernels (1 compute + 2 data movement);
-    # emit all three even when a thread has no work, filling it with a pass
-    # body, the same shape @ttl.operation produces.
+    # TTNN interop requires one emitted thread for every backend slot. Empty
+    # slots retain a pass body so argument metadata stays aligned with slot order.
     threads = []
+    thread_logical_kernels = []
     any_real_work = False
-    for kernel_type, thread in (
-        ("compute", "trisc"),
-        ("datamovement", "ncrisc"),
-        ("datamovement", "brisc"),
-    ):
-        body = split.body_for(thread)
+    for slot, logical_kernel, body in backend_bodies:
         any_real_work = any_real_work or _has_real_work(body)
-        fn_name = f"{spec.name}__{thread}"
+        fn_name = f"{spec.name}__{slot.source_name}"
         threads.append(
-            _make_thread_callable(spec, kernel_type, fn_name, body, captures)
+            _make_thread_callable(spec, slot.kernel_type, fn_name, body, captures)
         )
+        thread_logical_kernels.append(logical_kernel)
 
     if not any_real_work:
         raise ValueError(
@@ -648,6 +765,7 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
+        logical_kernels=thread_logical_kernels,
     )
 
 
@@ -714,6 +832,9 @@ class Atom:
     @property
     def name(self) -> str:
         return self._spec.name
+
+    def _operation_identity_capture(self) -> tuple[str, str]:
+        return ("operation", self._spec.operation_identity)
 
     def __call__(self, *args, **kwargs):
         if self._grid is None:

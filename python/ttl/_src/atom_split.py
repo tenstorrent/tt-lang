@@ -2,196 +2,358 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Duplicate-and-prune splitter for unified-body @ttl.operation kernels.
+"""Plan and apply logical-kernel splitting for unified operations.
 
-Walks the function body of a unified @ttl.operation kernel and produces
-three stripped function ASTs: one each for the TRISC (compute), NCRISC
-(default DM, receivers + non-pipe DM), and BRISC (pipe senders) threads.
-
-Algorithm:
-
-    trisc_body, ncrisc_body, brisc_body = three deepcopies of body
-
-    Pass A (anchor tagging):
-        Walk every Call/MatMult node and look it up in the op
-        registry. Anchor stmts get an ``_ttl_threads`` attribute
-        set to the frozenset of threads they belong on. Stmts that
-        produce a block via ``cb.wait()`` / ``cb.reserve()`` are
-        *deferred anchors*: their thread is the union of threads
-        observed on the produced block's downstream anchor uses.
-
-        DM ops are registered with the sentinel ``"dm"``; the tagger
-        materializes that to a concrete thread (``"ncrisc"`` outside
-        an if_src callback, ``"brisc"`` inside one). Pipe dispatch
-        methods bind directly: ``if_src`` -> brisc, ``if_dst`` -> ncrisc.
-
-    Pass B (per-side prune):
-        For each side, walk the duplicated body. If a stmt has
-        ``_ttl_threads`` and this side isn't in it, drop the stmt.
-        Non-anchor stmts (control flow, scalar arithmetic, ttl.node,
-        make_dataflow_buffer_like, make_tensor_backed_dfb, ...) stay on
-        every side; MLIR DCE removes dead code per-thread later.
-
-    Post-check:
-        A DFB producer (``blk = cb.wait()`` / ``cb.reserve()``) must have
-        users on exactly one thread. Splitting an acquire across threads
-        would issue the synchronization operation more than once against
-        the same DFB.
-
-Unknown ``ttl.<name>(...)`` calls are a hard error. To add an op,
-register it in ``_TTL_OPS`` with its thread.
+The analysis records statement placement and DFB transaction ownership on the
+unmodified AST. Application then clones and prunes the body once per selected
+logical kernel. Target-specific processor assignment occurs in ``ttl.atom``
+after this module returns the logical split.
 """
 
 from __future__ import annotations
 
 import ast
 import copy
+import inspect
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from enum import Enum, auto
+from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
+
+from ttl.kernel import (
+    Kernel,
+    KernelKind,
+    KernelSelector,
+    _DFB_RELEASE_METHODS,
+    _PIPE_SOURCE_KERNEL_ROLE,
+    _format_kernel_capacity_error,
+    _format_selector,
+    _selector_kind,
+    _selector_sort_key,
+)
+
+_EXTERNAL_CALL_NAME = "call_extern_func"
+_KERNEL_KEYWORD = "kernel"
+_PIPE_SOURCE_KERNEL = Kernel._implicit(
+    KernelKind.DATA_MOVEMENT,
+    _PIPE_SOURCE_KERNEL_ROLE,
+)
 
 
-# ----- threads --------------------------------------------------------------
-
-
-THREADS: Tuple[str, ...] = ("trisc", "ncrisc", "brisc")
-DM_THREADS: Tuple[str, ...] = ("ncrisc", "brisc")
+class _Placement(Enum):
+    DATA_MOVEMENT = auto()
+    CONTROL = auto()
+    DEFERRED = auto()
 
 
 # ----- op registry ----------------------------------------------------------
 
 
-# ttl.<name>(...) -> "trisc" | "dm" | "control".
-#
-# ``"dm"`` is a sentinel: at tagging time it is materialized to either
-# "ncrisc" or "brisc" depending on whether the call sits inside an
-# ``if_src`` callback (-> brisc) or anywhere else (-> ncrisc).
-_TTL_OPS: Dict[str, str] = {
+# DATA_MOVEMENT resolves to the current callback's logical data-movement
+# kernel. CONTROL does not constrain placement.
+_TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     # Data movement
-    "copy": "dm",
-    "element_read": "dm",
-    "element_write": "dm",
+    "copy": _Placement.DATA_MOVEMENT,
+    "element_read": _Placement.DATA_MOVEMENT,
+    "element_write": _Placement.DATA_MOVEMENT,
     # Compute
-    "fill": "trisc",
-    "matmul": "trisc",
-    "reduce_sum": "trisc",
-    "reduce_max": "trisc",
-    "broadcast": "trisc",
-    "transpose": "trisc",
-    "exp": "trisc",
-    "mul": "trisc",
-    "add": "trisc",
-    "sub": "trisc",
-    "div": "trisc",
-    "recip": "trisc",
-    "neg": "trisc",
-    "sqrt": "trisc",
-    "tanh": "trisc",
-    "log": "trisc",
-    "abs": "trisc",
-    "relu": "trisc",
-    "sign": "trisc",
-    "sigmoid": "trisc",
-    "gelu": "trisc",
+    "fill": KernelKind.COMPUTE,
+    "matmul": KernelKind.COMPUTE,
+    "reduce_sum": KernelKind.COMPUTE,
+    "reduce_max": KernelKind.COMPUTE,
+    "broadcast": KernelKind.COMPUTE,
+    "transpose": KernelKind.COMPUTE,
+    "exp": KernelKind.COMPUTE,
+    "mul": KernelKind.COMPUTE,
+    "add": KernelKind.COMPUTE,
+    "sub": KernelKind.COMPUTE,
+    "div": KernelKind.COMPUTE,
+    "recip": KernelKind.COMPUTE,
+    "neg": KernelKind.COMPUTE,
+    "sqrt": KernelKind.COMPUTE,
+    "tanh": KernelKind.COMPUTE,
+    "log": KernelKind.COMPUTE,
+    "abs": KernelKind.COMPUTE,
+    "relu": KernelKind.COMPUTE,
+    "sign": KernelKind.COMPUTE,
+    "sigmoid": KernelKind.COMPUTE,
+    "gelu": KernelKind.COMPUTE,
     # Compile-time / scalar producers: duplicated, not anchored.
-    "Pipe": "control",
-    "PipeNet": "control",
-    "make_dataflow_buffer_like": "control",
-    "make_tensor_backed_dfb": "control",
-    "node": "control",
-    "raw_addr": "control",
-    "grid_size": "control",
-    "dims": "control",
-    "cores": "control",
-    "tile_index": "control",
-    "signpost": "control",
+    "Pipe": _Placement.CONTROL,
+    "PipeNet": _Placement.CONTROL,
+    "make_dataflow_buffer_like": _Placement.CONTROL,
+    "make_tensor_backed_dfb": _Placement.CONTROL,
+    "node": _Placement.CONTROL,
+    "dfb_descriptor": _Placement.CONTROL,
+    "get_dfb_id": _Placement.CONTROL,
+    "raw_addr": _Placement.CONTROL,
+    "grid_size": _Placement.CONTROL,
+    "dims": _Placement.CONTROL,
+    "cores": _Placement.CONTROL,
+    "tile_index": _Placement.CONTROL,
+    "signpost": _Placement.CONTROL,
 }
 
-# ttl.<ns>.<name>(...) -> thread, applies to every name in the namespace.
-_TTL_NAMESPACES: Dict[str, str] = {
-    "math": "trisc",
-    "block": "trisc",
+# ttl.<ns>.<name>(...) -> logical kind for every name in the namespace.
+_TTL_NAMESPACES: Dict[str, KernelKind] = {
+    "math": KernelKind.COMPUTE,
+    "block": KernelKind.COMPUTE,
 }
 
-# <pipenet>.<method>(...) -> thread. The receiver is any Name (PipeNet
-# object). ``if_src`` dispatches the sender side on BRISC; ``if_dst``
-# the receiver side on NCRISC (sender = BRISC, receiver = NCRISC).
-_PIPENET_METHODS: Dict[str, str] = {
-    "if_src": "brisc",
-    "if_dst": "ncrisc",
+# Pipe source and destination callbacks have distinct logical affinities.
+_PIPENET_METHODS: Dict[str, KernelSelector] = {
+    "if_src": _PIPE_SOURCE_KERNEL,
+    "if_dst": KernelKind.DATA_MOVEMENT,
 }
 
-# <block>.<method>(...) where <block> is a known block. "trisc" pins
-# the call; "deferred" pins it to the block's inferred thread.
-_BLOCK_METHODS: Dict[str, str] = {
-    "store": "trisc",
-    "pop": "deferred",
-    "push": "deferred",
+# Block releases use the transaction owner computed before statement planning.
+_BLOCK_METHODS: Dict[str, Union[KernelKind, _Placement]] = {
+    "store": KernelKind.COMPUTE,
+    "pop": _Placement.DEFERRED,
+    "push": _Placement.DEFERRED,
 }
 
 # Methods on a DFB name that produce a block.
 _DFB_PRODUCING_METHODS: Set[str] = {"wait", "reserve"}
-_DFB_DIRECT_METHODS: Dict[str, str] = {"publish": "dm"}
+_DFB_DIRECT_METHODS: Dict[str, _Placement] = {"publish": _Placement.DATA_MOVEMENT}
 
 
-# ----- shared call -> thread classification ---------------------------------
+# ----- shared call classification ------------------------------------------
 
 
-def _materialize_thread(op: Optional[str], dm_thread: str) -> Optional[str]:
-    """Resolve a registry value to a concrete thread tag.
-
-    ``"dm"`` becomes the scope's DM thread (ncrisc by default, brisc inside an
-    if_src callback). Anything that is not a concrete thread (``"control"`` and
-    compile-time producers) returns None, since it does not pin a thread.
-    """
-    if op == "dm":
-        return dm_thread
-    if op in THREADS:
-        return op
+def _materialize_kernels(
+    classification: Union[KernelKind, _Placement],
+    data_movement_kernels: FrozenSet[KernelSelector],
+) -> Optional[FrozenSet[KernelSelector]]:
+    if classification is _Placement.DATA_MOVEMENT:
+        return data_movement_kernels
+    if isinstance(classification, KernelKind):
+        return frozenset({classification})
     return None
 
 
-def _classify_ttl_call(func: ast.expr, dm_thread: str) -> Optional[str]:
-    """Thread a registry-driven call pins to, or None when the call is not a
-    registry anchor (control op, bare-name call, block / DFB method, or a
-    chained call).
+def _is_external_call(call: ast.Call) -> bool:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id == _EXTERNAL_CALL_NAME
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == _EXTERNAL_CALL_NAME
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "ttl"
+    )
 
-    Handles ``ttl.<op>(...)``, ``ttl.<ns>.<name>(...)`` and
-    ``<recv>.if_src/if_dst(...)``, raising on an unknown ``ttl.<...>`` form so a
-    new op must be registered rather than silently mis-split. This is the
-    single source of the call->thread decision; both anchor tagging and
-    block-use collection route through it.
-    """
-    # ttl.<name>(...) or <recv>.if_src/if_dst(...)
+
+def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
+    for keyword in call.keywords:
+        if keyword.arg == _KERNEL_KEYWORD:
+            return keyword.value
+    return None
+
+
+def _is_kernel_kind_union(node: ast.AST) -> bool:
+    return isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)
+
+
+def _flatten_kernel_kind_union(node: ast.expr) -> List[ast.expr]:
+    if not _is_kernel_kind_union(node):
+        return [node]
+    assert isinstance(node, ast.BinOp)
+    return _flatten_kernel_kind_union(node.left) + _flatten_kernel_kind_union(
+        node.right
+    )
+
+
+class _DefaultTTLSelectorNamespace:
+    KernelKind = KernelKind
+
+
+_DEFAULT_TTL_SELECTOR_NAMESPACE = _DefaultTTLSelectorNamespace()
+_MISSING_SELECTOR_VALUE = object()
+
+
+class _KernelSelectorResolver:
+    def __init__(
+        self,
+        logical_kernels: Mapping[str, Kernel],
+        selector_scope: Mapping[str, object],
+    ):
+        self.logical_kernels = dict(logical_kernels)
+        self.selector_scope = dict(selector_scope)
+        for name, kernel in self.logical_kernels.items():
+            if not isinstance(kernel, Kernel):
+                raise TypeError(
+                    f"logical kernel {name!r} must be a Kernel, got "
+                    f"{type(kernel).__name__}"
+                )
+            self.selector_scope[name] = kernel
+
+    def resolve_external(
+        self,
+        call: ast.Call,
+        inferred_kernels: FrozenSet[KernelSelector],
+    ) -> FrozenSet[KernelSelector]:
+        selector = _kernel_keyword(call)
+        if selector is None:
+            if len(inferred_kernels) == 1:
+                return inferred_kernels
+            raise _split_error(
+                call,
+                "call_extern_func requires a kernel selector when its logical "
+                "kernel cannot be inferred",
+            )
+
+        selected = self._resolve_selection(selector, allow_tuple=True)
+        if inferred_kernels and selected != inferred_kernels:
+            raise _split_error(
+                selector,
+                "explicit external-call kernel selection "
+                f"({_format_kernels(selected)}) conflicts with inferred "
+                f"selection ({_format_kernels(inferred_kernels)})",
+            )
+        return selected
+
+    def resolve_release(self, call: ast.Call) -> Optional[KernelSelector]:
+        selector = _kernel_keyword(call)
+        if selector is None:
+            return None
+        if isinstance(selector, ast.Tuple):
+            raise _split_error(
+                selector,
+                f"{ast.unparse(call.func)} accepts one kernel selector, not a tuple",
+            )
+        if _is_kernel_kind_union(selector):
+            raise _split_error(
+                selector,
+                f"{ast.unparse(call.func)} accepts one kernel selector, not a kind union",
+            )
+        selected = self._resolve_selector(selector)
+        return selected
+
+    def _resolve_selection(
+        self,
+        node: ast.expr,
+        allow_tuple: bool,
+    ) -> FrozenSet[KernelSelector]:
+        if _is_kernel_kind_union(node):
+            selectors = [
+                self._resolve_selector(element)
+                for element in _flatten_kernel_kind_union(node)
+            ]
+            if not all(isinstance(selector, KernelKind) for selector in selectors):
+                raise _split_error(
+                    node,
+                    "kernel kind union operands must be KernelKind members; "
+                    "use a tuple to include operation-local Kernel handles",
+                )
+            return self._validate_multiple_selection(node, selectors)
+        if not isinstance(node, ast.Tuple):
+            return frozenset({self._resolve_selector(node)})
+        if not allow_tuple:
+            raise _split_error(node, "expected one kernel selector, not a tuple")
+        if not node.elts:
+            raise _split_error(
+                node,
+                "call_extern_func kernel selection requires a nonempty tuple",
+            )
+        selectors = [self._resolve_selector(element) for element in node.elts]
+        return self._validate_multiple_selection(node, selectors)
+
+    def _validate_multiple_selection(
+        self,
+        node: ast.expr,
+        selectors: List[KernelSelector],
+    ) -> FrozenSet[KernelSelector]:
+        selected = frozenset(selectors)
+        if len(selected) != len(selectors):
+            raise _split_error(
+                node,
+                "call_extern_func kernel selection contains a duplicate kernel selector",
+            )
+        return selected
+
+    def _resolve_selector(self, node: ast.expr) -> KernelSelector:
+        value = self._resolve_reference(node)
+        if isinstance(value, KernelKind):
+            return value
+        if isinstance(value, Kernel) and any(
+            value is kernel for kernel in self.logical_kernels.values()
+        ):
+            return value
+        if isinstance(node, ast.Attribute):
+            owner = self._resolve_reference(node.value)
+            if owner is KernelKind and value is _MISSING_SELECTOR_VALUE:
+                raise _split_error(
+                    node,
+                    f"unknown KernelKind member {node.attr!r}",
+                )
+        type_detail = ""
+        if value is not _MISSING_SELECTOR_VALUE:
+            type_detail = f", got {type(value).__name__}"
+        raise _split_error(
+            node,
+            "kernel selector must be a KernelKind or Kernel declared as a "
+            f"top-level operation resource{type_detail}",
+        )
+
+    def _resolve_reference(self, node: ast.expr):
+        if isinstance(node, ast.Name):
+            if node.id in self.selector_scope:
+                return self.selector_scope[node.id]
+            if node.id == "KernelKind":
+                return KernelKind
+            if node.id == "ttl":
+                return _DEFAULT_TTL_SELECTOR_NAMESPACE
+            return _MISSING_SELECTOR_VALUE
+        if not isinstance(node, ast.Attribute):
+            return _MISSING_SELECTOR_VALUE
+        owner = self._resolve_reference(node.value)
+        if owner is _MISSING_SELECTOR_VALUE:
+            return _MISSING_SELECTOR_VALUE
+        try:
+            return inspect.getattr_static(owner, node.attr)
+        except AttributeError:
+            return _MISSING_SELECTOR_VALUE
+
+
+def _classify_ttl_call(
+    call: ast.Call,
+    data_movement_kernels: FrozenSet[KernelSelector],
+    inferred_external_kernels: FrozenSet[KernelSelector],
+    selector_resolver: _KernelSelectorResolver,
+) -> Optional[FrozenSet[KernelSelector]]:
+    """Return a registry-driven call's logical-kernel selection."""
+    if _is_external_call(call):
+        return selector_resolver.resolve_external(call, inferred_external_kernels)
+
+    func = call.func
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        recv = func.value.id
+        receiver = func.value.id
         name = func.attr
-        if recv == "ttl":
-            op = _TTL_OPS.get(name)
-            if op is None:
+        if receiver == "ttl":
+            classification = _TTL_OPS.get(name)
+            if classification is None:
                 raise _split_error(
                     func,
-                    f"unknown ttl.{name}(...) call; register it in "
-                    f"atom_split._TTL_OPS with its thread "
-                    f"('trisc', 'dm', or 'control')",
+                    f"unknown ttl.{name}(...) call; register its logical "
+                    "kernel classification in atom_split._TTL_OPS",
                 )
-            return _materialize_thread(op, dm_thread)
+            return _materialize_kernels(classification, data_movement_kernels)
         if name in _PIPENET_METHODS:
-            return _PIPENET_METHODS[name]
+            return frozenset({_PIPENET_METHODS[name]})
         return None
 
-    # ttl.<ns>.<name>(...)
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
         outer = func.value
         if isinstance(outer.value, ast.Name) and outer.value.id == "ttl":
-            ns = outer.attr
-            ns_thread = _TTL_NAMESPACES.get(ns)
-            if ns_thread is None:
+            namespace = outer.attr
+            kind = _TTL_NAMESPACES.get(namespace)
+            if kind is None:
                 raise _split_error(
                     func,
-                    f"unknown ttl.{ns}.{func.attr}(...) call; register "
-                    f"namespace 'ttl.{ns}' in atom_split._TTL_NAMESPACES",
+                    f"unknown ttl.{namespace}.{func.attr}(...) call; register "
+                    f"namespace 'ttl.{namespace}' in atom_split._TTL_NAMESPACES",
                 )
-            return _materialize_thread(ns_thread, dm_thread)
+            return frozenset({kind})
 
     return None
 
@@ -199,53 +361,146 @@ def _classify_ttl_call(func: ast.expr, dm_thread: str) -> Optional[str]:
 # ----- public API -----------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class StatementSelection:
+    statement_id: int
+    kernels: FrozenSet[KernelSelector]
+    source_line: int
+
+
+@dataclass(frozen=True)
+class DFBTransactionPlan:
+    block_name: str
+    inferred_kernels: FrozenSet[KernelSelector]
+    explicit_kernels: FrozenSet[KernelSelector]
+    owner: KernelSelector
+    source_line: int
+
+
+@dataclass(frozen=True)
+class SplitPlan:
+    kernels: Tuple[KernelSelector, ...]
+    statements: Tuple[StatementSelection, ...]
+    transactions: Tuple[DFBTransactionPlan, ...]
+    kernel_requirements: Tuple[Tuple[KernelKind, int], ...]
+    target_capacities: Tuple[Tuple[KernelKind, int], ...]
+
+
 @dataclass
 class SplitResult:
-    trisc_body: List[ast.stmt]
-    ncrisc_body: List[ast.stmt]
-    brisc_body: List[ast.stmt]
+    plan: SplitPlan
+    _bodies: Dict[KernelSelector, List[ast.stmt]]
 
-    def body_for(self, thread: str) -> List[ast.stmt]:
-        return getattr(self, f"{thread}_body")
+    @property
+    def kernels(self) -> Tuple[KernelSelector, ...]:
+        return self.plan.kernels
+
+    def body_for(self, kernel: KernelSelector) -> List[ast.stmt]:
+        if not isinstance(kernel, (KernelKind, Kernel)):
+            raise TypeError(
+                "body_for() requires a KernelKind or Kernel, got "
+                f"{type(kernel).__name__}"
+            )
+        return self._bodies.get(kernel, [ast.Pass()])
+
+
+class _AnalysisState:
+    def __init__(self):
+        self.anchor_selections: Dict[int, FrozenSet[KernelSelector]] = {}
+        self.kernel_origins: Dict[KernelSelector, ast.stmt] = {}
+        self.transactions: List[DFBTransactionPlan] = []
+
+    def select(self, statement: ast.stmt, kernels: Set[KernelSelector]) -> None:
+        self.anchor_selections[id(statement)] = frozenset(kernels)
+        for kernel in kernels:
+            self.kernel_origins.setdefault(kernel, statement)
 
 
 def split_function_body(
     fn_def: ast.FunctionDef,
     dfb_param_names: Set[str],
     local_dfb_names: Optional[Set[str]] = None,
+    logical_kernels: Optional[Mapping[str, Kernel]] = None,
+    selector_scope: Optional[Mapping[str, object]] = None,
+    kernel_capacities: Optional[Mapping[KernelKind, int]] = None,
 ) -> SplitResult:
-    """Split a unified @ttl.operation body into trisc / ncrisc / brisc bodies.
+    """Split a unified operation body into target-independent logical kernels.
 
     Args:
         fn_def: AST FunctionDef of the user's @ttl.operation function.
         dfb_param_names: parameter names annotated as ttl.DFB / ttl.DFB.Output.
         local_dfb_names: names of DFBs declared inside the body via a DFB
             factory. Treated as DFB receivers for wait/reserve recognition.
+        logical_kernels: lifted logical Kernel resources keyed by source name.
+        selector_scope: frozen operation scope used for selector references.
+        kernel_capacities: target-provided maximum kernel counts by kind.
     """
     dfb_names = set(dfb_param_names) | (local_dfb_names or set())
+    selector_resolver = _KernelSelectorResolver(
+        logical_kernels or {}, selector_scope or {}
+    )
+    state = _AnalysisState()
+    _AnchorPlanner(
+        dfb_names=dfb_names,
+        selector_resolver=selector_resolver,
+        state=state,
+    ).analyze(fn_def.body)
 
-    # Pass A: tag anchor stmts in-place on the original body.
-    _AnchorTagger(dfb_names=dfb_names).tag(fn_def.body)
+    selected_kernels: Set[KernelSelector] = set()
+    for selection in state.anchor_selections.values():
+        selected_kernels.update(selection)
+    ordered_kernels = tuple(sorted(selected_kernels, key=_selector_sort_key))
+    _validate_kernel_capacities(
+        fn_def,
+        ordered_kernels,
+        state.kernel_origins,
+        kernel_capacities,
+    )
 
-    # Pass B: deep-copy the body once per side; prune anchors that
-    # don't apply on this side. Tag attributes survive deep-copy.
+    all_kernels = frozenset(ordered_kernels)
+    statements = tuple(
+        StatementSelection(
+            statement_id=id(statement),
+            kernels=state.anchor_selections.get(id(statement), all_kernels),
+            source_line=getattr(statement, "lineno", 0),
+        )
+        for statement in _walk_statements(fn_def.body)
+    )
+    requirements = tuple(
+        (
+            kind,
+            sum(_selector_kind(kernel) == kind for kernel in ordered_kernels),
+        )
+        for kind in KernelKind
+    )
+    target_capacities = tuple(
+        sorted(
+            (kernel_capacities or {}).items(),
+            key=lambda item: _selector_sort_key(item[0]),
+        )
+    )
+    plan = SplitPlan(
+        kernels=ordered_kernels,
+        statements=statements,
+        transactions=tuple(state.transactions),
+        kernel_requirements=requirements,
+        target_capacities=target_capacities,
+    )
     bodies = {
-        thread: _prune_body([copy.deepcopy(s) for s in fn_def.body], thread)
-        for thread in THREADS
+        kernel: _apply_split_plan(fn_def.body, kernel, plan)
+        for kernel in ordered_kernels
     }
-
     return SplitResult(
-        trisc_body=bodies["trisc"],
-        ncrisc_body=bodies["ncrisc"],
-        brisc_body=bodies["brisc"],
+        plan=plan,
+        _bodies=bodies,
     )
 
 
-# ----- Pass A: anchor tagging ----------------------------------------------
+# ----- logical-kernel analysis ---------------------------------------------
 
 
-class _AnchorTagger:
-    """Walks the body and annotates anchor stmts with ``_ttl_threads``.
+class _AnchorPlanner:
+    """Analyze statement placement and DFB transactions without AST mutation.
 
     Anchors fall into three categories:
 
@@ -253,53 +508,56 @@ class _AnchorTagger:
        ``ttl.<op>(...)`` call, a ``<pipenet>.if_src/if_dst(...)`` call,
        a DFB direct-method call (``dfb.publish()``), a block-method call
        (``blk.store(...)``), or a ``@`` MatMult.
-       Thread = union of anchor threads found.
+       Selection is the union of logical kernels found.
 
     2. Deferred producer anchors: ``name = cb.wait()/.reserve()`` (or
-       ``with cb.<m>() as name:``). The producer stmt's thread is the
-       block's inferred thread (from the produced block's downstream
+       ``with cb.<m>() as name:``). The producer statement uses the
+       block's resolved owner (from the produced block's downstream
        uses).
 
-    3. Block-method anchors with deferred thread: ``blk.pop()`` /
-       ``blk.push()`` resolve to the block's inferred thread.
+    3. Block-method anchors with deferred ownership: ``blk.pop()`` /
+       ``blk.push()`` resolve to the block's planned logical kernel.
 
-    ``dm_thread`` is the concrete thread used for DM-classified ops in
-    the current scope: ``"ncrisc"`` by default and ``"brisc"`` for the
-    body of an ``if_src`` callback. The outer scope's Phase 1 detects
-    which top-level FunctionDef names are passed as ``if_src(<name>)``;
-    those FunctionDefs get an inner tagger with ``dm_thread="brisc"``.
+    Data-movement operations use the current callback's logical affinity.
     """
 
-    def __init__(self, dfb_names: Set[str], dm_thread: str = "ncrisc"):
+    def __init__(
+        self,
+        dfb_names: Set[str],
+        selector_resolver: _KernelSelectorResolver,
+        state: _AnalysisState,
+        data_movement_kernels: FrozenSet[KernelSelector] = frozenset(
+            {KernelKind.DATA_MOVEMENT}
+        ),
+        inferred_external_kernels: FrozenSet[KernelSelector] = frozenset(),
+    ):
         self.dfb_names = dfb_names
-        self._dm_thread = dm_thread
-        # block_name -> frozenset of threads the block is used on.
-        self.block_threads: Dict[str, FrozenSet[str]] = {}
-        # block_name -> list of producer stmts (Assign / With) in this scope.
+        self._selector_resolver = selector_resolver
+        self._state = state
+        self._data_movement_kernels = data_movement_kernels
+        self._inferred_external_kernels = inferred_external_kernels
+        self.block_owners: Dict[str, KernelSelector] = {}
         self._producers: Dict[str, List[ast.stmt]] = {}
-        # FunctionDef names in this scope used as the callback argument
-        # to a ``<recv>.if_src(<Name>)`` call. Their inner bodies are
-        # tagged with dm_thread="brisc".
-        self._brisc_callbacks: Set[str] = set()
+        self._callback_kernels: Dict[str, Set[KernelSelector]] = {}
 
     # --- entry ---
 
-    def tag(self, body: List[ast.stmt]) -> None:
+    def analyze(self, body: List[ast.stmt]) -> None:
+        _validate_dfb_acquire_keywords(body, self.dfb_names)
         self._discover_producers(body)
-        self._discover_brisc_callbacks(body)
-        block_users = _collect_block_users(
+        self._discover_callback_kernels(body)
+        inferred_users, explicit_releases = _collect_block_ownership(
             body,
             set(self._producers.keys()),
             self.dfb_names,
-            dm_thread=self._dm_thread,
-            brisc_callbacks=self._brisc_callbacks,
+            data_movement_kernels=self._data_movement_kernels,
+            callback_kernels=self._callback_kernels,
+            selector_resolver=self._selector_resolver,
+            inferred_external_kernels=self._inferred_external_kernels,
         )
-        for name, threads in block_users.items():
-            if threads:
-                self.block_threads[name] = frozenset(threads)
+        self._resolve_transactions(inferred_users, explicit_releases)
         for stmt in body:
             self._annotate(stmt)
-        self._check_producer_threads()
 
     # --- phase 1a: producer discovery (this scope only) ---
 
@@ -329,21 +587,72 @@ class _AnchorTagger:
         # Do NOT descend into FunctionDef / AsyncFunctionDef: they are
         # their own scope and get their own tagger in Phase 3.
 
-    # --- phase 1b: if_src callback discovery (this scope only) ---
+    # --- callback affinity discovery (this scope only) ---
 
-    def _discover_brisc_callbacks(self, stmts: List[ast.stmt]) -> None:
+    def _discover_callback_kernels(self, stmts: List[ast.stmt]) -> None:
         for node in _walk_skip_nested_fns_iter(stmts):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
             if not isinstance(func, ast.Attribute):
                 continue
-            if func.attr != "if_src":
+            kernel = _PIPENET_METHODS.get(func.attr)
+            if kernel is None:
                 continue
             if node.args and isinstance(node.args[0], ast.Name):
-                self._brisc_callbacks.add(node.args[0].id)
+                self._callback_kernels.setdefault(node.args[0].id, set()).add(kernel)
 
-    # --- phase 2: annotate every stmt with anchor threads ---
+    def _resolve_transactions(
+        self,
+        inferred_users: Dict[str, Set[KernelSelector]],
+        explicit_releases: Dict[str, List[Tuple[ast.Call, KernelSelector]]],
+    ) -> None:
+        for block_name, producers in self._producers.items():
+            inferred = frozenset(inferred_users.get(block_name, set()))
+            explicit = frozenset(
+                selector for _, selector in explicit_releases.get(block_name, [])
+            )
+            if len(inferred) > 1:
+                raise _split_error(
+                    producers[0],
+                    f"DFB block {block_name!r} is used by multiple logical "
+                    f"kernels ({_format_kernels(inferred)}); each "
+                    ".reserve()/.wait() must resolve to exactly one kernel",
+                )
+            if len(explicit) > 1:
+                raise _split_error(
+                    producers[0],
+                    f"DFB block {block_name!r} has releases assigned to "
+                    f"multiple logical kernels ({_format_kernels(explicit)})",
+                )
+            if inferred and explicit and inferred != explicit:
+                raise _split_error(
+                    explicit_releases[block_name][0][0],
+                    f"explicit {_format_kernels(explicit)} release ownership "
+                    f"conflicts with inferred {_format_kernels(inferred)} "
+                    f"ownership for DFB block {block_name!r}",
+                )
+            owners = inferred or explicit
+            if not owners:
+                raise _split_error(
+                    producers[0],
+                    f"result of a DFB wait/reserve bound to {block_name!r} has "
+                    "no uses; the splitter cannot infer a logical kernel and "
+                    "the release has no explicit kernel selector",
+                )
+            owner = next(iter(owners))
+            self.block_owners[block_name] = owner
+            self._state.transactions.append(
+                DFBTransactionPlan(
+                    block_name=block_name,
+                    inferred_kernels=inferred,
+                    explicit_kernels=explicit,
+                    owner=owner,
+                    source_line=getattr(producers[0], "lineno", 0),
+                )
+            )
+
+    # --- statement selection ---
 
     def _annotate(self, stmt: ast.stmt) -> None:
         if isinstance(stmt, (ast.For, ast.While, ast.If)):
@@ -351,55 +660,51 @@ class _AnchorTagger:
                 self._annotate(child)
             return
         if isinstance(stmt, ast.With):
-            threads = self._with_threads(stmt)
-            if threads is not None:
-                if not threads:
-                    names = [
-                        _with_item_block_name(item, self.dfb_names)
-                        for item in stmt.items
-                    ]
-                    names = [n for n in names if n]
+            kernels = self._with_kernels(stmt)
+            if kernels is not None:
+                if len(kernels) != 1:
                     raise _split_error(
                         stmt,
-                        f"result of `with <dfb>.wait()/.reserve() as ...` "
-                        f"({', '.join(names)}) has no uses; the splitter "
-                        f"cannot pick a thread for the wait/reserve. "
-                        f"Add a use inside the with-body or remove it.",
+                        "DFB acquire statement resolves to multiple logical "
+                        f"kernels ({_format_kernels(kernels)}); each "
+                        ".reserve()/.wait() must resolve to exactly one kernel",
                     )
-                if len(threads) != 1:
-                    raise _split_error(
-                        stmt,
-                        "DFB acquire statement resolves to multiple threads "
-                        f"({_format_threads(threads)}); each .reserve()/.wait() "
-                        "must resolve to exactly one thread",
-                    )
-                _tag(stmt, threads)
+                self._state.select(stmt, kernels)
             for child in stmt.body:
                 self._annotate(child)
+            if kernels is not None:
+                self._validate_with_body_selection(stmt, kernels)
             return
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            inner_dm = (
-                "brisc" if stmt.name in self._brisc_callbacks else self._dm_thread
+            callback_kernels = frozenset(
+                self._callback_kernels.get(stmt.name, self._data_movement_kernels)
             )
-            inner = _AnchorTagger(dfb_names=self.dfb_names, dm_thread=inner_dm)
-            inner.tag(stmt.body)
+            inferred_external_kernels = (
+                callback_kernels
+                if stmt.name in self._callback_kernels
+                else self._inferred_external_kernels
+            )
+            inner = _AnchorPlanner(
+                dfb_names=self.dfb_names,
+                selector_resolver=self._selector_resolver,
+                state=self._state,
+                data_movement_kernels=callback_kernels,
+                inferred_external_kernels=inferred_external_kernels,
+            )
+            inner.analyze(stmt.body)
             return
 
-        # Producer Assign: thread = block's inferred thread.
         prod = _bare_wait_assign_target(stmt, self.dfb_names)
         if prod is not None:
             block_name, dfb_name = prod
-            threads = self._block_thread_set(block_name)
-            if not threads:
+            owner = self.block_owners.get(block_name)
+            if owner is None:
                 raise _split_error(
                     stmt,
                     f"result of {dfb_name}.wait()/.reserve() bound to "
-                    f"'{block_name}' has no uses; the splitter cannot pick "
-                    f"a thread for the wait/reserve. Add a use of "
-                    f"'{block_name}' (e.g. a no-op store into another CB) "
-                    f"or remove the producer.",
+                    f"{block_name!r} has no logical-kernel owner",
                 )
-            _tag(stmt, threads)
+            self._state.select(stmt, {owner})
             return
 
         copy_target = _assigned_copy_target(stmt)
@@ -411,170 +716,232 @@ class _AnchorTagger:
                 "instead",
             )
 
-        threads = self._stmt_anchor_threads(stmt)
-        if threads is not None:
-            if len(threads) != 1:
+        kernels = self._stmt_anchor_kernels(stmt)
+        if kernels is not None:
+            if len(kernels) != 1 and not _is_external_call_statement(stmt):
                 raise _split_error(
                     stmt,
-                    "executable statement is pinned to multiple threads "
-                    f"({_format_threads(threads)}); split the compute and "
-                    "data movement work into separate statements",
+                    "executable statement is assigned to multiple logical "
+                    f"kernels ({_format_kernels(kernels)}); split the work "
+                    "into separate statements",
                 )
-            _tag(stmt, threads)
+            self._state.select(stmt, kernels)
 
-    def _with_threads(self, stmt: ast.With) -> Optional[Set[str]]:
-        """Thread set for a ``with cb.<wait|reserve>() as blk:`` form,
-        unioned across all DFB-sync withitems. ``None`` if the With has
-        no DFB-sync items (it's then a plain control-flow With).
-        """
-        merged: Set[str] = set()
+    def _with_kernels(self, stmt: ast.With) -> Optional[Set[KernelSelector]]:
+        merged: Set[KernelSelector] = set()
         any_dfb = False
         for item in stmt.items:
             name = _with_item_block_name(item, self.dfb_names)
             if name is None:
                 continue
             any_dfb = True
-            merged |= self._block_thread_set(name)
+            owner = self.block_owners.get(name)
+            if owner is not None:
+                merged.add(owner)
         return merged if any_dfb else None
 
-    def _block_thread_set(self, block_name: str) -> Set[str]:
-        return set(self.block_threads.get(block_name, frozenset()))
+    def _validate_with_body_selection(
+        self,
+        stmt: ast.With,
+        acquire_kernels: Set[KernelSelector],
+    ) -> None:
+        for nested_statement in _walk_statements(stmt.body):
+            nested_kernels = self._state.anchor_selections.get(id(nested_statement))
+            if nested_kernels is None or nested_kernels.issubset(acquire_kernels):
+                continue
+            raise _split_error(
+                nested_statement,
+                "statement selects logical kernels "
+                f"({_format_kernels(nested_kernels)}) outside its enclosing "
+                "DFB acquire owner "
+                f"({_format_kernels(acquire_kernels)})",
+            )
 
-    def _anchor_threads_in(self, root: ast.AST) -> Set[str]:
-        """Return all concrete thread anchors in ``root``."""
-        threads: Set[str] = set()
+    def _block_kernel_set(self, block_name: str) -> Set[KernelSelector]:
+        owner = self.block_owners.get(block_name)
+        return {owner} if owner is not None else set()
+
+    def _anchor_kernels_in(self, root: ast.AST) -> Set[KernelSelector]:
+        kernels: Set[KernelSelector] = set()
         for node in _iter_skip_nested_fns(root):
             if isinstance(node, ast.Call):
-                thread = self._classify_call(node)
-                if thread in THREADS:
-                    threads.add(thread)
+                selection = self._classify_call(node)
+                if selection is not None:
+                    kernels.update(selection)
             elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
-                threads.add("trisc")
-        return threads
+                kernels.add(KernelKind.COMPUTE)
+        return kernels
 
-    def _stmt_anchor_threads(self, stmt: ast.stmt) -> Optional[Set[str]]:
-        """Union of anchor threads found in the stmt's subtree. ``None``
-        if the stmt has no thread-pinning anchor (control / scalar /
-        registered compile-time op); those stay duplicated on all sides.
+    def _stmt_anchor_kernels(self, stmt: ast.stmt) -> Optional[Set[KernelSelector]]:
+        """Union of logical-kernel anchors found in a statement subtree.
 
-        Lambdas inside the stmt are deliberately skipped: their body's
-        DM ops are dispatched by the enclosing ``<recv>.if_src/if_dst``
-        call, whose own classification already pins the stmt to the
-        right thread. Including the lambda body would double-count an
-        ``if_src(lambda: ttl.copy(...))`` as both brisc (from if_src)
-        and ncrisc (from ttl.copy), forcing duplication.
+        ``None`` means the statement is control or scalar code and is cloned
+        into every selected logical kernel.
 
-        AugAssign on a known block is still a compute anchor even when
-        the RHS has no Call / MatMult (e.g. ``blk += scalar``).
+        Lambdas are skipped because their data-movement operations inherit the
+        enclosing PipeNet callback affinity.
+
+        AugAssign on a known block remains a compute anchor even when the RHS
+        has no call or matrix multiplication.
+
+        The result is ``None`` if the stmt has no kernel-pinning anchor.
         """
-        threads = self._anchor_threads_in(stmt)
-        if threads:
-            return threads
+        kernels = self._anchor_kernels_in(stmt)
+        if kernels:
+            return kernels
         if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
-            return self._block_thread_set(stmt.target.id) or None
+            return self._block_kernel_set(stmt.target.id) or None
         return None
 
-    def _classify_call(self, call: ast.Call) -> Optional[str]:
-        """Return the thread of a Call ("trisc"/"ncrisc"/"brisc"), or None if
-        it isn't an anchor at all (e.g. ``range(...)``, ``int(...)``,
-        ``.wait()`` on a call result). Raises on a ``ttl.<unknown>(...)`` form.
+    def _classify_call(self, call: ast.Call) -> Optional[FrozenSet[KernelSelector]]:
+        selection = _classify_ttl_call(
+            call,
+            self._data_movement_kernels,
+            self._inferred_external_kernels,
+            self._selector_resolver,
+        )
+        if selection is not None:
+            return selection
 
-        Delegates the registry decision (ttl ops, namespaces, pipe dispatch)
-        to ``_classify_ttl_call``; resolves ``<block>.store/pop/push`` here,
-        since deferred block methods need this scope's inferred block threads.
-        """
-        thread = _classify_ttl_call(call.func, self._dm_thread)
-        if thread is not None:
-            return thread
-
-        # <block>.<method>(...) where <block> is a producer in this scope.
         func = call.func
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             if func.value.id in self.dfb_names:
                 method = _DFB_DIRECT_METHODS.get(func.attr)
                 if method is not None:
-                    return _materialize_thread(method, self._dm_thread)
+                    return _materialize_kernels(method, self._data_movement_kernels)
             if func.value.id in self._producers:
                 method = _BLOCK_METHODS.get(func.attr)
-                if method == "trisc":
-                    return "trisc"
-                if method == "deferred":
-                    bt = self.block_threads.get(func.value.id)
-                    if bt and len(bt) == 1:
-                        return next(iter(bt))
+                if isinstance(method, KernelKind):
+                    return frozenset({method})
+                if method is _Placement.DEFERRED:
+                    owner = self.block_owners.get(func.value.id)
+                    if owner is not None:
+                        return frozenset({owner})
         return None
 
-    # --- post-check: every DFB acquire belongs to exactly one thread ---
 
-    def _check_producer_threads(self) -> None:
-        for name, stmts in self._producers.items():
-            threads = self.block_threads.get(name, frozenset())
-            if len(threads) > 1:
-                raise _split_error(
-                    stmts[0],
-                    f"DFB block '{name}' is used on multiple threads "
-                    f"({_format_threads(threads)}). Its .reserve()/.wait() "
-                    f"acquire must resolve to exactly one thread; use a "
-                    f"separate acquired block for each thread.",
-                )
+# ----- split-plan application ---------------------------------------------
 
 
-# ----- Pass B: prune --------------------------------------------------------
+class _KernelKeywordStripper(ast.NodeTransformer):
+    def __init__(self, block_names: Set[str]):
+        self.block_names = block_names
+
+    def visit_Call(self, node: ast.Call):
+        node = self.generic_visit(node)
+        is_release = (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in self.block_names
+            and node.func.attr in _DFB_RELEASE_METHODS
+        )
+        if _is_external_call(node) or is_release:
+            node.keywords = [
+                keyword for keyword in node.keywords if keyword.arg != _KERNEL_KEYWORD
+            ]
+        return node
 
 
-def _prune_body(body: List[ast.stmt], side: str) -> List[ast.stmt]:
-    """Walk a deep-copied body and drop anchor stmts not for ``side``.
-    Empty control-flow bodies are filled with ``pass`` (AST well-formedness).
-    """
-    result: List[ast.stmt] = []
-    for stmt in body:
-        kept = _prune_stmt(stmt, side)
-        if kept is not None:
-            result.append(kept)
-    return result if result else [ast.Pass()]
+def _walk_statements(statements: List[ast.stmt]):
+    for statement in statements:
+        yield statement
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.stmt):
+                yield from _walk_statements([child])
+            elif isinstance(child, ast.ExceptHandler):
+                yield from _walk_statements(child.body)
 
 
-def _prune_stmt(stmt: ast.stmt, side: str) -> Optional[ast.stmt]:
-    threads = getattr(stmt, "_ttl_threads", None)
-    if threads is not None and side not in threads:
-        return None
-    if isinstance(stmt, ast.For):
-        stmt.body = _prune_body(stmt.body, side)
-        stmt.orelse = _prune_orelse(stmt.orelse, side)
-    elif isinstance(stmt, ast.While):
-        stmt.body = _prune_body(stmt.body, side)
-        stmt.orelse = _prune_orelse(stmt.orelse, side)
-    elif isinstance(stmt, ast.If):
-        stmt.body = _prune_body(stmt.body, side)
-        stmt.orelse = _prune_orelse(stmt.orelse, side)
-    elif isinstance(stmt, ast.With):
-        stmt.body = _prune_body(stmt.body, side)
-    elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        stmt.body = _prune_body(stmt.body, side)
-    return stmt
+def _validate_kernel_capacities(
+    fn_def: ast.FunctionDef,
+    kernels: Tuple[KernelSelector, ...],
+    kernel_origins: Mapping[KernelSelector, ast.stmt],
+    kernel_capacities: Optional[Mapping[KernelKind, int]],
+) -> None:
+    if kernel_capacities is None:
+        return
+    for kind in KernelKind:
+        capacity = kernel_capacities.get(kind)
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 0:
+            raise ValueError(
+                f"kernel capacity for {kind.value} must be a nonnegative integer"
+            )
+        selected = tuple(kernel for kernel in kernels if _selector_kind(kernel) == kind)
+        required = len(selected)
+        if required > capacity:
+            diagnostic_node = max(
+                (kernel_origins[kernel] for kernel in selected),
+                key=lambda statement: getattr(statement, "lineno", 0),
+                default=fn_def,
+            )
+            raise _split_error(
+                diagnostic_node,
+                _format_kernel_capacity_error(kind, selected, capacity),
+            )
 
 
-def _prune_orelse(body: List[ast.stmt], side: str) -> List[ast.stmt]:
-    """Prune an orelse body without inserting a placeholder ``pass``.
+def _apply_split_plan(
+    body: List[ast.stmt],
+    kernel: KernelSelector,
+    plan: SplitPlan,
+) -> List[ast.stmt]:
+    memo: Dict[int, object] = {}
+    copy.deepcopy(body, memo)
+    selections = {
+        statement.statement_id: statement.kernels for statement in plan.statements
+    }
+    cloned = _prune_statement_list(body, kernel, selections, memo, insert_pass=True)
+    stripper = _KernelKeywordStripper(
+        {transaction.block_name for transaction in plan.transactions}
+    )
+    return [
+        ast.fix_missing_locations(stripper.visit(statement)) for statement in cloned
+    ]
 
-    Python treats an empty orelse as 'no else clause'.
-    """
-    result: List[ast.stmt] = []
-    for stmt in body:
-        kept = _prune_stmt(stmt, side)
-        if kept is not None:
-            result.append(kept)
+
+def _prune_statement_list(
+    originals: List[ast.stmt],
+    kernel: KernelSelector,
+    selections: Dict[int, FrozenSet[KernelSelector]],
+    memo: Dict[int, object],
+    insert_pass: bool,
+) -> List[ast.stmt]:
+    result = []
+    for original in originals:
+        if kernel not in selections[id(original)]:
+            continue
+        clone = memo[id(original)]
+        assert isinstance(clone, ast.stmt)
+        if isinstance(original, (ast.For, ast.While, ast.If)):
+            clone.body = _prune_statement_list(
+                original.body, kernel, selections, memo, insert_pass=True
+            )
+            clone.orelse = _prune_statement_list(
+                original.orelse, kernel, selections, memo, insert_pass=False
+            )
+        elif isinstance(original, ast.With):
+            clone.body = _prune_statement_list(
+                original.body, kernel, selections, memo, insert_pass=True
+            )
+        elif isinstance(original, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            clone.body = _prune_statement_list(
+                original.body, kernel, selections, memo, insert_pass=True
+            )
+        result.append(clone)
+    if not result and insert_pass:
+        return [ast.Pass()]
     return result
 
 
 # ----- helpers --------------------------------------------------------------
 
 
-def _tag(stmt: ast.stmt, threads: Set[str]) -> None:
-    """Annotate a stmt with its anchor thread set. ``frozenset()`` means
-    'drop on every side'.
-    """
-    stmt._ttl_threads = frozenset(threads)
+def _is_external_call_statement(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and _is_external_call(statement.value)
+    )
 
 
 def _assigned_copy_target(stmt: ast.stmt) -> Optional[str]:
@@ -594,6 +961,29 @@ def _assigned_copy_target(stmt: ast.stmt) -> Optional[str]:
     if func.attr != "copy":
         return None
     return stmt.targets[0].id
+
+
+def _validate_dfb_acquire_keywords(
+    statements: List[ast.stmt], dfb_names: Set[str]
+) -> None:
+    """Reject placement selectors on DFB acquisition operations."""
+    for statement in statements:
+        for node in _iter_skip_nested_fns(statement):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if func.attr not in _DFB_PRODUCING_METHODS:
+                continue
+            if not isinstance(func.value, ast.Name) or func.value.id not in dfb_names:
+                continue
+            if _kernel_keyword(node) is not None:
+                raise _split_error(
+                    node,
+                    f"kernel= is not supported on DFB {func.attr}(); "
+                    "select release ownership on push() or pop()",
+                )
 
 
 def _bare_wait_assign_target(
@@ -656,9 +1046,10 @@ def _expr_root_name(node) -> Optional[str]:
         return None
 
 
-def _format_threads(threads) -> str:
-    """Stable, user-facing rendering of a concrete thread collection."""
-    return ", ".join(thread.upper() for thread in THREADS if thread in threads)
+def _format_kernels(kernels) -> str:
+    return ", ".join(
+        _format_selector(kernel) for kernel in sorted(kernels, key=_selector_sort_key)
+    )
 
 
 def _split_error(node, msg: str) -> ValueError:
@@ -729,103 +1120,171 @@ def _local_bindings(fn_node) -> Set[str]:
     return locals_
 
 
-def _collect_block_users(
+def _collect_block_ownership(
     stmts: List[ast.stmt],
     block_names: Set[str],
     dfb_names: Set[str],
-    dm_thread: str = "ncrisc",
-    brisc_callbacks: Optional[Set[str]] = None,
-) -> Dict[str, Set[str]]:
-    """For each block name, the set of threads ("trisc"/"ncrisc"/"brisc")
-    on which it has an anchor-relevant use. Walks nested functions and
-    lambdas with shadow awareness: a re-bound name inside a callback
-    hides the outer name.
+    data_movement_kernels: FrozenSet[KernelSelector],
+    callback_kernels: Mapping[str, Set[KernelSelector]],
+    selector_resolver: _KernelSelectorResolver,
+    inferred_external_kernels: FrozenSet[KernelSelector],
+) -> Tuple[
+    Dict[str, Set[KernelSelector]],
+    Dict[str, List[Tuple[ast.Call, KernelSelector]]],
+]:
+    """Collect inferred block uses and explicit release ownership separately."""
+    inferred_users: Dict[str, Set[KernelSelector]] = {
+        name: set() for name in block_names
+    }
+    explicit_releases: Dict[str, List[Tuple[ast.Call, KernelSelector]]] = {
+        name: [] for name in block_names
+    }
 
-    ``dm_thread`` is the concrete thread for DM-classified ops in the
-    current scope (default "ncrisc"). When the walker descends into a
-    callback recognized as an if_src dispatch target (a FunctionDef whose
-    name is in ``brisc_callbacks``, or the lambda/named-arg of an
-    ``<recv>.if_src(...)`` call), it switches to "brisc". Descent into
-    ``<recv>.if_dst(...)`` arguments forces "ncrisc".
-
-    An anchor-relevant use:
-      - argument to a ttl.* / pipenet method call -> that call's thread
-      - receiver of ``.store(...)`` -> trisc
-      - receiver of ``.pop()``/``.push()`` -> does not pin (sync helper)
-      - operand of MatMult ``@`` or any other BinOp -> trisc
-      - target of an AugAssign -> trisc
-    """
-    brisc_callbacks = brisc_callbacks or set()
-    users: Dict[str, Set[str]] = {n: set() for n in block_names}
-
-    def record_call_args(node: ast.Call, thread: str, visible: Set[str]) -> None:
+    def record_call_args(
+        node: ast.Call,
+        kernels: FrozenSet[KernelSelector],
+        visible: Set[str],
+    ) -> None:
         for arg in node.args:
             root = _expr_root_name(arg)
             if root in visible:
-                users[root].add(thread)
+                inferred_users[root].update(kernels)
         for kw in node.keywords:
             root = _expr_root_name(kw.value)
             if root in visible:
-                users[root].add(thread)
+                inferred_users[root].update(kernels)
 
-    def visit(node, visible, dm):
+    def visit(
+        node,
+        visible: Set[str],
+        current_data_movement_kernels: FrozenSet[KernelSelector],
+        current_external_kernels: FrozenSet[KernelSelector],
+    ):
         if isinstance(node, ast.Call):
             func = node.func
-            thread = _classify_ttl_call(func, dm)
-            sub_dm = dm
+            sub_data_movement_kernels = current_data_movement_kernels
+            sub_external_kernels = current_external_kernels
+            block_method_selection: Optional[FrozenSet[KernelSelector]] = None
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                recv = func.value.id
+                receiver = func.value.id
                 method = func.attr
-                if thread is None and recv in visible and method == "store":
-                    users[recv].add("trisc")
-                    thread = "trisc"
+                if receiver in visible and method in _DFB_RELEASE_METHODS:
+                    explicit = selector_resolver.resolve_release(node)
+                    if explicit is not None:
+                        explicit_releases[receiver].append((node, explicit))
+                    for arg in node.args:
+                        visit(
+                            arg,
+                            visible,
+                            sub_data_movement_kernels,
+                            sub_external_kernels,
+                        )
+                    for keyword in node.keywords:
+                        visit(
+                            keyword.value,
+                            visible,
+                            sub_data_movement_kernels,
+                            sub_external_kernels,
+                        )
+                    return
+                if receiver in visible and method == "store":
+                    inferred_users[receiver].add(KernelKind.COMPUTE)
+                    block_method_selection = frozenset({KernelKind.COMPUTE})
                 if method in _PIPENET_METHODS:
-                    sub_dm = _PIPENET_METHODS[method]
-            if thread is not None:
-                record_call_args(node, thread, visible)
+                    callback_kernel = _PIPENET_METHODS[method]
+                    sub_data_movement_kernels = frozenset({callback_kernel})
+                    sub_external_kernels = sub_data_movement_kernels
+
+            selection = _classify_ttl_call(
+                node,
+                current_data_movement_kernels,
+                current_external_kernels,
+                selector_resolver,
+            )
+            selection = selection or block_method_selection
+            if selection is not None and not _is_external_call(node):
+                record_call_args(node, selection, visible)
             for arg in node.args:
-                visit(arg, visible, sub_dm)
+                visit(
+                    arg,
+                    visible,
+                    sub_data_movement_kernels,
+                    sub_external_kernels,
+                )
             for kw in node.keywords:
-                visit(kw.value, visible, sub_dm)
-            # Recurse into the callee so a chained call such as
-            # `ttl.copy(blk, pipe).wait()` still records `blk`'s use in the
-            # inner call (the inner call is func.value, not an arg/keyword).
+                visit(
+                    kw.value,
+                    visible,
+                    sub_data_movement_kernels,
+                    sub_external_kernels,
+                )
             if isinstance(func, ast.Attribute):
-                visit(func.value, visible, sub_dm)
+                visit(
+                    func.value,
+                    visible,
+                    sub_data_movement_kernels,
+                    sub_external_kernels,
+                )
             return
         if isinstance(node, ast.BinOp):
             for side in (node.left, node.right):
                 root = _expr_root_name(side)
                 if root in visible:
-                    users[root].add("trisc")
+                    inferred_users[root].add(KernelKind.COMPUTE)
         elif isinstance(node, ast.AugAssign):
             target = _expr_root_name(node.target)
             if target in visible:
-                users[target].add("trisc")
+                inferred_users[target].add(KernelKind.COMPUTE)
             rhs = _expr_root_name(node.value)
             if rhs in visible:
-                users[rhs].add("trisc")
+                inferred_users[rhs].add(KernelKind.COMPUTE)
         elif isinstance(node, ast.Assign):
             for tgt in node.targets:
                 if isinstance(tgt, ast.Subscript):
                     root = _expr_root_name(tgt.value)
                     if root in visible:
-                        users[root].add("trisc")
+                        inferred_users[root].add(KernelKind.COMPUTE)
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             inner = visible - _local_bindings(node)
-            sub_dm = "brisc" if node.name in brisc_callbacks else dm
+            selected_callback_kernels = callback_kernels.get(node.name)
+            if selected_callback_kernels is None:
+                nested_data_movement_kernels = current_data_movement_kernels
+                nested_external_kernels = current_external_kernels
+            else:
+                nested_data_movement_kernels = frozenset(selected_callback_kernels)
+                nested_external_kernels = nested_data_movement_kernels
             for child in node.body:
-                visit(child, inner, sub_dm)
+                visit(
+                    child,
+                    inner,
+                    nested_data_movement_kernels,
+                    nested_external_kernels,
+                )
             return
         if isinstance(node, ast.Lambda):
             inner = visible - _local_bindings(node)
-            visit(node.body, inner, dm)
+            visit(
+                node.body,
+                inner,
+                current_data_movement_kernels,
+                current_external_kernels,
+            )
             return
 
         for child in ast.iter_child_nodes(node):
-            visit(child, visible, dm)
+            visit(
+                child,
+                visible,
+                current_data_movement_kernels,
+                current_external_kernels,
+            )
 
     for stmt in stmts:
-        visit(stmt, block_names, dm_thread)
-    return users
+        visit(
+            stmt,
+            block_names,
+            data_movement_kernels,
+            inferred_external_kernels,
+        )
+    return inferred_users, explicit_releases

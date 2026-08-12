@@ -20,7 +20,8 @@ import torch
 from .constants import TILE_SHAPE
 from .context import get_context
 from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
-from .blockstate import BlockAcquisition, KernelType
+from .blockstate import BlockAcquisition
+from .kernel import KernelKind
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
 
@@ -224,7 +225,7 @@ def broadcast(
         tensor=Tensor(result_elem),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, block)
@@ -277,7 +278,7 @@ def fill(
         tensor=Tensor(elem),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
 
