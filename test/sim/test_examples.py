@@ -93,9 +93,8 @@ _SPEC_EXAMPLES_PASSING = [
     "spec/dataflow_buffer/row_major_tensor_shape.py",
     "spec/dataflow_buffer/dataflow_buffer.py",
     "spec/operation_function/multi_kernel_operation.py",
-    # Run for their structure, with nothing to compare against: the debugging
-    # snippets are about what they print.  Reaching the end without a dataflow or
-    # diagnostic error is the whole check.
+    # Debugging snippets wrapped in @ttl.operation; debug_printing.py also
+    # asserts the text its kernel prints.
     "spec/performance_and_debugging/debug_printing.py",
     "spec/performance_and_debugging/signpost.py",
     # Grid/node introspection: node-dependent setup runs per node, asserted.

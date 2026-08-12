@@ -1273,7 +1273,6 @@ def matmul_read():
                                     a_xf.wait()
                                     b_xf.wait()
 
-
 ```
 
 | Function | Description |
@@ -1352,7 +1351,6 @@ def matmul_read():
 
                         a_xf.wait()
                         b_xf.wait()
-
 
 ```
 
