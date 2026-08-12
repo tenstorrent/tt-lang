@@ -53,7 +53,8 @@ static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
 class DFBPhysicalConflictModelBuilder {
 public:
   static DFBPhysicalConflictModel
-  build(const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  build(const DFBConcurrentKernelLivenessAnalysis &liveness,
+        ArrayRef<DFBStaticConfigurationConflict> staticConflicts) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     DFBPhysicalConflictModel model;
@@ -64,6 +65,25 @@ public:
            ++rhsIndex) {
         addPairConflicts(model, liveness, lhsIndex, rhsIndex);
       }
+    }
+    DenseMap<int64_t, unsigned> logicalIndexById;
+    for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
+      logicalIndexById.try_emplace(logicalDFB.logicalId, logicalIndex);
+    }
+    for (const DFBStaticConfigurationConflict &conflict : staticConflicts) {
+      auto lhsIt = logicalIndexById.find(conflict.lhsLogicalId);
+      auto rhsIt = logicalIndexById.find(conflict.rhsLogicalId);
+      assert(lhsIt != logicalIndexById.end() &&
+             rhsIt != logicalIndexById.end() &&
+             "configuration conflicts must reference analyzed logical DFBs");
+      unsigned lhsIndex = lhsIt->second;
+      unsigned rhsIndex = rhsIt->second;
+      if (lhsIndex == rhsIndex || model.adjacency[lhsIndex].test(rhsIndex)) {
+        continue;
+      }
+      addEvidence(model, logicalDFBs[lhsIndex], logicalDFBs[rhsIndex], lhsIndex,
+                  rhsIndex, DFBConflictReason::StaticConfigurationMismatch,
+                  std::nullopt, conflict.lhsOperation, conflict.rhsOperation);
     }
     return model;
   }
@@ -787,6 +807,7 @@ validateTensorBackingRanges(ArrayRef<DFBPhysicalIndexAssignment> assignments,
 DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     Operation *operation, bool reuseUserDFBs,
     std::uint64_t exactColoringSearchStateLimit,
+    ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     AnalysisManager analysisManager) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
   std::string targetFailureReason;
@@ -813,7 +834,8 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
   DFBAnalysisFailure analysisFailure;
-  plan.conflictModel = DFBPhysicalConflictModelBuilder::build(liveness);
+  plan.conflictModel = DFBPhysicalConflictModelBuilder::build(
+      liveness, staticConfigurationConflicts);
   LLVM_DEBUG(printDFBAllocationDebugReport(llvm::dbgs(), liveness,
                                            plan.conflictModel));
 
