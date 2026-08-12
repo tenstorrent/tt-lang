@@ -22,12 +22,13 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "DFBVerification.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <cstdlib>
 #include <iterator>
 
 namespace mlir::tt::ttl {
@@ -235,7 +236,7 @@ struct TTLVerifyDFBSPSCPass
     // launch-domain analysis can represent. The explicit opt-out suppresses
     // only SPSC domain analysis; finalized DFB identity checks above remain
     // mandatory.
-    if (std::getenv("TTL_RELAX_DFB_SPSC")) {
+    if (isDFBProtocolDomainVerificationRelaxed()) {
       return;
     }
 
