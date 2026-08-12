@@ -561,16 +561,10 @@ def apply_fabric_target_binding_plan(
     device_coordinates: Tuple[int, ...],
 ) -> None:
     """Apply a validated target-binding plan to one program descriptor."""
-    for kernel_index in plan.managed_kernel_indices:
-        if len(program_descriptor.kernels[kernel_index].runtime_args) != 0:
-            raise ValueError(
-                "compiler-managed fabric routes require an empty runtime "
-                f"argument table for kernel {kernel_index}"
-            )
-
     for manager in plan.managers:
         kernel_descriptor = program_descriptor.kernels[manager.kernel_index]
         node_x, node_y = manager.node_coordinates
+        caller_runtime_args = list(kernel_descriptor.runtime_args[node_x][node_y])
         connection_node_ids = []
         connection_link_indices = []
         fabric_args = []
@@ -595,7 +589,13 @@ def apply_fabric_target_binding_plan(
                 manager.kernel_index,
                 ttnn_api.CoreCoord(node_x, node_y),
             )
-        runtime_args = [*manager.runtime_prefix, *fabric_args]
+        # Generated code indexes its route metadata and connection records from
+        # zero. Keep that ABI stable and append operation-owned arguments.
+        runtime_args = [
+            *manager.runtime_prefix,
+            *fabric_args,
+            *caller_runtime_args,
+        ]
         kernel_descriptor.runtime_args[node_x][node_y] = runtime_args
         if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
             print(

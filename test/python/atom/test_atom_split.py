@@ -1446,6 +1446,82 @@ def test_direct_external_call_selects_canonical_data_movement_kernel():
     assert "kernel=" not in data_movement
 
 
+def test_composed_legacy_external_threads_map_to_logical_kernels():
+    """Migration-only physical selectors retain placement after composition."""
+
+    @ttl.operation()
+    def legacy_child():
+        ttl.call_extern_func("legacy.hpp", "compute", thread="trisc")
+        ttl.call_extern_func("legacy.hpp", "reader", thread="ncrisc")
+        ttl.call_extern_func("legacy.hpp", "writer", thread="brisc")
+
+    @ttl.operation()
+    def legacy_parent():
+        legacy_child()
+
+    spec = legacy_parent._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+    )
+
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    reader = _kind_src(result, KernelKind.DATA_MOVEMENT, index=0)
+    writer = _kind_src(result, KernelKind.DATA_MOVEMENT, index=1)
+    assert "'compute'" in compute
+    assert "'reader'" in reader
+    assert "'writer'" in writer
+    assert all("thread=" not in source for source in (compute, reader, writer))
+
+    assignments = _assign_backend_kernel_slots(result)
+    assigned_sources = {
+        slot.source_name: _kernel_src(result, selector)
+        for slot, selector in assignments.items()
+    }
+    assert "'compute'" in assigned_sources["trisc"]
+    assert "'reader'" in assigned_sources["ncrisc"]
+    assert "'writer'" in assigned_sources["brisc"]
+
+
+def test_public_pipe_source_selector_shares_pipenet_source_kernel():
+    """External transport work can share the compiler-owned PipeNet source."""
+    fn = _fn(
+        """
+        def k(net):
+            net.if_src(lambda pipe: None)
+            ttl.call_extern_func(
+                "transport.hpp",
+                "transport",
+                kernel=ttl.PIPE_SOURCE_KERNEL,
+            )
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    data_movement_kernels = tuple(
+        kernel
+        for kernel in result.kernels
+        if kernel is KernelKind.DATA_MOVEMENT
+        or isinstance(kernel, Kernel)
+        and kernel.kind is KernelKind.DATA_MOVEMENT
+    )
+    assert data_movement_kernels == (ttl.PIPE_SOURCE_KERNEL,)
+    source = _kernel_src(result, ttl.PIPE_SOURCE_KERNEL)
+    assert "net.if_src" in source
+    assert "'transport'" in source
+    assert "kernel=" not in source
+
+    assignments = _assign_backend_kernel_slots(result)
+    brisc_selector = next(
+        selector
+        for slot, selector in assignments.items()
+        if slot.source_name == "brisc"
+    )
+    assert brisc_selector is ttl.PIPE_SOURCE_KERNEL
+
+
 def test_external_call_selects_named_logical_kernel():
     """A logical handle distinguishes a noncanonical kernel of the same kind."""
     reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")

@@ -42,6 +42,7 @@ def call_extern_func(
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
     result_type: Optional[ScalarType] = None,
+    thread: Optional[str] = None,
 ) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
@@ -50,6 +51,10 @@ def call_extern_func(
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
     removes the selector before AST lowering.
+
+    ``thread`` preserves legacy ``trisc``, ``ncrisc``, and ``brisc`` placement
+    while operations migrate to logical kernel selectors. It is mutually
+    exclusive with ``kernel``.
 
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external

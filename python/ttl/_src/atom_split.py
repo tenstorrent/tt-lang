@@ -23,8 +23,8 @@ from ttl.kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    PIPE_SOURCE_KERNEL,
     _DFB_RELEASE_METHODS,
-    _PIPE_SOURCE_KERNEL_ROLE,
     _format_kernel_capacity_error,
     _format_selector,
     _selector_kind,
@@ -33,10 +33,12 @@ from ttl.kernel import (
 
 _EXTERNAL_CALL_NAME = "call_extern_func"
 _KERNEL_KEYWORD = "kernel"
-_PIPE_SOURCE_KERNEL = Kernel._implicit(
-    KernelKind.DATA_MOVEMENT,
-    _PIPE_SOURCE_KERNEL_ROLE,
-)
+_THREAD_KEYWORD = "thread"
+_LEGACY_THREAD_KERNELS: Mapping[str, KernelSelector] = {
+    "trisc": KernelKind.COMPUTE,
+    "ncrisc": KernelKind.DATA_MOVEMENT,
+    "brisc": PIPE_SOURCE_KERNEL,
+}
 
 
 class _Placement(Enum):
@@ -102,7 +104,7 @@ _TTL_NAMESPACES: Dict[str, KernelKind] = {
 
 # Pipe source and destination callbacks have distinct logical affinities.
 _PIPENET_METHODS: Dict[str, KernelSelector] = {
-    "if_src": _PIPE_SOURCE_KERNEL,
+    "if_src": PIPE_SOURCE_KERNEL,
     "if_dst": KernelKind.DATA_MOVEMENT,
 }
 
@@ -144,11 +146,19 @@ def _is_external_call(call: ast.Call) -> bool:
     )
 
 
-def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
+def _placement_keyword(call: ast.Call, name: str) -> Optional[ast.expr]:
     for keyword in call.keywords:
-        if keyword.arg == _KERNEL_KEYWORD:
+        if keyword.arg == name:
             return keyword.value
     return None
+
+
+def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
+    return _placement_keyword(call, _KERNEL_KEYWORD)
+
+
+def _thread_keyword(call: ast.Call) -> Optional[ast.expr]:
+    return _placement_keyword(call, _THREAD_KEYWORD)
 
 
 def _is_kernel_kind_union(node: ast.AST) -> bool:
@@ -166,6 +176,7 @@ def _flatten_kernel_kind_union(node: ast.expr) -> List[ast.expr]:
 
 class _DefaultTTLSelectorNamespace:
     KernelKind = KernelKind
+    PIPE_SOURCE_KERNEL = PIPE_SOURCE_KERNEL
 
 
 _DEFAULT_TTL_SELECTOR_NAMESPACE = _DefaultTTLSelectorNamespace()
@@ -194,22 +205,58 @@ class _KernelSelectorResolver:
         inferred_kernels: FrozenSet[KernelSelector],
     ) -> FrozenSet[KernelSelector]:
         selector = _kernel_keyword(call)
+        thread = _thread_keyword(call)
+        if selector is not None and thread is not None:
+            raise _split_error(
+                call,
+                "call_extern_func accepts either kernel= or legacy thread=, not both",
+            )
+        if thread is not None:
+            selected = self._resolve_legacy_thread(thread)
+            return self._validate_inferred_selection(
+                thread, frozenset({selected}), inferred_kernels
+            )
         if selector is None:
             if len(inferred_kernels) == 1:
                 return inferred_kernels
+            callee = ast.unparse(call.args[1]) if len(call.args) >= 2 else "<missing>"
             raise _split_error(
                 call,
                 "call_extern_func requires a kernel selector when its logical "
-                "kernel cannot be inferred",
+                f"kernel cannot be inferred; callee={callee}",
             )
 
         selected = self._resolve_selection(selector, allow_tuple=True)
+        return self._validate_inferred_selection(selector, selected, inferred_kernels)
+
+    def _validate_inferred_selection(
+        self,
+        node: ast.expr,
+        selected: FrozenSet[KernelSelector],
+        inferred_kernels: FrozenSet[KernelSelector],
+    ) -> FrozenSet[KernelSelector]:
         if inferred_kernels and selected != inferred_kernels:
             raise _split_error(
-                selector,
+                node,
                 "explicit external-call kernel selection "
                 f"({_format_kernels(selected)}) conflicts with inferred "
                 f"selection ({_format_kernels(inferred_kernels)})",
+            )
+        return selected
+
+    def _resolve_legacy_thread(self, node: ast.expr) -> KernelSelector:
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            raise _split_error(
+                node,
+                "legacy call_extern_func thread must be a string literal",
+            )
+        selected = _LEGACY_THREAD_KERNELS.get(node.value)
+        if selected is None:
+            supported = ", ".join(repr(name) for name in _LEGACY_THREAD_KERNELS)
+            raise _split_error(
+                node,
+                f"unsupported legacy call_extern_func thread {node.value!r}; "
+                f"expected one of {supported}",
             )
         return selected
 
@@ -276,8 +323,9 @@ class _KernelSelectorResolver:
         value = self._resolve_reference(node)
         if isinstance(value, KernelKind):
             return value
-        if isinstance(value, Kernel) and any(
-            value is kernel for kernel in self.logical_kernels.values()
+        if isinstance(value, Kernel) and (
+            value is PIPE_SOURCE_KERNEL
+            or any(value is kernel for kernel in self.logical_kernels.values())
         ):
             return value
         if isinstance(node, ast.Attribute):
@@ -1249,7 +1297,7 @@ class _ScalarLivenessPlanner:
 # ----- split-plan application ---------------------------------------------
 
 
-class _KernelKeywordStripper(ast.NodeTransformer):
+class _PlacementKeywordStripper(ast.NodeTransformer):
     def __init__(self, block_names: Set[str]):
         self.block_names = block_names
 
@@ -1261,9 +1309,14 @@ class _KernelKeywordStripper(ast.NodeTransformer):
             and node.func.value.id in self.block_names
             and node.func.attr in _DFB_RELEASE_METHODS
         )
+        placement_keywords = {_KERNEL_KEYWORD}
+        if _is_external_call(node):
+            placement_keywords.add(_THREAD_KEYWORD)
         if _is_external_call(node) or is_release:
             node.keywords = [
-                keyword for keyword in node.keywords if keyword.arg != _KERNEL_KEYWORD
+                keyword
+                for keyword in node.keywords
+                if keyword.arg not in placement_keywords
             ]
         return node
 
@@ -1317,7 +1370,7 @@ def _apply_split_plan(
         statement.statement_id: statement.kernels for statement in plan.statements
     }
     cloned = _prune_statement_list(body, kernel, selections, memo, insert_pass=True)
-    stripper = _KernelKeywordStripper(
+    stripper = _PlacementKeywordStripper(
         {transaction.block_name for transaction in plan.transactions}
     )
     return [
