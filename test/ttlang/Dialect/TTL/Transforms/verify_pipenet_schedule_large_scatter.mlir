@@ -5,7 +5,9 @@
 
 // Thirty-two sends and thirty-two post/wait pairs at each of sixty-four
 // receivers produce 4128 graph nodes in total but at most 64 at one launch
-// node. Helper expansion preserves each static occurrence.
+// node. The 72-node launch grid also exceeds the retained execution-count
+// location set. Helper expansion preserves each static occurrence after
+// earlier location analyses are released.
 
 module attributes {ttl.launch_grid = [9 : i64, 8 : i64]} {
   // The receive leaf posts one reservation, waits for its payload, and makes
