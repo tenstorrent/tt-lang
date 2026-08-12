@@ -2630,16 +2630,15 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
       typeConverter, &ctx, pipeTransportPlan);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
-           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
-           ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           OpaqueCallLowering, GetDfbIdLowering, IsDeviceLowering,
-           CurrentDeviceIndexLowering, IsDeviceInRangeLowering,
-           SelectedPipeSourceDeviceIndexLowering,
-           SelectedPipeDestinationDeviceIndexLowering,
-           SelectedPipeSourceCoordinatesLowering,
-           SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
+               StoreLowering, CoreXLowering, CoreYLowering,
+               RawElementReadLowering, ReadIndexLowering,
+               RawElementWriteLowering, RawAddrLowering, OpaqueCallLowering,
+               GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+               IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
+               SelectedPipeDestinationDeviceIndexLowering,
+               SelectedPipeSourceCoordinatesLowering,
+               SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);

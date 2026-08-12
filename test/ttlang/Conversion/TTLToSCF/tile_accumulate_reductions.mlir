@@ -21,8 +21,7 @@
 // LOOPS: %{{.*}}, %[[INIT_COPY:.*]] = ttl.copy_tile %[[INIT_TILE]]{{.*}} into dst[%[[ACC:.*]]]
 // LOOPS: scf.for %[[K:.*]] =
 // LOOPS: %[[CONTRIB_TILE:.*]] = tensor.extract %{{.*}}[%[[K]], %{{.*}}, %{{.*}}]
-// LOOPS: %{{.*}}, %[[CONTRIB_COPY:.*]] = ttl.copy_tile %[[CONTRIB_TILE]]
-// LOOPS: ttl.tile_accumulate %[[INIT_COPY]], %[[CONTRIB_COPY]] add into dst[%[[ACC]]]
+// LOOPS-NEXT: ttl.tile_accumulate %[[INIT_COPY]], %[[CONTRIB_TILE]] add into dst[%[[ACC]]]
 // LOOPS: ttl.tile_store %{{.*}} from dst[%[[ACC]]]
 
 // TTK-LABEL: func.func @tile_accumulate_reduction
