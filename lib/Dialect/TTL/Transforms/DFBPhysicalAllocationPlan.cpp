@@ -95,6 +95,16 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
+    bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
+    bool rhsInactive = rhs.launchDomain.known && rhs.launchDomain.nodes.empty();
+    if (lhsInactive || rhsInactive) {
+      if (lhs.tensorBacking || rhs.tensorBacking) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::StorageMismatch, std::nullopt,
+                    lhs.declarations.front(), rhs.declarations.front());
+      }
+      return;
+    }
     if (!lhs.launchDomain.known || !rhs.launchDomain.known) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::UnknownLaunchNodeDomain, std::nullopt,
