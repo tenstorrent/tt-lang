@@ -12,6 +12,7 @@ import hashlib
 import inspect
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from ttl.condition import DispatchCondition
 from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
 
@@ -125,10 +126,11 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
-) -> Tuple[Dict[str, object], Dict[str, Kernel]]:
+) -> Tuple[Dict[str, object], Dict[str, Kernel], Dict[str, DispatchCondition]]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
     logical_kernels = {}
+    dispatch_conditions = {}
     inline_discriminators = {}
     fn_def.body = _inline_statements(
         fn_def.body,
@@ -137,9 +139,10 @@ def inline_atom_calls(
         reserved_names,
         external_pipenets,
         logical_kernels,
+        dispatch_conditions,
         inline_discriminators,
     )
-    return external_pipenets, logical_kernels
+    return external_pipenets, logical_kernels, dispatch_conditions
 
 
 def _inline_statements(
@@ -149,6 +152,7 @@ def _inline_statements(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    dispatch_conditions: Dict[str, DispatchCondition],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
@@ -160,6 +164,7 @@ def _inline_statements(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            dispatch_conditions,
             inline_discriminators,
         )
         match = _standalone_operation_call(statement, scope)
@@ -177,6 +182,7 @@ def _inline_statements(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                dispatch_conditions,
                 inline_discriminators,
             )
         )
@@ -190,6 +196,7 @@ def _inline_compound_bodies(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    dispatch_conditions: Dict[str, DispatchCondition],
     inline_discriminators: Dict[str, int],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
@@ -205,6 +212,7 @@ def _inline_compound_bodies(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            dispatch_conditions,
             inline_discriminators,
         )
         setattr(statement, attribute, inlined)
@@ -221,6 +229,7 @@ def _inline_compound_bodies(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                dispatch_conditions,
                 inline_discriminators,
             )
 
@@ -296,6 +305,7 @@ def _expand_call(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    dispatch_conditions: Dict[str, DispatchCondition],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
@@ -322,6 +332,13 @@ def _expand_call(
         scope,
         reserved_names,
         logical_kernels,
+    )
+    _add_dispatch_condition_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        dispatch_conditions,
     )
 
     local_names = _collect_local_names(spec.fn_ast)
@@ -421,6 +438,32 @@ def _add_logical_kernel_bindings(
             existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
             scope[existing_name] = kernel
             logical_kernels[existing_name] = kernel
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+
+
+def _add_dispatch_condition_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    dispatch_conditions: Dict[str, DispatchCondition],
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, condition in spec.dispatch_conditions.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in dispatch_conditions.items()
+                if candidate is condition
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = condition
+            dispatch_conditions[existing_name] = condition
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 

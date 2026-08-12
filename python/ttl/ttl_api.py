@@ -89,6 +89,12 @@ from .dataflow_buffer import (
 )
 from .pipe import Pipe, PipeNet
 from .scalar import ScalarType
+from .condition import (
+    _BoundDispatchCondition,
+    DispatchCondition,
+    _bind_current_dispatch_condition,
+    _dispatch_condition_binding_scope,
+)
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -1502,6 +1508,7 @@ def _build_pipenet_graph(nets):
 
 def _collect_captures(
     f: Callable,
+    bound_dispatch_conditions: Optional[Mapping[str, _BoundDispatchCondition]] = None,
 ) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
@@ -1535,6 +1542,15 @@ def _collect_captures(
             return val
         elif val is ScalarType or isinstance(val, ScalarType):
             return val
+        elif isinstance(val, DispatchCondition):
+            bound_condition = (
+                bound_dispatch_conditions.get(name)
+                if bound_dispatch_conditions is not None
+                else None
+            )
+            if bound_condition is not None and bound_condition.declaration is val:
+                return bound_condition
+            return _bind_current_dispatch_condition(val)
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 
@@ -1878,6 +1894,12 @@ def _compile(
         except (TypeError, OSError):
             source_file = "<unknown>"
 
+        bound_dispatch_conditions = {
+            name: _bind_current_dispatch_condition(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DispatchCondition)
+        }
+
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             source_code = _cleanup_source_code(f)
@@ -1897,7 +1919,7 @@ def _compile(
             return _run_thread_compiler(
                 f.__name__,
                 kernel_type,
-                _collect_captures(f),
+                _collect_captures(f, bound_dispatch_conditions),
                 f.__globals__,
                 args,
                 kwargs,
@@ -2093,7 +2115,8 @@ def _compile_kernel(
             call_kwargs[param.name] = value
         else:
             call_args.append(value)
-    f(*call_args, **call_kwargs)
+    with _dispatch_condition_binding_scope():
+        f(*call_args, **call_kwargs)
     threads = _get_registered_threads()
 
     if not threads:

@@ -31,6 +31,27 @@ def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_DispatchConditionAttr
+    : TTL_Attr<"DispatchCondition", "dispatch_condition"> {
+  let summary = "Module-local dispatch-stable condition identity";
+  let description = [{
+    Identifies one immutable condition declaration within a module. Equal
+    attributes reference the same condition and evaluate to the same truth
+    value for one dispatch and launch coordinate. Distinct conditions within a
+    module require distinct ordinals. Zero is false and nonzero is true. The
+    value may differ between launch coordinates or dispatches.
+
+    The ordinal is module-local and has no runtime meaning. The scalar type
+    is the external result carrier and must be signless i32 or i64.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    "Type":$scalarType
+  );
+  let assemblyFormat = "`<` $ordinal `,` $scalarType `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   let summary = "Slice specification for core range";
   let parameters = (ins
