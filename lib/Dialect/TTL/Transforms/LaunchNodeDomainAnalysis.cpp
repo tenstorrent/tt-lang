@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
@@ -41,6 +42,10 @@
 namespace mlir::tt::ttl {
 
 namespace {
+
+/// Each entry owns full-function dataflow state. Bound retained entries so
+/// large logical-device domains cannot keep one full copy per location.
+constexpr std::size_t kMaxCachedExecutionCountLocationsPerFunction = 64;
 
 /// Result of evaluating a predicate over the launch grid.
 struct LaunchNodeDomainResult {
@@ -652,6 +657,10 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
           .executionCountAnalysesByFunctionAndLocation[function.getOperation()];
   auto analysisIt = analysesByLocation.find(location);
   if (analysisIt == analysesByLocation.end()) {
+    if (analysesByLocation.size() >=
+        kMaxCachedExecutionCountLocationsPerFunction) {
+      analysesByLocation.clear();
+    }
     auto analysis = std::make_unique<ExecutionCountAnalysis>(
         function.getBody(),
         [location, &state](Value value) {
