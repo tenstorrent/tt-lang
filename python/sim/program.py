@@ -17,7 +17,7 @@ from greenlet import getcurrent
 
 from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
-from .blockstate import KernelType
+from .kernel import KernelKind
 from .context import get_context
 from .greenlet_scheduler import (
     GreenletScheduler,
@@ -289,15 +289,15 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                     # a node must have distinct __name__s -- the scheduler
                     # rejects duplicates with a user-facing error.
                     for tmpl in (compute_func_tmpl, dm0_tmpl, dm1_tmpl):
-                        # Get KernelType directly from template's kernel_type attribute
                         kernel_type = getattr(tmpl, "kernel_type", None)
                         match kernel_type:
-                            case KernelType.COMPUTE | KernelType.DM:
+                            case KernelKind.COMPUTE | KernelKind.DATA_MOVEMENT:
                                 pass
                             case _:
                                 raise RuntimeError(
                                     f"Template {tmpl} has invalid kernel_type '{kernel_type}'. "
-                                    f"Expected KernelType enum (COMPUTE or DM)."
+                                    "Expected KernelKind enum "
+                                    "(COMPUTE or DATA_MOVEMENT)."
                                 )
 
                         # Bind template to node context

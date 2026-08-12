@@ -10,8 +10,12 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 
-class KernelKind(Enum):
-    """A target-independent kernel class."""
+class KernelKind(str, Enum):
+    """A target-independent kernel class used by simulator execution state.
+
+    String-backed members match the compiler API and retain C-level hashing for
+    simulator state dictionaries.
+    """
 
     @staticmethod
     def _generate_next_value_(name, start, count, last_values):
