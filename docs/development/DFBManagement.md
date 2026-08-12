@@ -1253,6 +1253,15 @@ Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
 unknown execution remains unproven.
 
+An access with an unknown launch-node domain is refined to an exact domain when
+execution-count analysis proves a count on every base launch node. Nodes with
+positive counts belong to the domain; nodes with zero counts do not. The proof
+applies per access before their domains are combined. One unresolved count
+preserves the unknown result. A logical DFB whose access-domain union is empty
+has no runtime storage access and may share a type-compatible scratch descriptor
+without a lifetime-order proof. Tensor-backed empty domains retain the issue
+#813 allocation diagnostic.
+
 The pass runs after `ttl-insert-copy-wait`. A transfer into or out of a DFB
 completes at its `ttl.wait`, whose transfer-handle operand does not identify the
 DFB. Inserting that wait before the corresponding push or pop ensures the
@@ -1439,6 +1448,8 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
   logicalDFBs = group bind_cb declarations by logical dfb_id
   collect every lifecycle operation and direct runtime use
   compute the launch-node domain of every access
+  if every per-node execution count is exact for an otherwise unknown access:
+    use the nodes with positive counts as its exact access domain
 
   for each launched physical node:
     graph = empty happens-before graph
