@@ -81,9 +81,15 @@ def _load_frontend_module(filename: str) -> types.ModuleType:
             assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             # Register before exec so @dataclass in the module can resolve its
-            # own __module__ via sys.modules during class processing.
+            # own __module__ via sys.modules during class processing.  A failed
+            # exec must take the registration back: the entry would otherwise
+            # name a half-initialized module that the next lookup accepts.
             sys.modules[spec.name] = module
-            spec.loader.exec_module(module)
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(spec.name, None)
+                raise
             return module
 
     raise RuntimeError(

@@ -108,6 +108,34 @@ def test_a_missing_frontend_module_names_the_places_it_looked() -> None:
     ), f"error does not name the bundled location:\n{reason}"
 
 
+def test_a_frontend_module_that_fails_to_execute_leaves_no_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module is registered before it is executed, so a failure must undo that.
+
+    The registration exists so a dataclass in the module can resolve its own
+    ``__module__`` while the class body runs. If execution then raises, an entry
+    naming a half-initialized module would be left behind, and the next lookup
+    would take it as a loaded module and read attributes that were never bound.
+    """
+    module_name = "ttl_sim_atom_raises_on_exec"
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    monkeypatch.setattr(
+        sim_unified_operation, "__file__", str(tmp_path / "unified_operation.py")
+    )
+    (tmp_path / "atom_raises_on_exec.py").write_text(
+        'raise RuntimeError("frontend module is broken")\n'
+    )
+
+    with pytest.raises(RuntimeError, match="frontend module is broken"):
+        _load_frontend_module("atom_raises_on_exec.py")
+
+    assert module_name not in sys.modules, (
+        "a module that failed to execute is still registered, so the next "
+        "lookup would accept it as loaded"
+    )
+
+
 def _lambda_body() -> Callable[[Any, Any], Any]:
     """A body Python can call but the simulator cannot read back as a ``def``."""
     body: Callable[[Any, Any], Any] = lambda a, out: ttl.copy(a, out).wait()
