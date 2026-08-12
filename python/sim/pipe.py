@@ -406,8 +406,8 @@ def _iter_pipe_nets_in_func(func: Any) -> Iterable["AnyPipeNet"]:
     # the names the code reads instead of being scanned whole: a net belonging to
     # another operation in the same file is not this operation's, and taking it
     # would shrink this operation's active node set -- skipping kernels on nodes
-    # that have work to do, silently. The compiler reads the same intersection
-    # (atom.py, loaded names against captured values).
+    # that have work to do, with no error reported. The compiler reads the same
+    # intersection (atom.py, loaded names against captured values).
     closure = getattr(func, "__closure__", None) or ()
     for cell in closure:
         try:

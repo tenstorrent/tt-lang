@@ -157,7 +157,8 @@ def _classify_ttl_call(func: ast.expr, dm_thread: str) -> Optional[str]:
 
     Handles ``ttl.<op>(...)``, ``ttl.<ns>.<name>(...)`` and
     ``<recv>.if_src/if_dst(...)``, raising on an unknown ``ttl.<...>`` form so a
-    new op must be registered rather than silently mis-split. This is the
+    new op must be registered rather than mis-split into a program that runs and
+    computes the wrong result. This is the
     single source of the call->thread decision; both anchor tagging and
     block-use collection route through it.
     """

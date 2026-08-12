@@ -164,9 +164,9 @@ def _is_kernel_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
     (``atom_rules.defines_kernels_by_spelling``) -- and the two can disagree about
     a body that reuses a kernel decorator's name for something else.
 
-    Misclassifying a multi-kernel body as unified splits it and silently produces
-    a wrong answer, so a decorator that resolves to nothing falls back to the
-    spelling rule, which errs toward "multi-kernel".
+    Misclassifying a multi-kernel body as unified splits it and returns a wrong
+    result with no error reported, so a decorator that resolves to nothing falls
+    back to the spelling rule, which errs toward "multi-kernel".
     """
     rules = _rules()
     node = dec.func if isinstance(dec, ast.Call) else dec
@@ -194,7 +194,7 @@ def _is_operation_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
 
 
 def _clear_decorators(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> None:
-    """Strip ``fn_def``'s decorators, refusing any that would go silently missing.
+    """Strip ``fn_def``'s decorators, refusing any that would be dropped unreported.
 
     The synthesized function carries none of them, for a different reason on each
     side of ``@ttl.operation``. Re-applying ``@ttl.operation`` would send the
@@ -306,7 +306,8 @@ def _aliased_api_calls(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> List
     either resolves to a thread-pinning op or is an attribute of the API module
     itself -- the second case catching an attribute that resolves to nothing
     recognizable, which spelled ``ttl.<name>`` would have been the splitter's own
-    "unknown op" error and aliased is silently unanchored instead.
+    "unknown op" error and aliased is left unanchored with no error reported --
+    assigning the call to a thread the program did not ask for.
 
     A call that resolves to a control op is not offending, in either spelling.
     That is the same exemption the splitter grants (control ops are replicated,
@@ -480,7 +481,8 @@ def _reject_unsupported_setup(fn_def: ast.FunctionDef) -> None:
     appears. Both frontends are narrower because they lift the construction
     textually and evaluate it ahead of the split, so it can only read names bound
     outside the body. Accepting the general form is a feature both would have to
-    grow, and until then rejecting is better than mis-splitting silently.
+    grow, and until then rejecting is better than mis-splitting into a program
+    that runs and computes the wrong result.
 
     Raises:
         ValueError: If a construction is not a hoistable top-level assignment, or
