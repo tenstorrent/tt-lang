@@ -1258,19 +1258,16 @@ returning. An external call before the terminal `cb_pop` can therefore remain
 within a bounded lifetime; the same call after the pop makes the DFB unbounded.
 
 Some external functions implement their reserve, push, wait, and pop operations
-inside C++. Direct operands make their DFB access sets explicit, but the hidden
-protocol cannot supply the exact visible lifecycle required by the reuse proof.
-Those DFBs remain unbounded and conflict with every other allocation candidate.
-The external call does not disable reuse among other DFBs whose visible
-lifecycles remain bounded.
+inside C++. `dfb_dependencies` declares storage accesses that are not direct
+function arguments. `dfb_effects` records the exact ordered protocol actions
+that complete before the call returns. Its static list expression supports
+concatenation and repetition without changing the resulting flat IR effect
+sequence. Dependencies without a complete protocol summary remain unbounded.
 
-The current DSL cannot declare a dependency-only DFB, summarize hidden
-protocol effects, or represent an unknown DFB access set. An external callee
-with an unknown set is outside the valid-program assumption. A future explicit
-unknown form must disable user DFB reuse for the complete module because an
-unresolved raw index may name any physical allocation. Issue
-[#806](https://github.com/tenstorrent/tt-lang/issues/806) tracks the required
-DFB dependency and protocol-effect representation.
+`unknown_dfb_access=True` declares that the callee may access user-managed
+DFBs outside its dependency list. The allocator then disables user DFB reuse in
+every allocation scope where the call may execute because an unresolved index
+may name any physical allocation.
 
 `num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
 tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
