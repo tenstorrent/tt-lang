@@ -872,6 +872,10 @@ def TTLVerifyPipeNetGuards
     module-wide logical `dfb_id`; compiler-created DFBs receive analysis-only
     logical IDs until physical index finalization. DFB lifecycle operands used
     by the guard analysis must resolve to `ttl.bind_cb` declarations.
+
+    `TTL_RELAX_DFB_SPSC` disables only the DFB wait-versus-producer domain
+    cross-check for externally synchronized programs. PipeNet endpoint guards,
+    transfer correspondence, and synchronization schedules remain mandatory.
   }];
 }
 
