@@ -87,6 +87,7 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
+from .scalar import ScalarType
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -1640,6 +1641,8 @@ def _collect_captures(
     def convert(name, val):
         from .domains import DeviceDomain
 
+        if val is None:
+            return val
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_global_semaphore(val):
@@ -1653,6 +1656,8 @@ def _collect_captures(
         elif isinstance(val, PipeNet):
             return val
         elif isinstance(val, DeviceDomain):
+            return val
+        elif val is ScalarType or isinstance(val, ScalarType):
             return val
         elif any(_iter_pipe_nets_in_value(val, set())):
             return val

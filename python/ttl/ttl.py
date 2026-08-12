@@ -30,12 +30,14 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
     make_dfb,
     make_tensor_backed_dfb,
 )
 from .operators import (
+    DFBEffect,
     call_extern_func,
     copy,
     dfb_descriptor,
@@ -58,6 +60,7 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "ScalarType",
     "compute",
     "datamovement",
     "Program",
@@ -69,6 +72,7 @@ __all__ = [
     "grid_size",
     "matmul",
     "call_extern_func",
+    "DFBEffect",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",

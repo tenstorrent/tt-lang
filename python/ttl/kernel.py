@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
 
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
+from .scalar import ScalarType
 
 
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
@@ -213,6 +214,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
     if isinstance(value, str):
         encoded = value.encode("utf-8")
         return f"str:{len(encoded)}:".encode("ascii") + encoded
+    if isinstance(value, ScalarType):
+        return f"scalar:{value.name}".encode("ascii")
     if isinstance(value, (tuple, list)):
         elements = []
         for element in value:

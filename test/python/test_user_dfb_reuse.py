@@ -4,6 +4,8 @@
 
 """Runtime coverage for physical reuse of user-declared DFBs."""
 
+import os
+
 import pytest
 import torch
 
@@ -24,6 +26,16 @@ OVER_CAPACITY_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 1
 # bounds; f32 data movement and addition tests retain 1e-5 relative tolerance.
 F32_REPEATED_EXP_RTOL = 2e-3
 F32_REPEATED_EXP_ATOL = 5e-4
+SCALAR_RESULT_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "scalar_result_op.hpp"
+)
+REPEATED_TRANSACTION_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "repeated_dfb_transactions.hpp"
+)
+
+
+def _count_final_dfb_allocations(final_mlir_path):
+    return final_mlir_path.read_text().count("dfb_index =")
 
 
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
@@ -127,12 +139,225 @@ def _make_over_capacity_atom_kernel(data_format):
     return over_capacity_atom_kernel
 
 
+def _make_exact_execution_domain_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(2, 1))
+    def exact_execution_domain_kernel(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, _ = ttl.node(dims=2)
+            first_runtime_predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result_from_coordinate",
+                template_args=[32],
+                func_args=[node_x],
+                result_type=ttl.ScalarType.I32,
+            )
+            second_runtime_predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result_from_coordinate",
+                template_args=[32],
+                func_args=[node_x],
+                result_type=ttl.ScalarType.I32,
+            )
+            first_node = node_x == 0
+            second_node = node_x == 1
+            first_active = (first_runtime_predicate and first_node) or first_node
+            second_active = (second_runtime_predicate and second_node) or second_node
+
+            with input_dfb.wait() as input_block:
+                if first_active:
+                    with first_scratch_dfb.reserve() as first_scratch_block:
+                        first_scratch_block.store(input_block)
+                    with first_scratch_dfb.wait() as first_scratch_block:
+                        with output_dfb.reserve() as output_block:
+                            output_block.store(first_scratch_block)
+                if second_active:
+                    with second_scratch_dfb.reserve() as second_scratch_block:
+                        second_scratch_block.store(input_block)
+                    with second_scratch_dfb.wait() as second_scratch_block:
+                        with output_dfb.reserve() as output_block:
+                            output_block.store(second_scratch_block)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _ = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, node_x], input_block).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _ = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, node_x]).wait()
+
+    return exact_execution_domain_kernel
+
+
+def _make_repeated_transaction_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def repeated_transaction_kernel(input_tensor, output_tensor):
+        first_source = ttl.make_dfb(data_format, shape=(1, 4), block_count=2)
+        completion = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_source = ttl.make_dfb(data_format, shape=(1, 4), block_count=2)
+        output = ttl.make_dfb(data_format, shape=(1, 4), block_count=2)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            for transaction in range(4):
+                with first_source.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            0:1,
+                            transaction * 4 : transaction * 4 + 4,
+                        ],
+                        destination,
+                    ).wait()
+
+            with completion.wait():
+                pass
+
+            for transaction in range(4):
+                with second_source.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            0:1,
+                            transaction * 4 : transaction * 4 + 4,
+                        ],
+                        destination,
+                    ).wait()
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "consume_repeated_dfb_and_signal",
+                template_args=[
+                    ttl.dfb_descriptor(first_source),
+                    ttl.dfb_descriptor(completion),
+                ],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.reserve(completion, tiles=1),
+                    ttl.DFBEffect.push(completion, tiles=1),
+                ],
+            )
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "copy_repeated_dfb",
+                template_args=[
+                    ttl.dfb_descriptor(second_source),
+                    ttl.dfb_descriptor(output),
+                ],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                ],
+            )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            for transaction in range(4):
+                with output.wait() as source:
+                    ttl.copy(
+                        source,
+                        output_tensor[
+                            0:1,
+                            transaction * 4 : transaction * 4 + 4,
+                        ],
+                    ).wait()
+
+    return repeated_transaction_kernel
+
+
+def _make_conditional_lifecycle_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def conditional_lifecycle_kernel(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            runtime_predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[32],
+                result_type=ttl.ScalarType.I32,
+            )
+            with input_dfb.wait() as input_block:
+                if runtime_predicate:
+                    with first_scratch_dfb.reserve() as first_scratch_block:
+                        first_scratch_block.store(input_block)
+                    with first_scratch_dfb.wait():
+                        pass
+
+                if runtime_predicate:
+                    with second_scratch_dfb.reserve() as second_scratch_block:
+                        second_scratch_block.store(input_block)
+                    with second_scratch_dfb.wait() as second_scratch_block:
+                        with output_dfb.reserve() as output_block:
+                            output_block.store(second_scratch_block)
+
+        @ttl.datamovement()
+        def read():
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, 0], input_block).wait()
+
+        @ttl.datamovement()
+        def write():
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return conditional_lifecycle_kernel
+
+
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _over_capacity_bf16_atom_kernel = _make_over_capacity_atom_kernel("bf16")
 _over_capacity_f32_atom_kernel = _make_over_capacity_atom_kernel("float32")
+_exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
+_exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
+_repeated_bf16_transaction_kernel = _make_repeated_transaction_kernel("bf16")
+_repeated_f32_transaction_kernel = _make_repeated_transaction_kernel("float32")
+_conditional_bf16_lifecycle_kernel = _make_conditional_lifecycle_kernel("bf16")
+_conditional_f32_lifecycle_kernel = _make_conditional_lifecycle_kernel("float32")
 
 assert OVER_CAPACITY_LOGICAL_DFBS > 32
 
@@ -310,6 +535,122 @@ def test_ordered_dfbs_with_distinct_noc_owners(
 
     actual = ttnn.to_torch(out).float()
     expected = second_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_exact_bf16_execution_domain_kernel, torch.bfloat16),
+        (_exact_f32_execution_domain_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_exact_disjoint_execution_domains_reuse_dfb(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+        TILE, 2 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "exact_execution_domain.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # Input and output hardware owners keep them distinct from the compute
+    # scratch DFBs. The scratch DFBs share because their exact node domains are
+    # disjoint, without requiring a local lifetime-order proof.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_repeated_bf16_transaction_kernel, torch.bfloat16),
+        (_repeated_f32_transaction_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_repeated_transaction_lifecycles_reuse_dfb(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * 16 * TILE, dtype=torch.float32).reshape(
+        TILE, 16 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "repeated_transactions.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # The two source DFBs have identical pointer owners and non-overlapping
+    # lifetimes. Completion and output retain distinct DFB types or owners.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_conditional_bf16_lifecycle_kernel, torch.bfloat16),
+        (_conditional_f32_lifecycle_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_same_runtime_condition_reuses_sequential_dfbs(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "conditional_lifecycle.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # Input and output ownership prevent them from sharing with compute DFBs.
+    # Three allocations prove that the two guarded lifecycles share one index.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:

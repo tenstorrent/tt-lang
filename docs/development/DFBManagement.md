@@ -1220,6 +1220,15 @@ Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
 unknown execution remains unproven.
 
+An access with an unknown launch-node domain is refined to an exact domain when
+execution-count analysis proves a count on every base launch node. Nodes with
+positive counts belong to the domain; nodes with zero counts do not. The proof
+applies per access before their domains are combined. One unresolved count
+preserves the unknown result. A logical DFB whose access-domain union is empty
+has no runtime storage access and may share a type-compatible scratch descriptor
+without a lifetime-order proof. Tensor-backed empty domains retain the issue
+#813 allocation diagnostic.
+
 The pass runs after `ttl-insert-copy-wait`. A transfer into or out of a DFB
 completes at its `ttl.wait`, whose transfer-handle operand does not identify the
 DFB. Inserting that wait before the corresponding push or pop ensures the
@@ -1395,6 +1404,8 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
   logicalDFBs = group bind_cb declarations by logical dfb_id
   collect every lifecycle operation and direct runtime use
   compute the launch-node domain of every access
+  if every per-node execution count is exact for an otherwise unknown access:
+    use the nodes with positive counts as its exact access domain
 
   for each launched physical node:
     graph = empty happens-before graph
@@ -1405,8 +1416,9 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         add previous completion -> entry
 
     for each logical DFB active on the node:
-      if exactly one reserve, push, wait, and pop form a matched lifecycle:
-        DFB.nodeLifetime.transactionTileCount = transactionTileCount
+      if statically counted reserve, push, wait, and pop runs match, or one
+         reserve, push, wait, and pop share one at-most-once condition:
+        DFB.nodeLifetime.transactionRuns = normalized counted transactions
         DFB.nodeLifetime.pointerOwners = read and write hardware processors
         add DFB.push.completion -> DFB.wait.completion
 
@@ -1419,8 +1431,14 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         DFB.nodeLifetime.terminalEvents = {DFB.pop.completion}
         DFB.nodeLifetime.quiescence = proven
 
+    build a second graph with every unknown access domain treated as possible
+    prove conditionally bounded lifetimes only for one complete conditional
+      transaction on every possible node
+    retain possible-domain order separately from exact-domain order
+
   return logical DFB lifecycles, per-node quiescence, pointer owners,
-         source evidence, and pairwise per-node lifetime order
+         conditional boundedness, source evidence, and pairwise per-node
+         exact and possible-domain lifetime order
 ```
 
 `DFBPhysicalAllocationPlanner` consumes those immutable facts and constructs a
@@ -1429,6 +1447,39 @@ logical DFB pair, optional launched node, source operations, and one of the
 following reasons: descriptor mismatch, unknown launch-node domain, unproven
 quiescence, transaction mismatch, pointer-owner mismatch, or concurrent
 lifetime.
+
+#### Allocation diagnostics
+
+An assertions-enabled build can print the allocation inputs and conflict
+evidence without changing allocation behavior:
+
+```bash
+ttlang-opt input.mlir \
+  --ttl-finalize-dfb-indices='reuse-user-dfbs=true' \
+  -debug-only=ttl-finalize-dfb-indices \
+  -o /dev/null
+```
+
+The report is emitted after liveness and conflict construction and before
+capacity or L1-budget validation. Each logical DFB records its descriptor,
+tensor backing, launch-node domain, boundedness, accesses, protocol effects,
+exact execution counts, transaction sizes, pointer owners, and lifetime
+frontiers. Frontier entries are access-occurrence indices that refer to the
+numbered access records and their source locations. Each conflict records both
+logical IDs, the typed reason, an applicable launch node, and source
+operations.
+
+The report evaluates each base launch node with every unknown-domain access
+treated as possible. Exact-zero execution excludes an access. These rows use
+`domain_assumption=unknown-possible`. A row records
+`conditional_execution=1` only when every unresolved active access shares one
+structured at-most-once condition and forms one complete transaction. A
+logical DFB becomes `conditionally_bounded=1` only when the proof succeeds on
+every possible node. Two conditionally bounded unknown-domain DFBs may share
+when their descriptors, transaction runs, pointer owners, and possible-domain
+lifetimes are compatible. Unknown/exact-domain pairs and all other unknown
+pairs retain an `unknown-launch-node-domain` conflict. Nodes with identical
+facts are grouped for deterministic bounded output.
 
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
@@ -1456,7 +1507,8 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
 
   for each logical DFB pair A, B:
     add descriptor mismatch if A.type != B.type
-    add unknown-domain conflict if either launch-node domain is unknown
+    add unknown-domain conflict unless both unknown domains are conditionally
+      bounded
     for each node where A and B both execute:
       add unproven-quiescence conflict unless both node lifetimes are proven
       add transaction conflict unless their transaction sizes match
