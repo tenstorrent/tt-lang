@@ -103,6 +103,7 @@ from .kernel_runner import (
     FabricRouteSpec,
     KernelSpec,
     MeshProgramPlacement,
+    PipeGlobalSemaphoreCache,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
@@ -851,11 +852,11 @@ class CompiledTTNNKernel:
         self.kernel_logical_selectors = kernel_logical_selectors or [
             None for _ in kernel_paths
         ]
-        self._pipe_global_semaphore_lifetime = []
+        self._pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
 
-    def __call__(self, *args):
+    def __call__(self, *args, _pipe_global_semaphore_cache=None):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
@@ -900,7 +901,11 @@ class CompiledTTNNKernel:
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            pipe_global_semaphore_cache=(
+                _pipe_global_semaphore_cache
+                if _pipe_global_semaphore_cache is not None
+                else self._pipe_global_semaphore_cache
+            ),
             mesh_program_placements=self.mesh_program_placements,
             device_domain=self.device_domain,
             kernel_fabric_routes=self.kernel_fabric_routes,
@@ -2654,6 +2659,7 @@ def _make_operation_wrapper(
     """Build the shared top-level operation cache and execution wrapper."""
     kernel_id = random.getrandbits(64)
     cache: Dict[tuple, CompiledTTNNKernel] = {}
+    pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
 
     @functools.wraps(function)
     def _wrapper(*args, **kwargs):
@@ -2675,16 +2681,19 @@ def _make_operation_wrapper(
         target_arch = _device_target_arch(runtime_args)
         l1_budget_override = _resolve_l1_budget(runtime_args, compiler_options)
 
-        cache_key = _make_cache_key(
-            runtime_args,
-            resolved_grid=resolved_grid,
-            fp32_dest_acc_en=fp32_dest_acc_en,
-            dst_full_sync_en=dst_full_sync_en,
-            math_fidelity=math_fidelity,
-            target_arch=target_arch,
-            compiler_options=compiler_options,
-            l1_budget_override=l1_budget_override,
-        )
+        def make_cache_key(effective_l1_budget):
+            return _make_cache_key(
+                runtime_args,
+                resolved_grid=resolved_grid,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
+                target_arch=target_arch,
+                compiler_options=compiler_options,
+                l1_budget_override=effective_l1_budget,
+            )
+
+        cache_key = make_cache_key(l1_budget_override)
 
         compiled_kernel = cache.get(cache_key)
         if compiled_kernel is None:
@@ -2703,7 +2712,13 @@ def _make_operation_wrapper(
         if compiled_kernel is None or not _should_execute():
             return None
 
-        result = compiled_kernel(*runtime_args)
+        result = compiled_kernel(
+            *runtime_args,
+            _pipe_global_semaphore_cache=pipe_global_semaphore_cache,
+        )
+        if compiled_kernel.num_pipe_global_semaphores > 0:
+            post_allocation_budget = _resolve_l1_budget(runtime_args, compiler_options)
+            cache.setdefault(make_cache_key(post_allocation_budget), compiled_kernel)
 
         if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
             _run_profiling_pipeline(

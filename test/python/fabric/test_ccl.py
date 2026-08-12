@@ -830,14 +830,18 @@ def test_point_to_point(
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
     with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        mesh.enable_program_cache()
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        fabric_operations.point_to_point(inp, out)
-        fabric_operations.point_to_point(inp, out)
+        program_cache_entry_counts = []
+        for _ in range(20):
+            fabric_operations.point_to_point(inp, out)
+            program_cache_entry_counts.append(mesh.num_program_cache_entries())
 
         result = _compose(mesh, out)
 
+    assert len(set(program_cache_entry_counts)) == 1
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)

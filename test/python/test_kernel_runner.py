@@ -66,10 +66,32 @@ class _FakeBoundingBox:
         return _FakeGridSize()
 
 
+class _FakeCoreCoord(NamedTuple):
+    x: int
+    y: int
+
+
+class _FakeCoreRange(NamedTuple):
+    start: _FakeCoreCoord
+    end: _FakeCoreCoord
+
+
 class _FakeCoreRanges:
+    def __init__(self, ranges=((0, 0, 0, 0),)):
+        self._ranges = tuple(
+            _FakeCoreRange(
+                _FakeCoreCoord(start_x, start_y),
+                _FakeCoreCoord(end_x, end_y),
+            )
+            for start_x, start_y, end_x, end_y in ranges
+        )
+
     @staticmethod
     def bounding_box():
         return _FakeBoundingBox()
+
+    def ranges(self):
+        return self._ranges
 
 
 class _CopyingRuntimeArgumentRow(defaultdict):
@@ -83,6 +105,7 @@ class _CopyingRuntimeArgumentRow(defaultdict):
 class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
+        self.reset_calls = []
         self.generic_op_calls = []
         self.next_address = 0x1000
         self.fabric_setup_calls = []
@@ -267,6 +290,9 @@ class _FakeTTNN:
     @staticmethod
     def get_global_semaphore_address(semaphore):
         return semaphore["address"]
+
+    def reset_global_semaphore_value(self, semaphore, value):
+        self.reset_calls.append((semaphore, value))
 
     def setup_routing_plane_connection(
         self,
@@ -1248,27 +1274,57 @@ def test_build_generic_op_io_tensors_requires_user_output():
         kernel_runner.build_generic_op_io_tensors([], [object()])
 
 
-def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
+def test_run_kernel_reuses_and_resets_cached_global_semaphores(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
     )
     tensor = _FakeTensor(object())
-    lifetime = []
+    cache = kernel_runner.PipeGlobalSemaphoreCache()
+    core_ranges = _FakeCoreRanges()
 
     for _ in range(2):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[],
             tensors=[tensor],
             cb_configs=[],
-            core_ranges=_FakeCoreRanges(),
+            core_ranges=core_ranges,
             num_pipe_global_semaphores=2,
-            pipe_global_semaphore_lifetime=lifetime,
+            pipe_global_semaphore_cache=cache,
         )
 
-    assert len(fake_ttnn.create_calls) == 4
-    assert lifetime == fake_ttnn.create_calls[-2:]
+    assert len(fake_ttnn.create_calls) == 2
+    assert fake_ttnn.reset_calls == [
+        (fake_ttnn.create_calls[0], 0),
+        (fake_ttnn.create_calls[1], 0),
+    ]
+
+
+def test_global_semaphore_cache_reallocates_for_context_changes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.PipeGlobalSemaphoreCache()
+    first_device = object()
+    second_device = object()
+    first_ranges = _FakeCoreRanges(((0, 0, 0, 0), (1, 0, 1, 0)))
+    equivalent_first_ranges = _FakeCoreRanges(((0, 0, 1, 0),))
+    second_ranges = _FakeCoreRanges(((0, 1, 1, 1),))
+
+    first_semaphores = cache.acquire([], first_ranges, 1, first_device)
+    reused_first_semaphores = cache.acquire(
+        [], equivalent_first_ranges, 1, first_device
+    )
+    second_device_semaphores = cache.acquire([], first_ranges, 1, second_device)
+    second_range_semaphores = cache.acquire([], second_ranges, 1, first_device)
+    second_count_semaphores = cache.acquire([], first_ranges, 2, first_device)
+
+    assert len(fake_ttnn.create_calls) == 5
+    assert reused_first_semaphores is first_semaphores
+    assert reused_first_semaphores is not second_device_semaphores
+    assert reused_first_semaphores is not second_range_semaphores
+    assert reused_first_semaphores is not second_count_semaphores
+    assert fake_ttnn.reset_calls == [(first_semaphores[0], 0)]
 
 
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
@@ -1740,6 +1796,7 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     )
 
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "PIPE_GLOBAL_SEMAPHORE_CACHE = PipeGlobalSemaphoreCache()" in source
     assert "PROGRAM_HASH = 18446744073709551614" in source
     assert "MESH_PROGRAM_PLACEMENTS = None" in source
     assert "run_kernel_on_device(" in source
@@ -1754,6 +1811,7 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     )
     assert "program_hash=PROGRAM_HASH" in source
     assert "num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES" in source
+    assert "pipe_global_semaphore_cache=PIPE_GLOBAL_SEMAPHORE_CACHE" in source
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
 
 

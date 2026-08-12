@@ -309,6 +309,10 @@ class TestMeshProgramPlacement:
         assert result == "result"
         assert calls[0]["mesh_program_placements"] == [placement]
         assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache
+        assert (
+            calls[0]["pipe_global_semaphore_cache"]
+            is compiled_kernel._pipe_global_semaphore_cache
+        )
 
 
 class TestKernelI32ArrayAttr:
