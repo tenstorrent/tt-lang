@@ -156,3 +156,53 @@ func.func @unsupported_result_type() {
   %result = ttl.opaque_call "foo" () {header = "h.hpp"} : () -> f32
   return
 }
+
+// -----
+// Test: a dispatch condition ordinal identifies one module-local declaration.
+func.func @negative_dispatch_condition_ordinal() {
+  // expected-error @below {{dispatch condition ordinal must be nonnegative}}
+  %result = ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<-1, i64>, header = "h.hpp"} : () -> i64
+  return
+}
+
+// -----
+// Test: a dispatch condition uses one supported external scalar carrier.
+func.func @unsupported_dispatch_condition_type() {
+  // expected-error @below {{dispatch condition scalar type must be signless i32 or i64}}
+  %result = ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<0, i16>, header = "h.hpp"} : () -> i16
+  return
+}
+
+// -----
+// Test: a dispatch condition declaration requires a scalar result.
+func.func @dispatch_condition_without_result() {
+  // expected-error @below {{'ttl.opaque_call' op condition result requires one scalar result}}
+  ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: the result type is part of the dispatch condition declaration.
+func.func @dispatch_condition_result_type_mismatch() {
+  // expected-error @below {{'ttl.opaque_call' op condition result type 'i32' does not match declared scalar type 'i64'}}
+  %result = ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> i32
+  return
+}
+
+// -----
+// Test: stable condition evaluation cannot access DFB state.
+func.func @stateful_dispatch_condition() {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op condition result call cannot access DFB state}}
+  %result = ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> i64
+  return
+}
+
+// -----
+// Test: an index template argument is still a DFB operand.
+func.func @dispatch_condition_with_dfb_index() {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op condition result call cannot access DFB state}}
+  %result = ttl.opaque_call "foo" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> i64
+  return
+}
