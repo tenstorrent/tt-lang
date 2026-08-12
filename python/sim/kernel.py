@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Tuple
 
 
 class KernelKind(Enum):
@@ -22,7 +21,7 @@ class KernelKind(Enum):
     COMPUTE = auto()
     DATA_MOVEMENT = auto()
 
-    def __or__(self, other: object) -> Tuple[KernelKind, KernelKind]:
+    def __or__(self, other: object) -> tuple[KernelKind, KernelKind]:
         if not isinstance(other, KernelKind):
             return NotImplemented
         return (self, other)
