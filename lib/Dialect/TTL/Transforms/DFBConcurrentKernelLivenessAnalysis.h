@@ -81,6 +81,17 @@ struct DFBPerNodeAccessOccurrence {
   std::optional<std::uint64_t> exactExecutionCount;
 };
 
+/// Consecutive normalized transactions with one tile count.
+struct DFBTransactionRun {
+  std::uint64_t executionCount = 0;
+  int64_t tilesPerExecution = 0;
+
+  bool operator==(const DFBTransactionRun &rhs) const {
+    return executionCount == rhs.executionCount &&
+           tilesPerExecution == rhs.tilesPerExecution;
+  }
+};
+
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
@@ -90,7 +101,7 @@ struct DFBPerNodeLifetime {
   SmallVector<unsigned> terminalCompletionEvents;
   SmallVector<unsigned> earliestAccessOccurrenceIndices;
   SmallVector<unsigned> terminalAccessOccurrenceIndices;
-  SmallVector<int64_t> transactionTileCounts;
+  SmallVector<DFBTransactionRun> transactionRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   DFBQuiescenceProof quiescence;
