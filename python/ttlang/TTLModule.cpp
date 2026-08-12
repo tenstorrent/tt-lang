@@ -92,6 +92,25 @@ void populateTTLModule(nb::module_ &m) {
                     : std::nullopt;
       });
 
+  tt_attribute_class<DispatchConditionAttr>(m, "DispatchConditionAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal, MlirType scalarType) {
+            MLIRContext *cppContext = unwrap(context);
+            DispatchConditionAttr attribute = DispatchConditionAttr::getChecked(
+                [cppContext]() {
+                  return emitError(UnknownLoc::get(cppContext));
+                },
+                cppContext, ordinal, unwrap(scalarType));
+            if (!attribute) {
+              throw nb::value_error("invalid dispatch condition");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("scalar_type"))
+      .def_prop_ro("ordinal", &DispatchConditionAttr::getOrdinal)
+      .def_prop_ro("scalar_type", &DispatchConditionAttr::getScalarType);
+
   nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
       .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
       .value("Boolean", ExternalTemplateArgKind::Boolean)

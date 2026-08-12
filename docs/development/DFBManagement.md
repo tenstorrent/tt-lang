@@ -1259,13 +1259,11 @@ Those DFBs remain unbounded and conflict with every other allocation candidate.
 The external call does not disable reuse among other DFBs whose visible
 lifecycles remain bounded.
 
-The current DSL cannot declare a dependency-only DFB, summarize hidden
-protocol effects, or represent an unknown DFB access set. An external callee
-with an unknown set is outside the valid-program assumption. A future explicit
-unknown form must disable user DFB reuse for the complete module because an
-unresolved raw index may name any physical allocation. Issue
-[#806](https://github.com/tenstorrent/tt-lang/issues/806) tracks the required
-DFB dependency and protocol-effect representation.
+`dfb_dependencies` declares dependency-only storage, and ordered typed
+`dfb_effects` summarize synchronous reserve, push, wait, and pop actions.
+`unknown_dfb_access=True` declares access to user-managed DFBs outside the
+listed set and conservatively prevents affected physical-index reuse. These
+contracts describe external behavior without adding calls or inspecting C++.
 
 `num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
 tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
@@ -1430,7 +1428,9 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
 
     build a second graph with every unknown access domain treated as possible
     prove conditionally bounded lifetimes only for one complete conditional
-      transaction on every possible node
+      transaction on every possible node; separately evaluated conditions
+      match across logical kernels only through typed dispatch-condition
+      identities at one launch coordinate
     retain possible-domain order separately from exact-domain order
 
   return logical DFB lifecycles, per-node quiescence, pointer owners,
@@ -1477,6 +1477,59 @@ when their descriptors, transaction runs, pointer owners, and possible-domain
 lifetimes are compatible. Unknown/exact-domain pairs and all other unknown
 pairs retain an `unknown-launch-node-domain` conflict. Nodes with identical
 facts are grouped for deterministic bounded output.
+
+#### Dispatch-stable condition identity
+
+An external predicate can be evaluated independently in multiple logical
+kernels when the frontend records one typed condition declaration:
+
+```python
+def make_conditional_operation():
+    active = ttl.DispatchCondition(ttl.ScalarType.I64)
+    producer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    consumer_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def conditional_operation(input_tensor):
+        producer_active = ttl.call_extern_func(
+            "condition.hpp",
+            "evaluate_for_producer",
+            condition_result=active,
+            kernel=producer_kernel,
+        )
+        consumer_active = ttl.call_extern_func(
+            "condition.hpp",
+            "evaluate_for_consumer",
+            condition_result=active,
+            kernel=consumer_kernel,
+        )
+```
+
+`DispatchCondition` is immutable and must be captured from an enclosing
+operation factory. Its declaration selects the i32 or i64 external result
+carrier. Zero is false and nonzero is true. The declared truth value must be
+stable for one dispatch and launch coordinate, and each evaluation must be
+repeat-safe. A condition-result call cannot access a DFB, declare DFB protocol
+effects, or declare unknown DFB access. DFB arguments, indices, and descriptors
+are all invalid on the call.
+
+The frontend assigns deterministic ordinals by declaration identity within the
+module compiled for an operation. Composition, unified-operation splitting,
+and explicit logical-kernel replication preserve those ordinals. Equal IR
+attributes identify the same condition; distinct conditions in one module use
+distinct ordinals. The attribute on `ttl.opaque_call` has no runtime effect and
+disappears with the opaque call during lowering.
+
+The liveness analysis proves equality from the typed identity and the actual
+structured condition expression. It preserves branch polarity and ordered
+nesting and supports exact `arith.andi`, `arith.ori`, and `arith.xori`
+expression trees over i1 values. Cross-function proof also requires the same
+launch coordinate and a typed expression for every unresolved conditional
+frame. Distinct identities, missing identities, mixed typed and untyped
+nesting, differing expressions, and unresolved loops remain conservative.
+Callee names, source
+locations, generated C++, template arguments, and textual equality do not
+establish condition identity.
 
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
