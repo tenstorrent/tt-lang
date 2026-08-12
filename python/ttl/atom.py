@@ -352,8 +352,6 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif stripped.startswith("def ") or stripped.startswith("async def "):
             break
     line_offset = start_lineno + num_decorator_lines - 1
-    operation_identity = _operation_identity(fn)
-
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise ValueError(
@@ -412,6 +410,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
+    operation_identity = _operation_identity(fn)
     topology = _dispatch_condition_topology(dispatch_conditions)
     if topology:
         encoded_topology = ";".join(
@@ -885,6 +884,9 @@ class Atom:
     @property
     def name(self) -> str:
         return self._spec.name
+
+    def _operation_identity_capture(self) -> tuple[str, str]:
+        return ("operation", self._spec.operation_identity)
 
     def __call__(self, *args, **kwargs):
         if self._grid is None:

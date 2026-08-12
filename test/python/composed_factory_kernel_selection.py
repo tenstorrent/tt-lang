@@ -54,7 +54,7 @@ def selected_caller(inp):
 # CALLS-DAG: ttl.opaque_call "second_entry"
 
 # SPECIALIZED-LABEL: func.func @selected_caller__ncrisc()
-# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.make_helper.<locals>.selected_helper[captures=0fd3119a74cbacf9]">
+# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.make_helper.<locals>.selected_helper[captures=6142f2ea4f753c85]">
 # SPECIALIZED-NEXT: emitc.call_opaque "second_entry"
 
 

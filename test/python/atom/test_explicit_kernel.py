@@ -31,9 +31,9 @@ def test_explicit_operation_binds_captured_kernel_declaration():
             pass
 
     assert data_movement_kernel.identity == "data_movement_kernel"
-    assert data_movement_kernel._operation_identity == (
+    assert data_movement_kernel._operation_identity.startswith(
         f"{__name__}.test_explicit_operation_binds_captured_kernel_declaration"
-        ".<locals>.explicit_operation"
+        ".<locals>.explicit_operation[captures="
     )
 
     _clear_thread_registry()
