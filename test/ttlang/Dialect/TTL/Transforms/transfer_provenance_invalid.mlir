@@ -86,7 +86,7 @@ func.func @pipe_wait_requires_post_token() {
 // A transfer wait requires a recognized asynchronous transfer producer.
 func.func @wait_requires_transfer_source() {
   %handle = builtin.unrealized_conversion_cast to !ttl.transfer_handle<write>
-  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy or ttl.pipe_transfer.send}}
+  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy, ttl.copy_tensor_page, or ttl.pipe_transfer.send}}
   ttl.wait %handle : !ttl.transfer_handle<write>
   func.return
 }
@@ -104,7 +104,7 @@ func.func @wait_container_requires_transfer_source(
       : tensor<?x!ttl.transfer_handle<read>>
   %extracted = tensor.extract %inserted[%zero]
       : tensor<?x!ttl.transfer_handle<read>>
-  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy or ttl.pipe_transfer.send}}
+  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy, ttl.copy_tensor_page, or ttl.pipe_transfer.send}}
   ttl.wait %extracted : !ttl.transfer_handle<read>
   func.return
 }
@@ -134,7 +134,7 @@ func.func @wait_selected_container_element_requires_transfer_source(
       : tensor<?x!ttl.transfer_handle<read>>
   %selected = tensor.extract %with_copy[%zero]
       : tensor<?x!ttl.transfer_handle<read>>
-  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy or ttl.pipe_transfer.send}}
+  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy, ttl.copy_tensor_page, or ttl.pipe_transfer.send}}
   ttl.wait %selected : !ttl.transfer_handle<read>
   func.return
 }
@@ -160,7 +160,7 @@ func.func @wait_control_flow_requires_transfer_source(
   } else {
     scf.yield %invalid : !ttl.transfer_handle<read>
   }
-  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy or ttl.pipe_transfer.send}}
+  // expected-error @below {{'ttl.wait' op expects operand to be derived from ttl.copy, ttl.copy_tensor_page, or ttl.pipe_transfer.send}}
   ttl.wait %handle : !ttl.transfer_handle<read>
   func.return
 }

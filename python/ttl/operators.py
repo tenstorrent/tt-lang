@@ -721,6 +721,40 @@ def copy(src, dst) -> CopyTransferHandler:
         )
 
 
+@syntax("copy_tensor_page")
+def copy_tensor_page(source, page_id, destination) -> CopyTransferHandler:
+    """Copy one complete row-major tensor page into a reserved DFB block.
+
+    ``source`` must be a rank-2 interleaved row-major BF16 or FP32 device
+    tensor. ``page_id`` selects a logical source row. ``destination`` must be a
+    reserved tiled block with the same scalar data type and byte count as one
+    source row.
+
+    The returned asynchronous read handle must be synchronized with ``wait()``
+    before the destination is consumed.
+    """
+    if not _is_block(destination):
+        raise ValueError(
+            "copy_tensor_page() destination must be a block acquired from "
+            "dfb.reserve()"
+        )
+
+    destination_cb = _get_cb_from_block(destination)
+    destination_cb_type = ttl.CircularBufferType.maybe_downcast(
+        destination_cb.type
+    )
+    if destination_cb_type is None:
+        raise ValueError(
+            f"Expected CircularBufferType, got {destination_cb.type}"
+        )
+
+    page_index = _as_index_values(source, (page_id,))[0]
+    transfer_type = Type.parse("!ttl.transfer_handle<read>", source.type.context)
+    return ttl.copy_tensor_page(
+        transfer_type, source, page_index, destination_cb
+    )
+
+
 @syntax("node")
 def node(*, dims):
     """
@@ -1388,6 +1422,7 @@ __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
     "copy",
+    "copy_tensor_page",
     "core",
     "grid_size",
     "signpost",

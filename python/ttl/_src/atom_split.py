@@ -55,6 +55,7 @@ class _Placement(Enum):
 _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     # Data movement
     "copy": _Placement.DATA_MOVEMENT,
+    "copy_tensor_page": _Placement.DATA_MOVEMENT,
     "element_read": _Placement.DATA_MOVEMENT,
     "element_write": _Placement.DATA_MOVEMENT,
     "read_index": _Placement.DATA_MOVEMENT,

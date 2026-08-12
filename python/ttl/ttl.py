@@ -14,6 +14,7 @@ Functions:
     ttl.make_dataflow_buffer_like() - Create a dataflow buffer
     ttl.make_tensor_backed_dfb() - Bind a dataflow buffer to tensor L1 storage
     ttl.copy() - Asynchronous data transfer
+    ttl.copy_tensor_page() - Asynchronous row-major tensor page read
     ttl.node(dims=2) - Get current core's coordinates as (x, y) tuple
     ttl.grid_size(dims=2) - Get grid size as (x_size, y_size) tuple
 
@@ -43,6 +44,7 @@ from .operators import (
     DFBEffect,
     call_extern_func,
     copy,
+    copy_tensor_page,
     dfb_descriptor,
     get_dfb_id,
     grid_size,
@@ -76,6 +78,7 @@ __all__ = [
     "make_tensor_backed_dfb",
     "make_dfb_allocation_group",
     "copy",
+    "copy_tensor_page",
     "node",
     "grid_size",
     "matmul",
