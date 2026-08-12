@@ -1137,6 +1137,12 @@ class TTCompilerBase(PyKernelAstBase):
         if not lhs or not rhs:
             raise ValueError("Compare operands not found")
 
+        if not hasattr(lhs, "type") or not hasattr(rhs, "type"):
+            raise TypeError(
+                "comparison operands must be compiler values, got "
+                f"{type(lhs).__name__} and {type(rhs).__name__}"
+            )
+
         if isinstance(lhs.type, memref.MemRefType):
             lhs = memref.LoadOp(
                 lhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
