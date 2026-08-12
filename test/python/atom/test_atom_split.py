@@ -1156,6 +1156,29 @@ def test_unknown_ttl_op_is_rejected():
         split_function_body(fn, dfb_param_names=set())
 
 
+def test_static_range_is_kernel_neutral_control_flow():
+    function = _fn(
+        """
+        def kernel():
+            for block_index in ttl.static_range(4):
+                source = source_dfb.wait()
+                destination = destination_dfb.reserve()
+                destination.store(source)
+                source.pop()
+                destination.push()
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names={"source_dfb", "destination_dfb"},
+    )
+
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.static_range(4)" in compute_source
+    assert "destination.store(source)" in compute_source
+
+
 def test_raw_addr_is_a_kernel_neutral_scalar_producer():
     fn = _fn(
         """

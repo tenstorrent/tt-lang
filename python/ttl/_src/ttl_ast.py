@@ -535,6 +535,56 @@ class TTLGenericCompiler(TTCompilerBase):
             return None
         return node.target.id, static_range
 
+    def _static_unroll_loop(self, node):
+        if not isinstance(node, ast.For) or not self._is_static_range_call(node.iter):
+            return None
+        if not isinstance(node.target, ast.Name):
+            self._raise_error(
+                node.target, "ttl.static_range() requires a simple loop variable"
+            )
+        if node.orelse:
+            self._raise_error(
+                node, "ttl.static_range() does not support a for-else clause"
+            )
+        return node.target.id, self._resolve_explicit_static_range(node.iter)
+
+    def _is_static_range_call(self, node) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        function = node.func
+        return (
+            isinstance(function, ast.Attribute)
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "ttl"
+            and function.attr == "static_range"
+        ) or (isinstance(function, ast.Name) and function.id == "static_range")
+
+    def _resolve_explicit_static_range(self, node):
+        if node.keywords:
+            self._raise_error(
+                node, "ttl.static_range() does not accept keyword arguments"
+            )
+        if not 1 <= len(node.args) <= 3:
+            self._raise_error(
+                node, "ttl.static_range() requires one to three integer arguments"
+            )
+
+        range_values = []
+        for argument_index, argument in enumerate(node.args, start=1):
+            value = self._resolve_static_python_value(argument)
+            if type(value) is not int:
+                self._raise_error(
+                    argument,
+                    "ttl.static_range() argument "
+                    f"{argument_index} must be a compile-time integer",
+                )
+            range_values.append(value)
+
+        try:
+            return range(*range_values)
+        except ValueError as error:
+            self._raise_error(node, f"ttl.static_range(): {error}")
+
     def _resolve_static_range_iter(self, node):
         if not isinstance(node, ast.Call):
             return None
@@ -634,22 +684,31 @@ class TTLGenericCompiler(TTCompilerBase):
         return any(visit_node(stmt) for stmt in body)
 
     def visit_For(self, node):
+        static_unroll_loop = self._static_unroll_loop(node)
+        if static_unroll_loop is not None:
+            loop_var, static_range = static_unroll_loop
+            self._emit_unrolled_loop(node, loop_var, static_range)
+            return
+
         selection_loop = self._selection_loop(node)
         if selection_loop is not None:
             loop_var, static_range = selection_loop
             # PipeNet receiver selection is host metadata. Unroll only
             # loops whose index selects a PipeNet so ordinary numeric
             # loops keep lowering to scf.for.
-            self._on_scope_exit()
-            for loop_value in static_range:
-                self.symbol_tables.append({})
-                self._set_var(loop_var, loop_value)
-                for stmt in node.body:
-                    self.visit(stmt)
-                self._on_scope_exit()
-                self.symbol_tables.pop()
+            self._emit_unrolled_loop(node, loop_var, static_range)
             return
         return super().visit_For(node)
+
+    def _emit_unrolled_loop(self, node, loop_var, static_range):
+        self._on_scope_exit()
+        for loop_value in static_range:
+            self.symbol_tables.append({})
+            self._set_var(loop_var, loop_value)
+            for stmt in node.body:
+                self.visit(stmt)
+            self._on_scope_exit()
+            self.symbol_tables.pop()
 
     def _device_domain_attr(self, domain):
         components = [
@@ -2378,9 +2437,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._bind_pipe_net_metadata_assignment(stmt)
                 self._bind_static_metadata_alias_assignment(stmt)
 
-            selection_loop = self._selection_loop(stmt)
-            if selection_loop is not None:
-                loop_var, static_range = selection_loop
+            unrolled_loop = self._static_unroll_loop(stmt)
+            if unrolled_loop is None:
+                unrolled_loop = self._selection_loop(stmt)
+            if unrolled_loop is not None:
+                loop_var, static_range = unrolled_loop
                 for loop_value in static_range:
                     self.symbol_tables.append({})
                     self._set_var(loop_var, loop_value)

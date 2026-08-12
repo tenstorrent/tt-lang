@@ -131,6 +131,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     dataflow_buffer.py
     compiler_options.py
     constants.py
+    control_flow.py
     diagnostics.py
     kernel.py
     kernel_runner.py

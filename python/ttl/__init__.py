@@ -5,6 +5,7 @@
 # TT-Lang Python Package
 
 from ttl.version import __version__, build_info
+from ttl.control_flow import static_range
 from ttl.domains import (
     AllToAllTransfer,
     AxisNeighborTransfer,
@@ -40,6 +41,7 @@ if _SIM_ONLY_INSTALL:
     __all__ = [
         "__version__",
         "build_info",
+        "static_range",
         "AllToAllTransfer",
         "AxisNeighborTransfer",
         "DeviceDomain",
@@ -135,6 +137,7 @@ else:
         "grid_size",
         "math",
         "signpost",
+        "static_range",
         "DFBEffect",
         "call_extern_func",
         "dfb_descriptor",
