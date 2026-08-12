@@ -18,6 +18,7 @@ ttl.call_extern_func(
     include_paths=None,
     kernel=None,
     result_type=None,
+    condition_result=None,
 )
 ```
 
@@ -157,6 +158,53 @@ The target backend assigns logical kernels to its supported kernel resources.
 Compilation fails when an operation requests more kernels of a kind than the
 target supports. Unified and explicit multi-kernel operations use the same
 target capacity table and diagnostic terms.
+
+## Dispatch-stable condition results
+
+`condition_result=` accepts a `ttl.DispatchCondition` created with
+`ttl.ScalarType.I32` or `ttl.ScalarType.I64`. It identifies independent
+evaluations of one runtime condition. Create the immutable declaration in an
+enclosing operation factory and capture the same object in every evaluation:
+
+```python
+def make_conditional_operation():
+    active = ttl.DispatchCondition(ttl.ScalarType.I64)
+    producer = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    consumer = ttl.Kernel(ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def conditional_operation(input_tensor):
+        producer_active = ttl.call_extern_func(
+            HEADER,
+            "evaluate_for_producer",
+            condition_result=active,
+            kernel=producer,
+        )
+        consumer_active = ttl.call_extern_func(
+            HEADER,
+            "evaluate_for_consumer",
+            condition_result=active,
+            kernel=consumer,
+        )
+
+    return conditional_operation
+```
+
+Calls using one declaration must return the same truth value for one dispatch
+and launch coordinate. Zero is false and nonzero is true. Each evaluation must
+be repeat-safe. A condition-result call cannot depend on DFB storage, declare
+DFB effects, or set `unknown_dfb_access=True`. It cannot carry a DFB argument,
+index, or descriptor. `condition_result` supplies the result type and cannot be
+combined with `result_type`.
+
+Composition and logical-kernel splitting preserve declaration identity.
+Distinct declarations remain independent even when calls have equal C++ names,
+headers, template arguments, or source text. The compiler also preserves
+branch polarity, structured nesting, and supported boolean expressions when it
+uses the identity to prove equal conditional DFB execution. Missing or partial
+identity remains conservative. In the compiled IR module, equal condition
+attributes identify one declaration and distinct declarations use distinct
+ordinals.
 
 ## Template arguments
 

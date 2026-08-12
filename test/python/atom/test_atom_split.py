@@ -473,6 +473,117 @@ def test_scalar_type_capture_changes_operation_identity():
     )
 
 
+def test_composition_preserves_one_dispatch_condition_identity():
+    """Inlining preserves one captured condition across logical kernels."""
+    condition = ttl.DispatchCondition(ttl.ScalarType.I64)
+
+    @ttl.operation()
+    def conditional_helper():
+        active = ttl.call_extern_func(
+            "condition.hpp",
+            "active",
+            condition_result=condition,
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )
+        if active:
+            ttl.call_extern_func("work.hpp", "work", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def composed_condition():
+        conditional_helper()
+        ttl.call_extern_func("work.hpp", "read", kernel=ttl.KernelKind.DATA_MOVEMENT)
+
+    spec = composed_condition._spec
+    assert tuple(spec.dispatch_conditions.values()) == (condition,)
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT),
+    ):
+        assert "condition_result=" in source
+        condition_name = next(iter(spec.dispatch_conditions))
+        assert f"condition_result={condition_name}" in source
+
+
+def test_composition_does_not_invent_missing_dispatch_condition_identity():
+    """A partially annotated composition retains its untyped evaluation."""
+    condition = ttl.DispatchCondition(ttl.ScalarType.I64)
+
+    @ttl.operation()
+    def typed_evaluation():
+        ttl.call_extern_func(
+            "condition.hpp",
+            "typed",
+            condition_result=condition,
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+
+    @ttl.operation()
+    def untyped_evaluation():
+        ttl.call_extern_func(
+            "condition.hpp",
+            "untyped",
+            result_type=ttl.ScalarType.I64,
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+
+    @ttl.operation()
+    def partial_condition():
+        typed_evaluation()
+        untyped_evaluation()
+
+    spec = partial_condition._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    source = _kind_src(result, KernelKind.COMPUTE)
+    assert source.count("condition_result=") == 1
+    assert source.count("result_type=") == 1
+
+
+def test_dispatch_condition_alias_topology_changes_operation_identity():
+    """The cache identity distinguishes shared and independent declarations."""
+
+    def make_operation(shared_identity):
+        first_condition = ttl.DispatchCondition(ttl.ScalarType.I32)
+        second_condition = (
+            first_condition
+            if shared_identity
+            else ttl.DispatchCondition(ttl.ScalarType.I32)
+        )
+
+        @ttl.operation()
+        def conditional_operation():
+            ttl.call_extern_func(
+                "condition.hpp",
+                "first",
+                condition_result=first_condition,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            ttl.call_extern_func(
+                "condition.hpp",
+                "second",
+                condition_result=second_condition,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+        return conditional_operation
+
+    shared = make_operation(shared_identity=True)
+    independent = make_operation(shared_identity=False)
+
+    assert shared._spec.operation_identity != independent._spec.operation_identity
+
+
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
     """Control selection includes logical-kernel anchors in the condition."""
     writer = Kernel(KernelKind.DATA_MOVEMENT)

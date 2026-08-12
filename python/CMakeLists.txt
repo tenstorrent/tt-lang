@@ -130,6 +130,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     atom.py
     dataflow_buffer.py
     compiler_options.py
+    condition.py
     constants.py
     control_flow.py
     diagnostics.py

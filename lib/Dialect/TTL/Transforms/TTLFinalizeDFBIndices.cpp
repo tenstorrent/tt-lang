@@ -45,9 +45,7 @@ collectStaticConfigurationConflicts(
       return failure();
     }
     FailureOr<KernelRequirements> requirements =
-        collectKernelRequirements(function, [&](Operation *operation) {
-          return !hasExactEmptyLaunchDomain(operation, launchDomains);
-        });
+        collectKernelRequirements(function, launchDomains);
     if (failed(requirements)) {
       return failure();
     }

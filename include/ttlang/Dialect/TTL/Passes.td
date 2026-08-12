@@ -1023,12 +1023,20 @@ def TTLFinalizeDFBIndices
     launch node. These requirements preserve hardware counter and ring-pointer
     state. One unresolved structured condition is supported when every active
     DFB access belongs to one reserve, push, wait, and pop transaction
-    controlled by equivalent `scf.if` or `affine.if` frames in one kernel
-    function. Branch polarity, nesting, and control SSA values must match.
-    Unresolved loops, repeated conditional transactions, and separately
-    evaluated opaque predicates remain unsupported. A logical DFB without a
-    matched lifecycle or a proven lifetime order conflicts with every other
-    DFB.
+    controlled by equivalent `scf.if` or `affine.if` frames. Branch polarity,
+    nesting, and control values must match. Within one kernel function, ordinary
+    SSA equality can establish equivalence. Separately evaluated `scf.if`
+    conditions can match across logical kernels when every unresolved frame is
+    a structurally equal expression rooted in the same typed dispatch-condition
+    identities at the same launch coordinate. Untyped evaluations, mixed typed
+    and untyped nesting, and unresolved loops remain conservative. A logical
+    DFB without a matched lifecycle or a proven lifetime order conflicts with
+    every other DFB.
+
+    Two DFBs used by one compute kernel may share a physical index only when
+    every target-supported destination width assigns compatible static unpack
+    modes to that index. This constraint is added to the conflict graph before
+    coloring.
 
     An access whose launch domain is otherwise unknown is refined to an exact
     domain when execution-count analysis proves a count on every base launch
@@ -1038,6 +1046,11 @@ def TTLFinalizeDFBIndices
     domains is empty. An inactive scratch DFB may share a compatible physical
     descriptor without a lifetime-order proof because no launched node accesses
     it. Tensor-backed empty domains retain their existing allocation diagnostic.
+    Operations proven to execute zero times on every launch node do not impose
+    runtime compute-configuration requirements, but strategy-dependent tile
+    operations still receive a strategy required by later lowering. Unknown
+    execution remains configuration-constraining. The subsequent compute
+    configuration pass uses the same exact-empty proof.
 
     The allocator represents each logical DFB as a vertex, each pair that
     cannot share as an edge, and each physical index as a color. First-fit

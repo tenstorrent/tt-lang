@@ -9,11 +9,13 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallSet.h"
 
 #include <algorithm>
@@ -878,11 +880,7 @@ KernelConfigPolicy::get(func::FuncOp function, StringRef fp32Selection,
   return policy;
 }
 
-FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
-  return collectKernelRequirements(function, [](Operation *) { return true; });
-}
-
-FailureOr<KernelRequirements> collectKernelRequirements(
+static FailureOr<KernelRequirements> collectKernelRequirementsImpl(
     func::FuncOp function,
     llvm::function_ref<bool(Operation *)> includeOperation) {
   KernelRequirements requirements;
@@ -895,14 +893,18 @@ FailureOr<KernelRequirements> collectKernelRequirements(
       }
       return WalkResult::advance();
     }
-    if (!includeOperation(operation)) {
-      return WalkResult::advance();
-    }
+    bool contributesConfiguration = includeOperation(operation);
     if (!executionOp.getLegalExecutionStrategies().empty()) {
       FailureOr<TileExecutionChoice> choice =
           getTileExecutionChoice(executionOp);
       if (failed(choice)) {
         return WalkResult::interrupt();
+      }
+      if (!contributesConfiguration) {
+        for (TileExecutionOption &option : choice->options) {
+          option.dfbInputUses.clear();
+          option.destinationUses.clear();
+        }
       }
       requirements.tileStrategyChoices.push_back(std::move(*choice));
       return WalkResult::advance();
@@ -917,8 +919,13 @@ FailureOr<KernelRequirements> collectKernelRequirements(
       operation->emitOpError("has no tile execution semantics");
       return WalkResult::interrupt();
     }
-    if (failed(verifyTileExecutionInfo(operation, *info)) ||
-        failed(appendExecutionRequirements(operation, *info,
+    if (failed(verifyTileExecutionInfo(operation, *info))) {
+      return WalkResult::interrupt();
+    }
+    if (!contributesConfiguration) {
+      return WalkResult::advance();
+    }
+    if (failed(appendExecutionRequirements(operation, *info,
                                            requirements.dfbInputUses,
                                            requirements.destinationUses))) {
       return WalkResult::interrupt();
@@ -933,6 +940,14 @@ FailureOr<KernelRequirements> collectKernelRequirements(
     return failure();
   }
   return requirements;
+}
+
+FailureOr<KernelRequirements>
+collectKernelRequirements(func::FuncOp function,
+                          const LaunchNodeDomainState &launchDomains) {
+  return collectKernelRequirementsImpl(function, [&](Operation *operation) {
+    return !hasExactEmptyLaunchDomain(operation, launchDomains);
+  });
 }
 
 namespace {

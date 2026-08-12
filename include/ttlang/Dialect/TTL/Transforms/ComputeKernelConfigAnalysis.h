@@ -9,7 +9,6 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -18,6 +17,8 @@
 #include <utility>
 
 namespace mlir::tt::ttl {
+
+struct LaunchNodeDomainState;
 
 /// User policy for a configuration value that may otherwise be inferred.
 enum class ConfigSelection {
@@ -190,13 +191,14 @@ private:
   llvm::SmallVector<TileExecutionDecision> tileStrategies;
 };
 
-/// Collect target-independent requirements and legal tile strategies.
-FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function);
-
-/// Collect requirements from operations accepted by `includeOperation`.
-FailureOr<KernelRequirements> collectKernelRequirements(
-    func::FuncOp function,
-    llvm::function_ref<bool(Operation *)> includeOperation);
+/// Collect executable requirements using exact launch-node counts.
+///
+/// Strategy choices are retained for exact-empty operations because later
+/// lowering requires a selected strategy. Their unreachable DFB, destination,
+/// and accumulation requirements do not constrain kernel configuration.
+FailureOr<KernelRequirements>
+collectKernelRequirements(func::FuncOp function,
+                          const LaunchNodeDomainState &launchDomains);
 
 /// Return conservative static-configuration conflicts between logical DFBs.
 SmallVector<DFBConfigurationAliasConflict>

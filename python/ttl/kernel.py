@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
 
+from .condition import DispatchCondition
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
 
@@ -237,8 +238,18 @@ def _operation_identity(function: Callable) -> str:
         return base_identity
 
     encoded_captures = []
+    condition_ordinals = {}
     for name, value in sorted(nonlocal_captures.items()):
-        encoded = _encode_identity_literal(value)
+        if isinstance(value, DispatchCondition):
+            condition_identity = id(value)
+            ordinal = condition_ordinals.setdefault(
+                condition_identity, len(condition_ordinals)
+            )
+            encoded = (f"dispatch-condition:{ordinal}:{value.scalar_type.name}").encode(
+                "ascii"
+            )
+        else:
+            encoded = _encode_identity_literal(value)
         if encoded is None:
             continue
         encoded_name = name.encode("utf-8")
