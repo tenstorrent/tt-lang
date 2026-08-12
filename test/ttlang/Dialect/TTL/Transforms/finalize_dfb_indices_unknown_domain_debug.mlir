@@ -29,9 +29,9 @@
 // CHECK-SAME: occurrences=[0:0, 1:0, 2:0, 3:0]
 // CHECK: DFB logical_id=3 bounded=0 compiler_created=0
 // CHECK-SAME: domain=unknown
-// CHECK: diagnostic_nodes quiescence=none domain_assumption=unknown-may-be-active may_be_active=1 node_count=1 nodes={(0,0)}
+// CHECK: diagnostic_nodes quiescence=incomplete-use-order domain_assumption=unknown-may-be-active may_be_active=1 node_count=1 nodes={(0,0)}
 // CHECK-SAME: occurrences=[0:unresolved, 1:1, 2:1, 3:1, 4:1]
-// CHECK-SAME: earliest_accesses=[0] terminal_accesses=[4]
+// CHECK-SAME: transactions=[1]
 // CHECK: diagnostic_nodes quiescence=incomplete-use-order domain_assumption=unknown-may-be-active may_be_active=1 node_count=1 nodes={(1,0)}
 // CHECK-SAME: occurrences=[0:unresolved, 1:1, 2:1, 3:1, 4:1]
 // CHECK: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain node=none
