@@ -698,6 +698,61 @@ def test_external_call_tuple_selects_multiple_logical_kernels():
         assert "kernel=" not in source
 
 
+def test_external_call_kind_union_selects_multiple_logical_kernels():
+    """A kind union selects both canonical logical kernels."""
+    fn = _fn(
+        """
+        def k():
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    assert result.kernels == (
+        KernelKind.COMPUTE,
+        KernelKind.DATA_MOVEMENT,
+    )
+    for kernel in result.kernels:
+        source = _kernel_src(result, kernel)
+        assert source.count("call_extern_func") == 1
+        assert "kernel=" not in source
+
+
+def test_kernel_kind_union_builds_tuple_selection():
+    """The public union expression evaluates to an accepted selector tuple."""
+    assert KernelKind.COMPUTE | KernelKind.DATA_MOVEMENT == (
+        KernelKind.COMPUTE,
+        KernelKind.DATA_MOVEMENT,
+    )
+
+
+def test_external_call_kind_union_rejects_named_kernel():
+    """Named logical kernels remain explicit tuple elements."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k():
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                kernel=ttl.KernelKind.COMPUTE | reader,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="kind union operands must be KernelKind"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader},
+        )
+
+
 @pytest.mark.parametrize(
     "selector, message",
     [
@@ -762,6 +817,25 @@ def test_acquire_rejects_kernel_selector(acquire, form):
     with pytest.raises(
         ValueError,
         match=rf"kernel= is not supported on DFB {acquire}\(\)",
+    ):
+        split_function_body(fn, dfb_param_names={"buffer"})
+
+
+@pytest.mark.parametrize("method", ["push", "pop"])
+def test_release_rejects_kind_union(method):
+    """A DFB release executes in exactly one logical kernel."""
+    fn = _fn(
+        f"""
+        def k():
+            block = buffer.reserve()
+            block.{method}(
+                kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT
+            )
+        """
+    )
+
+    with pytest.raises(
+        ValueError, match="accepts one kernel selector, not a kind union"
     ):
         split_function_body(fn, dfb_param_names={"buffer"})
 

@@ -28,6 +28,16 @@ ttl.call_extern_func(
 )
 ```
 
+Canonical kernel kinds may be combined with `|`:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "shared_entry",
+    kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
 An operation-local `Kernel` distinguishes multiple logical kernels of the same
 kind. Its declaration is a static top-level operation resource:
 
@@ -42,11 +52,12 @@ ttl.call_extern_func(
 )
 ```
 
-An external call accepts one selector or a nonempty tuple of distinct
-selectors. A tuple emits the call once in every selected logical kernel. A call
-may omit `kernel=` when its enclosing callback already determines one logical
-kernel. Otherwise, omission is invalid because opaque code cannot be assigned
-by inspecting its implementation.
+An external call accepts one selector or multiple distinct selectors. The `|`
+syntax combines `KernelKind` values. A nonempty tuple supports selections that
+include operation-local `Kernel` handles. Multiple selectors emit the call once
+in every selected logical kernel. A call may omit `kernel=` when its enclosing
+callback already determines one logical kernel. Otherwise, omission is invalid
+because opaque code cannot be assigned by inspecting its implementation.
 
 `TensorBlock.push` and `TensorBlock.pop` also accept `kernel=`, but only one
 selector. An explicit selector assigns an otherwise-unused DFB transaction:

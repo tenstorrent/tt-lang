@@ -25,6 +25,11 @@ class KernelKind(Enum):
     COMPUTE = str(_TableGenLogicalKernelKind.Compute)
     DATA_MOVEMENT = str(_TableGenLogicalKernelKind.DataMovement)
 
+    def __or__(self, other: object) -> Tuple["KernelKind", "KernelKind"]:
+        if not isinstance(other, KernelKind):
+            return NotImplemented
+        return (self, other)
+
 
 @dataclass(frozen=True)
 class _KernelIdentity:

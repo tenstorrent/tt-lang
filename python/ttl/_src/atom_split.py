@@ -150,6 +150,19 @@ def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
     return None
 
 
+def _is_kernel_kind_union(node: ast.AST) -> bool:
+    return isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)
+
+
+def _flatten_kernel_kind_union(node: ast.expr) -> List[ast.expr]:
+    if not _is_kernel_kind_union(node):
+        return [node]
+    assert isinstance(node, ast.BinOp)
+    return _flatten_kernel_kind_union(node.left) + _flatten_kernel_kind_union(
+        node.right
+    )
+
+
 class _DefaultTTLSelectorNamespace:
     KernelKind = KernelKind
 
@@ -208,6 +221,11 @@ class _KernelSelectorResolver:
                 selector,
                 f"{ast.unparse(call.func)} accepts one kernel selector, not a tuple",
             )
+        if _is_kernel_kind_union(selector):
+            raise _split_error(
+                selector,
+                f"{ast.unparse(call.func)} accepts one kernel selector, not a kind union",
+            )
         selected = self._resolve_selector(selector)
         return selected
 
@@ -216,6 +234,18 @@ class _KernelSelectorResolver:
         node: ast.expr,
         allow_tuple: bool,
     ) -> FrozenSet[KernelSelector]:
+        if _is_kernel_kind_union(node):
+            selectors = [
+                self._resolve_selector(element)
+                for element in _flatten_kernel_kind_union(node)
+            ]
+            if not all(isinstance(selector, KernelKind) for selector in selectors):
+                raise _split_error(
+                    node,
+                    "kernel kind union operands must be KernelKind members; "
+                    "use a tuple to include operation-local Kernel handles",
+                )
+            return self._validate_multiple_selection(node, selectors)
         if not isinstance(node, ast.Tuple):
             return frozenset({self._resolve_selector(node)})
         if not allow_tuple:
@@ -226,6 +256,13 @@ class _KernelSelectorResolver:
                 "call_extern_func kernel selection requires a nonempty tuple",
             )
         selectors = [self._resolve_selector(element) for element in node.elts]
+        return self._validate_multiple_selection(node, selectors)
+
+    def _validate_multiple_selection(
+        self,
+        node: ast.expr,
+        selectors: List[KernelSelector],
+    ) -> FrozenSet[KernelSelector]:
         selected = frozenset(selectors)
         if len(selected) != len(selectors):
             raise _split_error(
