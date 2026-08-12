@@ -9,6 +9,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -103,6 +104,7 @@ struct TileExecutionDecision {
 /// One dataflow-buffer operand and the facts used to determine unpack mode.
 struct DFBInputUse {
   int64_t dfbIndex;
+  Value dfb;
   Operation *consumer;
   unsigned operandIndex;
   TilePrimitive primitive;
@@ -146,6 +148,14 @@ struct KernelRequirements {
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
 };
 
+/// Two logical DFBs whose static unpack requirements forbid physical aliasing.
+struct DFBConfigurationAliasConflict {
+  Value lhsDFB;
+  Value rhsDFB;
+  Operation *lhsOperation;
+  Operation *rhsOperation;
+};
+
 /// Complete configuration selected before any IR mutation. Apply the plan
 /// before mutating IR because its decisions contain operation pointers.
 class KernelConfigPlan {
@@ -182,6 +192,16 @@ private:
 
 /// Collect target-independent requirements and legal tile strategies.
 FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function);
+
+/// Collect requirements from operations accepted by `includeOperation`.
+FailureOr<KernelRequirements> collectKernelRequirements(
+    func::FuncOp function,
+    llvm::function_ref<bool(Operation *)> includeOperation);
+
+/// Return conservative static-configuration conflicts between logical DFBs.
+SmallVector<DFBConfigurationAliasConflict>
+collectDFBConfigurationAliasConflicts(const KernelTargetEnvironment &target,
+                                      const KernelRequirements &requirements);
 
 /// Resolve one complete configuration from target, policy, and requirements.
 FailureOr<KernelConfigPlan> resolveKernelConfig(
