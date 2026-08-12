@@ -22,6 +22,7 @@ import ttnn
 
 
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
+EFFECT_TILES = 1
 reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
 
 
@@ -34,10 +35,10 @@ def external_stage(source: ttl.DFB, destination: ttl.DFB):
         func_args=[source],
         dfb_dependencies=[destination],
         dfb_effects=[
-            ttl.DFBEffect.wait(source, tiles=2),
-            ttl.DFBEffect.pop(source, tiles=2),
-            ttl.DFBEffect.reserve(destination, tiles=1),
-            ttl.DFBEffect.push(destination, tiles=1),
+            ttl.DFBEffect.wait(source, tiles=2 * EFFECT_TILES),
+            ttl.DFBEffect.pop(source, tiles=2 * EFFECT_TILES),
+            ttl.DFBEffect.reserve(destination, tiles=EFFECT_TILES),
+            ttl.DFBEffect.push(destination, tiles=EFFECT_TILES),
         ],
         unknown_dfb_access=True,
         kernel=reader,
