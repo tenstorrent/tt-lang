@@ -38,6 +38,29 @@ def get_default_grid() -> Shape:
     return get_context().config.default_full_grid
 
 
+def _validate_grid(grid: Shape) -> None:
+    """Reject a grid that names no node, before a body is ever run.
+
+    A grid with a dimension of zero has no nodes, so nothing runs the operation
+    body and the per-node state the run reads is never built; the run then fails
+    on a missing node rather than on the grid that has none.  A negative
+    dimension is worse, because the node count is a product: ``(-1, -2)`` counts
+    two nodes.
+
+    Raises:
+        ValueError: If ``grid`` is empty or has a dimension below one.
+    """
+    if not grid:
+        raise ValueError("ttl.operation() grid must have at least one dimension")
+    bad = [(axis, size) for axis, size in enumerate(grid) if size < 1]
+    if bad:
+        listed = ", ".join(f"dimension {axis} is {size}" for axis, size in bad)
+        raise ValueError(
+            f"ttl.operation() grid {tuple(grid)} names no node: {listed}. "
+            "Every grid dimension must be one or more."
+        )
+
+
 def operation(
     grid: Union[str, Shape] = "full",
     fp32_dest_acc_en: Optional[bool] = None,
@@ -66,6 +89,11 @@ def operation(
     Returns:
         Decorated function with grid configuration
 
+    Raises:
+        TypeError: If an unrecognised keyword argument is passed.
+        ValueError: If ``math_fidelity`` is unsupported, or the grid names no
+            node (see :func:`_validate_grid`).
+
     Example:
         @ttl.operation(grid="full")
         def my_operation(a, b, out):
@@ -91,6 +119,8 @@ def operation(
                 else grid
             ),
         )
+
+        _validate_grid(actual_grid)
 
         # Create new globals dict that includes grid
         new_globals = func.__globals__.copy()

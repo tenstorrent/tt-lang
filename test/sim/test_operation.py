@@ -1338,6 +1338,42 @@ class TestHardwareKeywordsIgnored:
             ttl.operation(grid=(1, 1), totally_unknown_option=42)
 
 
+class TestGridValidation:
+    """A grid that names no node is rejected where it is written.
+
+    The node count is a product over the dimensions, so a zero dimension leaves
+    the run with nothing to schedule and a negative one is counted as its
+    absolute contribution.  Both are reported against the grid rather than as a
+    later failure to find a node's state.
+    """
+
+    @pytest.mark.parametrize("grid", [(0, 2), (2, 0), (0, 0), (1, 1, 0)])
+    def test_zero_dimension_rejected(self, grid: Shape) -> None:
+        """A dimension of zero names no node."""
+        with pytest.raises(ValueError, match="names no node"):
+            _make_passthrough_kernel(ttl.operation(grid=grid))
+
+    @pytest.mark.parametrize("grid", [(-1, 2), (-1, -2)])
+    def test_negative_dimension_rejected(self, grid: Shape) -> None:
+        """A negative dimension is rejected rather than multiplied out."""
+        with pytest.raises(ValueError, match="names no node"):
+            _make_passthrough_kernel(ttl.operation(grid=grid))
+
+    def test_empty_grid_rejected(self) -> None:
+        """A grid with no dimensions has no node to run on."""
+        with pytest.raises(ValueError, match="at least one dimension"):
+            _make_passthrough_kernel(ttl.operation(grid=()))
+
+    def test_message_names_the_offending_dimensions(self) -> None:
+        """The message points at which dimensions are wrong, and at the grid."""
+        with pytest.raises(ValueError) as excinfo:
+            _make_passthrough_kernel(ttl.operation(grid=(0, 2)))
+
+        reason = str(excinfo.value)
+        assert "(0, 2)" in reason, reason
+        assert "dimension 0 is 0" in reason, reason
+
+
 class TestOperationInterface:
     """The signature and body rules an operation must satisfy, with the compiler.
 
