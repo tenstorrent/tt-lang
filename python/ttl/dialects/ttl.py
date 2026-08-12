@@ -23,6 +23,7 @@ def ensure_dialects_registered(ctx):
 
 # Re-export C++-bound attributes/types for convenience.
 SliceAttr = ir.SliceAttr
+LogicalKernelAttr = ir.LogicalKernelAttr
 TensorBackingAttr = ir.TensorBackingAttr
 PipeRecordAttr = ir.PipeRecordAttr
 PipeNetRecordsAttr = ir.PipeNetRecordsAttr

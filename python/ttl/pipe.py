@@ -172,6 +172,15 @@ class Pipe:
         )
         return self.is_collective
 
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "pipe",
+            tuple(self.src),
+            tuple(self.dst_start),
+            tuple(self.dst_end),
+            self.is_collective,
+        )
+
 
 def _pipe_to_pipe_use(pipe: Pipe):
     """Convert a ttl.Pipe to a PipeUse for OperationPipeNets validation/build."""
@@ -251,6 +260,12 @@ class PipeNet:
             self._source_line = frame.lineno
         except (IndexError, AttributeError):
             pass
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "pipenet",
+            tuple(pipe._operation_identity_capture() for pipe in self.pipes),
+        )
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
