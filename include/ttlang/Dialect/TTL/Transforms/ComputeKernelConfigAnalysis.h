@@ -17,6 +17,8 @@
 
 namespace mlir::tt::ttl {
 
+struct LaunchNodeDomainState;
+
 /// User policy for a configuration value that may otherwise be inferred.
 enum class ConfigSelection {
   Auto,
@@ -102,6 +104,7 @@ struct TileExecutionDecision {
 /// One dataflow-buffer operand and the facts used to determine unpack mode.
 struct DFBInputUse {
   int64_t dfbIndex;
+  Value dfb;
   Operation *consumer;
   unsigned operandIndex;
   TilePrimitive primitive;
@@ -144,6 +147,14 @@ struct KernelRequirements {
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
 };
 
+/// Two logical DFBs whose static unpack requirements forbid physical aliasing.
+struct DFBConfigurationAliasConflict {
+  Value lhsDFB;
+  Value rhsDFB;
+  Operation *lhsOperation;
+  Operation *rhsOperation;
+};
+
 /// Complete configuration selected before any IR mutation. Apply the plan
 /// before mutating IR because its decisions contain operation pointers.
 class KernelConfigPlan {
@@ -178,8 +189,19 @@ private:
   llvm::SmallVector<TileExecutionDecision> tileStrategies;
 };
 
-/// Collect target-independent requirements and legal tile strategies.
-FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function);
+/// Collect executable requirements using exact launch-node counts.
+///
+/// Strategy choices are retained for exact-empty operations because later
+/// lowering requires a selected strategy. Their unreachable DFB, destination,
+/// and accumulation requirements do not constrain kernel configuration.
+FailureOr<KernelRequirements>
+collectKernelRequirements(func::FuncOp function,
+                          const LaunchNodeDomainState &launchDomains);
+
+/// Return conservative static-configuration conflicts between logical DFBs.
+SmallVector<DFBConfigurationAliasConflict>
+collectDFBConfigurationAliasConflicts(const KernelTargetEnvironment &target,
+                                      const KernelRequirements &requirements);
 
 /// Resolve one complete configuration from target, policy, and requirements.
 FailureOr<KernelConfigPlan> resolveKernelConfig(

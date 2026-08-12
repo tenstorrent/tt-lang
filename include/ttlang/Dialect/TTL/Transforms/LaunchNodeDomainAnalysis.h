@@ -189,6 +189,10 @@ std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
                                    const LaunchNodeDomainState &state);
 
+/// Return true when `op` executes zero times on every launch node.
+bool hasExactEmptyLaunchDomain(Operation *op,
+                               const LaunchNodeDomainState &state);
+
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch nodes.
 ///
