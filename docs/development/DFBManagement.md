@@ -1764,19 +1764,21 @@ with releases before finalization.
 
 ## Scalar Element Access to DFBs
 
-`ttl.raw_element_read` and `ttl.raw_element_write` give data movement (noc)
-threads per-element L1 access to DFB slots. The existing DFB interface
-operates on whole blocks; these ops fill the gap for use cases like KV-cache
-updates, top-K, and element-level data manipulation in DM threads.
+`ttl.raw_element_read`, `ttl.raw_element_write`, and `ttl.read_index` give data
+movement (noc) threads per-element L1 access to DFB slots. The existing DFB
+interface operates on whole blocks; these ops provide scalar access for uses
+such as KV-cache updates, top-K selection, and dynamic tensor slice indices.
 
 ```python
 val = ttl.raw_element_read(block, coord0, coord1, ...)
 ttl.raw_element_write(block, coord0, coord1, ..., val)
+index = ttl.read_index(block, coord0, coord1, ...)
 ```
 
 ```mlir
 %v = ttl.raw_element_read %block[%i, %j] : tensor<1x1x!ttcore.tile<32x32, f32>> -> f32
 ttl.raw_element_write %block[%i, %j], %v : tensor<1x1x!ttcore.tile<32x32, f32>>, f32
+%index = ttl.read_index %block[%i, %j] : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
 ```
 
 Coordinates are flat scalar-element positions (one per tensor dimension).
@@ -1784,16 +1786,26 @@ For tiled blocks, lowering will decompose each coordinate into tile index +
 intra-tile offset; for row-major blocks they map directly to memory offsets.
 Blocks of any rank are supported.
 
-The verifier (`verifyRawElementOp` in `TTLOps.cpp`) enforces:
+The verifiers enforce:
 
 1. Enclosing function is a noc kernel thread.
-2. Coordinate count equals block tensor rank.
-3. Scalar type matches the block's element dtype (resolved through
-   `TileType` for tiled blocks).
-4. Only `f32` and `bf16` are accepted.
+2. Read blocks come from `ttl.cb_wait`, and write blocks come from
+   `ttl.cb_reserve`.
+3. Coordinate count equals block tensor rank.
+4. Scalar read and write types match the block element type.
+5. Only `f32` and `bf16` block elements are accepted.
 
-Both ops carry `MemRead`/`MemWrite` side effects to prevent reordering
-across acquire/release boundaries.
+This is a scalar-access lowering restriction, not a DFB storage restriction.
+The lowering maps the 32-bit and 16-bit IEEE-754 representations to TTKernel
+L1 integer loads and stores. `ttl.read_index` decodes those representations
+with integer operations because noc kernels do not support generic
+floating-point-to-integer conversion.
+
+`ttl.read_index` truncates fractional values toward zero and returns an MLIR
+index. Its source must be finite, nonnegative, and no greater than INT32_MAX;
+behavior is undefined otherwise. The element-access operations carry
+appropriate `MemRead`/`MemWrite` side effects to prevent reordering across
+acquire/release boundaries.
 
 ### Lowering
 
