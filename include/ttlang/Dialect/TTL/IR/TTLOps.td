@@ -1412,7 +1412,7 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", "Broadcast",
     [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
-    Broadcasts a row, column, or scalar tile into a full 32x32 tile.
+    Broadcasts a row, column, or scalar within the output tile dimensions.
     Maps to ttkernel.unary_bcast_init + ttkernel.unary_bcast.
     Reads input from CB, writes result to DST. The output operand carries
     the output CB for init-time PACK configuration only.
