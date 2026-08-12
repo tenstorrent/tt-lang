@@ -27,6 +27,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdlib>
 #include <iterator>
 
 namespace mlir::tt::ttl {
@@ -227,6 +228,14 @@ struct TTLVerifyDFBSPSCPass
           });
     });
     if (!hasAcquisitionAction) {
+      return;
+    }
+
+    // Some externally synchronized programs enforce a stronger protocol than
+    // launch-domain analysis can represent. The explicit opt-out suppresses
+    // only SPSC domain analysis; finalized DFB identity checks above remain
+    // mandatory.
+    if (std::getenv("TTL_RELAX_DFB_SPSC")) {
       return;
     }
 
