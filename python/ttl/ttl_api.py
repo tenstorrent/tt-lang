@@ -821,6 +821,7 @@ class CompiledTTNNKernel:
         mesh_program_placements=None,
         device_domain=None,
         kernel_logical_selectors=None,
+        kernel_used_cb_indices=None,
         operation_name="<anonymous>",
         runtime_resource_factory: Optional[
             Callable[..., ProgramRuntimeResources]
@@ -863,6 +864,8 @@ class CompiledTTNNKernel:
                 execution uses ttnn.MeshProgramDescriptor.
             device_domain: Logical device domain used for per-device dispatch.
             kernel_logical_selectors: Logical selector for each compiled kernel.
+            kernel_used_cb_indices: Physical DFB indices referenced by each
+                final specialized kernel. None entries are conservative.
             operation_name: User-facing operation name for runtime diagnostics.
             runtime_resource_factory: Optional per-invocation resource callback.
         """
@@ -898,6 +901,11 @@ class CompiledTTNNKernel:
         self.kernel_logical_selectors = (
             list(kernel_logical_selectors)
             if kernel_logical_selectors is not None
+            else [None for _ in kernel_paths]
+        )
+        self.kernel_used_cb_indices = (
+            kernel_used_cb_indices
+            if kernel_used_cb_indices is not None
             else [None for _ in kernel_paths]
         )
         if runtime_resource_factory is not None:
@@ -964,6 +972,7 @@ class CompiledTTNNKernel:
                 fabric_manager_intervals=self.kernel_fabric_manager_intervals[
                     kernel_idx
                 ],
+                used_cb_indices=self.kernel_used_cb_indices[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -1122,6 +1131,20 @@ def _get_optional_kernel_i32_array_attr(module, kernel_name: str, attr_name: str
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
         return []
+    if not isinstance(attr, DenseI32ArrayAttr):
+        raise ValueError(
+            f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    return list(attr)
+
+
+def _get_kernel_optional_i32_array_attr(module, kernel_name: str, attr_name: str):
+    """Read an optional array while preserving missing versus empty."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(attr_name, None)
+    if attr is None:
+        return None
     if not isinstance(attr, DenseI32ArrayAttr):
         raise ValueError(
             f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
@@ -1476,6 +1499,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
+    kernel_used_cb_indices = []
     # Per-kernel single-core ranges (specialization path) and tensor indices
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
@@ -1514,6 +1538,9 @@ def _compile_ttnn_kernel(
         )
         kernel_fabric_runtime_arg_base_common_indices.append(
             _get_kernel_fabric_runtime_arg_base_common_index(module, name)
+        )
+        kernel_used_cb_indices.append(
+            _get_kernel_optional_i32_array_attr(module, name, "ttl.used_cb_indices")
         )
 
         # The specialized clone's launch coordinates (None on the default,
@@ -1612,6 +1639,7 @@ def _compile_ttnn_kernel(
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
+        kernel_used_cb_indices=kernel_used_cb_indices,
         operation_name=operation_name,
         runtime_resource_factory=runtime_resource_factory,
     )
@@ -1640,6 +1668,7 @@ def _compile_ttnn_kernel(
                 ),
                 logical_kernel=kernel_logical_selectors[kernel_idx],
                 fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
+                used_cb_indices=kernel_used_cb_indices[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -2742,6 +2771,7 @@ def _lower_program_to_kernel(
                 "ttkernel-specialize-cores",
                 "canonicalize",
                 "cse",
+                "ttkernel-annotate-cb-use",
             ]
         pipeline_passes += [
             "convert-ttkernel-to-emitc",

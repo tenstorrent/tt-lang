@@ -1404,6 +1404,29 @@ def TTKernelSpecializeCores
   ];
 }
 
+def TTKernelAnnotateCBUse
+    : Pass<"ttkernel-annotate-cb-use", "::mlir::ModuleOp"> {
+  let summary = "Record physical CB indices used by each TTKernel function";
+  let description = [{
+    Runs after per-core specialization and canonicalization, when untaken
+    coordinate branches have been removed. For each function, records the
+    sorted physical CB indices reached through surviving
+    `ttkernel.get_compile_time_arg_val` operations below
+    `ttl.base_cta_index` in `ttl.used_cb_indices`. The compile-time ABI places
+    every CB before tensor-accessor arguments, including CB ids passed to
+    opaque externs as scalar values.
+
+    Direct function calls are analyzed transitively. An unresolved call is
+    handled conservatively by recording every CB compile-time argument below
+    `ttl.base_cta_index`.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelCombinePackTiles
     : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
   let summary = "Combine consecutive pack_tile ops into pack_tile_block";
