@@ -905,11 +905,15 @@ def TTLVerifyPipeNetSchedule
     pipe events must be kernel-thread entry points or be reachable from one
     through direct calls. Definitions of one event kind for a pipe endpoint
     must belong to one kernel-thread function because independent kernel
-    threads have no program order. Each event must have an exact launch-node
-    domain. Multi-block regions that contribute pipe events, unknown event
-    domains, recursive calls containing pipe events, and schedules with more
-    than 4096 expanded event occurrences at one launch node are rejected
-    because the verifier cannot construct a correct bounded event graph.
+    threads have no program order. Events with statically analyzable predicates
+    use their exact launch-node domain. Otherwise, the static PipeNet endpoint
+    role provides a conservative domain that includes every possible event;
+    execution-count analysis still removes coordinates proven not to execute.
+    Multi-block regions that contribute pipe events, events without a finite
+    static role domain, recursive calls containing pipe events, and schedules
+    with more than 4096 expanded event occurrences at one launch node are
+    rejected because the verifier cannot construct a correct bounded event
+    graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
