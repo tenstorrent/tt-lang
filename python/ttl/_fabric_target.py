@@ -564,7 +564,12 @@ def apply_fabric_target_binding_plan(
     for manager in plan.managers:
         kernel_descriptor = program_descriptor.kernels[manager.kernel_index]
         node_x, node_y = manager.node_coordinates
-        caller_runtime_args = list(kernel_descriptor.runtime_args[node_x][node_y])
+        # TTNN stores per-core runtime arguments sparsely, so a manager core
+        # without operation-owned arguments has no descriptor entry.
+        try:
+            caller_runtime_args = list(kernel_descriptor.runtime_args[node_x][node_y])
+        except LookupError:
+            caller_runtime_args = []
         connection_node_ids = []
         connection_link_indices = []
         fabric_args = []
