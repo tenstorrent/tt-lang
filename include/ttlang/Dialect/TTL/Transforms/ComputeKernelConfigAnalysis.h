@@ -11,6 +11,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -114,6 +115,7 @@ struct DestinationUse {
   Operation *operation;
   TilePrimitive primitive;
   Type elementType;
+  std::uint64_t requiredDstSlots;
 };
 
 /// Requirements imposed by one legal execution strategy.
