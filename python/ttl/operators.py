@@ -40,9 +40,11 @@ def call_extern_func(
 ) -> None:
     """Call external C++ in selected logical kernels.
 
-    ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``. A
-    nonempty tuple emits the call once in each selected logical kernel. The
-    unified-operation splitter removes the selector before AST lowering.
+    ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``.
+    ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
+    supports multiple selectors, including operation-local kernels. The call is
+    emitted once in each selected logical kernel. The unified-operation splitter
+    removes the selector before AST lowering.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 

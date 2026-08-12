@@ -4,12 +4,18 @@
 
 """Inert logical-kernel selectors for simulator API compatibility."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum, auto
 
 
-class KernelKind(Enum):
-    """A target-independent kernel class."""
+class KernelKind(str, Enum):
+    """A target-independent kernel class used by simulator execution state.
+
+    String-backed members match the compiler API and retain C-level hashing for
+    simulator state dictionaries.
+    """
 
     @staticmethod
     def _generate_next_value_(name, start, count, last_values):
@@ -18,6 +24,11 @@ class KernelKind(Enum):
 
     COMPUTE = auto()
     DATA_MOVEMENT = auto()
+
+    def __or__(self, other: object) -> tuple[KernelKind, KernelKind]:
+        if not isinstance(other, KernelKind):
+            return NotImplemented
+        return (self, other)
 
 
 @dataclass(frozen=True)

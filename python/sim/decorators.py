@@ -14,9 +14,8 @@ import types
 from types import CellType, FunctionType
 from typing import Any, Callable, Dict, List
 
-from .blockstate import KernelType
 from .context import get_context
-from .kernel import KernelSelector
+from .kernel import KernelKind, KernelSelector
 from .typedefs import BindableTemplate
 
 
@@ -98,7 +97,7 @@ def compute(
         class ComputeTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            kernel_type = KernelType.COMPUTE  # KernelType enum for type safety
+            kernel_type = KernelKind.COMPUTE
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-node closure
@@ -131,7 +130,7 @@ def datamovement(
         class DMTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            kernel_type = KernelType.DM  # KernelType enum for type safety
+            kernel_type = KernelKind.DATA_MOVEMENT
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = rebind_func_with_ctx(func, ctx)

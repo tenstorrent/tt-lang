@@ -38,6 +38,16 @@ def compute_external(inp):
     )
 ```
 
+Combine canonical kernel kinds with `|` when one call executes in both:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "shared_entry",
+    kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
 An operation-local `Kernel` distinguishes multiple kernels with the same
 kind. An operation factory may create one handle and capture it in the
 operation and related factory callbacks. Operation registration binds the
@@ -102,11 +112,13 @@ Factory-created operations with different immutable nonlocal captures receive
 different deterministic operation identities. Equal captures retain the same
 identity.
 
-An external call accepts one selector or a nonempty tuple of distinct
-selectors. A tuple emits the call once in every selected logical kernel. A
-call may omit `kernel=` when its enclosing callback already determines one
-logical kernel. A top-level opaque call without a selector is invalid because
-the compiler cannot infer placement from C++ code.
+An external call accepts one selector or multiple distinct selectors. The `|`
+syntax combines `KernelKind` values. A nonempty tuple supports selections that
+include operation-local `Kernel` handles. Multiple selectors emit the call once
+in every selected logical kernel. A call may omit `kernel=` when its enclosing
+callback already determines one logical kernel. A top-level opaque call without
+a selector is invalid because the compiler cannot infer placement from C++
+code.
 
 The target backend assigns logical kernels to its supported kernel resources.
 Compilation fails when an operation requests more kernels of a kind than the

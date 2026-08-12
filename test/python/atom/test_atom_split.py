@@ -26,7 +26,7 @@ from ttl.atom import (
     _build_atom_spec,
     _lift_setup,
 )
-from ttl.kernel import Kernel, KernelKind
+from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 
 def _fn(src: str) -> ast.FunctionDef:
@@ -277,6 +277,110 @@ def test_factory_instances_with_equal_captures_share_logical_identity():
         first_helper._spec.operation_identity == second_helper._spec.operation_identity
     )
     assert first_reader == second_reader
+
+
+def test_factory_instances_with_different_callees_keep_distinct_kernels():
+    """Composed operation identity distinguishes generated parent kernels."""
+
+    def make_callee(entry):
+        @ttl.operation()
+        def selected_callee():
+            ttl.call_extern_func(
+                "callee.hpp",
+                entry,
+                kernel=KernelKind.DATA_MOVEMENT,
+            )
+
+        return selected_callee
+
+    def make_parent(selected_callee):
+        reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+        @ttl.operation()
+        def selected_parent():
+            selected_callee()
+            ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+
+        return selected_parent, reader
+
+    first_parent, first_reader = make_parent(make_callee("first_entry"))
+    second_parent, second_reader = make_parent(make_callee("second_entry"))
+
+    assert (
+        first_parent._spec.operation_identity != second_parent._spec.operation_identity
+    )
+    assert first_reader != second_reader
+
+
+def test_operation_identity_encodes_pipe_topology():
+    """Pipe topology distinguishes factory-created operations."""
+
+    def identity_for(destination):
+        pipe = ttl.Pipe(src=(0, 0), dst=destination)
+
+        def selected_operation():
+            return pipe
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((1, 0)) == identity_for((1, 0))
+    assert identity_for((1, 0)) != identity_for((2, 0))
+
+
+def test_operation_identity_encodes_pipenet_topology():
+    """Local PipeNet topology distinguishes factory-created operations."""
+
+    def identity_for(destination):
+        pipe_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=destination)])
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((1, 0)) == identity_for((1, 0))
+    assert identity_for((1, 0)) != identity_for((2, 0))
+
+
+def test_operation_identity_encodes_graph_pipenet_topology():
+    """Graph PipeNet identity includes its domain and transfer relation."""
+
+    def identity_for(destination):
+        domain = ttl.DeviceDomain((1, 3))
+        graph = ttl.TransferGraph.edges(
+            domain,
+            edges=[((0, 0), destination)],
+        )
+        pipe_net = ttl.PipeNet(graph=graph)
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((0, 1)) == identity_for((0, 1))
+    assert identity_for((0, 1)) != identity_for((0, 2))
+
+
+def test_operation_identity_rejects_unsupported_nonlocal_capture():
+    """Unsupported captures cannot silently collapse distinct operations."""
+
+    class UnsupportedCapture:
+        pass
+
+    unsupported_capture = UnsupportedCapture()
+
+    def selected_operation():
+        return unsupported_capture
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "operation identity cannot encode nonlocal capture "
+            "'unsupported_capture' of type UnsupportedCapture"
+        ),
+    ):
+        _operation_identity(selected_operation)
 
 
 def test_composition_preserves_body_local_kernel_declaration():
@@ -698,6 +802,61 @@ def test_external_call_tuple_selects_multiple_logical_kernels():
         assert "kernel=" not in source
 
 
+def test_external_call_kind_union_selects_multiple_logical_kernels():
+    """A kind union selects both canonical logical kernels."""
+    fn = _fn(
+        """
+        def k():
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    assert result.kernels == (
+        KernelKind.COMPUTE,
+        KernelKind.DATA_MOVEMENT,
+    )
+    for kernel in result.kernels:
+        source = _kernel_src(result, kernel)
+        assert source.count("call_extern_func") == 1
+        assert "kernel=" not in source
+
+
+def test_kernel_kind_union_builds_tuple_selection():
+    """The public union expression evaluates to an accepted selector tuple."""
+    assert KernelKind.COMPUTE | KernelKind.DATA_MOVEMENT == (
+        KernelKind.COMPUTE,
+        KernelKind.DATA_MOVEMENT,
+    )
+
+
+def test_external_call_kind_union_rejects_named_kernel():
+    """Named logical kernels remain explicit tuple elements."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k():
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                kernel=ttl.KernelKind.COMPUTE | reader,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="kind union operands must be KernelKind"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader},
+        )
+
+
 @pytest.mark.parametrize(
     "selector, message",
     [
@@ -762,6 +921,25 @@ def test_acquire_rejects_kernel_selector(acquire, form):
     with pytest.raises(
         ValueError,
         match=rf"kernel= is not supported on DFB {acquire}\(\)",
+    ):
+        split_function_body(fn, dfb_param_names={"buffer"})
+
+
+@pytest.mark.parametrize("method", ["push", "pop"])
+def test_release_rejects_kind_union(method):
+    """A DFB release executes in exactly one logical kernel."""
+    fn = _fn(
+        f"""
+        def k():
+            block = buffer.reserve()
+            block.{method}(
+                kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT
+            )
+        """
+    )
+
+    with pytest.raises(
+        ValueError, match="accepts one kernel selector, not a kind union"
     ):
         split_function_body(fn, dfb_param_names={"buffer"})
 

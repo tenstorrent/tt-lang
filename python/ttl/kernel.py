@@ -25,6 +25,11 @@ class KernelKind(Enum):
     COMPUTE = str(_TableGenLogicalKernelKind.Compute)
     DATA_MOVEMENT = str(_TableGenLogicalKernelKind.DataMovement)
 
+    def __or__(self, other: object) -> tuple[KernelKind, KernelKind]:
+        if not isinstance(other, KernelKind):
+            return NotImplemented
+        return (self, other)
+
 
 @dataclass(frozen=True)
 class _KernelIdentity:
@@ -220,31 +225,77 @@ def _encode_identity_literal(value) -> Optional[bytes]:
     return None
 
 
-def _operation_identity(function: Callable) -> str:
-    """Return a deterministic semantic identity shared by both operation forms."""
+def _encode_identity_capture(
+    name: str, value: object, active_functions: set[int]
+) -> bytes:
+    encoded = _encode_identity_literal(value)
+    if encoded is not None:
+        return encoded
+    if isinstance(value, Kernel):
+        return f"kernel-kind:{value.kind.value}".encode("utf-8")
+
+    semantic_identity = getattr(value, "_operation_identity_capture", None)
+    if callable(semantic_identity):
+        encoded = _encode_identity_literal(semantic_identity())
+        if encoded is not None:
+            return b"semantic:" + encoded
+
+    if inspect.ismodule(value):
+        return f"module:{value.__name__}".encode("utf-8")
+    if inspect.isfunction(value):
+        identity = _operation_identity_impl(value, active_functions)
+        return f"function:{identity}".encode("utf-8")
+    if inspect.isbuiltin(value) or inspect.isclass(value):
+        module = getattr(value, "__module__", "")
+        qualname = getattr(value, "__qualname__", "")
+        if module and qualname:
+            return f"callable:{module}.{qualname}".encode("utf-8")
+
+    raise TypeError(
+        "operation identity cannot encode nonlocal capture "
+        f"{name!r} of type {type(value).__name__}"
+    )
+
+
+def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
+    function_id = id(function)
+    if function_id in active_functions:
+        raise TypeError(
+            "operation identity cannot encode recursive nonlocal function "
+            f"{function.__qualname__!r}"
+        )
+    active_functions.add(function_id)
+
     base_identity = f"{function.__module__}.{function.__qualname__}"
     try:
         nonlocal_captures = inspect.getclosurevars(function).nonlocals
     except (TypeError, ValueError):
+        active_functions.remove(function_id)
         return base_identity
 
-    encoded_captures = []
-    for name, value in sorted(nonlocal_captures.items()):
-        encoded = _encode_identity_literal(value)
-        if encoded is None:
-            continue
-        encoded_name = name.encode("utf-8")
-        encoded_captures.append(
-            f"{len(encoded_name)}:".encode("ascii")
-            + encoded_name
-            + f"{len(encoded)}:".encode("ascii")
-            + encoded
-        )
+    try:
+        encoded_captures = []
+        for name, value in sorted(nonlocal_captures.items()):
+            encoded = _encode_identity_capture(name, value, active_functions)
+            encoded_name = name.encode("utf-8")
+            encoded_captures.append(
+                f"{len(encoded_name)}:".encode("ascii")
+                + encoded_name
+                + f"{len(encoded)}:".encode("ascii")
+                + encoded
+            )
+    finally:
+        active_functions.remove(function_id)
     if not encoded_captures:
         return base_identity
 
     digest = hashlib.sha256(b"".join(encoded_captures)).hexdigest()[:16]
     return f"{base_identity}[captures={digest}]"
+
+
+def _operation_identity(function: Callable) -> str:
+    """Return a deterministic semantic identity shared by both operation forms."""
+    return _operation_identity_impl(function, set())
 
 
 def _bind_kernel_declarations(
