@@ -4,6 +4,7 @@
 
 # REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s 2>&1 | FileCheck %s
+# RUN: env TTLANG_COMPILE_ONLY=1 TTL_RELAX_DFB_SPSC=1 %python %s
 
 """Compile-only coverage for DFB SPSC rejection in frontend-generated IR.
 
