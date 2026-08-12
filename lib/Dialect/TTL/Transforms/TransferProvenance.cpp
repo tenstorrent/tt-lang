@@ -116,6 +116,9 @@ findUniquePipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
         if (origin.getDefiningOp<PipeTransferSendOp>()) {
           return std::optional<CopyOp>();
         }
+        if (origin.getDefiningOp<CopyTensorPageOp>()) {
+          return std::optional<CopyOp>();
+        }
         return failure();
       });
 }
@@ -172,10 +175,12 @@ LogicalResult verifyWait(WaitOp op, ValueOriginAnalysis &analysis) {
   const OriginSet &origins = analysis.getOrigins(op.getXf());
   if (!origins.allMatch([](Value origin) {
         return origin.getDefiningOp<CopyOp>() ||
+               origin.getDefiningOp<CopyTensorPageOp>() ||
                origin.getDefiningOp<PipeTransferSendOp>();
       })) {
-    return op.emitOpError() << "expects operand to be derived from ttl.copy or "
-                               "ttl.pipe_transfer.send";
+    return op.emitOpError()
+           << "expects operand to be derived from ttl.copy, "
+              "ttl.copy_tensor_page, or ttl.pipe_transfer.send";
   }
 
   bool hasPipeSend = false;
@@ -183,7 +188,8 @@ LogicalResult verifyWait(WaitOp op, ValueOriginAnalysis &analysis) {
   for (Value origin : origins) {
     hasPipeSend |=
         static_cast<bool>(origin.getDefiningOp<PipeTransferSendOp>());
-    hasCopy |= static_cast<bool>(origin.getDefiningOp<CopyOp>());
+    hasCopy |= static_cast<bool>(origin.getDefiningOp<CopyOp>()) ||
+               static_cast<bool>(origin.getDefiningOp<CopyTensorPageOp>());
   }
   if (hasPipeSend && hasCopy) {
     return op.emitOpError()

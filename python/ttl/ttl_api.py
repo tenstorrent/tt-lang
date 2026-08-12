@@ -127,7 +127,7 @@ from .kernel import (
     _selector_kind,
 )
 from .runtime_resources import ProgramRuntimeResources
-from .operators import CopyTransferHandler, TensorBlock, copy
+from .operators import CopyTransferHandler, TensorBlock, copy, copy_tensor_page
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
 
@@ -3025,5 +3025,6 @@ __all__ = [
     "CircularBuffer",
     "CopyTransferHandler",
     "copy",
+    "copy_tensor_page",
     "CompiledTTNNKernel",
 ]

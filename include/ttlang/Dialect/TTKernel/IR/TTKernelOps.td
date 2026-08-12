@@ -3584,19 +3584,25 @@ def TTKernel_NocAsyncReadOp
 }
 
 def TTKernel_NocAsyncReadTileOp
-    : TTKernel_NocReadCommandOp<"noc_async_read_tile"> {
-    let summary = "NocAsyncReadTile";
-    let description = [{
-      NocAsyncReadTile
+    : TTKernel_NocReadCommandOp<"noc_async_read_tile",
+                                [AttrSizedOperandSegments]> {
+  let summary = "NocAsyncReadTile";
+  let description = [{
+      Initiates an asynchronous read from a page selected through a
+      `TensorAccessor`. The accessor always defines page stride and address
+      mapping. When `size` is absent, the transfer extent is the accessor's
+      aligned page size. When `size` is present, it defines the transfer extent
+      without changing the accessor's page stride or address mapping.
     }];
 
     let arguments = (ins I32:$id,
                          TTKernel_TensorAccessor:$addrGenStruct,
                          I32:$dstLocalL1Addr,
+                         Optional<I32>:$size,
                          Optional<I8>:$noc);
 
     let assemblyFormat = [{
-      `(` $id `,` $addrGenStruct `,` $dstLocalL1Addr (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` $id `,` $addrGenStruct `,` $dstLocalL1Addr (`,` $noc^)? (`,` `size` $size^)? `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 

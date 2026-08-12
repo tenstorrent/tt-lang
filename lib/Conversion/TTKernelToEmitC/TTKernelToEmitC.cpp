@@ -2030,11 +2030,21 @@ public:
     SmallVector<Value, 4> operands;
     std::string callStr;
     if constexpr (isRead) {
-      operands.append({adaptor.getAddrGenStruct(), adaptor.getDstLocalL1Addr(),
-                       adaptor.getAddrGenStruct(), adaptor.getId()});
-      callStr = *nocName + ".async_read({}, CoreLocalMem<uint32_t>({}), "
-                           "{}.get_aligned_page_size(), "
-                           "{{.page_id = static_cast<uint32_t>({})}, {{});";
+      operands.append(
+          {adaptor.getAddrGenStruct(), adaptor.getDstLocalL1Addr()});
+      if (Value size = adaptor.getSize()) {
+        operands.push_back(size);
+        callStr = *nocName + ".async_read({}, CoreLocalMem<uint32_t>({}), "
+                             "{}, {{.page_id = static_cast<uint32_t>({})}, "
+                             "{{});";
+      } else {
+        operands.push_back(adaptor.getAddrGenStruct());
+        callStr = *nocName + ".async_read({}, CoreLocalMem<uint32_t>({}), "
+                             "{}.get_aligned_page_size(), "
+                             "{{.page_id = static_cast<uint32_t>({})}, "
+                             "{{});";
+      }
+      operands.push_back(adaptor.getId());
     } else {
       operands.append({adaptor.getSrcLocalL1Addr(), adaptor.getAddrGenStruct(),
                        adaptor.getAddrGenStruct(), adaptor.getId()});

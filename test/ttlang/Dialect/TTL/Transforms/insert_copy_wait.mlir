@@ -89,3 +89,24 @@ func.func @mixed_copy_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout3>
   %xf2 = ttl.copy %slice1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout3>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
   func.return
 }
+
+// -----
+
+#row_major = #ttl.layout<shape = [4, 64], element_type = bf16,
+                         buffer = dram, grid = [1, 1], memory = interleaved>
+
+// CHECK-LABEL: func.func @copy_tensor_page_no_wait
+// CHECK: %[[PAGE_XF:.+]] = ttl.copy_tensor_page
+// CHECK-NEXT: ttl.wait %[[PAGE_XF]] : !ttl.transfer_handle<read>
+// CHECK: return
+func.func @copy_tensor_page_no_wait(
+    %source: tensor<4x64xbf16, #row_major>, %page: index)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>
+  %xf = ttl.copy_tensor_page %source[%page], %dfb
+      : tensor<4x64xbf16, #row_major>,
+        !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>
+      -> !ttl.transfer_handle<read>
+  func.return
+}

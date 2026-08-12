@@ -176,6 +176,47 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let hasVerifier = 1;
 }
 
+def TTL_CopyTensorPageOp : TTL_Op<"copy_tensor_page",
+    [MemoryEffects<[MemRead, MemWrite]>, TTL_DataMovementOpTrait]> {
+  let summary = "Copy one row-major tensor page into a dataflow buffer block";
+  let description = [{
+    `ttl.copy_tensor_page` initiates one asynchronous NOC read from a rank-2,
+    interleaved row-major tensor argument into a reserved tiled dataflow buffer
+    block. `page_id` selects a complete source row. The source row and
+    destination block must have the same scalar data type and byte count.
+
+    The source tensor's runtime `TensorAccessor` defines the aligned page stride,
+    address mapping, and memory placement. The transfer extent is the logical
+    source-row byte count, independent of any alignment padding between source
+    rows. The source supports BF16 and FP32 in DRAM or L1. The destination uses
+    tiled storage so subsequent TT-Lang operations can consume the copied row
+    without an intermediate layout conversion.
+
+    This operation is non-blocking. The destination is safe to use after
+    synchronizing the returned read handle with `ttl.wait`. It is valid only in
+    a data movement thread.
+
+    Example:
+    ```mlir
+    %xf = ttl.copy_tensor_page %table[%row], %destination
+          : tensor<5120x7168xbf16, #layout>,
+            !ttl.cb<[1, 224], !ttcore.tile<1x32, bf16>, 1>
+          -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    ```
+  }];
+  let arguments = (ins
+    TTLLayoutTensor:$source,
+    Index:$page_id,
+    TTL_TiledCircularBuffer:$destination
+  );
+  let results = (outs TTL_ReadTransferHandle:$xf);
+  let assemblyFormat =
+      "$source `[` $page_id `]` `,` $destination attr-dict `:` "
+      "type($source) `,` type($destination) `->` type($xf)";
+  let hasVerifier = 1;
+}
+
 def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Wait on a transfer handle";
   let description = [{

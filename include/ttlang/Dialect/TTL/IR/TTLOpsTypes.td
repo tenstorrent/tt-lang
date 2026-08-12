@@ -24,6 +24,23 @@ def TTLLayoutTensor : TypeConstraint<
     ]>,
     "ranked tensor with TTL layout encoding">;
 
+def TTL_TiledCircularBuffer : TypeConstraint<
+    And<[
+      CPred<"llvm::isa<mlir::tt::ttl::CircularBufferType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttcore::TileType>("
+            "llvm::cast<mlir::tt::ttl::CircularBufferType>($_self)."
+            "getElementType())">
+    ]>,
+    "dataflow buffer with tiled storage">;
+
+def TTL_ReadTransferHandle : TypeConstraint<
+    And<[
+      CPred<"llvm::isa<mlir::tt::ttl::TransferHandleType>($_self)">,
+      CPred<"llvm::cast<mlir::tt::ttl::TransferHandleType>($_self).getKind() "
+            "== mlir::tt::ttl::TransferKind::read">
+    ]>,
+    "read transfer handle">;
+
 //===----------------------------------------------------------------------===//
 // TTL type definitions
 //===----------------------------------------------------------------------===//

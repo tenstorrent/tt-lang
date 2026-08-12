@@ -1559,7 +1559,7 @@ static LogicalResult lowerTensorCBCopy(
 
         if (isRead) {
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
-                                          accessor, cbAddr, nocVal);
+                                          accessor, cbAddr, Value{}, nocVal);
         } else {
           ttk::NocAsyncWriteTileOp::create(
               loopBuilder, bodyLoc, tensorTileIdx32, accessor, cbAddr, nocVal);
@@ -1583,6 +1583,68 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
           op, "tensor_slice has remaining uses after copy lowering");
     }
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CopyTensorPageLowering : OpConversionPattern<CopyTensorPageOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CopyTensorPageOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto *typeConverter = this->getTypeConverter();
+    if (!typeConverter) {
+      return rewriter.notifyMatchFailure(op, "no type converter");
+    }
+
+    FailureOr<TensorAccessorInfo> accessorInfo =
+        getTensorAccessorInfo(op.getSource(), op, rewriter);
+    if (failed(accessorInfo)) {
+      return failure();
+    }
+    if (accessorInfo->pageSizeBytes) {
+      return rewriter.notifyMatchFailure(
+          op, "copy_tensor_page requires row-major tensor storage");
+    }
+
+    FailureOr<CircularBufferType> destinationType =
+        utils::getTTLCircularBufferType(adaptor.getDestination());
+    if (failed(destinationType)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to get destination DFB type");
+    }
+    FailureOr<Value> destination = utils::convertTTLCBToTTKernel(
+        adaptor.getDestination(), rewriter, op.getLoc());
+    if (failed(destination)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to convert destination DFB");
+    }
+
+    Location loc = op.getLoc();
+    Value bankBase =
+        getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
+    Value accessor = materializeTensorAccessor(op.getSource(), bankBase,
+                                               *accessorInfo, rewriter);
+    Value destinationAddress =
+        ttk::GetWritePtrOp::create(rewriter, loc, *destination).getResult();
+    Value pageId = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getI32Type(), adaptor.getPageId());
+    auto sourceType = mlir::cast<RankedTensorType>(op.getSource().getType());
+    uint64_t elementBytes = mlir::isa<BFloat16Type>(sourceType.getElementType())
+                                ? sizeof(uint16_t)
+                                : sizeof(uint32_t);
+    uint64_t sourceRowBytes =
+        static_cast<uint64_t>(sourceType.getDimSize(1)) * elementBytes;
+    Value transferSize = arith::ConstantIntOp::create(
+        rewriter, loc, static_cast<int64_t>(sourceRowBytes), 32);
+
+    int64_t nocIndex = getNocIndex(op);
+    Value noc = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                          rewriter.getI8IntegerAttr(nocIndex));
+    ttk::NocAsyncReadTileOp::create(rewriter, loc, pageId, accessor,
+                                    destinationAddress, transferSize, noc);
+    rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
     return success();
   }
 };
@@ -2511,7 +2573,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // until the tile ops lowering phase. Raw element access ops are lowered here
   // despite carrying the DataMovement trait.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
-    if (llvm::isa<RawElementReadOp, ReadIndexOp, RawElementWriteOp>(op)) {
+    if (llvm::isa<CopyTensorPageOp, RawElementReadOp, ReadIndexOp,
+                  RawElementWriteOp>(op)) {
       return false;
     }
     return tt::ttl::isTileComputeOp(op) ||
@@ -2634,6 +2697,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, pipeTransportPlan,
                              transportSlotCounters);
+  patterns.add<CopyTensorPageLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeModulePlan,
                                          postSequenceCounters, pipeResourcePlan,
                                          fabricRuntime);

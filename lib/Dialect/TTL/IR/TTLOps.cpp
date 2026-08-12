@@ -705,6 +705,99 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::CopyTensorPageOp::verify() {
+  auto kernel = mlir::tt::ttl::getEnclosingKernelThread(getOperation());
+  if (!kernel) {
+    return emitOpError() << "must be inside a function with '"
+                         << mlir::tt::ttl::kKernelThreadAttrName
+                         << "' attribute";
+  }
+  auto thread = kernel->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+      mlir::tt::ttl::kKernelThreadAttrName);
+  if (!thread || thread.getValue() != mlir::tt::ttkernel::ThreadType::Noc) {
+    return emitOpError() << "is only allowed in data movement (noc) threads";
+  }
+
+  auto sourceArgument = mlir::dyn_cast<mlir::BlockArgument>(getSource());
+  if (!sourceArgument ||
+      sourceArgument.getParentBlock() != &kernel.getBody().front()) {
+    return emitOpError()
+           << "source must be an entry-block argument of its kernel function";
+  }
+
+  auto sourceType = mlir::cast<mlir::RankedTensorType>(getSource().getType());
+  if (!sourceType.hasStaticShape() || sourceType.getRank() != 2) {
+    return emitOpError() << "source must have static rank 2, got "
+                         << sourceType;
+  }
+
+  auto layout = mlir::cast<LayoutAttr>(sourceType.getEncoding());
+  if (layout.getMemoryLayout() != TensorMemoryLayout::Interleaved) {
+    return emitOpError() << "source must use interleaved row-major memory";
+  }
+  if (layout.getBufferType() != BufferType::DRAM &&
+      layout.getBufferType() != BufferType::L1) {
+    return emitOpError() << "source buffer must be DRAM or L1";
+  }
+  if (layout.getShape() != sourceType.getShape()) {
+    return emitOpError() << "source layout shape must match tensor shape";
+  }
+
+  Type sourceElementType = sourceType.getElementType();
+  if (!mlir::isa<mlir::BFloat16Type, mlir::Float32Type>(sourceElementType)) {
+    return emitOpError() << "source must use row-major bf16 or f32 elements, "
+                         << "got " << sourceElementType;
+  }
+  if (layout.getElementType() != sourceElementType) {
+    return emitOpError() << "source layout element type must match tensor "
+                            "element type";
+  }
+
+  auto destinationType =
+      mlir::cast<CircularBufferType>(getDestination().getType());
+  auto destinationTileType =
+      mlir::cast<ttcore::TileType>(destinationType.getElementType());
+
+  ttcore::DataType expectedDataType =
+      mlir::isa<mlir::BFloat16Type>(sourceElementType)
+          ? ttcore::DataType::BFloat16
+          : ttcore::DataType::Float32;
+  if (destinationTileType.getDataType() != expectedDataType) {
+    return emitOpError()
+           << "destination tile data type must match source element type";
+  }
+
+  uint64_t sourceElementBytes =
+      mlir::isa<mlir::BFloat16Type>(sourceElementType) ? 2 : 4;
+  uint64_t sourceColumns = static_cast<uint64_t>(sourceType.getDimSize(1));
+  if (sourceColumns >
+      std::numeric_limits<uint64_t>::max() / sourceElementBytes) {
+    return emitOpError() << "source row byte count is not representable";
+  }
+  uint64_t sourceRowBytes = sourceColumns * sourceElementBytes;
+  if (sourceRowBytes > std::numeric_limits<uint32_t>::max()) {
+    return emitOpError() << "source row byte count must fit in a 32-bit NOC "
+                            "transfer size, got "
+                         << sourceRowBytes;
+  }
+
+  uint64_t destinationPages =
+      static_cast<uint64_t>(destinationType.getElementsPerBlock());
+  uint64_t destinationPageBytes = destinationTileType.getSizeBytes();
+  if (destinationPages >
+      std::numeric_limits<uint64_t>::max() / destinationPageBytes) {
+    return emitOpError() << "destination block byte count is not representable";
+  }
+  uint64_t destinationBlockBytes = destinationPages * destinationPageBytes;
+  if (sourceRowBytes != destinationBlockBytes) {
+    return emitOpError() << "source row byte count (" << sourceRowBytes
+                         << ") must equal destination block byte count ("
+                         << destinationBlockBytes << ")";
+  }
+
+  return mlir::success();
+}
+
 static mlir::LogicalResult
 verifyPipeNetForeachBody(mlir::Operation *op, mlir::Region &body,
                          mlir::Type expectedArgType) {

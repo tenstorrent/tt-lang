@@ -75,18 +75,22 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
     return protocolUseMatchesAcquire(interval, access);
   }
 
-  auto copy = dyn_cast<CopyOp>(user);
-  if (!copy) {
-    return true;
+  if (auto copyTensorPage = dyn_cast<CopyTensorPageOp>(user)) {
+    return interval.kind == DFBAcquireReleaseKind::Producer &&
+           copyTensorPage.getDestination() == interval.dfb;
   }
 
-  switch (interval.kind) {
-  case DFBAcquireReleaseKind::Producer:
-    return copy.getDst() == interval.dfb;
-  case DFBAcquireReleaseKind::Consumer:
-    return copy.getSrc() == interval.dfb;
+  if (auto copy = dyn_cast<CopyOp>(user)) {
+    switch (interval.kind) {
+    case DFBAcquireReleaseKind::Producer:
+      return copy.getDst() == interval.dfb;
+    case DFBAcquireReleaseKind::Consumer:
+      return copy.getSrc() == interval.dfb;
+    }
+    llvm_unreachable("unknown DFB acquire/release kind");
   }
-  llvm_unreachable("unknown DFB acquire/release kind");
+
+  return true;
 }
 
 /// Returns true when a direct DFB operand does not consume an acquired slot.

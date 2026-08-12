@@ -6,8 +6,8 @@
 // TTL Insert Copy Wait
 //===----------------------------------------------------------------------===//
 //
-// Inserts missing ttl.wait for ttl.copy ops whose transfer handle has no
-// wait user. The wait is placed immediately after the copy.
+// Inserts missing ttl.wait for asynchronous copy operations whose transfer
+// handle has no wait user. The wait is placed immediately after the copy.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,8 +31,7 @@ struct TTLInsertCopyWaitPass
     func::FuncOp func = getOperation();
     OpBuilder builder(func.getContext());
 
-    func.walk([&](CopyOp copy) {
-      Value handle = copy.getXf();
+    auto insertWait = [&](Operation *copy, Value handle) {
       bool hasWait = llvm::any_of(
           handle.getUsers(), [](Operation *user) { return isa<WaitOp>(user); });
       if (hasWait) {
@@ -40,7 +39,16 @@ struct TTLInsertCopyWaitPass
       }
 
       builder.setInsertionPointAfter(copy);
-      WaitOp::create(builder, copy.getLoc(), handle);
+      WaitOp::create(builder, copy->getLoc(), handle);
+    };
+
+    func.walk([&](Operation *operation) {
+      if (auto copy = dyn_cast<CopyOp>(operation)) {
+        insertWait(copy, copy.getXf());
+      } else if (auto copyTensorPage =
+                     dyn_cast<CopyTensorPageOp>(operation)) {
+        insertWait(copyTensorPage, copyTensorPage.getXf());
+      }
     });
   }
 };
