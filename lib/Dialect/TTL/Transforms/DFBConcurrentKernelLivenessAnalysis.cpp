@@ -110,6 +110,27 @@ struct LivenessDomainState : LaunchNodeDomainState {
 using AccessExecutionCounts =
     DenseMap<const DFBAccessOccurrence *, std::optional<std::uint64_t>>;
 
+static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
+    Operation *operation, AccessDomain accessDomain,
+    const LivenessDomainState &domainState) {
+  if (accessDomain.domain.known) {
+    return accessDomain;
+  }
+
+  LaunchNodeDomain exactDomain;
+  for (LaunchNodeCoord node : domainState.baseDomain.nodes) {
+    std::optional<std::uint64_t> executionCount =
+        getExactExecutionCountAtLaunchNode(operation, node, domainState);
+    if (!executionCount) {
+      return accessDomain;
+    }
+    if (*executionCount > 0) {
+      exactDomain.nodes.insert(node);
+    }
+  }
+  return {std::move(exactDomain), nullptr};
+}
+
 // Unknown membership is included only for counterfactual diagnostics. Reuse
 // proofs continue to require exact launch-node membership.
 static bool mayContainLaunchNode(const LaunchNodeDomain &domain,
@@ -996,14 +1017,16 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
     for (DFBAccessOccurrence &access : logicalDFB.accesses) {
       auto domainIt = domainState.accessDomains.find(access.operation);
+      AccessDomain accessDomain;
       if (domainIt == domainState.accessDomains.end()) {
-        access.launchDomain = LaunchNodeDomain::unknown();
-        access.unanalyzableDomainOperation = access.operation;
+        accessDomain = {LaunchNodeDomain::unknown(), access.operation};
       } else {
-        access.launchDomain = domainIt->second.domain;
-        access.unanalyzableDomainOperation =
-            domainIt->second.unanalyzableOperation;
+        accessDomain = domainIt->second;
       }
+      accessDomain = refineUnknownAccessDomainFromExecutionCounts(
+          access.operation, accessDomain, domainState);
+      access.launchDomain = accessDomain.domain;
+      access.unanalyzableDomainOperation = accessDomain.unanalyzableOperation;
       logicalDFB.launchDomain =
           logicalDFB.launchDomain.unionWith(access.launchDomain);
     }
@@ -1018,6 +1041,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         domainIt == domainState.accessDomains.end()
             ? AccessDomain{LaunchNodeDomain::unknown(), unknownAccess}
             : domainIt->second;
+    accessDomain = refineUnknownAccessDomainFromExecutionCounts(
+        unknownAccess, accessDomain, domainState);
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
       if (logicalDFB.compilerCreated) {
         continue;
