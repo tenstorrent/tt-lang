@@ -28,7 +28,7 @@ from ttl.atom import (
     _lift_setup,
 )
 from ttl.compiler_options import CompilerOptions
-from ttl.kernel import Kernel, KernelKind
+from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 
 def _fn(src: str) -> ast.FunctionDef:
@@ -315,6 +315,97 @@ def test_factory_instances_with_equal_captures_share_logical_identity():
         first_helper._spec.operation_identity == second_helper._spec.operation_identity
     )
     assert first_reader == second_reader
+
+
+def test_factory_instances_with_different_callees_keep_distinct_kernels():
+    """Composed operation identity distinguishes generated parent kernels."""
+
+    def make_callee(entry):
+        @ttl.operation()
+        def selected_callee():
+            ttl.call_extern_func(
+                "callee.hpp",
+                entry,
+                kernel=KernelKind.DATA_MOVEMENT,
+            )
+
+        return selected_callee
+
+    def make_parent(selected_callee):
+        reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+        @ttl.operation()
+        def selected_parent():
+            selected_callee()
+            ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+
+        return selected_parent, reader
+
+    first_parent, first_reader = make_parent(make_callee("first_entry"))
+    second_parent, second_reader = make_parent(make_callee("second_entry"))
+
+    assert (
+        first_parent._spec.operation_identity != second_parent._spec.operation_identity
+    )
+    assert first_reader != second_reader
+
+
+@pytest.mark.parametrize("capture_kind", ["pipe", "pipenet"])
+def test_operation_identity_encodes_pipe_topology(capture_kind):
+    """Pipe and PipeNet topology distinguish factory-created operations."""
+
+    def identity_for(destination):
+        pipe = ttl.Pipe(src=(0, 0), dst=destination)
+        capture = pipe if capture_kind == "pipe" else ttl.PipeNet([pipe])
+
+        def selected_operation():
+            return capture
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((1, 0)) == identity_for((1, 0))
+    assert identity_for((1, 0)) != identity_for((2, 0))
+
+
+def test_operation_identity_encodes_graph_pipenet_topology():
+    """Graph PipeNet identity includes its domain and transfer relation."""
+
+    def identity_for(destination):
+        domain = ttl.DeviceDomain((1, 3))
+        graph = ttl.TransferGraph.edges(
+            domain,
+            edges=[((0, 0), destination)],
+        )
+        pipe_net = ttl.PipeNet(graph=graph)
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((0, 1)) == identity_for((0, 1))
+    assert identity_for((0, 1)) != identity_for((0, 2))
+
+
+def test_operation_identity_rejects_unsupported_nonlocal_capture():
+    """Unsupported captures cannot silently collapse distinct operations."""
+
+    class UnsupportedCapture:
+        pass
+
+    unsupported_capture = UnsupportedCapture()
+
+    def selected_operation():
+        return unsupported_capture
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "operation identity cannot encode nonlocal capture "
+            "'unsupported_capture' of type UnsupportedCapture"
+        ),
+    ):
+        _operation_identity(selected_operation)
 
 
 def test_composition_preserves_body_local_kernel_declaration():

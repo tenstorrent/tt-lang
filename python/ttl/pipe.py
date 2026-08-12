@@ -200,6 +200,15 @@ class Pipe:
         )
         return self.is_collective
 
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "pipe",
+            tuple(self.src),
+            tuple(self.dst_start),
+            tuple(self.dst_end),
+            self.is_collective,
+        )
+
 
 def _pipe_to_pipe_use(pipe: Pipe):
     """Convert a ttl.Pipe to a PipeUse for OperationPipeNets validation/build."""
@@ -364,6 +373,42 @@ class PipeNet:
     @property
     def is_graph(self) -> bool:
         return self.graph is not None or bool(self.mappings)
+
+    def _operation_identity_capture(self) -> tuple:
+        if self.graph is None:
+            return (
+                "pipenet",
+                tuple(pipe._operation_identity_capture() for pipe in self.pipes),
+            )
+
+        from .domains import DeviceRange
+
+        def device_identity(device) -> tuple:
+            return tuple(tuple(coordinates) for coordinates in device.coordinates)
+
+        def destination_identity(destination) -> tuple:
+            if isinstance(destination, DeviceRange):
+                return (
+                    "range",
+                    device_identity(destination.lo),
+                    device_identity(destination.hi),
+                )
+            return ("device", device_identity(destination))
+
+        return (
+            "graph-pipenet",
+            tuple(
+                (component.name, tuple(component.extent))
+                for component in self.graph.domain.components
+            ),
+            tuple(
+                (
+                    device_identity(edge.source),
+                    destination_identity(edge.destination),
+                )
+                for edge in self.graph.iter_edges()
+            ),
+        )
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
