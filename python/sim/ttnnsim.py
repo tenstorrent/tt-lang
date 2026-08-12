@@ -1735,12 +1735,7 @@ class Shape(tuple[int, ...]):
         return not result
 
     def __hash__(self) -> int:
-        """The equal tuple's hash.
-
-        Defining ``__eq__`` above would otherwise leave a Shape unhashable, and
-        hashing it as the tuple it compares equal to is what lets the two
-        spellings reach the same dict entry.
-        """
+        """Restore the tuple hash that defining ``__eq__`` sets to None."""
         return super().__hash__()
 
     def _refuse_ordering(self, other: object) -> NoReturn:
