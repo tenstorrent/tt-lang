@@ -2575,8 +2575,7 @@ public:
     std::string routeIdName =
         getResultVariableName(op.getRouteId(), state, "fabric_route_id_");
     std::string runtimeArgIndexName = routeIdName + "_runtime_arg_index";
-    std::string code = "size_t " + runtimeArgIndexName + " = " +
-                       std::to_string(op.getRuntimeArgBase()) + ";\n" +
+    std::string code = "size_t " + runtimeArgIndexName + " = {};\n" +
                        "uint32_t " + routeIdName + " = 0;\n" +
                        "if ({} != 0) {{\n"
                        "  open_connections({}, {}, " +
@@ -2588,8 +2587,9 @@ public:
                        " = PacketHeaderPool::allocate_header_n({});\n" + "}";
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(), rewriter.getStringAttr(code),
-        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
-                   adaptor.getConnectionCount(), adaptor.getConnectionCount()});
+        ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
+                   adaptor.getManager(), adaptor.getConnectionCount(),
+                   adaptor.getConnectionCount()});
     rewriter.replaceOp(
         op, emitc::LiteralOp::create(
                 rewriter, op.getLoc(),

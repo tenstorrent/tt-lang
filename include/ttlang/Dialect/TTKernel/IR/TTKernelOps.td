@@ -4500,7 +4500,7 @@ def TTKernel_OpenRoutingPlaneConnectionsOp :
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$connectionCount,
-    I64Attr:$runtimeArgBase
+    Index:$runtimeArgBase
   );
   let results = (outs I32:$routeId);
   let assemblyFormat = [{

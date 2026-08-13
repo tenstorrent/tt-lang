@@ -22,8 +22,9 @@
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
 // CHECK-NEXT: sizeBytes);
 // CHECK-LABEL: void kernel_main() {
+// CHECK: size_t [[RUNTIME_ARG_BASE:.*]] = 5;
 // CHECK: tt::tt_fabric::RoutingPlaneConnectionManager [[MANAGER:.*]];
-// CHECK: size_t [[ARG_INDEX:.*]] = 5;
+// CHECK: size_t [[ARG_INDEX:.*]] = [[RUNTIME_ARG_BASE]];
 // CHECK: uint32_t [[ROUTE_ID:.*]] = 0;
 // CHECK: if ([[COUNT:.*]] != 0) {
 // CHECK-NEXT: open_connections([[MANAGER]], [[COUNT]], [[ARG_INDEX]]);
@@ -37,6 +38,7 @@
 module {
   func.func @routing_plane() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %count = arith.constant 1 : i32
+    %runtime_arg_base = arith.constant 5 : index
     %connection_index = arith.constant 0 : i32
     %destination_device_id = arith.constant 2 : i32
     %destination_mesh_id = arith.constant 3 : i32
@@ -58,8 +60,8 @@ module {
     %manager = ttkernel.routing_plane.create_connection_manager
       : !ttkernel.routing_plane_connection_manager
     %route_id = ttkernel.routing_plane.open_connections
-      %manager, %count runtime_arg_base = 5
-      : (!ttkernel.routing_plane_connection_manager, i32) -> i32
+      %manager, %count runtime_arg_base = %runtime_arg_base
+      : (!ttkernel.routing_plane_connection_manager, i32, index) -> i32
     ttkernel.routing_plane.atomic_inc(
       %manager, %route_id, %connection_index, %destination_device_id,
       %destination_mesh_id, %destination_hop_count, %semaphore_address,
