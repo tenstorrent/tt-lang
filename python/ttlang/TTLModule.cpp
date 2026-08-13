@@ -113,6 +113,25 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("ordinal", &DispatchConditionAttr::getOrdinal)
       .def_prop_ro("scalar_type", &DispatchConditionAttr::getScalarType);
 
+  tt_attribute_class<DFBAllocationGroupAttr>(m, "DFBAllocationGroupAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal) {
+            MLIRContext *cppContext = unwrap(context);
+            DFBAllocationGroupAttr attribute =
+                DFBAllocationGroupAttr::getChecked(
+                    [cppContext]() {
+                      return emitError(UnknownLoc::get(cppContext));
+                    },
+                    cppContext, ordinal);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB allocation group");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"))
+      .def_prop_ro("ordinal", &DFBAllocationGroupAttr::getOrdinal);
+
   tt_attribute_class<SynchronizedDFBResetAttr>(m, "SynchronizedDFBResetAttr")
       .def_static(
           "get",

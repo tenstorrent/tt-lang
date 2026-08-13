@@ -52,6 +52,24 @@ def TTL_DispatchConditionAttr
   let genVerifyDecl = 1;
 }
 
+def TTL_DFBAllocationGroupAttr
+    : TTL_Attr<"DFBAllocationGroup", "dfb_allocation_group"> {
+  let summary = "Module-local verified dataflow buffer allocation identity";
+  let description = [{
+    Identifies logical dataflow buffers that must receive one physical DFB
+    index after the compiler proves compatible static configuration, storage,
+    non-overlapping lifecycles, and reusable protocol state. Equal attributes
+    identify one group. Distinct attributes impose no allocation relationship.
+
+    `$ordinal` is module-local and has no runtime meaning. The attribute does
+    not synchronize execution, reset DFB state, or by itself permit an
+    interference edge to be removed.
+  }];
+  let parameters = (ins "int64_t":$ordinal);
+  let assemblyFormat = "`<` $ordinal `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_SynchronizedDFBResetAttr
     : TTL_Attr<"SynchronizedDFBReset", "synchronized_dfb_reset"> {
   let summary = "Worker-local synchronized dataflow buffer reset identity";

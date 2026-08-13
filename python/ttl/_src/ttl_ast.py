@@ -1081,6 +1081,10 @@ class TTLGenericCompiler(TTCompilerBase):
         }
         if tensor_backing is not None:
             bind_attributes["tensor_backing"] = tensor_backing
+        if cb.allocation_group is not None:
+            bind_attributes["allocation_group"] = ttl.DFBAllocationGroupAttr.get(
+                self.ctx, cb.allocation_group.ordinal
+            )
         return ttl.bind_cb(cb_type, cb._cb_index, **bind_attributes)
 
     def _emit_pipe_from_capture(

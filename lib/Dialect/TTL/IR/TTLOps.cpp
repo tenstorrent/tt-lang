@@ -87,6 +87,14 @@ llvm::LogicalResult DispatchConditionAttr::verify(
   return success();
 }
 
+llvm::LogicalResult DFBAllocationGroupAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal) {
+  if (ordinal < 0) {
+    return emitError() << "DFB allocation group ordinal must be nonnegative";
+  }
+  return success();
+}
+
 llvm::LogicalResult SynchronizedDFBResetAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
     ArrayRef<LogicalKernelAttr> participants) {
