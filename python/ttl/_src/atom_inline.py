@@ -13,6 +13,7 @@ import inspect
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from ttl.condition import DispatchCondition
+from ttl.dfb_reset import DFBReset
 from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
 
@@ -126,11 +127,17 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
-) -> Tuple[Dict[str, object], Dict[str, Kernel], Dict[str, DispatchCondition]]:
+) -> Tuple[
+    Dict[str, object],
+    Dict[str, Kernel],
+    Dict[str, DispatchCondition],
+    Dict[str, DFBReset],
+]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
     logical_kernels = {}
     dispatch_conditions = {}
+    dfb_resets = {}
     inline_discriminators = {}
     fn_def.body = _inline_statements(
         fn_def.body,
@@ -140,9 +147,10 @@ def inline_atom_calls(
         external_pipenets,
         logical_kernels,
         dispatch_conditions,
+        dfb_resets,
         inline_discriminators,
     )
-    return external_pipenets, logical_kernels, dispatch_conditions
+    return external_pipenets, logical_kernels, dispatch_conditions, dfb_resets
 
 
 def _inline_statements(
@@ -153,6 +161,7 @@ def _inline_statements(
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
     dispatch_conditions: Dict[str, DispatchCondition],
+    dfb_resets: Dict[str, DFBReset],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
@@ -165,6 +174,7 @@ def _inline_statements(
             external_pipenets,
             logical_kernels,
             dispatch_conditions,
+            dfb_resets,
             inline_discriminators,
         )
         match = _standalone_operation_call(statement, scope)
@@ -183,6 +193,7 @@ def _inline_statements(
                 external_pipenets,
                 logical_kernels,
                 dispatch_conditions,
+                dfb_resets,
                 inline_discriminators,
             )
         )
@@ -197,6 +208,7 @@ def _inline_compound_bodies(
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
     dispatch_conditions: Dict[str, DispatchCondition],
+    dfb_resets: Dict[str, DFBReset],
     inline_discriminators: Dict[str, int],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
@@ -213,6 +225,7 @@ def _inline_compound_bodies(
             external_pipenets,
             logical_kernels,
             dispatch_conditions,
+            dfb_resets,
             inline_discriminators,
         )
         setattr(statement, attribute, inlined)
@@ -230,6 +243,7 @@ def _inline_compound_bodies(
                 external_pipenets,
                 logical_kernels,
                 dispatch_conditions,
+                dfb_resets,
                 inline_discriminators,
             )
 
@@ -306,6 +320,7 @@ def _expand_call(
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
     dispatch_conditions: Dict[str, DispatchCondition],
+    dfb_resets: Dict[str, DFBReset],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
@@ -339,6 +354,14 @@ def _expand_call(
         scope,
         reserved_names,
         dispatch_conditions,
+    )
+    _add_dfb_reset_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        dfb_resets,
+        suffix,
     )
 
     local_names = _collect_local_names(spec.fn_ast)
@@ -465,6 +488,34 @@ def _add_dispatch_condition_bindings(
             scope[existing_name] = condition
             dispatch_conditions[existing_name] = condition
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+
+
+def _add_dfb_reset_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    dfb_resets: Dict[str, DFBReset],
+    suffix: str,
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    reset_instances: Dict[int, DFBReset] = {}
+    for name, reset in spec.dfb_resets.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        reset_instance = reset_instances.get(id(reset))
+        if reset_instance is None:
+            # Each composed call executes a distinct dynamic reset. Aliases
+            # within that call retain one identity across all participants.
+            reset_instance = DFBReset(
+                participants=reset.participants,
+                scope=reset.scope,
+            )
+            reset_instances[id(reset)] = reset_instance
+        fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
+        scope[fresh_name] = reset_instance
+        dfb_resets[fresh_name] = reset_instance
+        bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
 
 
 def _literal_node(
