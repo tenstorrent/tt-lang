@@ -101,6 +101,7 @@ from .dfb_reset import (
     _bind_current_dfb_reset,
     _dfb_reset_binding_scope,
 )
+from .dfb_allocation_group import _dfb_allocation_group_binding_scope
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -2087,7 +2088,11 @@ def _compile_kernel(
             call_kwargs[param.name] = value
         else:
             call_args.append(value)
-    with _dispatch_condition_binding_scope(), _dfb_reset_binding_scope():
+    with (
+        _dispatch_condition_binding_scope(),
+        _dfb_allocation_group_binding_scope(),
+        _dfb_reset_binding_scope(),
+    ):
         f(*call_args, **call_kwargs)
     threads = _get_registered_threads()
 

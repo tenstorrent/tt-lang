@@ -85,8 +85,11 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
     }
     LLVM_DEBUG({
       llvm::dbgs() << "DFB assignment: logical DFB " << assignment.logicalId
-                   << " -> physical index " << assignment.physicalIndex
-                   << (assignment.bounded ? " (bounded)\n" : " (unbounded)\n");
+                   << " -> physical index " << assignment.physicalIndex;
+      if (assignment.allocationGroup) {
+        llvm::dbgs() << " allocation_group=" << assignment.allocationGroup;
+      }
+      llvm::dbgs() << (assignment.bounded ? " (bounded)\n" : " (unbounded)\n");
     });
   }
 
