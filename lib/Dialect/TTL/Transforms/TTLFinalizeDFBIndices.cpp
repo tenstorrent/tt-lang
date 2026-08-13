@@ -12,6 +12,7 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/ComputeKernelConfigAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
@@ -39,6 +40,9 @@ collectStaticConfigurationConflicts(
   launchDomains.initialize(moduleOp);
   SmallVector<DFBStaticConfigurationConflict> conflicts;
   for (func::FuncOp function : moduleOp.getOps<func::FuncOp>()) {
+    if (getKernelThreadType(function) != ttkernel::ThreadType::Compute) {
+      continue;
+    }
     FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
         KernelTargetEnvironment::get(function);
     if (failed(target)) {
@@ -81,8 +85,11 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
     }
     LLVM_DEBUG({
       llvm::dbgs() << "DFB assignment: logical DFB " << assignment.logicalId
-                   << " -> physical index " << assignment.physicalIndex
-                   << (assignment.bounded ? " (bounded)\n" : " (unbounded)\n");
+                   << " -> physical index " << assignment.physicalIndex;
+      if (assignment.allocationGroup) {
+        llvm::dbgs() << " allocation_group=" << assignment.allocationGroup;
+      }
+      llvm::dbgs() << (assignment.bounded ? " (bounded)\n" : " (unbounded)\n");
     });
   }
 

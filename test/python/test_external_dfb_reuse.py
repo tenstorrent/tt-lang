@@ -188,7 +188,7 @@ _external_f32_composition = _make_external_composition_kernel("float32", False)
 _tensor_backed_bf16_composition = _make_external_composition_kernel("bf16", True)
 _tensor_backed_f32_composition = _make_external_composition_kernel("float32", True)
 
-assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 32
+assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 64
 
 
 def _count_final_dfb_allocations(final_mlir_path):
@@ -305,7 +305,7 @@ def test_external_composition_requires_dfb_reuse(
     with pytest.raises(
         RuntimeError,
         match=(
-            "need 70 unspilled DFB indices but exceeds the "
+            "need 70 unspilled DFB indices, exceeding the "
             "(?:64-DFB-index Blackhole|32-DFB-index Wormhole B0) target capacity"
         ),
     ):

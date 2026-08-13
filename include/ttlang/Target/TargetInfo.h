@@ -66,6 +66,7 @@ inline TargetDFBIndexCapacity getTargetDFBIndexCapacity(Operation *op) {
   case ttcore::Arch::Quasar:
     return {kQuasarDFBIndexCapacity, "Quasar"};
   }
+  llvm_unreachable("unhandled ttcore::Arch");
 }
 
 } // namespace target_info_detail

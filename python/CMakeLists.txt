@@ -132,6 +132,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     compiler_options.py
     condition.py
     constants.py
+    dfb_allocation_group.py
     dfb_reset.py
     diagnostics.py
     kernel.py

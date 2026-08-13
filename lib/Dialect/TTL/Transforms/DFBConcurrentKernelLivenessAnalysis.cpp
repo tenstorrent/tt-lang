@@ -447,12 +447,13 @@ static bool runPrecedesWithinEachIteration(const AccessRun &before,
 
 /// Requires a release to follow every use owned by its acquisition; textual
 /// acquire/release order alone does not prove storage quiescence.
-static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
+static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release,
+                                    ArrayRef<Operation *> sameKindAcquires) {
   if (acquire->getBlock() != release->getBlock()) {
     return false;
   }
-  SmallVector<Operation *> acquires = {acquire};
-  DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+  DFBAcquireInterval interval =
+      makeDFBAcquireInterval(acquire, sameKindAcquires);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
   return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
@@ -593,6 +594,7 @@ static LogicalResult collectLogicalDFBs(
       logicalDFB.logicalId = logicalId;
       logicalDFB.type = declaration.getResult().getType();
       logicalDFB.tensorBacking = declaration.getTensorBackingAttr();
+      logicalDFB.allocationGroup = assignment.allocationGroup;
       logicalDFB.compilerCreated =
           declaration->hasAttr(kCompilerAllocatedAttrName);
       logicalDFBs.push_back(std::move(logicalDFB));
@@ -1501,24 +1503,26 @@ static void appendTransactionRun(DFBPerNodeLifetime &lifetime,
   lifetime.transactionRuns.push_back({executionCount, tilesPerExecution});
 }
 
-/// Proves that every acquire in a finite transaction sequence names one
-/// contiguous interval. A reset may canonicalize a safe nonzero final offset,
-/// but it cannot repair an earlier acquire that crossed the allocation end.
-static bool
-proveNonStraddlingTransactionRuns(ArrayRef<DFBTransactionRun> transactionRuns,
-                                  std::uint64_t physicalTileCount) {
-  std::uint64_t pointerOffset = 0;
+} // namespace
+
+FailureOr<std::uint64_t>
+advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
+                            std::uint64_t physicalTileCount,
+                            std::uint64_t pointerOffset) {
+  if (physicalTileCount == 0 || pointerOffset >= physicalTileCount) {
+    return failure();
+  }
   for (const DFBTransactionRun &run : transactionRuns) {
     if (run.executionCount == 0 || run.tilesPerExecution <= 0 ||
         static_cast<std::uint64_t>(run.tilesPerExecution) > physicalTileCount) {
-      return false;
+      return failure();
     }
     std::uint64_t tilesPerExecution = run.tilesPerExecution;
     std::uint64_t remainingTiles = physicalTileCount - pointerOffset;
     std::uint64_t executionsBeforeBoundary = remainingTiles / tilesPerExecution;
     if (remainingTiles % tilesPerExecution != 0) {
       if (run.executionCount > executionsBeforeBoundary) {
-        return false;
+        return failure();
       }
       pointerOffset += run.executionCount * tilesPerExecution;
       continue;
@@ -1536,7 +1540,7 @@ proveNonStraddlingTransactionRuns(ArrayRef<DFBTransactionRun> transactionRuns,
     std::uint64_t executionsPerCycle = physicalTileCount / tilesPerExecution;
     if (physicalTileCount % tilesPerExecution != 0) {
       if (remainingExecutions > executionsPerCycle) {
-        return false;
+        return failure();
       }
       pointerOffset = remainingExecutions * tilesPerExecution;
       continue;
@@ -1544,8 +1548,10 @@ proveNonStraddlingTransactionRuns(ArrayRef<DFBTransactionRun> transactionRuns,
     pointerOffset =
         (remainingExecutions % executionsPerCycle) * tilesPerExecution;
   }
-  return true;
+  return pointerOffset;
 }
+
+namespace {
 
 /// Derives exact-domain or possible-domain per-node lifetime facts. Possible
 /// facts control reuse only after proving conditional boundedness.
@@ -1721,6 +1727,18 @@ static DFBQuiescenceProof computeProtocolLifetime(
   }
   std::optional<DFBPointerOwner> writeOwner;
   std::optional<DFBPointerOwner> readOwner;
+  SmallVector<Operation *> nativeReserves;
+  SmallVector<Operation *> nativeWaits;
+  for (const AccessRun *reserve : reserves) {
+    if (isa<CBReserveOp>(reserve->access->operation)) {
+      nativeReserves.push_back(reserve->access->operation);
+    }
+  }
+  for (const AccessRun *wait : waits) {
+    if (isa<CBWaitOp>(wait->access->operation)) {
+      nativeWaits.push_back(wait->access->operation);
+    }
+  }
   for (auto [reserve, push] : llvm::zip_equal(reserves, pushes)) {
     if (reserve->access->numTiles <= 0) {
       return {DFBQuiescenceFailureReason::MismatchedTransaction,
@@ -1728,7 +1746,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
     if (isa<CBReserveOp>(reserve->access->operation) &&
         !releaseFollowsOwnedUses(reserve->access->operation,
-                                 push->access->operation)) {
+                                 push->access->operation, nativeReserves)) {
       return {DFBQuiescenceFailureReason::IncompleteUseOrder,
               push->access->operation};
     }
@@ -1750,7 +1768,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
     if (isa<CBWaitOp>(wait->access->operation) &&
         !releaseFollowsOwnedUses(wait->access->operation,
-                                 pop->access->operation)) {
+                                 pop->access->operation, nativeWaits)) {
       return {DFBQuiescenceFailureReason::IncompleteUseOrder,
               pop->access->operation};
     }
@@ -1826,9 +1844,9 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
   }
   if (hasCanonicalResetTerminator &&
-      !proveNonStraddlingTransactionRuns(
+      failed(advanceDFBTransactionCursor(
           lifetime.transactionRuns,
-          static_cast<std::uint64_t>(physicalTileCount))) {
+          static_cast<std::uint64_t>(physicalTileCount)))) {
     return {DFBQuiescenceFailureReason::MismatchedTransaction,
             reserves.front()->access->operation};
   }

@@ -3,9 +3,10 @@
 
 // CHECK: ttl.dfb_allocations = [
 // CHECK-COUNT-33: dfb_index = {{[0-9]+}} : i32
-// CHECK-NOT: dfb_index = 33
+// CHECK-NOT: dfb_index
 // CHECK-LABEL: func.func @blackhole_accepts_33_indices
 // CHECK-SAME: ttl.base_cta_index = 33 : i32
+// CHECK: ttl.bind_cb{cb_index = 32, block_count = 1}
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @blackhole_accepts_33_indices()

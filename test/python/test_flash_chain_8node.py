@@ -7,8 +7,8 @@
 Each node computes streaming-softmax state for its K/V shard. A binary tree
 combines the per-node states before node 0 normalizes and writes the result.
 Frontend composition inlines both atoms into one operation whose logical DFB
-count exceeds the hardware limit; concurrent-kernel liveness maps the logical DFBs
-to a legal set of physical indices.
+count exceeds the smallest supported target capacity; concurrent-kernel liveness
+maps the logical DFBs to a legal set of physical indices.
 """
 
 import math
