@@ -29,6 +29,7 @@ from .constants import DEFAULT_TILE_SIZE
 from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
 from .scalar import ScalarType
+from .dfb_reset import DFBReset
 
 
 def call_extern_func(
@@ -44,6 +45,8 @@ def call_extern_func(
     kernel: Optional[ExternalKernelSelection] = None,
     result_type: Optional[ScalarType] = None,
     condition_result: Optional[DispatchCondition] = None,
+    dfb_reset: Optional[DFBReset] = None,
+    dfb_reset_targets=None,
 ) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
@@ -60,6 +63,13 @@ def call_extern_func(
     ``condition_result`` declares that the result evaluates one immutable
     dispatch-stable condition. Its scalar type comes from the declaration. The
     call must be repeat-safe and cannot access DFB state.
+
+    ``dfb_reset`` declares that the call synchronizes every participant and
+    resets the complete interface state of ``dfb_reset_targets`` before it
+    returns. The reset descriptor and targets are compile-time metadata; the
+    external function remains responsible for implementing the declared
+    synchronization and reset. An ``ALL_LOCAL`` reset omits
+    ``dfb_reset_targets`` and resets every worker-local DFB interface.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 
