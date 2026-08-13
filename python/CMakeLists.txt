@@ -133,6 +133,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     condition.py
     constants.py
     control_flow.py
+    dfb_reset.py
     diagnostics.py
     kernel.py
     kernel_runner.py

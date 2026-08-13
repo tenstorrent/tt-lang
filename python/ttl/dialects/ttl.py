@@ -25,6 +25,7 @@ def ensure_dialects_registered(ctx):
 SliceAttr = ir.SliceAttr
 LogicalKernelAttr = ir.LogicalKernelAttr
 DispatchConditionAttr = ir.DispatchConditionAttr
+SynchronizedDFBResetAttr = ir.SynchronizedDFBResetAttr
 DFBProtocolEffectAttr = ir.DFBProtocolEffectAttr
 TensorBackingAttr = ir.TensorBackingAttr
 PipeRecordAttr = ir.PipeRecordAttr

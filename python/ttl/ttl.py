@@ -32,6 +32,7 @@ from .runtime_resources import (
     ProgramRuntimeResources,
 )
 from .condition import DispatchCondition
+from .dfb_reset import DFBReset, DFBResetScope
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -64,6 +65,8 @@ __all__ = [
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
     "DispatchCondition",
+    "DFBReset",
+    "DFBResetScope",
     "ScalarType",
     "compute",
     "datamovement",
