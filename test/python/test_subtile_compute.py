@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device coverage for subtile elementwise, matmul, and reduce operations."""
+"""Device coverage for subtile compute operations."""
 
 import pytest
 import torch
@@ -188,6 +188,27 @@ def subtile_broadcast_row(inp, out):
 
 
 @ttl.operation(grid=(1, 1))
+def subtile_broadcast_col(inp, out):
+    input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with input_dfb.wait() as input_block, output_dfb.reserve() as output_block:
+            output_block.store(ttl.block.broadcast(input_block, dims=[1], shape=(1, 1)))
+
+    @ttl.datamovement()
+    def reader():
+        with input_dfb.reserve() as input_block:
+            ttl.copy(inp[0:1, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, out[0:1, 0:1]).wait()
+
+
+@ttl.operation(grid=(1, 1))
 def subtile_matmul(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 2), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), block_count=2)
@@ -285,6 +306,50 @@ def subtile_reduce(inp, out):
             ttl.copy(output_block, out[0:1, 0:1]).wait()
 
 
+@ttl.operation(grid=(1, 1))
+def subtile_reduce_sum_row(inp, out):
+    input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with input_dfb.wait() as input_block:
+            with output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.reduce_sum(input_block, dims=[1]))
+
+    @ttl.datamovement()
+    def reader():
+        with input_dfb.reserve() as input_block:
+            ttl.copy(inp[0:1, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, out[0:1, 0:1]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def subtile_reduce_max_row(inp, out):
+    input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with input_dfb.wait() as input_block:
+            with output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.reduce_max(input_block, dims=[1]))
+
+    @ttl.datamovement()
+    def reader():
+        with input_dfb.reserve() as input_block:
+            ttl.copy(inp[0:1, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, out[0:1, 0:1]).wait()
+
+
 SHORT_HEIGHT_TILE_SIZES = [(1, 32), (2, 32), (4, 32), (8, 32)]
 COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
 ELEMENTWISE_TILE_SIZES = SHORT_HEIGHT_TILE_SIZES + COMPUTE_TILE_SIZES
@@ -308,6 +373,10 @@ DTYPES = [
     (torch.bfloat16, ttnn.bfloat16, 5e-2, 1.0),
     (torch.float32, ttnn.float32, 1e-3, 1e-3),
 ]
+REDUCE_DTYPES = [
+    (torch.bfloat16, ttnn.bfloat16, 5e-2, 1.0),
+    (torch.float32, ttnn.float32, 5e-3, 1e-2),
+]
 MATMUL_DTYPES = [
     (torch.bfloat16, ttnn.bfloat16, 0.999),
     (torch.float32, ttnn.float32, 0.9999),
@@ -325,6 +394,10 @@ INTEGER_OPERATIONS = [
     pytest.param(subtile_add, 10, id="add"),
     pytest.param(subtile_sub, 4, id="sub"),
     pytest.param(subtile_mul, 21, id="mul"),
+]
+ROW_REDUCTION_OPERATIONS = [
+    pytest.param(subtile_reduce_sum_row, torch.sum, id="sum"),
+    pytest.param(subtile_reduce_max_row, torch.amax, id="max"),
 ]
 
 
@@ -505,6 +578,34 @@ def test_subtile_integer_broadcast(device, torch_dtype, ttnn_dtype, memory_confi
 
 
 @pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype,rtol,atol",
+    DTYPES,
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+def test_subtile_broadcast_col(
+    device, torch_dtype, ttnn_dtype, rtol, atol, memory_config
+):
+    tile_hw = (8, 32)
+    source = torch.zeros(tile_hw, dtype=torch_dtype)
+    source[:, 0] = torch.linspace(-3.0, 4.0, tile_hw[0]).to(torch_dtype)
+    input_tensor = _to_device(source, device, tile_hw, ttnn_dtype, memory_config)
+    output_tensor = _to_device(
+        torch.zeros(tile_hw, dtype=torch_dtype),
+        device,
+        tile_hw,
+        ttnn_dtype,
+        memory_config,
+    )
+
+    subtile_broadcast_col(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
+    expected = source[:, :1].expand(tile_hw).float()
+    assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
     "lhs_tile,rhs_tile,output_tile",
     MATMUL_TILE_CONFIGS,
     ids=lambda config: f"{config[0]}x{config[1]}",
@@ -653,4 +754,41 @@ def test_subtile_reduce(
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()[0, 0]
     expected = source.float().sum()
+    assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("kernel,reducer", ROW_REDUCTION_OPERATIONS)
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype,rtol,atol",
+    REDUCE_DTYPES,
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+def test_subtile_reduce_row(
+    device,
+    kernel,
+    reducer,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+):
+    tile_hw = (8, 32)
+    source = torch.linspace(-3.0, 5.0, tile_hw[0] * tile_hw[1]).reshape(tile_hw)
+    source += torch.arange(tile_hw[0]).reshape(-1, 1) * 0.125
+    source = source.to(torch_dtype)
+    input_tensor = _to_device(source, device, tile_hw, ttnn_dtype, memory_config)
+    output_tensor = _to_device(
+        torch.zeros(tile_hw, dtype=torch_dtype),
+        device,
+        tile_hw,
+        ttnn_dtype,
+        memory_config,
+    )
+
+    kernel(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()[:, 0]
+    expected = reducer(source.float(), dim=1)
     assert_allclose(actual, expected, rtol=rtol, atol=atol)
