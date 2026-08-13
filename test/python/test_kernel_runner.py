@@ -123,6 +123,9 @@ class _CopyingRuntimeArgumentRow(defaultdict):
     def __init__(self):
         super().__init__(list)
 
+    def __getitem__(self, key):
+        return list(super().__getitem__(key))
+
     def __setitem__(self, key, value):
         super().__setitem__(key, list(value))
 
@@ -443,7 +446,7 @@ def _make_fake_fabric_program(kernel_count):
             kernel_source=f"/tmp/kernel_{kernel_index}.cpp",
             core_ranges=core_ranges,
             compile_time_args=[],
-            common_runtime_args=[],
+            common_runtime_args=[0],
             config=object(),
         )
         for kernel_index in range(kernel_count)
@@ -2063,6 +2066,44 @@ def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
     assert descriptors[1].common_runtime_args == [0x2000, 0x3000]
 
 
+def test_build_kernel_descriptors_reserves_fabric_runtime_arg_base(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/reader.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        pipe_computed_address_dfb_indices=[2],
+        fabric_runtime_arg_base_common_index=3,
+        extra_common_runtime_args=[0x5000],
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        pipe_computed_address_base_addresses={2: 0x8000},
+        extra_common_runtime_args=[0x3000],
+        expected_extra_common_runtime_args=1,
+        device_coordinates=[4, 5],
+    )
+
+    assert descriptors[0].common_runtime_args == [
+        0x2000,
+        0x8000,
+        0x3000,
+        0,
+        4,
+        5,
+        0x5000,
+    ]
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -2115,7 +2156,7 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         kernel_source="/tmp/kernel.cpp",
         core_ranges=_make_fake_core_ranges((1, 0)),
         compile_time_args=[],
-        common_runtime_args=[],
+        common_runtime_args=[0],
         config=object(),
     )
     kernel.runtime_args[1][0] = [0x55]
@@ -2129,14 +2170,16 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=mesh_device,
         device_coordinates=(0, 0),
         grid_cols=2,
         grid_rows=1,
     )
 
-    assert kernel.runtime_args[0][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0]
-    assert kernel.runtime_args[1][0] == [0] * 5 + [0x55]
+    assert kernel.common_runtime_args[0] == 1
+    assert kernel.runtime_args[0][0] == [0, 1, 0, 1, 0, 0, 0xA0, 0xB0]
+    assert kernel.runtime_args[1][0] == [0x55] + [0] * 5
     assert fake_ttnn.fabric_setup_calls == [
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (0, 0)),
     ]
@@ -2156,6 +2199,7 @@ def test_routing_plane_materializes_sparse_runtime_args(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2182,7 +2226,7 @@ def test_routing_plane_respects_kernel_execution_range(monkeypatch):
             [_FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(1, 0), _FakeTTNN.CoreCoord(1, 0))]
         ),
         compile_time_args=[],
-        common_runtime_args=[],
+        common_runtime_args=[0],
         config=object(),
     )
     program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
@@ -2191,6 +2235,7 @@ def test_routing_plane_respects_kernel_execution_range(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=2,
@@ -2215,7 +2260,7 @@ def test_routing_plane_reuses_connection_for_one_direction(monkeypatch):
         kernel_source="/tmp/kernel.cpp",
         core_ranges=_make_fake_core_ranges(),
         compile_time_args=[],
-        common_runtime_args=[],
+        common_runtime_args=[0],
         config=object(),
     )
     program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
@@ -2227,6 +2272,7 @@ def test_routing_plane_reuses_connection_for_one_direction(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2269,6 +2315,7 @@ def test_routing_plane_uses_separate_connections_for_directions(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2307,6 +2354,7 @@ def test_routing_plane_connects_one_dimensional_route_to_neighbor(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2340,6 +2388,7 @@ def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypat
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2372,6 +2421,7 @@ def test_routing_plane_rejects_nonadjacent_neighbor_exchange(monkeypatch):
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
             mesh_device=_FakeMeshDevice(),
             device_coordinates=(0, 0),
             grid_cols=1,
@@ -2396,6 +2446,7 @@ def test_routing_plane_rejects_one_dimensional_route_across_axes(monkeypatch):
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
             mesh_device=_FakeMeshDevice(),
             device_coordinates=(0, 0),
             grid_cols=1,
@@ -2417,6 +2468,7 @@ def test_routing_plane_rejects_unsupported_fabric_configuration(monkeypatch):
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
             mesh_device=_FakeMeshDevice(),
             device_coordinates=(0, 0),
             grid_cols=1,
@@ -2436,6 +2488,7 @@ def test_routing_plane_assigns_distinct_links_to_concurrent_managers(monkeypatch
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2456,14 +2509,14 @@ def test_routing_plane_assigns_distinct_links_to_brisc_and_ncrisc(monkeypatch):
                 kernel_source="/tmp/brisc.cpp",
                 core_ranges=core_ranges,
                 compile_time_args=[],
-                common_runtime_args=[],
+                common_runtime_args=[0],
                 config=_FakeTTNN.ReaderConfigDescriptor(),
             ),
             _FakeTTNN.KernelDescriptor(
                 kernel_source="/tmp/ncrisc.cpp",
                 core_ranges=core_ranges,
                 compile_time_args=[],
-                common_runtime_args=[],
+                common_runtime_args=[0],
                 config=_FakeTTNN.WriterConfigDescriptor(),
             ),
         ],
@@ -2475,6 +2528,7 @@ def test_routing_plane_assigns_distinct_links_to_brisc_and_ncrisc(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2499,6 +2553,7 @@ def test_routing_plane_uses_control_plane_default_for_one_manager(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2523,6 +2578,7 @@ def test_routing_plane_requires_link_query_for_concurrent_managers(monkeypatch):
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=[[route], [route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0, 0],
             mesh_device=_FakeMeshDevice(),
             device_coordinates=(0, 0),
             grid_cols=1,
@@ -2544,6 +2600,7 @@ def test_routing_plane_preserves_noncontiguous_link_indices(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2568,6 +2625,7 @@ def test_routing_plane_link_matching_backtracks(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[flexible_route], [constrained_route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2593,6 +2651,7 @@ def test_routing_plane_intersects_reused_connection_links(monkeypatch):
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
@@ -2615,6 +2674,7 @@ def test_routing_plane_rejects_link_overcommit_before_mutation(monkeypatch):
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=[[route], [route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0, 0],
             mesh_device=_FakeMeshDevice(),
             device_coordinates=(0, 0),
             grid_cols=1,
@@ -2626,7 +2686,7 @@ def test_routing_plane_rejects_link_overcommit_before_mutation(monkeypatch):
     assert all(not kernel.runtime_args for kernel in program.kernels)
 
 
-def test_routing_plane_appends_existing_runtime_args_after_fabric_args(monkeypatch):
+def test_routing_plane_preserves_existing_runtime_args(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     program = _make_fake_fabric_program(2)
@@ -2636,14 +2696,68 @@ def test_routing_plane_appends_existing_runtime_args_after_fabric_args(monkeypat
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=1,
         grid_rows=1,
     )
+    assert program.kernels[0].common_runtime_args[0] == 0
+    assert program.kernels[1].common_runtime_args[0] == 1
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 1, 0, 0]
+    assert program.kernels[1].runtime_args[0][0][:6] == [0x44, 1, 0, 1, 0, 0]
 
-    assert program.kernels[0].runtime_args[0][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0]
-    assert program.kernels[1].runtime_args[0][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0, 0x44]
+
+def test_routing_plane_rejects_missing_base_slot_before_setup(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].common_runtime_args.clear()
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    with pytest.raises(ValueError, match="outside its common argument table"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_pads_heterogeneous_caller_runtime_args(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((1, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    kernel.runtime_args[0][0] = [0x10]
+    kernel.runtime_args[1][0] = [0x20, 0x21, 0x22]
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert kernel.common_runtime_args[0] == 3
+    assert kernel.runtime_args[0][0][:8] == [0x10, 0, 0, 1, 0, 1, 0, 0]
+    assert kernel.runtime_args[1][0] == [0x20, 0x21, 0x22, 0, 0, 0, 0, 0]
 
 
 def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):
@@ -2657,13 +2771,14 @@ def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):
             kernel_source="/tmp/kernel.cpp",
             core_ranges=_make_fake_core_ranges(),
             compile_time_args=[],
-            common_runtime_args=[],
+            common_runtime_args=[0],
             config=object(),
         )
         program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=[routes],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
             mesh_device=mesh_device,
             device_coordinates=(0, 0),
             grid_cols=1,
@@ -3816,6 +3931,7 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
                 thread_type="noc",
                 tensor_indices=[],
                 config=_FakeTTNN.ReaderConfigDescriptor(),
+                fabric_runtime_arg_base_common_index=0,
             )
         ],
         cb_configs=[],
@@ -3833,6 +3949,7 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
     assert "FabricRouteSpec((0, 0, 0), (0, 0, 1), ((0, 0), (1, 0)), 2)" in source
     assert "device_domain=DEVICE_DOMAIN" in source
     assert "kernel_fabric_routes=KERNEL_FABRIC_ROUTES" in source
+    assert "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = [0]" in source
     compile(source, "<generated-runner>", "exec")
 
 

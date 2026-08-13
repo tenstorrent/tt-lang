@@ -38,6 +38,11 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
+  m.attr("FABRIC_ROUTES_ATTR") =
+      nb::str(kFabricRoutesAttrName.data(), kFabricRoutesAttrName.size());
+  m.attr("FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR") =
+      nb::str(kFabricRuntimeArgBaseCommonIndexAttrName.data(),
+              kFabricRuntimeArgBaseCommonIndexAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =
       nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
 

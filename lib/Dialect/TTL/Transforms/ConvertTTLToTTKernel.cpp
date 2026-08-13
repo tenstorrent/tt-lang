@@ -2564,7 +2564,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   FabricRoutePlan fabricRoutePlan;
   if (failed(buildFabricRoutePlan(transferIndex, *pipeGraphOrErr,
-                                  fabricRoutePlan))) {
+                                  foreachLoweringInfo, fabricRoutePlan))) {
     return failure();
   }
 

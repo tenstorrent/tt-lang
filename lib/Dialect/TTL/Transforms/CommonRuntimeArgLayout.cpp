@@ -37,6 +37,11 @@ static int64_t getPipeResourceCount(ModuleOp module) {
   return count;
 }
 
+static bool functionHasFabricRoutes(func::FuncOp function) {
+  auto routes = function->getAttrOfType<ArrayAttr>(kFabricRoutesAttrName);
+  return routes && !routes.empty();
+}
+
 CommonRuntimeArgLayout::CommonRuntimeArgLayout(func::FuncOp function)
     : CommonRuntimeArgLayout(function,
                              getComputedReceiverDFBBaseCount(function)) {}
@@ -53,7 +58,10 @@ CommonRuntimeArgLayout::CommonRuntimeArgLayout(
   pipeResourceBaseArgIndex =
       computedReceiverDFBBaseArgIndex + computedReceiverDFBBaseCount;
   pipeResourceCount = getPipeResourceCount(module);
-  deviceCoordinateBaseArgIndex = pipeResourceBaseArgIndex + pipeResourceCount;
+  fabricRuntimeArgBaseIndex = pipeResourceBaseArgIndex + pipeResourceCount;
+  hasFabricRuntimeArgBase = functionHasFabricRoutes(function);
+  deviceCoordinateBaseArgIndex =
+      fabricRuntimeArgBaseIndex + (hasFabricRuntimeArgBase ? 1 : 0);
 }
 
 int64_t
@@ -69,6 +77,12 @@ int64_t CommonRuntimeArgLayout::getPipeResourceIndex(int64_t ordinal) const {
   assert(ordinal < pipeResourceCount &&
          "PipeNet resource ordinal is out of range");
   return pipeResourceBaseArgIndex + ordinal;
+}
+
+int64_t CommonRuntimeArgLayout::getFabricRuntimeArgBaseIndex() const {
+  assert(hasFabricRuntimeArgBase &&
+         "kernel function has no compiler-managed fabric routes");
+  return fabricRuntimeArgBaseIndex;
 }
 
 int64_t

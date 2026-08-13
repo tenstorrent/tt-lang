@@ -176,6 +176,8 @@ class KernelSpec:
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
         extra_common_runtime_args: Per-kernel runtime args appended after
             shared compiler-managed arguments.
+        fabric_runtime_arg_base_common_index: Common runtime argument index
+            containing the base of compiler-managed fabric unique arguments.
         logical_kernel: Target-independent selector retained across kernel cloning.
     """
 
@@ -187,6 +189,7 @@ class KernelSpec:
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
     extra_common_runtime_args: Optional[List[int]] = None
+    fabric_runtime_arg_base_common_index: Optional[int] = None
     logical_kernel: Optional[KernelSelector] = None
 
 
@@ -1020,6 +1023,14 @@ def build_kernel_descriptors(
             )
         common_runtime_args.extend(computed_address_base_args)
         common_runtime_args.extend(extra_args)
+        if spec.fabric_runtime_arg_base_common_index is not None:
+            if len(common_runtime_args) != spec.fabric_runtime_arg_base_common_index:
+                raise RuntimeError(
+                    "fabric runtime argument base common index mismatch: "
+                    f"compiler selected {spec.fabric_runtime_arg_base_common_index}, "
+                    f"host constructed {len(common_runtime_args)} arguments"
+                )
+            common_runtime_args.append(0)
         common_runtime_args.extend(device_coordinates or [])
         common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
@@ -1736,6 +1747,7 @@ def build_device_mesh_program_descriptor(
 def configure_routing_plane_runtime_args(
     program_descriptor: Any,
     kernel_fabric_routes: List[List[FabricRouteSpec]],
+    kernel_fabric_runtime_arg_base_common_indices: List[Optional[int]],
     mesh_device: Any,
     device_coordinates: tuple,
     grid_cols: int,
@@ -1750,6 +1762,9 @@ def configure_routing_plane_runtime_args(
         ttnn_api=ttnn,
         program_descriptor=program_descriptor,
         kernel_fabric_routes=kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices=(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
         mesh_device=mesh_device,
         device_coordinates=device_coordinates,
         grid_cols=grid_cols,
@@ -1950,6 +1965,9 @@ def run_kernel_on_device(
             configure_routing_plane_runtime_args(
                 program_descriptor=device_program,
                 kernel_fabric_routes=fabric_routes,
+                kernel_fabric_runtime_arg_base_common_indices=[
+                    spec.fabric_runtime_arg_base_common_index for spec in kernel_specs
+                ],
                 mesh_device=mesh_device,
                 device_coordinates=mesh_coordinate,
                 grid_cols=grid_cols,
@@ -2158,6 +2176,10 @@ def emit_runner_source(
     lines.append(
         "KERNEL_FABRIC_ROUTES = " f"{_fabric_routes_to_source(kernel_fabric_routes)}"
     )
+    lines.append(
+        "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = "
+        f"{[spec.fabric_runtime_arg_base_common_index for spec in kernel_specs]!r}"
+    )
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -2315,6 +2337,10 @@ def emit_runner_source(
     lines.append(
         "                logical_kernel=_logical_kernel_from_spec("
         "KERNEL_LOGICAL_IDENTITIES[kernel_idx]),"
+    )
+    lines.append(
+        "                fabric_runtime_arg_base_common_index="
+        "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES[kernel_idx],"
     )
     lines.append("            )")
     lines.append("        )")
