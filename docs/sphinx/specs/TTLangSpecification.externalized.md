@@ -55,6 +55,7 @@
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
 | 0.21 | 08/07/2026 | Add `ttl.read_index` |
+| 0.22 | 08/12/2026 | Permit proved replacement of a complete waited dataflow-buffer block |
 
 
 ## Introduction
@@ -183,6 +184,16 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 
 <!-- @spec:example dataflow_buffer/dataflow_buffer.py -->
 
+A compute thread may replace a waited block after reading its original value.
+This preserves occupancy and both DFB pointers; the enclosing wait still ends
+with its normal pop. The compiler requires a straight-line, complete acquisition
+of a one-block DFB as that compute kernel's first access to the DFB. It rejects
+partial, repeated, conditional, or unresolved replacement.
+
+#### Waited block replacement example
+
+<!-- @spec:example dataflow_buffer/waited_block_replacement.py -->
+
 | Type alias/Function | Description |
 | :---- | :---- |
 |  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
@@ -208,7 +219,7 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in a reserved block or replaces a compiler-proved waited block after reading its original value. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
 
 For `ttl.math` functions and block operators see [Appendix B](#appendix-b-block-operators-and-math-functions).
 
