@@ -32,6 +32,9 @@ SCALAR_RESULT_HEADER = os.path.join(
 REPEATED_TRANSACTION_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "repeated_dfb_transactions.hpp"
 )
+SYNCHRONIZED_RESET_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "synchronized_dfb_reset.hpp"
+)
 
 
 def _count_final_dfb_allocations(final_mlir_path):
@@ -424,6 +427,83 @@ def _make_dispatch_condition_lifecycle_kernel(data_format):
     return dispatch_condition_lifecycle_kernel
 
 
+def _make_synchronized_reset_kernel(
+    data_format, enter_semaphore, exit_semaphore, all_local
+):
+    enter_semaphore_address = int(ttnn.get_global_semaphore_address(enter_semaphore))
+    exit_semaphore_address = int(ttnn.get_global_semaphore_address(exit_semaphore))
+    second_data_movement_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            second_data_movement_kernel,
+        ),
+        scope=(ttl.DFBResetScope.ALL_LOCAL if all_local else ttl.DFBResetScope.TARGETS),
+    )
+
+    if all_local:
+
+        @ttl.operation()
+        def reset_dfb(target: ttl.DFB):
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_all_dfb_state",
+                func_args=[
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset,
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                    second_data_movement_kernel,
+                ),
+            )
+
+    else:
+
+        @ttl.operation()
+        def reset_dfb(target: ttl.DFB):
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    target,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset,
+                dfb_reset_targets=[target],
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                    second_data_movement_kernel,
+                ),
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def synchronized_reset_kernel(input_tensor, output_tensor):
+        stale_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+        current_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+
+        with stale_dfb.reserve() as stale_destination:
+            ttl.copy(input_tensor[0, 0], stale_destination).wait()
+
+        reset_dfb(stale_dfb)
+
+        with current_dfb.reserve() as current_destination:
+            ttl.copy(input_tensor[0, 0], current_destination).wait()
+        with current_dfb.wait() as current_source:
+            with output_dfb.reserve() as output_destination:
+                output_destination.store(current_source)
+        with output_dfb.wait() as output_source:
+            ttl.copy(output_source, output_tensor[0, 0]).wait()
+
+    return synchronized_reset_kernel
+
+
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
@@ -769,6 +849,47 @@ def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
     # The first and second sources have equal types and pointer owners. Their
     # separately evaluated producer and consumer conditions share one identity.
     assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("all_local", [False, True], ids=["targets", "all-local"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_synchronized_reset_terminates_producer_epoch(
+    device, dtype, all_local, memory_config, to_device, monkeypatch, tmp_path
+):
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    )
+    enter_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    exit_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_synchronized_reset_kernel(
+        data_format, enter_semaphore, exit_semaphore, all_local
+    )
+
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "synchronized_reset.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # The producer-only DFB becomes canonical at the reset and shares with the
+    # following source. The compute-produced output retains a distinct index.
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()

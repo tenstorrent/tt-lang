@@ -168,30 +168,52 @@ private:
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (lhsLifetime->transactionRuns != rhsLifetime->transactionRuns) {
+      bool lhsBeforeRhs =
+          useConditionalProof
+              ? liveness.isConditionallyOrderedBefore(lhsIndex, rhsIndex, node)
+              : liveness.isOrderedBefore(lhsIndex, rhsIndex, node);
+      bool rhsBeforeLhs =
+          useConditionalProof
+              ? liveness.isConditionallyOrderedBefore(rhsIndex, lhsIndex, node)
+              : liveness.isOrderedBefore(rhsIndex, lhsIndex, node);
+      const DFBPerNodeLifetime *before =
+          lhsBeforeRhs ? lhsLifetime : rhsLifetime;
+      const DFBPerNodeLifetime *after =
+          lhsBeforeRhs ? rhsLifetime : lhsLifetime;
+      bool terminalStateCompatible = false;
+      bool pointerOwnersCompatible = false;
+      if (lhsBeforeRhs || rhsBeforeLhs) {
+        terminalStateCompatible =
+            before->terminalStateCanonical ||
+            before->terminalTransactionRuns == after->transactionRuns;
+        pointerOwnersCompatible =
+            before->terminalStateCanonical ||
+            (before->terminalWritePointerOwner == after->writePointerOwner &&
+             before->terminalReadPointerOwner == after->readPointerOwner);
+      } else {
+        // Preserve the more specific state diagnosis when lifetimes are also
+        // unordered; ordering alone must not obscure a protocol mismatch.
+        terminalStateCompatible =
+            lhsLifetime->transactionRuns == rhsLifetime->transactionRuns;
+        pointerOwnersCompatible =
+            lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
+            lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner;
+      }
+      if (!terminalStateCompatible) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::TransactionMismatch, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (lhsLifetime->writePointerOwner != rhsLifetime->writePointerOwner ||
-          lhsLifetime->readPointerOwner != rhsLifetime->readPointerOwner) {
+      if (!pointerOwnersCompatible) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::PointerOwnerMismatch, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      bool ordered =
-          useConditionalProof
-              ? liveness.isConditionallyOrderedBefore(lhsIndex, rhsIndex,
-                                                      node) ||
-                    liveness.isConditionallyOrderedBefore(rhsIndex, lhsIndex,
-                                                          node)
-              : liveness.isOrderedBefore(lhsIndex, rhsIndex, node) ||
-                    liveness.isOrderedBefore(rhsIndex, lhsIndex, node);
-      if (!ordered) {
+      if (!lhsBeforeRhs && !rhsBeforeLhs) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::ConcurrentLifetime, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
