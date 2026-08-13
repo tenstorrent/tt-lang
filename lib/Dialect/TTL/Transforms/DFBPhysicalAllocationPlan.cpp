@@ -23,12 +23,14 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 
@@ -68,6 +70,58 @@ static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
     return lifetime->quiescence.evidence;
   }
   return logicalDFB.declarations.front();
+}
+
+static bool cursorRunsCanRepeat(ArrayRef<DFBTransactionRun> cursorRuns,
+                                std::uint64_t physicalTileCount) {
+  FailureOr<std::uint64_t> terminalOffset =
+      advanceDFBTransactionCursor(cursorRuns, physicalTileCount);
+  if (failed(terminalOffset)) {
+    return false;
+  }
+  if (cursorRuns.empty() || *terminalOffset == 0) {
+    return true;
+  }
+
+  std::uint64_t totalMovement = 0;
+  for (const DFBTransactionRun &run : cursorRuns) {
+    std::optional<std::uint64_t> runMovement = llvm::checkedMulUnsigned(
+        run.executionCount, static_cast<std::uint64_t>(run.tilesPerExecution));
+    if (!runMovement) {
+      return false;
+    }
+    std::optional<std::uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalMovement, *runMovement);
+    if (!updatedTotal) {
+      return false;
+    }
+    totalMovement = *updatedTotal;
+  }
+
+  // Every reachable start offset is a multiple of this value. Requiring each
+  // movement and its prefix to share that alignment prevents boundary crossing
+  // when the complete cursor sequence is repeated.
+  std::uint64_t repeatAlignment = std::gcd(totalMovement, physicalTileCount);
+  std::uint64_t prefixMovement = 0;
+  for (const DFBTransactionRun &run : cursorRuns) {
+    std::uint64_t tilesPerExecution = run.tilesPerExecution;
+    if (repeatAlignment % tilesPerExecution != 0 ||
+        prefixMovement % tilesPerExecution != 0) {
+      return false;
+    }
+    prefixMovement += run.executionCount * tilesPerExecution;
+  }
+  return true;
+}
+
+static bool haveCompatibleCursorRuns(const DFBPerNodeLifetime &before,
+                                     const DFBPerNodeLifetime &after,
+                                     std::uint64_t physicalTileCount) {
+  return before.terminalWriteCursorRuns == after.writeCursorRuns &&
+         before.terminalReadCursorRuns == after.readCursorRuns &&
+         cursorRunsCanRepeat(before.terminalWriteCursorRuns,
+                             physicalTileCount) &&
+         cursorRunsCanRepeat(before.terminalReadCursorRuns, physicalTileCount);
 }
 
 } // namespace
@@ -156,6 +210,8 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
+    std::uint64_t physicalTileCount =
+        cast<CircularBufferType>(lhs.type).getTotalElements();
     bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
     bool rhsInactive = rhs.launchDomain.known && rhs.launchDomain.nodes.empty();
     if (lhsInactive || rhsInactive) {
@@ -227,7 +283,7 @@ private:
       if (lhsBeforeRhs || rhsBeforeLhs) {
         terminalStateCompatible =
             before->terminalStateCanonical || !requireMatchingTransactions ||
-            before->terminalTransactionRuns == after->transactionRuns;
+            haveCompatibleCursorRuns(*before, *after, physicalTileCount);
         pointerOwnersCompatible =
             before->terminalStateCanonical ||
             (before->terminalWritePointerOwner == after->writePointerOwner &&
@@ -237,7 +293,10 @@ private:
         // unordered; ordering alone must not obscure a protocol mismatch.
         terminalStateCompatible =
             !requireMatchingTransactions ||
-            lhsLifetime->transactionRuns == rhsLifetime->transactionRuns;
+            (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
+                                      physicalTileCount) &&
+             haveCompatibleCursorRuns(*rhsLifetime, *lhsLifetime,
+                                      physicalTileCount));
         pointerOwnersCompatible =
             lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
             lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner;
@@ -410,10 +469,12 @@ static LogicalResult validateAllocationGroupCursor(
     }
     activeMembers = std::move(orderedMembers);
 
-    std::uint64_t pointerOffset = 0;
+    std::uint64_t writePointerOffset = 0;
+    std::uint64_t readPointerOffset = 0;
     for (const AllocationGroupNodeMember &member : activeMembers) {
       const DFBPerNodeLifetime &lifetime = *member.lifetime;
-      auto advanceRuns = [&](ArrayRef<DFBTransactionRun> transactionRuns) {
+      auto advanceRuns = [&](ArrayRef<DFBTransactionRun> transactionRuns,
+                             std::uint64_t &pointerOffset) {
         FailureOr<std::uint64_t> nextOffset = advanceDFBTransactionCursor(
             transactionRuns, physicalTileCount, pointerOffset);
         if (succeeded(nextOffset)) {
@@ -423,18 +484,24 @@ static LogicalResult validateAllocationGroupCursor(
       };
       bool cursorValid = true;
       if (lifetime.resetEpochs.empty()) {
-        cursorValid = succeeded(advanceRuns(lifetime.transactionRuns));
+        cursorValid =
+            succeeded(
+                advanceRuns(lifetime.writeCursorRuns, writePointerOffset)) &&
+            succeeded(advanceRuns(lifetime.readCursorRuns, readPointerOffset));
       } else {
         for (const DFBLifecycleEpoch &epoch : lifetime.resetEpochs) {
-          if (failed(advanceRuns(epoch.transactionRuns))) {
+          if (failed(advanceRuns(epoch.writeCursorRuns, writePointerOffset)) ||
+              failed(advanceRuns(epoch.readCursorRuns, readPointerOffset))) {
             cursorValid = false;
             break;
           }
           if (epoch.terminalStateCanonical) {
-            pointerOffset = 0;
+            writePointerOffset = 0;
+            readPointerOffset = 0;
           }
         }
       }
+      cursorValid &= writePointerOffset == readPointerOffset;
       if (cursorValid) {
         continue;
       }
