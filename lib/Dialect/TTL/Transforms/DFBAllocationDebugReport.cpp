@@ -197,12 +197,12 @@ static void printOccurrences(llvm::raw_ostream &output,
   output << ']';
 }
 
-static void printTransactions(llvm::raw_ostream &output,
-                              const DFBPerNodeLifetime &lifetime) {
+static void printTransactionRuns(llvm::raw_ostream &output,
+                                 ArrayRef<DFBTransactionRun> transactionRuns) {
   constexpr std::uint64_t maxExpandedTransactions = 64;
   std::uint64_t remainingExpandedTransactions = maxExpandedTransactions;
   bool expandTransactions = true;
-  for (const DFBTransactionRun &run : lifetime.transactionRuns) {
+  for (const DFBTransactionRun &run : transactionRuns) {
     if (run.executionCount > remainingExpandedTransactions) {
       expandTransactions = false;
       break;
@@ -212,7 +212,7 @@ static void printTransactions(llvm::raw_ostream &output,
 
   output << '[';
   bool first = true;
-  for (const DFBTransactionRun &run : lifetime.transactionRuns) {
+  for (const DFBTransactionRun &run : transactionRuns) {
     if (!expandTransactions) {
       if (!first) {
         output << ", ";
@@ -234,6 +234,55 @@ static void printTransactions(llvm::raw_ostream &output,
   output << ']';
 }
 
+static void printTransactions(llvm::raw_ostream &output,
+                              const DFBPerNodeLifetime &lifetime) {
+  printTransactionRuns(output, lifetime.transactionRuns);
+}
+
+static void printResetEpochs(llvm::raw_ostream &output,
+                             const DFBPerNodeLifetime &lifetime) {
+  output << '[';
+  llvm::interleaveComma(
+      lifetime.resetEpochs, output, [&](const DFBLifecycleEpoch &epoch) {
+        output << "{accesses=";
+        printValues(output, epoch.accessOccurrenceIndices);
+        output << ",transactions=";
+        printTransactionRuns(output, epoch.transactionRuns);
+        output << ",write_owner=";
+        printPointerOwner(output, epoch.writePointerOwner);
+        output << ",read_owner=";
+        printPointerOwner(output, epoch.readPointerOwner);
+        output << ",terminal_reset=";
+        if (epoch.terminalResetOrdinal) {
+          output << *epoch.terminalResetOrdinal;
+        } else {
+          output << "none";
+        }
+        output << ",terminal_state="
+               << (epoch.terminalStateCanonical ? "canonical" : "protocol")
+               << '}';
+      });
+  output << ']';
+}
+
+static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
+                                ArrayRef<DFBLifecycleEpoch> rhs) {
+  return llvm::equal(
+      lhs, rhs,
+      [](const DFBLifecycleEpoch &lhsEpoch, const DFBLifecycleEpoch &rhsEpoch) {
+        return lhsEpoch.accessOccurrenceIndices ==
+                   rhsEpoch.accessOccurrenceIndices &&
+               lhsEpoch.transactionRuns == rhsEpoch.transactionRuns &&
+               lhsEpoch.writePointerOwner == rhsEpoch.writePointerOwner &&
+               lhsEpoch.readPointerOwner == rhsEpoch.readPointerOwner &&
+               lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
+               lhsEpoch.terminalStateCanonical ==
+                   rhsEpoch.terminalStateCanonical &&
+               lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
+               lhsEpoch.quiescence.evidence == rhsEpoch.quiescence.evidence;
+      });
+}
+
 static bool
 hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
                       const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
@@ -246,6 +295,11 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.transactionRuns != rhs.transactionRuns ||
       lhs.writePointerOwner != rhs.writePointerOwner ||
       lhs.readPointerOwner != rhs.readPointerOwner ||
+      lhs.terminalTransactionRuns != rhs.terminalTransactionRuns ||
+      lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
+      lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
+      lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
+      !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs) ||
       !(lhsDiagnostics == rhsDiagnostics)) {
     return false;
   }
@@ -270,6 +324,10 @@ printLifetimeFacts(llvm::raw_ostream &output,
   printValues(output, diagnostics.earliestAccessOccurrenceIndices);
   output << " terminal_accesses=";
   printValues(output, diagnostics.terminalAccessOccurrenceIndices);
+  if (!lifetime.resetEpochs.empty()) {
+    output << " reset_epochs=";
+    printResetEpochs(output, lifetime);
+  }
 }
 
 struct LifetimeWithDiagnostics {

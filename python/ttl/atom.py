@@ -55,6 +55,7 @@ from .condition import (
     _bind_dispatch_conditions,
     _dispatch_condition_topology,
 )
+from .dfb_reset import DFBReset, _bind_dfb_resets, _dfb_reset_topology
 from .dataflow_buffer import (
     DataflowBuffer,
     _reset_cb_counter,
@@ -197,6 +198,7 @@ class _AtomSpec:
     external_pipenets: Dict[str, PipeNet]
     logical_kernels: Dict[str, Kernel]
     dispatch_conditions: Dict[str, DispatchCondition]
+    dfb_resets: Dict[str, DFBReset]
 
 
 def _has_explicit_kernels(fn: Callable) -> bool:
@@ -266,9 +268,12 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets, inlined_logical_kernels, inlined_dispatch_conditions = (
-        inline_atom_calls(fn_def, scope, caller_name=name)
-    )
+    (
+        inlined_pipenets,
+        inlined_logical_kernels,
+        inlined_dispatch_conditions,
+        inlined_dfb_resets,
+    ) = inline_atom_calls(fn_def, scope, caller_name=name)
     validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -283,6 +288,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     dispatch_conditions: Dict[str, DispatchCondition] = dict(
         inlined_dispatch_conditions
     )
+    dfb_resets: Dict[str, DFBReset] = dict(inlined_dfb_resets)
     captured_logical_kernels: Dict[str, Kernel] = {}
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
@@ -299,6 +305,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 captured_logical_kernels[capture_name] = value
         elif isinstance(value, DispatchCondition):
             dispatch_conditions[capture_name] = value
+        elif isinstance(value, DFBReset):
+            dfb_resets[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -320,6 +328,22 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         operation_identity = (
             f"{operation_identity}[dispatch_conditions={topology_digest}]"
         )
+    reset_kernels = dict(logical_kernels)
+    reset_kernels.update(captured_logical_kernels)
+    reset_topology = _dfb_reset_topology(dfb_resets, reset_kernels)
+    if reset_topology:
+        encoded_reset_topology = ";".join(
+            f"{ordinal}:{scope.name}:"
+            + ",".join(
+                f"{participant_kind}:{participant_identity}"
+                for participant_kind, participant_identity in participants
+            )
+            for ordinal, scope, participants in reset_topology
+        )
+        reset_topology_digest = hashlib.sha256(
+            encoded_reset_topology.encode("utf-8")
+        ).hexdigest()[:16]
+        operation_identity = f"{operation_identity}[dfb_resets={reset_topology_digest}]"
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
 
@@ -327,6 +351,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     frozen_scope.update(compile_time_captures)
     frozen_scope.update(logical_kernels)
     frozen_scope.update(dispatch_conditions)
+    frozen_scope.update(dfb_resets)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -345,6 +370,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         external_pipenets=external_pipenets,
         logical_kernels=logical_kernels,
         dispatch_conditions=dispatch_conditions,
+        dfb_resets=dfb_resets,
     )
 
 
@@ -477,9 +503,11 @@ def _compile_atom(
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
     logical_kernels = dict(spec.logical_kernels)
     bound_dispatch_conditions = _bind_dispatch_conditions(spec.dispatch_conditions)
+    bound_dfb_resets = _bind_dfb_resets(spec.dfb_resets)
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(logical_kernels)
     eval_scope.update(bound_dispatch_conditions)
+    eval_scope.update(bound_dfb_resets)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -549,6 +577,7 @@ def _compile_atom(
     captures.update(nets)
     captures.update(spec.external_pipenets)
     captures.update(bound_dispatch_conditions)
+    captures.update(bound_dfb_resets)
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.
@@ -733,10 +762,11 @@ def operation(
         validate_operation_interface(fn)
         global_captures = inspect.getclosurevars(fn).globals
         for name, value in sorted(global_captures.items()):
-            if isinstance(value, DispatchCondition):
+            if isinstance(value, (DispatchCondition, DFBReset)):
                 raise ValueError(
-                    f"@ttl.operation {fn.__name__!r}: DispatchCondition "
-                    f"{name!r} must be created by an enclosing factory"
+                    f"@ttl.operation {fn.__name__!r}: "
+                    f"{type(value).__name__} {name!r} must be created by an "
+                    "enclosing factory"
                 )
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):

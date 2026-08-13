@@ -269,6 +269,10 @@ def _encode_identity_capture(
 
 
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
+    # Local import avoids the dfb_reset -> kernel import cycle during module
+    # initialization while retaining a typed resource check.
+    from .dfb_reset import DFBReset
+
     function_id = id(function)
     if function_id in active_functions:
         raise TypeError(
@@ -293,6 +297,12 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 if isinstance(value, DispatchCondition)
             }
         )
+        reset_ordinals = {}
+        kernel_capture_names = {
+            id(value): name
+            for name, value in nonlocal_captures.items()
+            if isinstance(value, Kernel)
+        }
         for name, value in sorted(nonlocal_captures.items()):
             if isinstance(value, DispatchCondition):
                 binding = bound_conditions[name]
@@ -300,6 +310,32 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     f"dispatch-condition:{binding.ordinal}:"
                     f"{binding.scalar_type.name}"
                 ).encode("ascii")
+            elif isinstance(value, DFBReset):
+                reset_identity = id(value)
+                ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
+                participant_tokens = []
+                for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
+                    if participant._implicit_role is not None:
+                        participant_tokens.append(
+                            "role:"
+                            f"{participant.kind.name}:"
+                            f"{participant._implicit_role}"
+                        )
+                        continue
+                    participant_name = kernel_capture_names.get(id(participant))
+                    if participant_name is None:
+                        raise TypeError(
+                            "DFBReset participant Kernel must be captured by "
+                            "the enclosing @ttl.operation"
+                        )
+                    participant_tokens.append(f"kernel:{participant_name}")
+                encoded = (
+                    f"dfb-reset:{ordinal}:{value.scope.name}:"
+                    + ",".join(sorted(participant_tokens))
+                ).encode("utf-8")
             else:
                 encoded = _encode_identity_capture(name, value, active_functions)
             encoded_name = name.encode("utf-8")
