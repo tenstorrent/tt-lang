@@ -91,7 +91,9 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
 
 /// Returns true when a direct DFB operand does not consume an acquired slot.
 static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
+  auto opaqueCall = dyn_cast<OpaqueCallOp>(operation);
   return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
+         (opaqueCall && opaqueCall.getDfbResetAttr()) ||
          !mayAccessDFBStorage(operation);
 }
 
