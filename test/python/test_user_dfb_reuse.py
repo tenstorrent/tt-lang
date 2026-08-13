@@ -5,6 +5,7 @@
 """Runtime coverage for physical reuse of user-declared DFBs."""
 
 import os
+import re
 
 import pytest
 import torch
@@ -238,9 +239,20 @@ def _make_exact_execution_domain_kernel(data_format):
 
     @ttl.operation(grid=(2, 1))
     def exact_execution_domain_kernel(input_tensor, output_tensor):
+        scratch_allocation = ttl.make_dfb_allocation_group()
         input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        first_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        second_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_scratch_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=scratch_allocation,
+        )
+        second_scratch_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=scratch_allocation,
+        )
         output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
 
         @ttl.compute(kernel=compute_kernel)
@@ -573,8 +585,19 @@ def _make_synchronized_reset_kernel(
 
     @ttl.operation(grid=(1, 1))
     def synchronized_reset_kernel(input_tensor, output_tensor):
-        stale_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
-        current_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+        reset_allocation = ttl.make_dfb_allocation_group()
+        stale_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=reset_allocation,
+        )
+        current_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=reset_allocation,
+        )
         output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
 
         with stale_dfb.reserve() as stale_destination:
@@ -591,6 +614,65 @@ def _make_synchronized_reset_kernel(
             ttl.copy(output_source, output_tensor[0, 0]).wait()
 
     return synchronized_reset_kernel
+
+
+def _make_allocation_group_kernel(data_format):
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def allocation_group_kernel(input_tensor, output_tensor):
+        shared_allocation = ttl.make_dfb_allocation_group()
+        first_source = ttl.make_dfb(
+            data_format,
+            shape=(1, 2),
+            block_count=1,
+            allocation_group=shared_allocation,
+        )
+        handoff = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_source = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=4,
+            allocation_group=shared_allocation,
+        )
+        output = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with first_source.reserve() as destination:
+                ttl.copy(input_tensor[0:1, 0:2], destination).wait()
+
+            with handoff.wait():
+                pass
+
+            with second_source.reserve() as destination:
+                ttl.copy(input_tensor[0, 0], destination).wait()
+            with second_source.reserve() as destination:
+                ttl.copy(input_tensor[0, 0], destination).wait()
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            with first_source.wait():
+                pass
+
+            with handoff.reserve() as signal:
+                signal.store(ttl.block.fill(0, shape=signal.shape, dtype=signal.dtype))
+
+            with second_source.wait():
+                pass
+
+            with second_source.wait() as source:
+                with output.reserve() as destination:
+                    destination.store(source)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with output.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return allocation_group_kernel
 
 
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
@@ -617,6 +699,8 @@ _dispatch_condition_bf16_lifecycle_kernel = _make_dispatch_condition_lifecycle_k
 _dispatch_condition_f32_lifecycle_kernel = _make_dispatch_condition_lifecycle_kernel(
     "float32"
 )
+_allocation_group_bf16_kernel = _make_allocation_group_kernel("bf16")
+_allocation_group_f32_kernel = _make_allocation_group_kernel("float32")
 
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
@@ -1026,6 +1110,59 @@ def test_waited_block_replacement_preserves_updated_value(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_allocation_group_bf16_kernel, torch.bfloat16),
+        (_allocation_group_f32_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+def test_allocation_group_reuses_one_capacity_envelope(
+    device,
+    operation,
+    dtype,
+    memory_config,
+    to_device,
+    tmp_path,
+    monkeypatch,
+):
+    input_host = torch.linspace(-1, 1, TILE * TILE * 2, dtype=torch.float32).reshape(
+        TILE, TILE * 2
+    )
+    input_host = input_host.to(dtype)
+    input_tensor = to_device(input_host, device)
+    expected = input_host[:, :TILE]
+    output_tensor = to_device(torch.zeros_like(expected), device)
+    final_mlir_path = tmp_path / "allocation_group.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    operation(input_tensor, output_tensor)
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected.float(), rtol=1e-5, atol=1e-6)
+
+    final_mlir = final_mlir_path.read_text()
+    reader_mlir = final_mlir.split("func.func @read", 1)[1].split(
+        "func.func @compute", 1
+    )[0]
+    reader_dfb_indices = [
+        int(index)
+        for index in re.findall(r"ttkernel\.cb_ctarg_idx = (\d+)", reader_mlir)
+    ]
+    assert reader_dfb_indices == [0, 1, 0]
+    assert "block_count = 4 : i32, dfb_index = 0 : i32" in final_mlir
 
 
 @pytest.mark.parametrize(

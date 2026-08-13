@@ -366,10 +366,40 @@ with state_dfb.wait() as state:
         replacement_output.store(state)
 ```
 
+An allocation group requests one physical DFB index and one storage definition
+for several logical DFBs. The group is an immutable compile-time identity. The
+compiler accepts the request only after proving that every pair has the same
+page format, compatible storage and static configuration, complete reusable
+protocol state, and non-overlapping lifecycles. Different scratch block shapes
+and block counts use the largest total-capacity member as the physical
+allocation; tensor-backed members require one exact backing range and
+descriptor. The declaration does not synchronize or reset DFB state.
+
+#### Dataflow buffer allocation group example
+
+```py
+shared_allocation = ttl.make_dfb_allocation_group()
+
+first_source = ttl.make_dataflow_buffer_like(
+    input_tensor,
+    shape=(1, 2),
+    block_count=1,
+    allocation_group=shared_allocation,
+)
+second_source = ttl.make_dataflow_buffer_like(
+    input_tensor,
+    shape=(1, 1),
+    block_count=4,
+    allocation_group=shared_allocation,
+)
+```
+
 | Type alias/Function | Description |
 | :---- | :---- |
-|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
-| `ttl.make_tensor_backed_dfb(ttnn.Tensor: tensor, shape: ttl.Shape, block_count: ttl.Size = 1, byte_offset: ttl.Size = 0) -> ttl.DataflowBuffer` | Create a dataflow buffer whose complete capacity uses a byte range of `tensor`'s node-local L1 allocation. |
+| `ttl.make_dfb_allocation_group() -> ttl.DFBAllocationGroup` | Create an immutable compile-time identity for compiler-verified physical DFB allocation sharing. |
+| `ttl.make_dfb(dtype, shape: ttl.Shape, block_count: ttl.Size = 2, tile = (32, 32), *, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a scratch dataflow buffer from an explicit element type. |
+|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2, *, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+| `ttl.make_tensor_backed_dfb(ttnn.Tensor: tensor, shape: ttl.Shape, *, block_count: ttl.Size = 1, byte_offset: ttl.Size = 0, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a dataflow buffer whose complete capacity uses a byte range of `tensor`'s node-local L1 allocation. |
 | `ttl.DataflowBuffer.publish(self)` | Publish the complete capacity of a tensor-backed input without copying bytes. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
