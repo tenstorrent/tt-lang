@@ -26,12 +26,14 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <tuple>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
@@ -86,6 +88,55 @@ llvm::LogicalResult DispatchConditionAttr::verify(
            << "dispatch condition scalar type must be signless i32 or i64";
   }
   return success();
+}
+
+llvm::LogicalResult SynchronizedDFBResetAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    bool allLocal, ArrayRef<LogicalKernelAttr> participants) {
+  if (ordinal < 0) {
+    return emitError() << "synchronized DFB reset ordinal must be nonnegative";
+  }
+  if (participants.empty()) {
+    return emitError()
+           << "synchronized DFB reset requires at least one participant";
+  }
+  llvm::DenseSet<Attribute> uniqueParticipants;
+  for (LogicalKernelAttr participant : participants) {
+    if (!uniqueParticipants.insert(participant).second) {
+      return emitError()
+             << "synchronized DFB reset participants must be distinct";
+    }
+  }
+  auto participantKey = [](LogicalKernelAttr participant) {
+    int identityKind = 0;
+    if (participant.getIdentity()) {
+      identityKind = participant.getRole() ? 1 : 2;
+    }
+    auto valueOrEmpty = [](StringAttr value) {
+      return value ? value.getValue() : StringRef();
+    };
+    return std::make_tuple(static_cast<unsigned>(participant.getKind()),
+                           identityKind,
+                           valueOrEmpty(participant.getIdentity()),
+                           valueOrEmpty(participant.getOperation()),
+                           valueOrEmpty(participant.getRole()));
+  };
+  if (!std::is_sorted(participants.begin(), participants.end(),
+                      [&](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
+                        return participantKey(lhs) < participantKey(rhs);
+                      })) {
+    return emitError()
+           << "synchronized DFB reset participants must use canonical order";
+  }
+  return success();
+}
+
+SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
+    Location location, MLIRContext *context, int64_t ordinal, bool allLocal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  return SynchronizedDFBResetAttr::getChecked(
+      [location]() { return emitError(location); }, context, ordinal, allLocal,
+      participants);
 }
 
 void TTLDialect::registerAttributes() {
@@ -3060,6 +3111,37 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
       }
     }
   }
+  SynchronizedDFBResetAttr reset = getDfbResetAttr();
+  if (reset) {
+    if (reset.getAllLocal() == !dependencies.empty()) {
+      return emitOpError(
+          reset.getAllLocal()
+              ? "all-local synchronized DFB reset cannot declare DFB "
+                "dependencies"
+              : "targeted synchronized DFB reset requires DFB dependencies");
+    }
+    if (getResult()) {
+      return emitOpError("synchronized DFB reset call cannot return a value");
+    }
+    if (getDfbEffects() || getUnknownDfbAccess()) {
+      return emitOpError(
+          "synchronized DFB reset cannot declare protocol effects or unknown "
+          "DFB access");
+    }
+    llvm::DenseSet<Value> targets;
+    for (Value target : dependencies) {
+      if (!targets.insert(target).second) {
+        return emitOpError("synchronized DFB reset targets must be distinct");
+      }
+    }
+    for (Value indexDFB : getDFBIndexOperands()) {
+      if (!targets.contains(indexDFB)) {
+        return emitOpError(
+            "every DFB index consumed by a synchronized reset call must be a "
+            "reset target");
+      }
+    }
+  }
   if (DispatchConditionAttr condition = getConditionResultAttr()) {
     if (!getResult()) {
       return emitOpError("condition result requires one scalar result");
@@ -3070,7 +3152,7 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
              << condition.getScalarType();
     }
     if (!getTemplateDfbOperands().empty() || !dependencies.empty() ||
-        getDfbEffects() || getUnknownDfbAccess()) {
+        getDfbEffects() || getUnknownDfbAccess() || reset) {
       return emitOpError("condition result call cannot access DFB state");
     }
   }
