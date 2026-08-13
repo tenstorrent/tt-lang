@@ -31,6 +31,7 @@ struct DFBPhysicalIndexAssignment {
   int32_t physicalIndex = 0;
   Type type;
   TensorBackingAttr tensorBacking;
+  DFBAllocationGroupAttr allocationGroup;
   LaunchNodeDomain launchDomain;
   SmallVector<BindCBOp> declarations;
   bool bounded = false;
@@ -77,6 +78,9 @@ enum class DFBConflictReason {
   ConcurrentLifetime,
   StaticConfigurationMismatch,
 };
+
+/// Returns the stable diagnostic spelling for one conflict reason.
+StringRef getDFBConflictReasonName(DFBConflictReason reason);
 
 /// Source evidence that explains why one logical DFB pair cannot share.
 struct DFBConflictEvidence {

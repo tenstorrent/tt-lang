@@ -13,6 +13,7 @@ import inspect
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from ttl.condition import DispatchCondition
+from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
@@ -131,12 +132,14 @@ def inline_atom_calls(
     Dict[str, object],
     Dict[str, Kernel],
     Dict[str, DispatchCondition],
+    Dict[str, DFBAllocationGroup],
     Dict[str, DFBReset],
 ]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
     logical_kernels = {}
     dispatch_conditions = {}
+    allocation_groups = {}
     dfb_resets = {}
     inline_discriminators = {}
     fn_def.body = _inline_statements(
@@ -147,10 +150,17 @@ def inline_atom_calls(
         external_pipenets,
         logical_kernels,
         dispatch_conditions,
+        allocation_groups,
         dfb_resets,
         inline_discriminators,
     )
-    return external_pipenets, logical_kernels, dispatch_conditions, dfb_resets
+    return (
+        external_pipenets,
+        logical_kernels,
+        dispatch_conditions,
+        allocation_groups,
+        dfb_resets,
+    )
 
 
 def _inline_statements(
@@ -161,6 +171,7 @@ def _inline_statements(
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
     dispatch_conditions: Dict[str, DispatchCondition],
+    allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
@@ -174,6 +185,7 @@ def _inline_statements(
             external_pipenets,
             logical_kernels,
             dispatch_conditions,
+            allocation_groups,
             dfb_resets,
             inline_discriminators,
         )
@@ -193,6 +205,7 @@ def _inline_statements(
                 external_pipenets,
                 logical_kernels,
                 dispatch_conditions,
+                allocation_groups,
                 dfb_resets,
                 inline_discriminators,
             )
@@ -208,6 +221,7 @@ def _inline_compound_bodies(
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
     dispatch_conditions: Dict[str, DispatchCondition],
+    allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
     inline_discriminators: Dict[str, int],
 ) -> None:
@@ -225,6 +239,7 @@ def _inline_compound_bodies(
             external_pipenets,
             logical_kernels,
             dispatch_conditions,
+            allocation_groups,
             dfb_resets,
             inline_discriminators,
         )
@@ -243,6 +258,7 @@ def _inline_compound_bodies(
                 external_pipenets,
                 logical_kernels,
                 dispatch_conditions,
+                allocation_groups,
                 dfb_resets,
                 inline_discriminators,
             )
@@ -320,6 +336,7 @@ def _expand_call(
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
     dispatch_conditions: Dict[str, DispatchCondition],
+    allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
@@ -354,6 +371,13 @@ def _expand_call(
         scope,
         reserved_names,
         dispatch_conditions,
+    )
+    _add_allocation_group_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        allocation_groups,
     )
     _add_dfb_reset_bindings(
         spec,
@@ -487,6 +511,32 @@ def _add_dispatch_condition_bindings(
             existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
             scope[existing_name] = condition
             dispatch_conditions[existing_name] = condition
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+
+
+def _add_allocation_group_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    allocation_groups: Dict[str, DFBAllocationGroup],
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, group in spec.allocation_groups.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in allocation_groups.items()
+                if candidate is group
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = group
+            allocation_groups[existing_name] = group
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
