@@ -90,7 +90,9 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
 }
 
 static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
+  auto opaqueCall = dyn_cast<OpaqueCallOp>(operation);
   return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
+         (opaqueCall && opaqueCall.getDfbResetAttr()) ||
          !mayAccessDFBStorage(operation);
 }
 

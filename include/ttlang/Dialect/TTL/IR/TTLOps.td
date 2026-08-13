@@ -2009,6 +2009,17 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     access a DFB, declare DFB effects, or declare unknown DFB access because
     condition evaluation is stable and repeat-safe rather than stateful.
 
+    `dfb_reset` declares a worker-local synchronized reset. Its participant set
+    names every logical kernel that executes the same dynamic reset instance.
+    For a targeted reset, `dependency_dfb_operands` names the DFB interfaces
+    whose read pointer, write pointer, occupancy, and initialization state are
+    canonical when the call returns. An `all_local` reset applies to every
+    worker-local DFB interface and has no dependency operands. This contract is
+    separate from `dfb_effects`: reset targets are not payload accesses and do
+    not imply reserve, push, wait, or pop. The external implementation must
+    provide the declared synchronization and state reset. The compiler does
+    not infer either property from the callee or header name.
+
     Example:
     ```mlir
     ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
@@ -2028,7 +2039,8 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
     UnitAttr:$unknown_dfb_access,
-    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result
+    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result,
+    OptionalAttr<TTL_SynchronizedDFBResetAttr>:$dfb_reset
   );
   let results = (outs Optional<AnyTypeOf<[I32, I64]>>:$result);
   let assemblyFormat = [{
@@ -2038,6 +2050,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
      type($dependency_dfb_operands) `)`)?
     (`dfb_effects` $dfb_effects^)?
+    (`dfb_reset` $dfb_reset^)?
     ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
