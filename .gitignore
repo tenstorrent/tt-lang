@@ -68,3 +68,4 @@ generated/pykernels/*
 **/temp/
 
 test/temp
+perf_data/
