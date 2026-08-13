@@ -13,9 +13,9 @@ from typing import Any, Callable, Optional, Union, cast
 
 from ttl.constants import validate_math_fidelity
 
-from .blockstate import KernelType
 from .typedefs import Shape
 from .context import get_context, cleanup_run_context
+from .kernel import KernelKind
 
 
 def set_default_grid(grid: Shape) -> None:
@@ -130,10 +130,12 @@ def operation(
             compute_kernels = [
                 t
                 for t in kernels
-                if getattr(t, "kernel_type", None) == KernelType.COMPUTE
+                if getattr(t, "kernel_type", None) == KernelKind.COMPUTE
             ]
             dm_kernels = [
-                t for t in kernels if getattr(t, "kernel_type", None) == KernelType.DM
+                t
+                for t in kernels
+                if getattr(t, "kernel_type", None) == KernelKind.DATA_MOVEMENT
             ]
 
             if len(compute_kernels) != 1:

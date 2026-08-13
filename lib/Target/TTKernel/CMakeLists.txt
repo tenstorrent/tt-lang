@@ -11,6 +11,7 @@ set(LLK_HEADERS
   experimental_invoke_sfpi_llks
   experimental_matmul_llks
   experimental_padding_llks
+  experimental_constant_table
   experimental_coord_translation
   experimental_fabric_topology_info
   experimental_fabric_1d_routing

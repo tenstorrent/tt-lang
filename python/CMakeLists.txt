@@ -131,6 +131,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     compiler_options.py
     constants.py
     diagnostics.py
+    kernel.py
     kernel_runner.py
     pipe.py
     ttl.py
@@ -160,6 +161,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/atom_split.py
     _src/atom_inline.py
     _src/auto_profile.py
+    _src/global_semaphore.py
     _src/perf_summary.py
     _src/perf_trace_server.py
     _src/signpost_profile.py

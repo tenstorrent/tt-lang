@@ -13,6 +13,7 @@
 #include "mlir/IR/Location.h"
 
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
 namespace nb = nanobind;
@@ -37,6 +38,59 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
+  m.attr("LOGICAL_KERNEL_ATTR") =
+      nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
+
+  nb::enum_<LogicalKernelKind>(m, "LogicalKernelKind")
+      .value("Compute", LogicalKernelKind::Compute)
+      .value("DataMovement", LogicalKernelKind::DataMovement);
+
+  tt_attribute_class<LogicalKernelAttr>(m, "LogicalKernelAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, LogicalKernelKind kind,
+             const std::optional<std::string> &identity,
+             const std::optional<std::string> &operation,
+             const std::optional<std::string> &role) {
+            MLIRContext *cppContext = unwrap(context);
+            auto optionalStringAttr =
+                [cppContext](
+                    const std::optional<std::string> &value) -> StringAttr {
+              return value ? StringAttr::get(cppContext, *value) : StringAttr();
+            };
+            LogicalKernelAttr attribute = LogicalKernelAttr::getChecked(
+                [cppContext]() {
+                  return emitError(UnknownLoc::get(cppContext));
+                },
+                cppContext, kind, optionalStringAttr(identity),
+                optionalStringAttr(operation), optionalStringAttr(role));
+            if (!attribute) {
+              throw nb::value_error("invalid logical kernel metadata");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("identity") = nb::none(),
+          nb::arg("operation") = nb::none(), nb::arg("role") = nb::none())
+      .def_prop_ro("kind", &LogicalKernelAttr::getKind)
+      .def_prop_ro("identity",
+                   [](LogicalKernelAttr attribute) {
+                     StringAttr identity = attribute.getIdentity();
+                     return identity ? std::optional<std::string>(
+                                           identity.getValue().str())
+                                     : std::nullopt;
+                   })
+      .def_prop_ro("operation",
+                   [](LogicalKernelAttr attribute) {
+                     StringAttr operation = attribute.getOperation();
+                     return operation ? std::optional<std::string>(
+                                            operation.getValue().str())
+                                      : std::nullopt;
+                   })
+      .def_prop_ro("role", [](LogicalKernelAttr attribute) {
+        StringAttr role = attribute.getRole();
+        return role ? std::optional<std::string>(role.getValue().str())
+                    : std::nullopt;
+      });
 
   nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
       .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
@@ -98,6 +152,72 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("tensor_index", &TensorBackingAttr::getTensorIndex)
       .def_prop_ro("byte_offset", &TensorBackingAttr::getByteOffset)
       .def_prop_ro("byte_size", &TensorBackingAttr::getByteSize);
+
+  //===--------------------------------------------------------------------===//
+  // PipeRecordAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<PipeRecordAttr>(m, "PipeRecordAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
+             int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+             bool isCollective) {
+            return wrap(PipeRecordAttr::get(unwrap(ctx), srcX, srcY, dstStartX,
+                                            dstStartY, dstEndX, dstEndY,
+                                            isCollective));
+          },
+          nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
+          nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
+          nb::arg("dst_end_y"), nb::arg("is_collective") = false)
+      .def_prop_ro("src_x", &PipeRecordAttr::getSrcX)
+      .def_prop_ro("src_y", &PipeRecordAttr::getSrcY)
+      .def_prop_ro("dst_start_x", &PipeRecordAttr::getDstStartX)
+      .def_prop_ro("dst_start_y", &PipeRecordAttr::getDstStartY)
+      .def_prop_ro("dst_end_x", &PipeRecordAttr::getDstEndX)
+      .def_prop_ro("dst_end_y", &PipeRecordAttr::getDstEndY)
+      .def_prop_ro("is_collective", &PipeRecordAttr::getIsCollective);
+
+  //===--------------------------------------------------------------------===//
+  // PipeNetRecordsAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<PipeNetRecordsAttr>(m, "PipeNetRecordsAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t pipeNetId,
+             std::optional<std::string> pipeNetName,
+             std::vector<MlirAttribute> pipes) {
+            SmallVector<PipeRecordAttr> records;
+            records.reserve(pipes.size());
+            for (MlirAttribute attr : pipes) {
+              records.push_back(mlir::cast<PipeRecordAttr>(unwrap(attr)));
+            }
+            StringAttr nameAttr;
+            if (pipeNetName.has_value()) {
+              nameAttr = StringAttr::get(unwrap(ctx), *pipeNetName);
+            }
+            return wrap(PipeNetRecordsAttr::get(unwrap(ctx), pipeNetId,
+                                                nameAttr, records));
+          },
+          nb::arg("context"), nb::arg("pipe_net_id"),
+          nb::arg("pipe_net_name").none() = nb::none(), nb::arg("pipes"))
+      .def_prop_ro("pipe_net_id", &PipeNetRecordsAttr::getPipeNetId)
+      .def_prop_ro("pipe_net_name",
+                   [](PipeNetRecordsAttr &self) -> std::optional<std::string> {
+                     if (auto nameAttr = self.getPipeNetName()) {
+                       return nameAttr.getValue().str();
+                     }
+                     return std::nullopt;
+                   })
+      .def_prop_ro("pipes", [](PipeNetRecordsAttr &self) {
+        std::vector<MlirAttribute> out;
+        out.reserve(self.getPipes().size());
+        for (PipeRecordAttr record : self.getPipes()) {
+          out.push_back(wrap(record));
+        }
+        return out;
+      });
 
   //===--------------------------------------------------------------------===//
   // CircularBufferType
@@ -213,4 +333,24 @@ void populateTTLModule(nb::module_ &m) {
             return type.hasMultipleReceivers();
           },
           "Deprecated. Use has_multiple_receivers().");
+
+  //===--------------------------------------------------------------------===//
+  // SelectedPipe types
+  //===--------------------------------------------------------------------===//
+
+  tt_type_class<SelectedPipeSrcType>(m, "SelectedPipeSrcType")
+      .def_static(
+          "get",
+          [](MlirContext ctx) {
+            return wrap(SelectedPipeSrcType::get(unwrap(ctx)));
+          },
+          nb::arg("context"));
+
+  tt_type_class<SelectedPipeDstType>(m, "SelectedPipeDstType")
+      .def_static(
+          "get",
+          [](MlirContext ctx) {
+            return wrap(SelectedPipeDstType::get(unwrap(ctx)));
+          },
+          nb::arg("context"));
 }

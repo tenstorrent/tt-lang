@@ -397,6 +397,30 @@ the `build-docker` job builds and pushes it before any other downstream
 job consumes it. Subsequent pushes of the same submodule SHA set reuse
 the cached image.
 
+(tagging-after-an-uplift-merge)=
+### Tagging after an uplift merge
+
+Wait for the merge's CI run on `main` to finish building the toolchain before
+pushing the release tag. A run reads caches only from its own ref and the
+default branch, and the uplift PR's cache lives under `refs/pull/<N>/merge`, so
+a tag pushed before `main` has cached the toolchain rebuilds it from source --
+about an hour and a half, concurrent with the identical build on `main`.
+
+The tag run cannot skip it: `call-build-docker.yml`'s `build-images` restores
+the toolchain with `fail-on-cache-miss: true` and bakes it into the IRD image.
+Dispatching `call-build-docker.yml` separately resolves the same cache scopes
+and rebuilds too.
+
+Confirm the cache exists first; the key uses seven-character submodule SHAs:
+
+```bash
+gh api "repos/tenstorrent/tt-lang/actions/caches?per_page=100" \
+  --jq '.actions_caches[] | select(.key | startswith("Linux-toolchain")) | "\(.ref)  \(.key)"'
+```
+
+Look for `Linux-toolchain_llvm-<llvm7>_ttmetal-<ttmetal7>` at
+`ref=refs/heads/main` matching the uplifted submodules, then push the tag.
+
 ### CI: toolchain cache and Docker images
 
 CI uses two caching layers that must be rebuilt when submodule SHAs change:
@@ -454,9 +478,11 @@ with `push: true` and uploads the rebuilt image so downstream jobs
 (`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) can pull
 it. If the image is missing and the resolved tag is the bare release form
 (e.g. `vX.Y.Z`), the probe step fails the job with an error directing the
-maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
-release tag from a PR or main commit would push newer content under the
-release tag and overwrite the released image.
+maintainer to run `call-build-docker.yml` with `push: true` at that exact
+release tag. Recovery uses that workflow rather than `publish-pypi.yml` so the
+image is rebuilt from the tagged commit alone; rebuilding the release tag from
+a PR or main commit would push newer content under the release tag and
+overwrite the released image.
 
 `ci.yml` also has a `dryrun-docker` job that runs only on
 pull_request events when the PR touches container-relevant files
@@ -504,11 +530,18 @@ Push policy across events:
 | PR (uplift)                            | refused by probe     | yes                            | no                           |
 | PR (non-uplift, container content)     | no (dryrun)          | n/a                            | no                           |
 | Main push (uplift)                     | refused by probe     | yes                            | yes                          |
-| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | no (`build-docker` skipped)  |
+| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | yes (`retag-latest`)         |
 | Tag push (release, via publish-pypi)   | yes                  | n/a                            | no                           |
 | `workflow_dispatch`                    | only if `push: true` | only if `push: true`           | only if `push: true` on main |
 
-For a final release:
+`build-docker` pushes `:latest`, but runs only when the probe reports the image
+missing. For an image published before the main push -- by an uplift PR's run or
+a release tag's `publish-pypi.yml` run -- the `retag-latest` job moves `:latest`
+onto the resolved tag instead, copying the manifest with
+`docker buildx imagetools create` rather than rebuilding.
+
+For a final release (see [Tagging after an uplift
+merge](#tagging-after-an-uplift-merge) before tagging an uplift):
 
 ```bash
 git tag vX.Y.Z
@@ -552,11 +585,17 @@ rejected.
    push release tag
  or workflow_dispatch
           |
-          v
-   +--------------+
-   |  preflight   |   verify the selected source and release tag
-   +--------------+   (release checks skipped if dry_run=true)
-          |
+          +---------------------------+
+          |                           v
+          |                    +--------------+
+          v                    | build-docker |   call-build-docker.yml
+   +--------------+            +--------------+   (release-tag pushes only;
+   |  preflight   |                                publishes the dist and IRD
+   +--------------+                                images under the release tag;
+          |                                        independent of preflight so
+          |   verify the selected source            an S3-only pin still gets
+          |   and release tag (release              its image)
+          |   checks skipped if dry_run=true)
           v
    +--------------------+
    | build-wheel-images |   call-build-wheel-images.yml
@@ -585,7 +624,7 @@ rejected.
    dry_run=false
    (uploads to PyPI)        (lists artifacts only)
 
-   Release-tag pushes complete after test-wheels.
+   Release-tag pushes complete after build-docker and test-wheels.
 ```
 
 Job-by-job:
@@ -600,22 +639,40 @@ Job-by-job:
    `docker_tag` is supplied. The multi-stage `manylinux_2_34` build stores LLVM
    caches separately for Python 3.10 and 3.12 and stores tt-metal in a third
    cache. Unchanged component inputs restore from GHCR instead of recompiling.
-3. **`build-wheels`** — calls `call-build-manylinux-wheels.yml` against either
+3. **`build-docker`** — calls `call-build-docker.yml` with `push: true` on a
+   release-tag push, publishing the dist and IRD images under the release tag.
+   It passes no source override, so the images are built from the tagged commit
+   that `github.sha` already points at. Manual PyPI dispatches skip it, because
+   the release images belong to the tag rather than to the dispatch. This job
+   is what `ci.yml`'s `resolve-docker-tag` probe depends on: without it, a
+   release tag resolves to an IRD image that was never published.
+
+   It declares no `needs`, so it starts immediately and never waits on
+   `preflight`. That independence is required, not incidental: `preflight`
+   decides whether the release is publishable to public PyPI, and an S3-only
+   pin fails that check by design (see [Two-phase
+   uplift](#two-phase-uplift-publishable-release-then-latest-s3-only)). A
+   dependent job is skipped when its `needs` fail, so gating image publication
+   on `preflight` would leave every S3-only release without the image `ci.yml`
+   requires. The image tag comes from `get-version-tag.sh` at checkout rather
+   than from `preflight`, and `on.push.tags` already restricts the event to
+   release tags.
+4. **`build-wheels`** — calls `call-build-manylinux-wheels.yml` against either
    the `docker_tag` input or the image-build output. It builds Python 3.10 and
    3.12 `tt-lang` wheels with an exact public `ttnn` dependency and builds the
    ABI-independent `tt-lang-sim` wheel. The workflow verifies wheel names,
    versions, dependency metadata, and the `manylinux_2_34` platform tag before
    uploading the `tt-lang-wheels` artifact.
-4. **`test-wheels`**: installs the Python 3.12 public wheel and its PyPI `ttnn`
+5. **`test-wheels`**: installs the Python 3.12 public wheel and its PyPI `ttnn`
    dependency in an isolated environment on an `n150` runner, installs the sfpi
    release recorded by `ttnn`, then runs the smoke test and tutorials. It runs
    during dry runs and must pass before `publish`.
-5. **`publish`**: runs only for a manual dispatch from `main` when `dry_run` is
+6. **`publish`**: runs only for a manual dispatch from `main` when `dry_run` is
    false and `test-wheels` succeeded. Downloads the artifact, verifies
    every wheel filename's version field matches `preflight.outputs.tag_version`,
    and uploads via `pypa/gh-action-pypi-publish` using OIDC trusted publishing
    (`environment: pypi`, `id-token: write`).
-6. **`dry-run-summary`**: runs only on `workflow_dispatch` with
+7. **`dry-run-summary`**: runs only on `workflow_dispatch` with
    `dry_run: true`. Downloads the artifact and lists what would have been
    uploaded. No `environment`, no PyPI credentials.
 

@@ -39,6 +39,10 @@ struct BlockFlowNode {
   SmallVector<BlockFlowNode *> successors;
   SmallVector<BlockFlowNode *> predecessors;
 
+  /// Position in the parent's node list. LLVM's dominator tree indexes its
+  /// internal vectors by this, so it must be dense over [0, nodes.size()).
+  unsigned number = 0;
+
   /// Supply the parent required by LLVM's generic dominator tree.
   BlockFlowGraph *getParent() const { return parent; }
 
@@ -76,6 +80,24 @@ struct GraphTraits<mlir::tt::execution_count_detail::BlockFlowNode *> {
   static ChildIteratorType child_end(NodeRef node) {
     return node->successors.end();
   }
+  static unsigned getNumber(NodeRef node) { return node->number; }
+};
+
+/// Supply the numbering the dominator tree reads through a const node.
+template <>
+struct GraphTraits<const mlir::tt::execution_count_detail::BlockFlowNode *> {
+  using NodeRef = const mlir::tt::execution_count_detail::BlockFlowNode *;
+  using ChildIteratorType = SmallVector<
+      mlir::tt::execution_count_detail::BlockFlowNode *>::const_iterator;
+
+  static NodeRef getEntryNode(NodeRef node) { return node; }
+  static ChildIteratorType child_begin(NodeRef node) {
+    return node->successors.begin();
+  }
+  static ChildIteratorType child_end(NodeRef node) {
+    return node->successors.end();
+  }
+  static unsigned getNumber(NodeRef node) { return node->number; }
 };
 
 /// Provide the reverse contextual edges required by post-dominance.
@@ -109,6 +131,11 @@ struct GraphTraits<mlir::tt::execution_count_detail::BlockFlowGraph *>
   static nodes_iterator nodes_end(GraphType graph) {
     return nodes_iterator(graph->nodes.end());
   }
+
+  static unsigned getMaxNumber(GraphType graph) { return graph->nodes.size(); }
+  /// Numbers are assigned once at graph construction and never reassigned, so
+  /// the dominator tree can never observe a stale numbering.
+  static unsigned getNumberEpoch(GraphType) { return 0; }
 };
 
 } // namespace llvm
@@ -410,6 +437,7 @@ private:
       BlockFlowNode &node = graph.nodes.emplace_back();
       node.parent = &graph;
       node.block = &block;
+      node.number = graph.nodes.size() - 1;
       nodesByBlock.try_emplace(&block, &node);
     }
     graph.entry = nodesByBlock.lookup(&region.front());

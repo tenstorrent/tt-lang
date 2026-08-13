@@ -78,6 +78,30 @@ jobs:
     with:
       push: true
 
+  # build-docker pushes :latest but runs only when the image is missing, which
+  # leaves :latest stale for images published before the main push.
+  retag-latest:
+    name: Point :latest at the resolved image
+    needs: resolve-docker-tag
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.resolve-docker-tag.outputs.needs_rebuild == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+      - name: Move :latest
+        run: .github/scripts/retag-docker-latest.sh "${{ needs.resolve-docker-tag.outputs.docker_tag }}"
+
   # Manylinux wheel-builder images are independent of the IRD image. Build them
   # alongside build-docker so hardware tests do not wait for toolchain caches.
   build-wheel-images:

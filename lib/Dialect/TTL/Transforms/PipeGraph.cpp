@@ -44,6 +44,9 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::DenseMap<int64_t, SmallVector<PipeTransferPostOp>>
       receiverPostsByStream;
   llvm::DenseMap<int64_t, SmallVector<CBPushOp>> pushesByStream;
+  llvm::SmallPtrSet<Operation *, 16> pipeRecordControlOps;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> pipeRecordIfThenDomains;
+  llvm::DenseMap<Operation *, PipeNetRecordLoop> pipeRecordLoops;
 };
 
 namespace {
@@ -62,6 +65,18 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
                                   Operation * /*unanalyzableOp*/) {
     state.operationLaunchDomains[op] = domain;
+  };
+  options.computeRegionDomain =
+      [&](Operation *op,
+          unsigned regionNumber) -> std::optional<LaunchNodeDomain> {
+    if (regionNumber != 0) {
+      return std::nullopt;
+    }
+    auto domainIt = state.pipeRecordIfThenDomains.find(op);
+    if (domainIt == state.pipeRecordIfThenDomains.end()) {
+      return std::nullopt;
+    }
+    return domainIt->second;
   };
   solver.load<LaunchNodeDomainAnalysis>(state, options);
   if (failed(solver.initializeAndRun(mod))) {
@@ -307,6 +322,13 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
       context.function = function;
       break;
     }
+    // The graph already represents each PipeNet record separately. Ignoring
+    // generated foreach control preserves the callback's order relative to
+    // operations before and after it.
+    if (analysisState.pipeRecordControlOps.contains(parent)) {
+      current = parent;
+      continue;
+    }
     if (parent && isTransparentReceiverScope(parent, receiver, analysisState)) {
       current = parent;
       continue;
@@ -396,22 +418,28 @@ static ReceiverPostsByDFB collectReceiverPostsByDFB(
   for (PipeTransferPostOp postOp : analysisState.receiverPosts) {
     PipeTransferCreateOp createOp =
         transferIndex.getTransferCreate(postOp.getOperation());
-    PipeKey pipe =
-        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    assert(succeeded(pipeRef) &&
+           "pipe transfer graph validated pipe references");
     auto receiverIt = receiverDFBByPost.find(postOp.getOperation());
     if (receiverIt == receiverDFBByPost.end()) {
       continue;
     }
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
-    pipe.forEachReceiver([&](PipeReceiverCoord receiver) {
-      if (postDomain.known && !knownLaunchNodeDomainContains(
-                                  postDomain, getLaunchNodeCoord(receiver))) {
-        return;
-      }
-      PipeReceiverDFBKey receiverDFB{receiver, receiverIt->second.dfbIndex};
-      postsByReceiverDFB[receiverDFB].push_back(postOp);
-    });
+    for (PipeType pipeType :
+         getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
+      PipeKey pipe = getPipeKey(pipeType);
+      pipe.forEachReceiver([&](PipeReceiverCoord receiver) {
+        if (postDomain.known && !knownLaunchNodeDomainContains(
+                                    postDomain, getLaunchNodeCoord(receiver))) {
+          return;
+        }
+        PipeReceiverDFBKey receiverDFB{receiver, receiverIt->second.dfbIndex};
+        postsByReceiverDFB[receiverDFB].push_back(postOp);
+      });
+    }
   }
   return postsByReceiverDFB;
 }
@@ -463,6 +491,11 @@ struct ReceiverProducerState {
 };
 
 } // namespace
+
+static std::optional<std::uint64_t>
+getConcreteTransferExecutionCount(Operation *op, LaunchNodeCoord coord,
+                                  const PipeReference &pipeRef,
+                                  PipeGraphAnalysisState &analysisState);
 
 static InFlightDiagnostic
 emitReceiverReservationPastDFBEnd(const ReceiverDFBInfo &receiverInfo,
@@ -530,7 +563,7 @@ verifyReceiverReservationSequence(const ReceiverAddressSequenceProof &sequence,
 }
 
 LogicalResult PipeGraph::assignReceiverAddressSequences(
-    const PipeTransferIndex &transferIndex,
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
   ReceiverPostsByDFB postsByReceiverDFB = collectReceiverPostsByDFB(
       transferIndex, receiverDFBByPost, analysisState);
@@ -543,19 +576,25 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     auto postOp = llvm::cast<PipeTransferPostOp>(postOperation);
     PipeTransferCreateOp createOp =
         transferIndex.getTransferCreate(postOp.getOperation());
-    PipeKey pipe =
-        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
-    pipe.forEachReceiver([&](PipeReceiverCoord receiver) {
-      PipeReceiverDFBKey receiverDFB{receiver, receiverDFBIndex};
-      auto postIt = postsByReceiverDFB.find(receiverDFB);
-      ArrayRef<PipeTransferPostOp> posts;
-      if (postIt != postsByReceiverDFB.end()) {
-        posts = postIt->second;
-      }
-      scheduleContextByReceiverDFB.try_emplace(
-          receiverDFB,
-          getProvenReceiverScheduleContext(receiverDFB, posts, analysisState));
-    });
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    assert(succeeded(pipeRef) &&
+           "pipe transfer graph validated pipe references");
+    for (PipeType pipeType :
+         getPipeTypesFromReference(postOp.getContext(), *pipeRef)) {
+      PipeKey pipe = getPipeKey(pipeType);
+      pipe.forEachReceiver([&](PipeReceiverCoord receiver) {
+        PipeReceiverDFBKey receiverDFB{receiver, receiverDFBIndex};
+        auto postIt = postsByReceiverDFB.find(receiverDFB);
+        ArrayRef<PipeTransferPostOp> posts;
+        if (postIt != postsByReceiverDFB.end()) {
+          posts = postIt->second;
+        }
+        scheduleContextByReceiverDFB.try_emplace(
+            receiverDFB, getProvenReceiverScheduleContext(receiverDFB, posts,
+                                                          analysisState));
+      });
+    }
   }
 
   // Recurrence facts accumulated for one endpoint during the producer walk.
@@ -571,35 +610,67 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       slotByReceiverReserve;
   llvm::DenseMap<PipeReceiverEndpointId, EndpointSlotAssignment>
       assignmentByEndpoint;
-  auto processPost = [&](PipeTransferPostOp postOp) -> LogicalResult {
-    const PipeTransferNode *transferNode =
-        getPipeTransferNodeForProtocolOp(postOp.getOperation());
-    if (!transferNode) {
+  auto processPost =
+      [&](PipeTransferPostOp postOp, LaunchNodeCoord coord,
+          ArrayRef<ActivePipeNetRecord> activeRecords) -> LogicalResult {
+    LaunchNodeDomain postDomain =
+        lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
+    if (postDomain.known && !knownLaunchNodeDomainContains(postDomain, coord)) {
       return success();
     }
-
-    const PipeKey &pipeKey = transferNode->pipe;
     auto receiverReserveOp = findCBReserveForPipeReceive(postOp.getDst());
     assert(receiverReserveOp &&
            "receiver post must trace to the reserve recorded by PipeGraph");
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    assert(succeeded(pipeRef) &&
+           "pipe transfer graph validated pipe references");
 
-    LaunchNodeDomain postDomain =
-        lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
-    bool hasReceiver = false;
-    LogicalResult result = success();
-    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      if (failed(result) ||
-          (postDomain.known && !knownLaunchNodeDomainContains(
-                                   postDomain, getLaunchNodeCoord(receiver)))) {
-        return;
+    SmallVector<PipeTransferNodeId, 1> selectedTransferNodeIds;
+    ArrayRef<PipeTransferNodeId> transferNodeIds;
+    Operation *selectedRecordLoop = nullptr;
+    if (pipeRef->isStatic()) {
+      transferNodeIds =
+          getPipeTransferNodeIdsForProtocolOp(postOp.getOperation());
+    } else {
+      selectedRecordLoop = pipeRef->getSelectedOperation()->getParentOp();
+      while (selectedRecordLoop &&
+             !analysisState.pipeRecordLoops.contains(selectedRecordLoop)) {
+        selectedRecordLoop = selectedRecordLoop->getParentOp();
       }
-      hasReceiver = true;
+      assert(selectedRecordLoop &&
+             "selected pipe operation must be nested in its record loop");
+      std::optional<std::uint64_t> activeRecordIndex =
+          getActivePipeNetRecordIndex(activeRecords, selectedRecordLoop);
+      assert(activeRecordIndex &&
+             "selected pipe operation must execute in an active record");
+      auto transferIt = transferNodeIdByProtocolOpAndRecord.find(
+          std::make_pair(postOp.getOperation(), *activeRecordIndex));
+      assert(transferIt != transferNodeIdByProtocolOpAndRecord.end() &&
+             "selected receiver record must have a transfer node");
+      selectedTransferNodeIds.push_back(transferIt->second);
+      transferNodeIds = selectedTransferNodeIds;
+    }
+    if (transferNodeIds.empty()) {
+      return success();
+    }
+
+    PipeReceiverCoord receiver{coord.x, coord.y};
+    for (PipeTransferNodeId transferNodeId : transferNodeIds) {
+      const PipeTransferNode &transferNode =
+          getPipeTransferNode(transferNodeId);
+      const PipeKey &pipeKey = transferNode.pipe;
+      if (!pipeKey.containsReceiver(receiver)) {
+        continue;
+      }
       auto endpointIt = llvm::find_if(
-          transferNode->receiverEndpoints,
+          transferNode.receiverEndpoints,
           [&](PipeReceiverEndpointId endpointId) {
             return getPipeReceiverEndpoint(endpointId).receiver == receiver;
           });
-      assert(endpointIt != transferNode->receiverEndpoints.end() &&
+      assert(endpointIt != transferNode.receiverEndpoints.end() &&
              "pipe transfer node is missing a receiver endpoint");
       const PipeReceiverEndpoint &endpoint =
           getPipeReceiverEndpoint(*endpointIt);
@@ -609,53 +680,73 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
           assignmentByEndpoint[*endpointIt];
       if (!scheduleContextByReceiverDFB.lookup(receiverDFB)) {
         endpointAssignment.valid = false;
-        return;
+        continue;
       }
       auto &slotByReserve = slotByReceiverReserve[receiverDFB];
       auto reserveIt = slotByReserve.find(receiverReserveOp.getOperation());
       int64_t slot = 0;
-      if (reserveIt == slotByReserve.end()) {
+      bool reserveRepeatsPerRecord =
+          selectedRecordLoop && selectedRecordLoop->isProperAncestor(
+                                    receiverReserveOp.getOperation());
+      // A reserve inside the selected record loop executes once per matching
+      // record. A reserve outside it retains one slot across those callbacks.
+      if (reserveRepeatsPerRecord || reserveIt == slotByReserve.end()) {
         FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
             receiverInfo, producerStateByReceiverDFB[receiverDFB]);
         if (failed(assignedSlot)) {
-          result = failure();
-          return;
+          return failure();
         }
         slot = *assignedSlot;
-        slotByReserve[receiverReserveOp.getOperation()] = slot;
+        if (!reserveRepeatsPerRecord) {
+          slotByReserve[receiverReserveOp.getOperation()] = slot;
+        }
       } else {
         slot = reserveIt->second;
       }
       if (!postDomain.known) {
         endpointAssignment.valid = false;
-        return;
+        continue;
       }
       std::optional<std::uint64_t> maybeExecutionCount =
-          getExactExecutionCountAtLaunchNode(postOp.getOperation(),
-                                             getLaunchNodeCoord(receiver),
-                                             analysisState);
+          getConcreteTransferExecutionCount(postOp.getOperation(), coord,
+                                            *pipeRef, analysisState);
       if (endpointAssignment.initialSlot) {
         endpointAssignment.valid = false;
-        return;
+        continue;
       }
       endpointAssignment.initialSlot = slot;
       endpointAssignment.executionCount = maybeExecutionCount;
-    });
-    if (failed(result)) {
-      return failure();
-    }
-    if (!hasReceiver) {
-      for (PipeReceiverEndpointId endpointId :
-           transferNode->receiverEndpoints) {
-        assignmentByEndpoint[endpointId].valid = false;
-      }
     }
     return success();
   };
 
-  for (PipeTransferPostOp postOp : analysisState.receiverPosts) {
-    if (failed(processPost(postOp))) {
-      return failure();
+  llvm::SmallSetVector<PipeReceiverCoord, 8> receiverCoords;
+  for (const PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
+    receiverCoords.insert(endpoint.receiver);
+  }
+  for (func::FuncOp funcOp : mod.getOps<func::FuncOp>()) {
+    for (PipeReceiverCoord receiver : receiverCoords) {
+      LaunchNodeCoord coord = getLaunchNodeCoord(receiver);
+      WalkResult walkResult = walkPipeNetOpsInProgramOrder(
+          funcOp, coord,
+          [&](Operation *op) -> std::optional<PipeNetRecordLoop> {
+            auto recordLoopIt = analysisState.pipeRecordLoops.find(op);
+            return recordLoopIt == analysisState.pipeRecordLoops.end()
+                       ? std::nullopt
+                       : std::optional<PipeNetRecordLoop>(recordLoopIt->second);
+          },
+          [&](Operation *op, ArrayRef<ActivePipeNetRecord> activeRecords,
+              std::optional<std::uint64_t>) {
+            if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
+              return failed(processPost(postOp, coord, activeRecords))
+                         ? WalkResult::interrupt()
+                         : WalkResult::advance();
+            }
+            return WalkResult::advance();
+          });
+      if (walkResult.wasInterrupted()) {
+        return failure();
+      }
     }
   }
 
@@ -1019,20 +1110,69 @@ const PipeReceiverEndpoint *PipeGraph::getProvenReceiverAddressEndpoint(
   return representative;
 }
 
+static std::optional<std::uint64_t>
+getConcreteTransferExecutionCount(Operation *op, LaunchNodeCoord coord,
+                                  const PipeReference &pipeRef,
+                                  PipeGraphAnalysisState &analysisState) {
+  std::optional<std::uint64_t> maybeTotalCount =
+      getExactExecutionCountAtLaunchNode(op, coord, analysisState);
+  if (!maybeTotalCount || pipeRef.isStatic()) {
+    return maybeTotalCount;
+  }
+
+  std::uint64_t matchingRecordCount = llvm::count_if(
+      pipeRef.getRecords().getPipes(), [&](PipeRecordAttr record) {
+        if (pipeRef.isSelectedSrc()) {
+          return record.getSrcX() == coord.x && record.getSrcY() == coord.y;
+        }
+        return coord.x >= record.getDstStartX() &&
+               coord.x <= record.getDstEndX() &&
+               coord.y >= record.getDstStartY() &&
+               coord.y <= record.getDstEndY();
+      });
+  if (matchingRecordCount == 0 || *maybeTotalCount % matchingRecordCount != 0) {
+    return std::nullopt;
+  }
+  // The shared operation count includes every matching record. Graph nodes
+  // represent individual records and therefore use the per-record count.
+  return *maybeTotalCount / matchingRecordCount;
+}
+
+/// A protocol operation and the selected record it represents.
+template <typename ProtocolOp>
+struct PipeProtocolCandidate {
+  ProtocolOp op;
+  std::optional<std::uint64_t> recordIndex;
+};
+
+void PipeGraph::recordTransferNodeForProtocolRecord(
+    Operation *op, std::optional<std::uint64_t> recordIndex,
+    PipeTransferNodeId transferNodeId) {
+  if (!recordIndex) {
+    return;
+  }
+  auto [recordIt, inserted] = transferNodeIdByProtocolOpAndRecord.try_emplace(
+      std::make_pair(op, *recordIndex), transferNodeId);
+  assert((inserted || recordIt->second == transferNodeId) &&
+         "selected protocol record maps to different transfers");
+}
+
 LogicalResult
 PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                 PipeGraphAnalysisState &analysisState) {
   pipeTransferNodes.clear();
-  transferNodeIdByProtocolOp.clear();
+  transferNodeIdsByProtocolOp.clear();
+  transferNodeIdByProtocolOpAndRecord.clear();
   pipeReceiverEndpoints.clear();
   receiverDFBNodes.clear();
 
   // Sends and receiver posts that declare the same logical pipe relation.
   // Correspondence analysis matches them into individual transfers.
+  using PipeSendCandidate = PipeProtocolCandidate<PipeTransferSendOp>;
+  using PipePostCandidate = PipeProtocolCandidate<PipeTransferPostOp>;
   struct PipeTransferCandidates {
-    PipeType pipeType;
-    SmallVector<PipeTransferSendOp> sends;
-    llvm::DenseMap<PipeReceiverCoord, SmallVector<PipeTransferPostOp>>
+    SmallVector<PipeSendCandidate> sends;
+    llvm::DenseMap<PipeReceiverCoord, SmallVector<PipePostCandidate>>
         postsByReceiver;
   };
 
@@ -1041,8 +1181,11 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
       PipeTransferCreateOp createOp =
           transferIndex.getTransferCreate(sendOp.getOperation());
-      auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-      PipeKey pipeKey = getPipeKey(pipeType);
+      FailureOr<PipeReference> pipeRef =
+          getPipeReference(sendOp, createOp.getPipe());
+      if (failed(pipeRef)) {
+        return failure();
+      }
       LaunchNodeDomain sendDomain =
           lookupOperationLaunchDomain(sendOp.getOperation(), analysisState);
       if (!sendDomain.known && analysisState.hasLaunchGrid) {
@@ -1050,22 +1193,26 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                          "this send");
         return failure();
       }
-      if (sendDomain.known && !knownLaunchNodeDomainContains(
-                                  sendDomain, {pipeKey.srcX, pipeKey.srcY})) {
-        continue;
+      SmallVector<PipeType> pipeTypes =
+          getPipeTypesFromReference(sendOp.getContext(), *pipeRef);
+      for (auto [recordIndex, pipeType] : llvm::enumerate(pipeTypes)) {
+        PipeKey pipeKey = getPipeKey(pipeType);
+        LaunchNodeCoord source{pipeKey.srcX, pipeKey.srcY};
+        if (sendDomain.known &&
+            !knownLaunchNodeDomainContains(sendDomain, source)) {
+          continue;
+        }
+        std::optional<std::uint64_t> maybeExecutionCount =
+            getConcreteTransferExecutionCount(sendOp.getOperation(), source,
+                                              *pipeRef, analysisState);
+        if (maybeExecutionCount && *maybeExecutionCount == 0) {
+          continue;
+        }
+        candidatesByPipe[pipeKey].sends.push_back(
+            {sendOp, pipeRef->isSelected()
+                         ? std::optional<std::uint64_t>(recordIndex)
+                         : std::nullopt});
       }
-      std::optional<std::uint64_t> maybeExecutionCount =
-          getExactExecutionCountAtLaunchNode(sendOp.getOperation(),
-                                             {pipeKey.srcX, pipeKey.srcY},
-                                             analysisState);
-      if (maybeExecutionCount && *maybeExecutionCount == 0) {
-        continue;
-      }
-      PipeTransferCandidates &candidates = candidatesByPipe[pipeKey];
-      if (!candidates.pipeType) {
-        candidates.pipeType = pipeType;
-      }
-      candidates.sends.push_back(sendOp);
       continue;
     }
 
@@ -1075,8 +1222,11 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     }
     PipeTransferCreateOp createOp =
         transferIndex.getTransferCreate(postOp.getOperation());
-    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-    PipeKey pipeKey = getPipeKey(pipeType);
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    if (failed(pipeRef)) {
+      return failure();
+    }
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
     if (!postDomain.known && analysisState.hasLaunchGrid) {
@@ -1084,29 +1234,31 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           "cannot determine which pipe receivers execute this post");
       return failure();
     }
-    SmallVector<PipeReceiverCoord> activeReceivers;
-    pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-      if (postDomain.known && !knownLaunchNodeDomainContains(
-                                  postDomain, getLaunchNodeCoord(receiver))) {
-        return;
+    SmallVector<PipeType> pipeTypes =
+        getPipeTypesFromReference(postOp.getContext(), *pipeRef);
+    for (auto [recordIndex, pipeType] : llvm::enumerate(pipeTypes)) {
+      std::optional<std::uint64_t> selectedRecordIndex =
+          pipeRef->isSelected() ? std::optional<std::uint64_t>(recordIndex)
+                                : std::nullopt;
+      PipeKey pipeKey = getPipeKey(pipeType);
+      PipeTransferCandidates &candidates = candidatesByPipe[pipeKey];
+      pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+        LaunchNodeCoord receiverCoord = getLaunchNodeCoord(receiver);
+        if (postDomain.known &&
+            !knownLaunchNodeDomainContains(postDomain, receiverCoord)) {
+          return;
+        }
+        std::optional<std::uint64_t> maybeExecutionCount =
+            getConcreteTransferExecutionCount(
+                postOp.getOperation(), receiverCoord, *pipeRef, analysisState);
+        if (!maybeExecutionCount || *maybeExecutionCount != 0) {
+          candidates.postsByReceiver[receiver].push_back(
+              {postOp, selectedRecordIndex});
+        }
+      });
+      if (candidates.postsByReceiver.empty() && candidates.sends.empty()) {
+        candidatesByPipe.erase(pipeKey);
       }
-      std::optional<std::uint64_t> maybeExecutionCount =
-          getExactExecutionCountAtLaunchNode(postOp.getOperation(),
-                                             getLaunchNodeCoord(receiver),
-                                             analysisState);
-      if (!maybeExecutionCount || *maybeExecutionCount != 0) {
-        activeReceivers.push_back(receiver);
-      }
-    });
-    if (activeReceivers.empty()) {
-      continue;
-    }
-    PipeTransferCandidates &candidates = candidatesByPipe[pipeKey];
-    if (!candidates.pipeType) {
-      candidates.pipeType = pipeType;
-    }
-    for (PipeReceiverCoord receiver : activeReceivers) {
-      candidates.postsByReceiver[receiver].push_back(postOp);
     }
   }
 
@@ -1115,12 +1267,13 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     PipeKey pipeKey = candidateEntry.first;
     PipeTransferCandidates &candidates = candidateEntry.second;
     if (candidates.sends.empty()) {
-      Operation *postOp = candidates.postsByReceiver.begin()->second.front();
+      Operation *postOp =
+          candidates.postsByReceiver.begin()->second.front().op.getOperation();
       postOp->emitError("pipe receiver post has no corresponding send");
       return failure();
     }
 
-    SmallVector<SmallVector<std::pair<PipeReceiverCoord, PipeTransferPostOp>>>
+    SmallVector<SmallVector<std::pair<PipeReceiverCoord, PipePostCandidate>>>
         endpointsBySend(candidates.sends.size());
     llvm::DenseMap<Operation *, std::size_t> sendIndexByPost;
     LogicalResult correspondenceResult = success();
@@ -1133,9 +1286,9 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                   ? 0
                                   : postsIt->second.size();
       if (postCount != candidates.sends.size()) {
-        Operation *diagnosticOp = postCount == 0
-                                      ? candidates.sends.front().getOperation()
-                                      : postsIt->second.front().getOperation();
+        Operation *diagnosticOp =
+            postCount == 0 ? candidates.sends.front().op.getOperation()
+                           : postsIt->second.front().op.getOperation();
         diagnosticOp->emitError()
             << "cannot prove one receiver post per pipe transfer for receiver "
             << "(" << receiver.x << ", " << receiver.y << "); found "
@@ -1147,46 +1300,113 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
 
       for (std::size_t sendIndex = 0; sendIndex < candidates.sends.size();
            ++sendIndex) {
-        PipeTransferSendOp sendOp = candidates.sends[sendIndex];
-        PipeTransferPostOp postOp = postsIt->second[sendIndex];
-        if (!proveEqualExecutionCountAtLaunchNodes(
-                sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
-                postOp.getOperation(), getLaunchNodeCoord(receiver),
-                analysisState)) {
+        PipeTransferSendOp sendOp = candidates.sends[sendIndex].op;
+        PipeTransferPostOp postOp = postsIt->second[sendIndex].op;
+        PipeTransferCreateOp sendCreate =
+            transferIndex.getTransferCreate(sendOp.getOperation());
+        PipeTransferCreateOp postCreate =
+            transferIndex.getTransferCreate(postOp.getOperation());
+        FailureOr<PipeReference> sendPipeRef =
+            getPipeReference(sendOp, sendCreate.getPipe());
+        FailureOr<PipeReference> postPipeRef =
+            getPipeReference(postOp, postCreate.getPipe());
+        assert(succeeded(sendPipeRef) && succeeded(postPipeRef) &&
+               "pipe transfer graph validated pipe references");
+        bool haveEqualExecutionCounts = false;
+        std::optional<std::uint64_t> maybeSendCount;
+        std::optional<std::uint64_t> maybePostCount;
+        if ((*sendPipeRef).isStatic() && (*postPipeRef).isStatic()) {
+          // Static pipe operations can have matching loop and branch structure
+          // even when an exact execution count cannot be evaluated.
+          haveEqualExecutionCounts = proveEqualExecutionCountAtLaunchNodes(
+              sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
+              postOp.getOperation(), getLaunchNodeCoord(receiver),
+              analysisState);
+        } else {
+          // Selected operations represent several records, so compare their
+          // per-record counts rather than their shared operation counts.
+          maybeSendCount = getConcreteTransferExecutionCount(
+              sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY}, *sendPipeRef,
+              analysisState);
+          maybePostCount = getConcreteTransferExecutionCount(
+              postOp.getOperation(), getLaunchNodeCoord(receiver), *postPipeRef,
+              analysisState);
+          haveEqualExecutionCounts = maybeSendCount && maybePostCount &&
+                                     *maybeSendCount == *maybePostCount;
+        }
+        if (!haveEqualExecutionCounts) {
           auto diag = postOp.emitError()
                       << "cannot prove matching execution counts for this "
                          "receiver post and its pipe send";
+          if ((*sendPipeRef).isSelected() || (*postPipeRef).isSelected()) {
+            diag << "; receiver post count is ";
+            if (maybePostCount) {
+              diag << *maybePostCount;
+            } else {
+              diag << "unknown";
+            }
+            diag << " and pipe send count is ";
+            if (maybeSendCount) {
+              diag << *maybeSendCount;
+            } else {
+              diag << "unknown";
+            }
+          }
           diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
           correspondenceResult = failure();
           return;
         }
         auto [existing, inserted] =
             sendIndexByPost.try_emplace(postOp.getOperation(), sendIndex);
-        if (!inserted && existing->second != sendIndex) {
+        if (!inserted && existing->second != sendIndex &&
+            (*postPipeRef).isStatic()) {
           postOp.emitError(
               "one receiver post cannot correspond to two pipe transfers");
           correspondenceResult = failure();
           return;
         }
-        endpointsBySend[sendIndex].push_back({receiver, postOp});
+        endpointsBySend[sendIndex].push_back(
+            {receiver, postsIt->second[sendIndex]});
       }
     });
     if (failed(correspondenceResult)) {
       return failure();
     }
 
-    for (auto [sendIndex, sendOp] : llvm::enumerate(candidates.sends)) {
+    for (auto [sendIndex, sendCandidate] : llvm::enumerate(candidates.sends)) {
+      PipeTransferSendOp sendOp = sendCandidate.op;
       PipeTransferCreateOp sendCreate =
           transferIndex.getTransferCreate(sendOp.getOperation());
       PipeTransferContract transferContract =
           getPipeTransferContract(sendCreate);
+      int64_t blockSpan = getPipeTransferBlockSpan(sendCreate);
+      int64_t destinationGroupDepth =
+          getPipeTransferDestinationGroupDepth(sendCreate);
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
-        PipeTransferPostOp postOp = endpoint.second;
+        PipeTransferPostOp postOp = endpoint.second.op;
         PipeTransferCreateOp postCreate =
             transferIndex.getTransferCreate(postOp.getOperation());
         if (getPipeTransferContract(postCreate) != transferContract) {
           postOp.emitError(
               "pipe send and receiver post use different transfer contracts");
+          return failure();
+        }
+        if (getPipeTransferBlockSpan(postCreate) != blockSpan) {
+          auto diagnostic =
+              postOp.emitError("pipe send and receiver post use different "
+                               "transfer block spans");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses block_span=" << blockSpan;
+          return failure();
+        }
+        if (getPipeTransferDestinationGroupDepth(postCreate) !=
+            destinationGroupDepth) {
+          auto diagnostic = postOp.emitError(
+              "pipe send and receiver post use different destination group "
+              "depths");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses destination_group_depth="
+              << destinationGroupDepth;
           return failure();
         }
       }
@@ -1195,20 +1415,32 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
       pipeTransferNodes.push_back(PipeTransferNode{transferNodeId,
                                                    pipeKey,
                                                    transferContract,
+                                                   blockSpan,
+                                                   destinationGroupDepth,
                                                    sendOp.getOperation(),
                                                    {},
                                                    {}});
       PipeTransferNode &transferNode = pipeTransferNodes.back();
-      transferNodeIdByProtocolOp[sendOp.getOperation()] = transferNodeId;
+      transferNodeIdsByProtocolOp[sendOp.getOperation()].push_back(
+          transferNodeId);
+      recordTransferNodeForProtocolRecord(
+          sendOp.getOperation(), sendCandidate.recordIndex, transferNodeId);
       llvm::SmallSetVector<Operation *, 4> uniquePostOps;
 
-      for (auto [receiver, postOp] : endpointsBySend[sendIndex]) {
+      for (auto [receiver, postCandidate] : endpointsBySend[sendIndex]) {
+        PipeTransferPostOp postOp = postCandidate.op;
         auto infoIt = receiverDFBByPost.find(postOp.getOperation());
         assert(infoIt != receiverDFBByPost.end() &&
                "receiver post must have DFB geometry");
         const ReceiverDFBInfo &receiverInfo = infoIt->second;
         uniquePostOps.insert(postOp.getOperation());
-        transferNodeIdByProtocolOp[postOp.getOperation()] = transferNodeId;
+        SmallVector<PipeTransferNodeId> &postTransferNodeIds =
+            transferNodeIdsByProtocolOp[postOp.getOperation()];
+        if (!llvm::is_contained(postTransferNodeIds, transferNodeId)) {
+          postTransferNodeIds.push_back(transferNodeId);
+        }
+        recordTransferNodeForProtocolRecord(
+            postOp.getOperation(), postCandidate.recordIndex, transferNodeId);
         PipeReceiverDFBKey receiverDFB{receiver, receiverInfo.dfbIndex};
         auto nodeIt = nodeIdByReceiverDFB.find(receiverDFB);
         PipeReceiverDFBNodeId receiverDFBNodeId = 0;
@@ -1243,6 +1475,43 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     }
   }
   return success();
+}
+
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe) {
+  Value tracedPipe = traceUnrealizedCasts(pipe);
+  if (auto pipeType = mlir::dyn_cast<PipeType>(tracedPipe.getType())) {
+    return PipeReference(pipeType);
+  }
+  if (auto selectedSrc = tracedPipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return PipeReference(selectedSrc);
+  }
+  if (auto selectedDst = tracedPipe.getDefiningOp<SelectPipeDstOp>()) {
+    return PipeReference(selectedDst);
+  }
+  return op->emitError() << "selected pipe operand must be a direct result of "
+                            "ttl.select_pipe_src or ttl.select_pipe_dst";
+}
+
+FailureOr<PipeReference>
+getPipeReferenceForProtocolOp(Operation *protocolOp,
+                              const PipeTransferIndex &transferIndex) {
+  return getPipeReference(
+      protocolOp, transferIndex.getTransferCreate(protocolOp).getPipe());
+}
+
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref) {
+  if (ref.isStatic()) {
+    return SmallVector<PipeType>{ref.getStaticPipeType()};
+  }
+  SmallVector<PipeType> pipeTypes;
+  PipeNetRecordsAttr records = ref.getRecords();
+  pipeTypes.reserve(records.getPipes().size());
+  for (PipeRecordAttr record : records.getPipes()) {
+    pipeTypes.push_back(
+        getPipeTypeFromRecord(context, record, records.getPipeNetId()));
+  }
+  return pipeTypes;
 }
 
 static LogicalResult
@@ -1431,13 +1700,20 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
   return success();
 }
 
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
-                                      const PipeTransferIndex &transferIndex) {
+FailureOr<PipeGraph>
+PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
+                 const PipeForeachLoweringInfo &foreachLoweringInfo) {
   PipeGraph graph;
   PipeGraphAnalysisState analysisState;
   if (failed(collectPipeGraphOperations(mod, transferIndex, analysisState))) {
     return failure();
   }
+
+  analysisState.pipeRecordControlOps.insert(
+      foreachLoweringInfo.controlOps.begin(),
+      foreachLoweringInfo.controlOps.end());
+  analysisState.pipeRecordIfThenDomains = foreachLoweringInfo.ifThenDomains;
+  analysisState.pipeRecordLoops = foreachLoweringInfo.recordLoops;
 
   for (PipeTransferPostOp postOp : analysisState.receiverPosts) {
     PipeTransferCreateOp createOp =
@@ -1446,7 +1722,6 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
       return failure();
     }
   }
-
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
     return failure();
   }
@@ -1454,8 +1729,8 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
   if (failed(graph.rebuildEndpointGraph(transferIndex, analysisState))) {
     return failure();
   }
-  if (failed(
-          graph.assignReceiverAddressSequences(transferIndex, analysisState))) {
+  if (failed(graph.assignReceiverAddressSequences(mod, transferIndex,
+                                                  analysisState))) {
     return failure();
   }
   if (failed(graph.provePipeOnlyReceiverProducerStreams(analysisState))) {

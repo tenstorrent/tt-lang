@@ -23,41 +23,17 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
+from ..kernel import _DFB_RELEASE_METHODS
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
     is_auto_profile_enabled,
 )
+from .global_semaphore import (
+    get_ttnn_global_semaphore_address,
+    is_ttnn_global_semaphore,
+)
 from .tensor_registry import get_tensor_global_index, get_tensor_source
-
-
-def is_ttnn_global_semaphore(value) -> bool:
-    """Require the exact TTNN type so local and lookalike objects are rejected."""
-    try:
-        from ttnn._ttnn.global_semaphore import global_semaphore
-    except ImportError:
-        return False
-    return isinstance(value, global_semaphore)
-
-
-def _get_ttnn_global_semaphore_address(value) -> int:
-    """Return one GlobalSemaphore address without suppressing TTNN failures."""
-    if not is_ttnn_global_semaphore(value):
-        raise TypeError(f"expected ttnn GlobalSemaphore, got {type(value)}")
-    import ttnn
-
-    address = ttnn.get_global_semaphore_address(value)
-    if type(address) is not int:
-        raise TypeError(
-            "ttnn.get_global_semaphore_address() must return one integer "
-            f"address, got {type(address)}"
-        )
-    if not 0 <= address < (1 << 32):
-        raise ValueError(
-            "ttnn.get_global_semaphore_address() result must fit in uint32_t, "
-            f"got {address}"
-        )
-    return address
 
 
 @dataclass(frozen=True)
@@ -210,9 +186,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Map id(PipeNet object) -> Python variable name the user assigned
         # it to. Populated from captures/globals at function entry and
-        # from body-local PipeNet assignments. Read by `_emit_pipe_from_capture`
-        # to stamp the user's variable name onto each `ttl.create_pipe`
-        # so the verifier can name PipeNets by user-facing identifier.
+        # from body-local PipeNet assignments. The name is stored on emitted
+        # pipe declarations so diagnostics use the user's identifier.
         self._pipe_net_names: dict[int, str] = {}
 
         # Include paths collected from ttl.call_extern_func invocations,
@@ -354,6 +329,8 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
+                self._strip_explicit_release_kernel_selector(node)
+
                 # Intercept print() to handle keyword arguments.
                 if (
                     not isinstance(node.func, ast.Attribute)
@@ -386,6 +363,25 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def _strip_explicit_release_kernel_selector(self, node: ast.Call) -> None:
+        """Remove release placement because the thread decorator owns it."""
+        if not isinstance(node.func, ast.Attribute):
+            return
+        if node.func.attr not in _DFB_RELEASE_METHODS:
+            return
+        if not isinstance(node.func.value, ast.Name):
+            return
+        receiver_table = self._var_exists(node.func.value.id)
+        if not receiver_table:
+            return
+        from ..operators import _is_block
+
+        if not _is_block(receiver_table[node.func.value.id]):
+            return
+        node.keywords = [
+            keyword for keyword in node.keywords if keyword.arg != "kernel"
+        ]
 
     def visit_AugAssign(self, node):
         """Handle augmented assignment on tensor values.
@@ -490,7 +486,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
-        from ..pipe import PipeNet, SrcPipeIdentity, DstPipeIdentity
+        from ..pipe import PipeNet
 
         method_name = node.func.attr
         var_name = node.func.value.id
@@ -545,45 +541,51 @@ class TTLGenericCompiler(TTCompilerBase):
         # is always non-empty.
         pipe_net_name = self._resolve_pipe_net_name(pipenet)
 
-        # Iterate over all pipes and emit if_src/if_dst for each
+        pipe_records = [
+            ttl.PipeRecordAttr.get(
+                self.ctx,
+                pipe.src[0],
+                pipe.src[1],
+                pipe.dst_start[0],
+                pipe.dst_start[1],
+                pipe.dst_end[0],
+                pipe.dst_end[1],
+                pipe.is_collective,
+            )
+            for pipe in pipenet.pipes
+        ]
+        records_attr = ttl.PipeNetRecordsAttr.get(
+            self.ctx,
+            pipenet.pipe_net_id,
+            pipe_net_name=pipe_net_name,
+            pipes=pipe_records,
+        )
         decl_file = getattr(pipenet, "_source_file", None)
         decl_line = getattr(pipenet, "_source_line", None)
-        for pipe in pipenet.pipes:
-            # Emit the pipe MLIR value
-            pipe_val = self._emit_pipe_from_capture(
-                pipe,
-                pipe_net_name=pipe_net_name,
-                source_file=decl_file,
-                source_line=decl_line,
-            )
-            pipe._mlir_value = pipe_val
+        loc = None
+        if decl_file and decl_line is not None:
+            loc = Location.file(decl_file, decl_line, 1, self.ctx)
 
-            # Create the appropriate PipeIdentity
-            if method_name == "if_src":
-                pipe_identity = SrcPipeIdentity(pipe)
-                op = ttl.if_src(pipe_val)
+        if method_name == "if_src":
+            op = ttl.pipenet_foreach_src(records_attr, loc=loc)
+            pipe_type = ttl.SelectedPipeSrcType.get(self.ctx)
+        else:
+            op = ttl.pipenet_foreach_dst(records_attr, loc=loc)
+            pipe_type = ttl.SelectedPipeDstType.get(self.ctx)
+
+        block = Block.create_at_start(op.body, [pipe_type])
+        with InsertionPoint(block):
+            self.symbol_tables.append({})
+            self.symbol_tables[-1][pipe_param_name] = block.arguments[0]
+
+            if isinstance(callback_body, list):
+                for stmt in callback_body:
+                    self.visit(stmt)
             else:
-                pipe_identity = DstPipeIdentity(pipe)
-                op = ttl.if_dst(pipe_val)
+                self.visit(callback_body)
 
-            # Create body block and compile callback inside
-            block = Block.create_at_start(op.body)
-            with InsertionPoint(block):
-                # Bind the pipe parameter to the MLIR pipe value.
-                # TODO: bind to PipeIdentity instead so .src/.dst work
-                # on the callback parameter per the spec.
-                self.symbol_tables.append({})
-                self.symbol_tables[-1][pipe_param_name] = pipe_val
-                self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
-
-                if isinstance(callback_body, list):
-                    for stmt in callback_body:
-                        self.visit(stmt)
-                else:
-                    self.visit(callback_body)
-
-                self.symbol_tables.pop()
-                ttl.yield_([])
+            self.symbol_tables.pop()
+            ttl.yield_([])
 
         return None  # Statement, no return value
 
@@ -1072,7 +1074,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
                 elif is_ttnn_global_semaphore(val):
-                    sem_addr = _get_ttnn_global_semaphore_address(val)
+                    sem_addr = get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
                     self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
                 else:
@@ -1610,7 +1612,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
             if is_ttnn_global_semaphore(val):
-                sem_addr = _get_ttnn_global_semaphore_address(val)
+                sem_addr = get_ttnn_global_semaphore_address(val)
                 return _unsigned_integer(sem_addr)
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:

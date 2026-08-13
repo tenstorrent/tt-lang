@@ -43,6 +43,8 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"get_read_ptr",                                   {"", "api/dataflow/dataflow_api.h"}},
         {"TensorAccessor",                                 {"", "api/tensor/noc_traits.h"}},
         {"TensorAccessorArgs",                             {"", "api/tensor/tensor_accessor_args.h"}},
+        {"noc_async_write_one_packet_set_state",           {"", "api/dataflow/dataflow_api.h"}},
+        {"noc_async_write_one_packet_with_state",          {"", "api/dataflow/dataflow_api.h"}},
         {"noc_semaphore_inc",                              {"", "api/dataflow/dataflow_api.h"}},
         {"noc_semaphore_set",                              {"", "api/dataflow/dataflow_api.h"}},
         {"noc_semaphore_set_remote",                       {"", "api/dataflow/dataflow_api.h"}},

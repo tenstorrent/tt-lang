@@ -131,6 +131,13 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--ttl-pipe-batch-tiles",
+        default=None,
+        dest="pipe_batch_tiles",
+        type=int,
+        help="Limit logical transfers per PipeTransport group; 0 selects automatically and 1 disables grouping (default: 0).",
+    )
+    p.add_argument(
         "--ttl-reuse-user-dfbs",
         default=None,
         dest="reuse_user_dfbs",
@@ -160,8 +167,9 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="l1_budget",
         type=int,
-        help="Override L1 CB budget in bytes (default: auto-detect from device, "
-        "or architecture default when no device is available).",
+        help="Override the L1 allocation budget in bytes used by DFB validation "
+        "and PipeTransport selection (default: auto-detect from device, or "
+        "architecture default when no device is available).",
     )
     return p
 
@@ -214,6 +222,7 @@ class CompilerOptions:
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
     pipe_global_semaphores_only: bool = False
+    pipe_batch_tiles: int = 0
     reuse_user_dfbs: bool = True
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False

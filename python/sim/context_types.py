@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
 from .typedefs import Count, Shape, BindableTemplate
-from .blockstate import KernelType
+from .kernel import KernelKind
 
 if TYPE_CHECKING:
     from .ttnnsim import Tensor
@@ -104,7 +104,7 @@ class SimulatorContext:
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Any = None  # Optional[GreenletScheduler] - avoid import cycle
-    current_kernel_type: Optional[KernelType] = None
+    current_kernel_type: Optional[KernelKind] = None
     kernel_registry: list[BindableTemplate] = field(
         default_factory=list[BindableTemplate]
     )  # pyright: ignore[reportUnknownVariableType]

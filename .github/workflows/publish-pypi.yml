@@ -80,6 +80,21 @@ jobs:
     with:
       ttlang_sha_override: ${{ inputs.ttlang_sha }}
 
+  # Publishes the dist and IRD images ci.yml's probe requires at the release tag.
+  # No needs: preflight -- it fails the PyPI alignment check on S3-only pins,
+  # which would skip image publication for exactly those releases. No
+  # ttlang_sha_override: github.sha is already the tagged commit.
+  build-docker:
+    if: ${{ github.event_name == 'push' }}
+    permissions:
+      checks: write
+      contents: read
+      packages: write
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+    with:
+      push: true
+
   build-wheels:
     needs: [preflight, build-wheel-images]
     if: ${{ always() && needs.preflight.result == 'success' && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') }}

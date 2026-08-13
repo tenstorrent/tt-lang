@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple, Union
 
-from ttl.dialects import arith
+from ttl.dialects import arith, ttl
 from ttl.ir import (
     Context,
     F32Type,
@@ -25,7 +25,7 @@ from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
 from .constants import DEFAULT_TILE_SIZE
-from ttl.dialects import ttl
+from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
 
 
@@ -36,8 +36,16 @@ def call_extern_func(
     template_args=None,
     func_args=None,
     include_paths=None,
+    kernel: Optional[ExternalKernelSelection] = None,
 ) -> None:
-    """Call an external C++ function from a compiled kernel."""
+    """Call external C++ in selected logical kernels.
+
+    ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``.
+    ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
+    supports multiple selectors, including operation-local kernels. The call is
+    emitted once in each selected logical kernel. The unified-operation splitter
+    removes the selector before AST lowering.
+    """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 
 
@@ -287,17 +295,23 @@ class TensorBlock:
         ttl.store(rhs, reserve, accumulate=True)
         return ast_self
 
-    def push(ast_self: TensorBlock) -> None:
+    def push(
+        ast_self: TensorBlock,
+        *,
+        kernel: Optional[ReleaseKernelSelection] = None,
+    ) -> None:
         """
-        Signal that data is ready in the circular buffer (producer release).
+        Signal that data is ready in the dataflow buffer (producer release).
 
         Finalizes a reserve() operation by signaling that the block has been
         written and is ready for consumers. This operation is non-blocking.
 
-        Must be called on a block acquired via reserve().
+        Must be called on a block acquired via reserve(). ``kernel`` assigns
+        an otherwise uninferable release to one logical kernel. An explicit
+        thread ignores it because its decorator already determines ownership.
 
         Example:
-            block = cb.reserve()
+            block = dfb.reserve()
             ttl.copy(data, block).wait()
             block.push()  # Signal data ready
         """
@@ -308,17 +322,23 @@ class TensorBlock:
         cb = _get_cb_from_block(ast_self)
         ttl.cb_push(cb)
 
-    def pop(ast_self: TensorBlock) -> None:
+    def pop(
+        ast_self: TensorBlock,
+        *,
+        kernel: Optional[ReleaseKernelSelection] = None,
+    ) -> None:
         """
         Signal that data has been consumed (consumer release).
 
         Finalizes a wait() operation by signaling that the block has been
         consumed and space is available for producers. This operation is non-blocking.
 
-        Must be called on a block acquired via wait().
+        Must be called on a block acquired via wait(). ``kernel`` assigns an
+        otherwise uninferable release to one logical kernel. An explicit thread
+        ignores it because its decorator already determines ownership.
 
         Example:
-            block = cb.wait()
+            block = dfb.wait()
             result = compute(block)
             block.pop()  # Signal consumption complete
         """
@@ -509,15 +529,27 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
 
 
 def _is_pipe(val):
-    """Check if a value is a pipe (either MLIR PipeType or Python Pipe with MLIR value)."""
-    if hasattr(val, "type") and ttl.PipeType.maybe_downcast(val.type):
+    """Check if a value is a pipe reference."""
+    if not hasattr(val, "type"):
+        return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
+    if ttl.PipeType.maybe_downcast(val.type):
+        return True
+    if ttl.SelectedPipeSrcType.maybe_downcast(val.type):
+        return True
+    if ttl.SelectedPipeDstType.maybe_downcast(val.type):
         return True
     return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
 
 
 def _get_pipe_mlir_value(pipe):
-    """Get the MLIR value for a pipe (either MLIR value or Python Pipe object)."""
-    if hasattr(pipe, "type") and ttl.PipeType.maybe_downcast(pipe.type):
+    """Get the MLIR value for a pipe reference."""
+    if not hasattr(pipe, "type"):
+        return pipe._mlir_value
+    if ttl.PipeType.maybe_downcast(pipe.type):
+        return pipe
+    if ttl.SelectedPipeSrcType.maybe_downcast(pipe.type):
+        return pipe
+    if ttl.SelectedPipeDstType.maybe_downcast(pipe.type):
         return pipe
     return pipe._mlir_value
 

@@ -23,9 +23,14 @@ def ensure_dialects_registered(ctx):
 
 # Re-export C++-bound attributes/types for convenience.
 SliceAttr = ir.SliceAttr
+LogicalKernelAttr = ir.LogicalKernelAttr
 TensorBackingAttr = ir.TensorBackingAttr
+PipeRecordAttr = ir.PipeRecordAttr
+PipeNetRecordsAttr = ir.PipeNetRecordsAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
+SelectedPipeSrcType = ir.SelectedPipeSrcType
+SelectedPipeDstType = ir.SelectedPipeDstType
 
 __all__ = [  # noqa: F405
     *[name for name in globals().keys() if not name.startswith("_")],

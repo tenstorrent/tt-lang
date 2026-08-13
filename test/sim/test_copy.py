@@ -19,12 +19,13 @@ from test_utils import (
     tensors_equal,
 )
 
-from sim.blockstate import BlockAcquisition, KernelType
+from sim.blockstate import BlockAcquisition
 from sim.context import set_current_kernel_type
 from sim.dfb import Block, DataflowBuffer
 from sim.ttnnsim import Tensor
 from sim.copy import CopyTransaction, GroupTransfer, copy
 from sim.pipe import Pipe
+from sim.kernel import KernelKind
 
 
 @pytest.fixture(autouse=True)
@@ -56,13 +57,13 @@ class TestCopyTransaction:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
         block2 = Block(
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
         with pytest.raises(
             ValueError, match="No copy handler registered for \\(Block, Block\\)"
@@ -81,7 +82,7 @@ class TestTensorToBlockCopy:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
 
         with pytest.raises(ValueError, match="does not match Block shape"):
@@ -97,7 +98,7 @@ class TestBlockToTensorCopy:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.WAIT,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
 
         # Wrong destination shape
@@ -147,7 +148,7 @@ class TestCopySourceLocking:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.WAIT,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
 
         # Create destination tensor (non-Block, so no state changes)
@@ -189,7 +190,7 @@ class TestCopyDestinationLocking:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
 
         # Start copy
@@ -215,7 +216,7 @@ class TestCopyDestinationLocking:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
 
         # Start copy
@@ -248,7 +249,7 @@ class TestMultipleCopyOperations:
             make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.WAIT,
-            kernel_type=KernelType.DM,
+            kernel_type=KernelKind.DATA_MOVEMENT,
         )
 
         # Create tensors (non-Block, so no state changes)
@@ -291,7 +292,7 @@ class TestCopyWithStateMachine:
         """Test Tensor -> Block copy using reserve() in DM kernel."""
 
         # Set DM kernel context for copy operations
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
         dfb = DataflowBuffer(
@@ -311,7 +312,7 @@ class TestCopyWithStateMachine:
     def test_copy_block_to_tensor_with_wait(self) -> None:
         """Test Block -> Tensor copy using wait() in DM kernel."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         # Setup: Fill DFB with data using reserve->store->push pattern
         dfb = DataflowBuffer(
@@ -342,7 +343,7 @@ class TestCopyWithStateMachine:
     def test_copy_single_tile_tensor_to_block(self) -> None:
         """Test single tile Tensor -> Block copy."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_ones_tile()
         dfb = DataflowBuffer(
@@ -362,7 +363,7 @@ class TestCopyWithStateMachine:
     def test_copy_multi_tile_tensor_to_block(self) -> None:
         """Test multi-tile Tensor -> Block copy."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_rand_tensor(128, 32)  # 4x1 tiles
         dfb = DataflowBuffer(
@@ -383,7 +384,7 @@ class TestCopyWithStateMachine:
     def test_copy_with_pipe_single_tile(self) -> None:
         """Test Block -> Pipe -> Block copy with single tile."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         tile = make_full_tile(123.0)
         src_dfb = DataflowBuffer(
@@ -418,7 +419,7 @@ class TestCopyWithStateMachine:
     def test_copy_with_pipe_multiple_tiles(self) -> None:
         """Test Block -> Pipe -> Block copy with multiple tiles."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
         grid = (100, 100)  # Set grid context for pipe operations
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
@@ -464,7 +465,7 @@ class TestCopyWithStateMachine:
     def test_copy_sequential_transfers(self) -> None:
         """Test multiple sequential copy operations."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_rand_tensor(64, 32)  # 2 tiles
         dfb = DataflowBuffer(
@@ -495,7 +496,7 @@ class TestCopyWithStateMachine:
     def test_copy_wait_idempotency(self) -> None:
         """Test that calling wait() multiple times is safe."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_ones_tile()
         dfb = DataflowBuffer(
@@ -518,7 +519,7 @@ class TestCopyWithStateMachine:
     def test_copy_can_wait_before_and_after(self) -> None:
         """Test can_wait() functionality."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_ones_tile()
         dfb = DataflowBuffer(
@@ -541,7 +542,7 @@ class TestCopyWithStateMachine:
     def test_copy_multi_tile_can_wait(self) -> None:
         """Test can_wait() with multi-tile transfer."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_rand_tensor(64, 64)  # 2x2 tiles
         dfb = DataflowBuffer(
@@ -562,7 +563,7 @@ class TestCopyWithStateMachine:
     def test_copy_with_pipe_can_wait(self) -> None:
         """Test can_wait() with pipe transfers."""
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         pipe = Pipe(10, 20)
         src_dfb = DataflowBuffer(
@@ -601,7 +602,7 @@ class TestCopyTransactionProperties:
         """Test that is_completed property correctly reflects transaction state."""
         from sim.copy import copy
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_ones_tile()
         dfb = DataflowBuffer(
@@ -629,7 +630,7 @@ class TestCopyTransactionProperties:
         """Test that calling wait() multiple times on completed transaction is safe."""
         from sim.copy import copy
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_rand_tensor(64, 32)
         dfb = DataflowBuffer(
@@ -655,7 +656,7 @@ class TestCopyTransactionProperties:
         """Test that can_wait() correctly delegates to handler."""
         from sim.copy import copy
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         # Tensor -> Block is always synchronous
         source = make_ones_tile()
@@ -682,7 +683,7 @@ class TestCopyContextManagerExtraction:
         """Test copy operations using context managers with Pipe."""
         from sim.copy import copy
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_full_tile(42.0)
         src_dfb = DataflowBuffer(
@@ -722,7 +723,7 @@ class TestCopyContextManagerExtraction:
         """Test mixing context managers with raw tensors."""
         from sim.copy import copy
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_full_tile(3.14)
         dfb = DataflowBuffer(
@@ -752,7 +753,7 @@ class TestCopyErrorConditions:
         """Test that copy() creates transaction immediately, not on wait()."""
         from sim.copy import copy, CopyTransaction
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_ones_tile()
         dfb = DataflowBuffer(
