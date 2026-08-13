@@ -45,8 +45,7 @@ struct TTLInsertCopyWaitPass
     func.walk([&](Operation *operation) {
       if (auto copy = dyn_cast<CopyOp>(operation)) {
         insertWait(copy, copy.getXf());
-      } else if (auto copyTensorPage =
-                     dyn_cast<CopyTensorPageOp>(operation)) {
+      } else if (auto copyTensorPage = dyn_cast<CopyTensorPageOp>(operation)) {
         insertWait(copyTensorPage, copyTensorPage.getXf());
       }
     });

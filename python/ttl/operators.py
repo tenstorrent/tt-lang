@@ -740,19 +740,13 @@ def copy_tensor_page(source, page_id, destination) -> CopyTransferHandler:
         )
 
     destination_cb = _get_cb_from_block(destination)
-    destination_cb_type = ttl.CircularBufferType.maybe_downcast(
-        destination_cb.type
-    )
+    destination_cb_type = ttl.CircularBufferType.maybe_downcast(destination_cb.type)
     if destination_cb_type is None:
-        raise ValueError(
-            f"Expected CircularBufferType, got {destination_cb.type}"
-        )
+        raise ValueError(f"Expected CircularBufferType, got {destination_cb.type}")
 
     page_index = _as_index_values(source, (page_id,))[0]
     transfer_type = Type.parse("!ttl.transfer_handle<read>", source.type.context)
-    return ttl.copy_tensor_page(
-        transfer_type, source, page_index, destination_cb
-    )
+    return ttl.copy_tensor_page(transfer_type, source, page_index, destination_cb)
 
 
 @syntax("node")
