@@ -12,6 +12,7 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/ComputeKernelConfigAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
@@ -39,6 +40,9 @@ collectStaticConfigurationConflicts(
   launchDomains.initialize(moduleOp);
   SmallVector<DFBStaticConfigurationConflict> conflicts;
   for (func::FuncOp function : moduleOp.getOps<func::FuncOp>()) {
+    if (getKernelThreadType(function) != ttkernel::ThreadType::Compute) {
+      continue;
+    }
     FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
         KernelTargetEnvironment::get(function);
     if (failed(target)) {
