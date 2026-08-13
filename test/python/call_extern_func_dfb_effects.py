@@ -20,28 +20,42 @@ import torch
 import ttl
 import ttnn
 
-
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
-reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+EFFECT_REPETITIONS = 2
 
 
-@ttl.operation()
-def external_stage(source: ttl.DFB, destination: ttl.DFB):
-    ttl.call_extern_func(
-        FAKE_HEADER,
-        "external_stage",
-        template_args=[ttl.get_dfb_id(source)],
-        func_args=[source],
-        dfb_dependencies=[destination],
-        dfb_effects=[
-            ttl.DFBEffect.wait(source, tiles=2),
-            ttl.DFBEffect.pop(source, tiles=2),
-            ttl.DFBEffect.reserve(destination, tiles=1),
-            ttl.DFBEffect.push(destination, tiles=1),
-        ],
-        unknown_dfb_access=True,
-        kernel=reader,
-    )
+def make_external_stage(effect_repetitions):
+    reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation()
+    def external_stage(source: ttl.DFB, destination: ttl.DFB):
+        ttl.call_extern_func(
+            FAKE_HEADER,
+            "external_stage",
+            template_args=[ttl.get_dfb_id(source)],
+            func_args=[source],
+            dfb_dependencies=[destination],
+            dfb_effects=(
+                effect_repetitions
+                * [
+                    ttl.DFBEffect.wait(source, tiles=1),
+                    ttl.DFBEffect.pop(source, tiles=1),
+                ]
+                + [
+                    ttl.DFBEffect.reserve(destination, tiles=1),
+                    ttl.DFBEffect.push(destination, tiles=1),
+                ]
+                * effect_repetitions
+                + 0 * [ttl.DFBEffect.wait(destination, tiles=1)]
+            ),
+            unknown_dfb_access=True,
+            kernel=reader,
+        )
+
+    return external_stage
+
+
+external_stage = make_external_stage(EFFECT_REPETITIONS)
 
 
 @ttl.operation(grid=(2, 1))
@@ -58,10 +72,10 @@ def external_metadata_kernel(inp):
 # The composed call retains automatic and dependency-only DFB identity. The
 # effect list order and distinct tile counts are preserved exactly.
 # INITIAL-LABEL: func.func @external_metadata_kernel__ncrisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.external_stage">
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "{{.*external_stage.*}}">
 # INITIAL-DAG: %[[SOURCE:.*]] = ttl.bind_cb
 # INITIAL-DAG: %[[DESTINATION:.*]] = ttl.bind_cb
-# INITIAL: ttl.opaque_call "external_stage" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%[[SOURCE]] : !ttl.cb<{{.*}}>) dfb_dependencies(%[[DESTINATION]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>, #ttl.dfb_protocol_effect<reserve, 1, 1>, #ttl.dfb_protocol_effect<push, 1, 1>] (%[[SOURCE]]) {header = "/dev/null/fake_shim.hpp", unknown_dfb_access}
+# INITIAL: ttl.opaque_call "external_stage" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%[[SOURCE]] : !ttl.cb<{{.*}}>) dfb_dependencies(%[[DESTINATION]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>, #ttl.dfb_protocol_effect<reserve, 1, 1>, #ttl.dfb_protocol_effect<push, 1, 1>, #ttl.dfb_protocol_effect<reserve, 1, 1>, #ttl.dfb_protocol_effect<push, 1, 1>] (%[[SOURCE]]) {header = "/dev/null/fake_shim.hpp", unknown_dfb_access}
 
 # Dependency-only operands and protocol metadata do not change the C++ call.
 # CHECK-CPP: external_stage<[[SOURCE_INDEX:[0-9]+]]U>(get_compile_time_arg_val([[SOURCE_INDEX]]));
