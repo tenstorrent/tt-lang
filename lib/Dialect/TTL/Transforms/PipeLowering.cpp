@@ -195,6 +195,7 @@ static std::size_t getFabricRouteCount(ArrayRef<FabricRoute> routes) {
 
 LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
                                    const PipeGraph &pipeGraph,
+                                   const PipeForeachLoweringInfo &foreachInfo,
                                    FabricRoutePlan &plan) {
   LogicalResult result = success();
   RecordAlignedTableBuilder<std::size_t> routeIndices;
@@ -283,6 +284,31 @@ LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
   }
 
   plan.routeIndices = std::move(routeIndices).finalize();
+
+  llvm::SmallPtrSet<Operation *, 16> generatedControlOps(
+      foreachInfo.controlOps.begin(), foreachInfo.controlOps.end());
+  llvm::MapVector<Operation *, SmallVector<Operation *>> operationsByInterval;
+  for (const auto &[operation, indices] : plan.routeIndices) {
+    if (indices.empty()) {
+      continue;
+    }
+
+    Operation *scope = operation;
+    for (Operation *parent = operation->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (generatedControlOps.contains(parent)) {
+        scope = parent;
+      }
+      if (isa<FuncOp>(parent)) {
+        break;
+      }
+    }
+    operationsByInterval[scope].push_back(operation);
+  }
+  for (auto &[scope, operations] : operationsByInterval) {
+    plan.runtimeIntervals.push_back(
+        FabricRuntimeIntervalPlan{scope, std::move(operations)});
+  }
   return result;
 }
 
@@ -310,40 +336,56 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
     func->setAttr(kFabricRoutesAttrName,
                   ArrayAttr::get(mod.getContext(), routeAttrs));
     func->setAttr(kFabricDeviceDomainAttrName, functionPlan.deviceDomain);
+    func->setAttr(
+        kFabricRuntimeArgBaseCommonIndexAttrName,
+        builder.getI64IntegerAttr(
+            CommonRuntimeArgLayout(func).getFabricRuntimeArgBaseIndex()));
   }
 }
 
 void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime) {
-  for (const auto &entry : plan.routesByFunction) {
-    FuncOp func = entry.first;
-    const SmallVector<FabricRoute> &routes = entry.second.routes;
+  for (const FabricRuntimeIntervalPlan &interval : plan.runtimeIntervals) {
+    FuncOp func = interval.scope->getParentOfType<FuncOp>();
+    assert(func && "fabric connection interval must be inside a function");
+    auto functionPlanIt = plan.routesByFunction.find(func);
+    assert(functionPlanIt != plan.routesByFunction.end() &&
+           "fabric connection interval is missing its route plan");
+    const SmallVector<FabricRoute> &routes = functionPlanIt->second.routes;
     std::size_t routeCount = getFabricRouteCount(routes);
-    OpBuilder builder(func.getContext());
-    builder.setInsertionPointToStart(&func.getBody().front());
-    Location loc = func.getLoc();
-    Value connectionCountIndex =
-        arith::ConstantIndexOp::create(builder, loc, 0);
+    OpBuilder builder(interval.scope);
+    Location loc = interval.scope->getLoc();
+    Value runtimeArgBaseCommonIndex = arith::ConstantIndexOp::create(
+        builder, loc,
+        CommonRuntimeArgLayout(func).getFabricRuntimeArgBaseIndex());
+    Value runtimeArgBaseI32 = ttk::GetCommonArgValOp::create(
+        builder, loc, builder.getI32Type(), runtimeArgBaseCommonIndex);
+    Value runtimeArgBase = arith::IndexCastOp::create(
+        builder, loc, builder.getIndexType(), runtimeArgBaseI32);
     Value connectionCount = ttk::GetArgValOp::create(
-        builder, loc, builder.getI32Type(), connectionCountIndex);
+        builder, loc, builder.getI32Type(), runtimeArgBase);
     Value manager = ttk::CreateRoutingPlaneConnectionManagerOp::create(
         builder, loc,
         ttk::RoutingPlaneConnectionManagerType::get(builder.getContext()));
+    Value connectionRecordsOffset =
+        arith::ConstantIndexOp::create(builder, loc, 1 + 4 * routeCount);
+    Value connectionRecordsBase = arith::AddIOp::create(
+        builder, loc, runtimeArgBase, connectionRecordsOffset);
     Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
         builder, loc, builder.getI32Type(), manager, connectionCount,
-        builder.getI64IntegerAttr(1 + 4 * routeCount));
-    runtime[func] =
-        FabricRuntimeInfo{manager, routeId, connectionCount, routeCount};
-
-    for (Block &block : func.getBody()) {
-      auto returnOp = mlir::dyn_cast<func::ReturnOp>(block.getTerminator());
-      if (!returnOp) {
-        continue;
-      }
-      builder.setInsertionPoint(returnOp);
-      ttk::CloseRoutingPlaneConnectionsOp::create(builder, returnOp.getLoc(),
-                                                  manager, connectionCount);
+        connectionRecordsBase);
+    FabricRuntimeInfo runtimeInfo{manager, routeId, connectionCount,
+                                  runtimeArgBase, routeCount};
+    for (Operation *operation : interval.protocolOperations) {
+      auto [runtimeIt, inserted] = runtime.try_emplace(operation, runtimeInfo);
+      (void)runtimeIt;
+      assert(inserted &&
+             "fabric protocol operation has multiple connection intervals");
     }
+
+    builder.setInsertionPointAfter(interval.scope);
+    ttk::CloseRoutingPlaneConnectionsOp::create(builder, loc, manager,
+                                                connectionCount);
   }
 }
 
@@ -1605,6 +1647,8 @@ private:
         arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value argIndex =
         arith::AddIOp::create(rewriter, loc, firstConnectionIndex, routeIndex);
+    argIndex =
+        arith::AddIOp::create(rewriter, loc, runtime.runtimeArgBase, argIndex);
     return ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                     argIndex);
   }
@@ -1622,6 +1666,12 @@ private:
         arith::AddIOp::create(rewriter, loc, firstMeshIndex, routeIndex);
     Value destinationHopCountIndex =
         arith::AddIOp::create(rewriter, loc, firstHopCountIndex, routeIndex);
+    destinationDeviceIndex = arith::AddIOp::create(
+        rewriter, loc, runtime.runtimeArgBase, destinationDeviceIndex);
+    destinationMeshIndex = arith::AddIOp::create(
+        rewriter, loc, runtime.runtimeArgBase, destinationMeshIndex);
+    destinationHopCountIndex = arith::AddIOp::create(
+        rewriter, loc, runtime.runtimeArgBase, destinationHopCountIndex);
     return {
         ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                  destinationDeviceIndex),
@@ -2055,8 +2105,7 @@ static LogicalResult lowerSelectedPipeTransferSend(
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   std::unique_ptr<PipeSendTransportEmitter> transport;
   if (usesFabric) {
-    FuncOp func = op->getParentOfType<FuncOp>();
-    auto runtimeIt = fabricRuntime.find(func);
+    auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe transfer has no initialized routing-plane "
                    "runtime state");
@@ -2298,8 +2347,7 @@ LogicalResult lowerPipeTransferSend(
   std::unique_ptr<PipeSendTransportEmitter> transport;
   NocPipeTransportEmitter *nocTransport = nullptr;
   if (usesFabric) {
-    FuncOp func = op->getParentOfType<FuncOp>();
-    auto runtimeIt = fabricRuntime.find(func);
+    auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe transfer has no initialized routing-plane "
                    "runtime state");
@@ -2533,7 +2581,7 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
 
   const FabricRuntimeInfo *fabricRuntimeInfo = nullptr;
   if (usesFabric) {
-    auto runtimeIt = fabricRuntime.find(func);
+    auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe receiver has no initialized routing-plane "
                    "runtime state");
@@ -2664,7 +2712,7 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
            pipeResource.readyCounter->getStorage() ==
                PipeCounterStorage::GlobalSemaphore &&
            "fabric receiver post requires a global readiness counter");
-    auto runtimeIt = fabricRuntime.find(func);
+    auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe receiver has no initialized routing-plane "
                    "runtime state");

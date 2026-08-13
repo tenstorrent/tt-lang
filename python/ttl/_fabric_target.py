@@ -130,7 +130,7 @@ class _FabricConnectionRequest:
 class _FabricManagerRequest:
     kernel_index: int
     node_coordinates: Tuple[int, int]
-    runtime_prefix: Tuple[int, ...]
+    fabric_runtime_metadata: Tuple[int, ...]
     connections: Tuple[_FabricConnectionRequest, ...]
 
 
@@ -144,7 +144,8 @@ class _FabricConnectionBinding:
 class _FabricManagerBinding:
     kernel_index: int
     node_coordinates: Tuple[int, int]
-    runtime_prefix: Tuple[int, ...]
+    caller_runtime_args: Tuple[int, ...]
+    fabric_runtime_metadata: Tuple[int, ...]
     connections: Tuple[_FabricConnectionBinding, ...]
 
 
@@ -154,7 +155,85 @@ class FabricTargetBindingPlan:
 
     source_node_id: Any
     managed_kernel_indices: Tuple[int, ...]
+    runtime_arg_base_common_indices: Tuple[Optional[int], ...]
+    runtime_arg_bases: Tuple[Optional[int], ...]
     managers: Tuple[_FabricManagerBinding, ...]
+
+
+def _read_runtime_arg_row(
+    kernel_descriptor: Any, node_coordinates: Tuple[int, int]
+) -> Tuple[int, ...]:
+    runtime_args = kernel_descriptor.runtime_args
+    node_x, node_y = node_coordinates
+    if isinstance(runtime_args, dict):
+        column = runtime_args.get(node_x)
+        if column is None:
+            return ()
+        return tuple(column.get(node_y, ()))
+    try:
+        return tuple(runtime_args[node_x][node_y])
+    except LookupError:
+        return ()
+
+
+def _plan_runtime_arg_bases(
+    ttnn_api: Any,
+    program_descriptor: Any,
+    kernel_fabric_routes: List[List[FabricRouteSpec]],
+    kernel_fabric_runtime_arg_base_common_indices: List[Optional[int]],
+    grid_cols: int,
+    grid_rows: int,
+) -> Tuple[Optional[int], ...]:
+    kernel_count = len(program_descriptor.kernels)
+    if len(kernel_fabric_runtime_arg_base_common_indices) != kernel_count:
+        raise ValueError(
+            "kernel_fabric_runtime_arg_base_common_indices must have one entry "
+            "per kernel descriptor"
+        )
+
+    runtime_arg_bases = []
+    for kernel_index, routes in enumerate(kernel_fabric_routes):
+        common_index = kernel_fabric_runtime_arg_base_common_indices[kernel_index]
+        if not routes:
+            if common_index is not None:
+                raise ValueError(
+                    f"kernel {kernel_index} has a fabric runtime argument base "
+                    "but no fabric routes"
+                )
+            runtime_arg_bases.append(None)
+            continue
+        if common_index is None:
+            raise ValueError(
+                f"kernel {kernel_index} has fabric routes but no fabric runtime "
+                "argument base common index"
+            )
+
+        kernel_descriptor = program_descriptor.kernels[kernel_index]
+        if common_index < 0 or common_index >= len(
+            kernel_descriptor.common_runtime_args
+        ):
+            raise ValueError(
+                f"kernel {kernel_index} fabric runtime argument base common "
+                f"index {common_index} is outside its common argument table"
+            )
+        if kernel_descriptor.common_runtime_args[common_index] != 0:
+            raise ValueError(
+                f"kernel {kernel_index} fabric runtime argument base common "
+                "argument must be initialized to zero"
+            )
+
+        runtime_arg_base = 0
+        for node_y in range(grid_rows):
+            for node_x in range(grid_cols):
+                worker_node = ttnn_api.CoreCoord(node_x, node_y)
+                if not kernel_descriptor.core_ranges.contains(worker_node):
+                    continue
+                runtime_arg_base = max(
+                    runtime_arg_base,
+                    len(_read_runtime_arg_row(kernel_descriptor, (node_x, node_y))),
+                )
+        runtime_arg_bases.append(runtime_arg_base)
+    return tuple(runtime_arg_bases)
 
 
 def _build_mesh_coordinate(ttnn_api: Any, coordinates: Tuple[int, ...]) -> Any:
@@ -338,6 +417,7 @@ def build_fabric_target_binding_plan(
     ttnn_api: Any,
     program_descriptor: Any,
     kernel_fabric_routes: List[List[FabricRouteSpec]],
+    kernel_fabric_runtime_arg_base_common_indices: List[Optional[int]],
     mesh_device: Any,
     device_coordinates: Tuple[int, ...],
     grid_cols: int,
@@ -349,6 +429,14 @@ def build_fabric_target_binding_plan(
         raise ValueError(
             "kernel_fabric_routes must have one entry per kernel descriptor"
         )
+    runtime_arg_bases = _plan_runtime_arg_bases(
+        ttnn_api,
+        program_descriptor,
+        kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices,
+        grid_cols,
+        grid_rows,
+    )
 
     source_node_id = mesh_device.get_fabric_node_id(
         _build_mesh_coordinate(ttnn_api, device_coordinates)
@@ -483,7 +571,7 @@ def build_fabric_target_binding_plan(
                         remote_slot
                     ].hop_count
 
-                runtime_prefix = (
+                fabric_runtime_metadata = (
                     len(connection_node_ids),
                     *route_slots,
                     *destination_device_ids,
@@ -520,7 +608,7 @@ def build_fabric_target_binding_plan(
                     _FabricManagerRequest(
                         kernel_index=kernel_index,
                         node_coordinates=node_coordinates,
-                        runtime_prefix=runtime_prefix,
+                        fabric_runtime_metadata=fabric_runtime_metadata,
                         connections=tuple(connection_requests),
                     )
                 )
@@ -539,7 +627,11 @@ def build_fabric_target_binding_plan(
             _FabricManagerBinding(
                 kernel_index=manager_request.kernel_index,
                 node_coordinates=manager_request.node_coordinates,
-                runtime_prefix=manager_request.runtime_prefix,
+                caller_runtime_args=_read_runtime_arg_row(
+                    program_descriptor.kernels[manager_request.kernel_index],
+                    manager_request.node_coordinates,
+                ),
+                fabric_runtime_metadata=manager_request.fabric_runtime_metadata,
                 connections=connection_bindings,
             )
         )
@@ -550,6 +642,10 @@ def build_fabric_target_binding_plan(
             for kernel_index, routes in enumerate(kernel_fabric_routes)
             if routes
         ),
+        runtime_arg_base_common_indices=tuple(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
+        runtime_arg_bases=runtime_arg_bases,
         managers=tuple(manager_bindings),
     )
 
@@ -561,13 +657,7 @@ def apply_fabric_target_binding_plan(
     device_coordinates: Tuple[int, ...],
 ) -> None:
     """Apply a validated target-binding plan to one program descriptor."""
-    for kernel_index in plan.managed_kernel_indices:
-        if len(program_descriptor.kernels[kernel_index].runtime_args) != 0:
-            raise ValueError(
-                "compiler-managed fabric routes require an empty runtime "
-                f"argument table for kernel {kernel_index}"
-            )
-
+    applied_managers = []
     for manager in plan.managers:
         kernel_descriptor = program_descriptor.kernels[manager.kernel_index]
         node_x, node_y = manager.node_coordinates
@@ -595,8 +685,13 @@ def apply_fabric_target_binding_plan(
                 manager.kernel_index,
                 ttnn_api.CoreCoord(node_x, node_y),
             )
-        runtime_args = [*manager.runtime_prefix, *fabric_args]
-        kernel_descriptor.runtime_args[node_x][node_y] = runtime_args
+        runtime_arg_base = plan.runtime_arg_bases[manager.kernel_index]
+        assert runtime_arg_base is not None
+        runtime_args = [*manager.caller_runtime_args]
+        runtime_args.extend([0] * (runtime_arg_base - len(runtime_args)))
+        runtime_args.extend(manager.fabric_runtime_metadata)
+        runtime_args.extend(fabric_args)
+        applied_managers.append((manager, runtime_args))
         if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
             print(
                 "fabric runtime args:",
@@ -609,11 +704,26 @@ def apply_fabric_target_binding_plan(
                 flush=True,
             )
 
+    for kernel_index in plan.managed_kernel_indices:
+        runtime_arg_base = plan.runtime_arg_bases[kernel_index]
+        common_index = plan.runtime_arg_base_common_indices[kernel_index]
+        assert runtime_arg_base is not None
+        assert common_index is not None
+        program_descriptor.kernels[kernel_index].common_runtime_args[
+            common_index
+        ] = runtime_arg_base
+    for manager, runtime_args in applied_managers:
+        node_x, node_y = manager.node_coordinates
+        program_descriptor.kernels[manager.kernel_index].runtime_args[node_x][
+            node_y
+        ] = runtime_args
+
 
 def configure_routing_plane_runtime_args(
     ttnn_api: Any,
     program_descriptor: Any,
     kernel_fabric_routes: List[List[FabricRouteSpec]],
+    kernel_fabric_runtime_arg_base_common_indices: List[Optional[int]],
     mesh_device: Any,
     device_coordinates: Tuple[int, ...],
     grid_cols: int,
@@ -626,11 +736,28 @@ def configure_routing_plane_runtime_args(
             raise ValueError(
                 "kernel_fabric_routes must have one entry per kernel descriptor"
             )
+        if len(kernel_fabric_runtime_arg_base_common_indices) != len(
+            program_descriptor.kernels
+        ):
+            raise ValueError(
+                "kernel_fabric_runtime_arg_base_common_indices must have one "
+                "entry per kernel descriptor"
+            )
+        if any(
+            common_index is not None
+            for common_index in kernel_fabric_runtime_arg_base_common_indices
+        ):
+            raise ValueError(
+                "fabric runtime argument base common indices require fabric routes"
+            )
         return
     plan = build_fabric_target_binding_plan(
         ttnn_api=ttnn_api,
         program_descriptor=program_descriptor,
         kernel_fabric_routes=kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices=(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
         mesh_device=mesh_device,
         device_coordinates=device_coordinates,
         grid_cols=grid_cols,

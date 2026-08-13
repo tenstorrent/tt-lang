@@ -29,11 +29,6 @@ namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
 
-inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
-    "ttl.fabric_routes";
-inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
-    "ttl.fabric_device_domain";
-
 /// One logical device route used by `sourceNodes` in a kernel function.
 /// `routeIndex` identifies the connection within `localDevice`.
 struct FabricRoute {
@@ -49,6 +44,12 @@ struct FunctionFabricRoutePlan {
   SmallVector<FabricRoute> routes;
 };
 
+/// One non-overlapping interval that owns routing-plane connections.
+struct FabricRuntimeIntervalPlan {
+  Operation *scope;
+  SmallVector<Operation *> protocolOperations;
+};
+
 /// Fabric routes and transfer associations derived before PipeNet lowering.
 struct FabricRoutePlan {
   /// Routes grouped by the kernel function that submits each transfer.
@@ -56,6 +57,8 @@ struct FabricRoutePlan {
   /// Connection indices in selected-record order. Static operations have one
   /// entry.
   llvm::MapVector<Operation *, SmallVector<std::size_t>> routeIndices;
+  /// Non-overlapping connection ownership intervals.
+  SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;
 
   ArrayRef<std::size_t> lookupRouteIndices(Operation *operation) const {
     auto routeIt = routeIndices.find(operation);
@@ -65,15 +68,16 @@ struct FabricRoutePlan {
   }
 };
 
-/// Per-function routing-plane state materialized before transfer lowering.
+/// Routing-plane state for one fabric connection interval.
 struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
   Value connectionCount;
+  Value runtimeArgBase;
   std::size_t routeCount = 0;
 };
 
-/// Routing-plane state indexed by its kernel function.
+/// Routing-plane state indexed by each fabric protocol operation.
 using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
 struct PipeInfo {
@@ -269,12 +273,13 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// PipeGraph.
 LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
                                    const PipeGraph &pipeGraph,
+                                   const PipeForeachLoweringInfo &foreachInfo,
                                    FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.
 void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
 
-/// Materialize one routing-plane manager per kernel that uses fabric routes.
+/// Materialize routing-plane state for each planned connection interval.
 void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime);
 

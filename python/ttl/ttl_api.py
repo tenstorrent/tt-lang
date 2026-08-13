@@ -790,6 +790,7 @@ class CompiledTTNNKernel:
         opaque_include_paths=None,
         kernel_pipe_computed_address_dfb_indices=None,
         kernel_fabric_routes=None,
+        kernel_fabric_runtime_arg_base_common_indices=None,
         mesh_program_placements=None,
         device_domain=None,
         kernel_logical_selectors=None,
@@ -823,6 +824,8 @@ class CompiledTTNNKernel:
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
             kernel_fabric_routes: Per-kernel routing-plane connection metadata.
+            kernel_fabric_runtime_arg_base_common_indices: Per-kernel common
+                argument indices containing fabric unique-argument bases.
             mesh_program_placements: Optional mesh device ranges. When present,
                 execution uses ttnn.MeshProgramDescriptor.
             device_domain: Logical device domain used for per-device dispatch.
@@ -848,6 +851,10 @@ class CompiledTTNNKernel:
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
         self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
+        self.kernel_fabric_runtime_arg_base_common_indices = (
+            kernel_fabric_runtime_arg_base_common_indices
+            or [None for _ in kernel_paths]
+        )
         self.mesh_program_placements = mesh_program_placements
         self.device_domain = device_domain
         self.kernel_logical_selectors = kernel_logical_selectors or [
@@ -888,6 +895,9 @@ class CompiledTTNNKernel:
                     kernel_idx
                 ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
+                fabric_runtime_arg_base_common_index=(
+                    self.kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
+                ),
                 logical_kernel=self.kernel_logical_selectors[kernel_idx],
             )
             kernel_specs.append(spec)
@@ -1141,7 +1151,7 @@ def _get_kernel_crta_indices(module, kernel_name: str):
 
 def _get_kernel_fabric_routes(module, kernel_name: str):
     operation = _lookup_kernel_func_op(module, kernel_name)
-    attr = operation.attributes.get("ttl.fabric_routes", None)
+    attr = operation.attributes.get(_ttl_ir.FABRIC_ROUTES_ATTR, None)
     if attr is None:
         return []
 
@@ -1172,6 +1182,14 @@ def _get_kernel_fabric_routes(module, kernel_name: str):
             )
         )
     return routes
+
+
+def _get_kernel_fabric_runtime_arg_base_common_index(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(
+        _ttl_ir.FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR, None
+    )
+    return None if attr is None else int(IntegerAttr(attr).value)
 
 
 def _compile_ttnn_kernel(
@@ -1346,6 +1364,7 @@ def _compile_ttnn_kernel(
     kernel_core_ranges = []
     specialized_tensor_indices = []
     kernel_fabric_routes = []
+    kernel_fabric_runtime_arg_base_common_indices = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -1372,6 +1391,9 @@ def _compile_ttnn_kernel(
             )
         )
         kernel_fabric_routes.append(_get_kernel_fabric_routes(module, name))
+        kernel_fabric_runtime_arg_base_common_indices.append(
+            _get_kernel_fabric_runtime_arg_base_common_index(module, name)
+        )
 
         # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used to build the per-kernel dispatch range below.
@@ -1462,6 +1484,9 @@ def _compile_ttnn_kernel(
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
         kernel_fabric_routes=kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices=(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
@@ -1486,6 +1511,9 @@ def _compile_ttnn_kernel(
                     kernel_idx
                 ],
                 core_ranges=kernel_core_ranges[kernel_idx],
+                fabric_runtime_arg_base_common_index=(
+                    kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
+                ),
                 logical_kernel=kernel_logical_selectors[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
