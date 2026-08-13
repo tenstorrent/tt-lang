@@ -285,31 +285,34 @@ struct ComputeOpCreationUse {
   }
 };
 
-/// Stores and `ttl.cb_push` publication for one reserve of an output DFB.
+/// Stores and optional publication for one acquired output DFB view.
 ///
-/// Every store uses a view derived from `reserve`. When present, `push` is the
-/// first `ttl.cb_push` following every store without an intervening reserve.
-/// Automatic DFB synchronization may add an absent push later.
+/// Every store uses a view derived from `acquire`. Reserve-backed transactions
+/// may carry a following `ttl.cb_push`. Wait-backed transactions replace an
+/// occupied consumer slot and retain the existing `ttl.cb_pop` release.
 struct OutputDFBTransaction {
-  /// DFB whose producer pointer is advanced by the transaction.
+  /// DFB whose acquired pages are written by the transaction.
   Value dfb;
 
-  /// Acquisition that provides every store view in the transaction.
-  CBReserveOp reserve;
+  /// `ttl.cb_reserve` or `ttl.cb_wait` that provides every store view.
+  Operation *acquire = nullptr;
 
-  /// Stores using views derived from `reserve`, in block order.
+  /// Stores using views derived from `acquire`, in block order.
   SmallVector<StoreOp> stores;
 
-  /// First matching `ttl.cb_push` after every store, when one exists.
+  /// First matching `ttl.cb_push` after every reserve-backed store, when one
+  /// exists. Wait-backed transactions never publish.
   std::optional<CBPushOp> push;
+
+  bool isWaitedMutation() const { return isa<CBWaitOp>(acquire); }
 };
 
 /// Read-only plan for storing and pushing one created `ComputeOp` result.
 ///
 /// Stores, transactions, and pushes retain block order. `dfbs` contains each
 /// output DFB once in first-store order. A DFB in `multiTransactionDFBs` is
-/// written through more than one reserve; combining those transactions into
-/// one compute would move a publication across a later reserve.
+/// written through more than one acquisition; combining those transactions
+/// into one compute would lose the acquisition boundary.
 struct OutputPublicationPlan {
   /// Unique output DFBs in first-store order.
   SmallVector<Value> dfbs;
@@ -320,17 +323,17 @@ struct OutputPublicationPlan {
   /// Existing `ttl.cb_push` operations matched to transactions, in block order.
   SmallVector<CBPushOp> pushes;
 
-  /// Reserve-delimited output transactions in first-store order.
+  /// Acquire-delimited output transactions in first-store order.
   SmallVector<OutputDFBTransaction> transactions;
 
-  /// DFBs written through more than one reserve operation.
+  /// DFBs written through more than one acquisition operation.
   SmallVector<Value> multiTransactionDFBs;
 
   /// Operation immediately before which the created `ComputeOp` executes.
   ///
   /// The final store is selected because all output stores are in one block
-  /// and each reserve dominates its store. It is therefore dominated by every
-  /// reserve needed to create the `ComputeOp` outputs.
+  /// and each acquisition dominates its store. It is therefore dominated by
+  /// every acquisition needed to create the `ComputeOp` outputs.
   StoreOp insertionAnchor;
 
   bool hasMultipleTransactionsForOneDFB() const {
@@ -340,6 +343,29 @@ struct OutputPublicationPlan {
   bool hasMultipleTransactions(Value dfb) const {
     return llvm::is_contained(multiTransactionDFBs, dfb);
   }
+};
+
+/// Immutable proof for one straight-line replacement of a waited DFB block.
+///
+/// The initial contract accepts one complete one-block consumer acquisition
+/// whose original value is a direct input to the replacement compute. All
+/// fields refer to the unmodified kernel used to build the creation plan.
+struct WaitedDFBMutationPlan {
+  /// Tensor store that replaces the acquired pages.
+  StoreOp store;
+
+  /// Consumer acquisition that owns the destination pages.
+  CBWaitOp wait;
+
+  /// Consumer release after every read of the replacement generation.
+  CBPopOp release;
+
+  /// Logical DFB whose read and write cursors coincide while the ring is full.
+  Value dfb;
+
+  /// Complete-ring transaction and capacity, in tiles.
+  int64_t transactionTiles = 0;
+  int64_t capacityTiles = 0;
 };
 
 /// Reason output publication cannot be planned for a legal source operation.
@@ -395,10 +421,11 @@ bool hasStandaloneComputeOpCreationRecipe(Operation *source);
 ///
 /// `source` must have exactly one result with at least one `ttl.store` user,
 /// all stores must be in one block, and every store view must originate from
-/// `ttl.cb_reserve`. Valid SSA ensures each reserve dominates its stores. These
-/// conditions provide one insertion position and explicit transaction
-/// identities. Unsupported valid forms return a typed rejection. A malformed
-/// reserve/store/publication transaction returns an invalid-IR diagnostic.
+/// `ttl.cb_reserve` or `ttl.cb_wait`. Valid SSA ensures each acquisition
+/// dominates its stores. These conditions provide one insertion position and
+/// explicit transaction identities. Unsupported valid forms return a typed
+/// rejection. A malformed store/publication transaction returns an invalid-IR
+/// diagnostic.
 PlanningResult<OutputPublicationPlan, OutputPublicationRejection>
 buildOutputPublicationPlan(Operation *source);
 
@@ -555,6 +582,9 @@ struct ComputeOpCreationPlan {
 
   /// Reserve, store, and publication transactions affected by creation.
   OutputPublicationPlan outputs;
+
+  /// Consumer-owned DFB replacements proved before IR mutation.
+  SmallVector<WaitedDFBMutationPlan> waitedMutations;
 
   /// Typed reason for an unselected structurally complete creation.
   ComputeOpCreationRejectionKind rejectionKind =
