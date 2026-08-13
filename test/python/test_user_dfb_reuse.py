@@ -107,6 +107,74 @@ def _make_repeated_dfb_atom_kernel(data_format):
     return repeated_dfb_atom_kernel
 
 
+@ttl.operation()
+def _store_waited_block(state_dfb: ttl.DFB, output_dfb: ttl.DFB):
+    with state_dfb.wait() as state_block:
+        increment = ttl.block.fill(
+            1,
+            shape=state_block.shape,
+            dtype=state_block.dtype,
+        )
+        updated_state = ttl.add(state_block, increment)
+        state_block.store(updated_state)
+
+        with output_dfb.reserve() as output_block:
+            output_block.store(state_block)
+
+
+@ttl.operation()
+def _iadd_waited_block(state_dfb: ttl.DFB, output_dfb: ttl.DFB):
+    with state_dfb.wait() as state_block:
+        increment = ttl.block.fill(
+            1,
+            shape=state_block.shape,
+            dtype=state_block.dtype,
+        )
+        state_block += increment
+
+        with output_dfb.reserve() as output_block:
+            output_block.store(
+                ttl.add(
+                    state_block,
+                    ttl.block.fill(
+                        0,
+                        shape=state_block.shape,
+                        dtype=state_block.dtype,
+                    ),
+                )
+            )
+
+
+def _make_waited_block_store_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def waited_block_mutation_kernel(input_tensor, output_tensor):
+        state_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        with state_dfb.reserve() as state_destination:
+            ttl.copy(input_tensor[0, 0], state_destination).wait()
+        _store_waited_block(state_dfb, output_dfb)
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return waited_block_mutation_kernel
+
+
+def _make_waited_block_iadd_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def waited_block_mutation_kernel(input_tensor, output_tensor):
+        state_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        with state_dfb.reserve() as state_destination:
+            ttl.copy(input_tensor[0, 0], state_destination).wait()
+        _iadd_waited_block(state_dfb, output_dfb)
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return waited_block_mutation_kernel
+
+
 def _make_nested_copy_atom(data_format, level_count):
     @ttl.operation()
     def copy_stage(source: ttl.DFB, destination: ttl.DFB):
@@ -511,6 +579,10 @@ _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
 _capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
+_waited_mutation_bf16_store_kernel = _make_waited_block_store_kernel("bf16")
+_waited_mutation_f32_store_kernel = _make_waited_block_store_kernel("float32")
+_waited_mutation_bf16_iadd_kernel = _make_waited_block_iadd_kernel("bf16")
+_waited_mutation_f32_iadd_kernel = _make_waited_block_iadd_kernel("float32")
 _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
 _exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
 _conditional_bf16_lifecycle_kernel = _make_conditional_lifecycle_kernel("bf16")
@@ -893,6 +965,40 @@ def test_synchronized_reset_terminates_producer_epoch(
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_waited_mutation_bf16_store_kernel, torch.bfloat16),
+        (_waited_mutation_f32_store_kernel, torch.float32),
+        (_waited_mutation_bf16_iadd_kernel, torch.bfloat16),
+        (_waited_mutation_f32_iadd_kernel, torch.float32),
+    ],
+    ids=["store-bf16", "store-f32", "iadd-bf16", "iadd-f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_waited_block_replacement_preserves_updated_value(
+    device, operation, dtype, memory_config, to_device
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor)
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float() + 1
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:

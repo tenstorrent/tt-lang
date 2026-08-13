@@ -51,12 +51,30 @@ func.func @store_shape_mismatch(
 
 // -----
 
-// View not from cb_reserve.
-func.func @store_view_not_from_reserve(
+// View not from a typed DFB acquisition.
+func.func @store_view_not_from_acquisition(
     %tensor: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %view: tensor<2x2x!ttcore.tile<32x32, f32>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
-  // expected-error @below {{view must come from ttl.cb_reserve}}
+  // expected-error @below {{view must come from ttl.cb_reserve or ttl.cb_wait}}
   ttl.store %tensor, %view : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return
+}
+
+// -----
+
+// Waited replacement uses an ordinary expression and cannot enable the
+// reserve-backed packer accumulation mode.
+func.func @waited_store_with_packer_accumulation(
+    %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %view = ttl.cb_wait %dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{wait-backed replacement does not support packer accumulation}}
+  ttl.store %tensor, %view {accumulate}
+      : tensor<1x1x!ttcore.tile<32x32, f32>>,
+        tensor<1x1x!ttcore.tile<32x32, f32>>
+  return
 }
