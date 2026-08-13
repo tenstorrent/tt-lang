@@ -137,6 +137,13 @@ struct DFBTransactionRun {
   }
 };
 
+/// Advances one physical ring cursor through finite transaction runs. Fails
+/// when an acquire would cross the end of the physical allocation.
+FailureOr<std::uint64_t>
+advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
+                            std::uint64_t physicalTileCount,
+                            std::uint64_t initialOffset = 0);
+
 /// Protocol state proved for one access interval between synchronized resets.
 struct DFBLifecycleEpoch {
   SmallVector<unsigned> accessOccurrenceIndices;
@@ -198,6 +205,7 @@ struct DFBLogicalLifecycle {
   int64_t logicalId = 0;
   Type type;
   TensorBackingAttr tensorBacking;
+  DFBAllocationGroupAttr allocationGroup;
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;

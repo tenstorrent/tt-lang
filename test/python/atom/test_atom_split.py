@@ -30,6 +30,10 @@ from ttl.atom import (
     _lift_setup,
 )
 from ttl.compiler_options import CompilerOptions
+from ttl.dfb_allocation_group import (
+    _bind_dfb_allocation_groups,
+    _dfb_allocation_group_binding_scope,
+)
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 
@@ -879,6 +883,173 @@ def test_resource_name_collection_excludes_nested_scopes():
     )
 
     assert atom_module._operation_resource_names(function) == {"operation_dfb"}
+
+
+def test_composition_preserves_one_dfb_allocation_group_identity():
+    """Inlining preserves one captured allocation identity across declarations."""
+
+    def make_operation():
+        shared_allocation = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            helper_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                block_count=2,
+                allocation_group=shared_allocation,
+            )
+
+        @ttl.operation()
+        def composed_allocation():
+            allocation_helper()
+            caller_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                block_count=4,
+                allocation_group=shared_allocation,
+            )
+
+        return composed_allocation, shared_allocation
+
+    composed_allocation, shared_allocation = make_operation()
+    spec = composed_allocation._spec
+
+    captured_groups = tuple(spec.allocation_groups.values())
+    assert len(captured_groups) == 2
+    assert all(group is shared_allocation for group in captured_groups)
+    with _dfb_allocation_group_binding_scope():
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast),
+            dict(spec.frozen_scope),
+            spec.operation_identity,
+        )
+    assert len(dfbs) == 2
+    helper_dfb, caller_dfb = dfbs.values()
+    assert helper_dfb.allocation_group is caller_dfb.allocation_group
+
+
+def test_composition_hoists_allocation_groups_from_control_flow():
+    """Generated group tokens and members remain operation-level resources."""
+
+    def make_operation():
+        shared_allocation = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            local_allocation = ttl.make_dfb_allocation_group()
+            helper_shared = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=shared_allocation
+            )
+            helper_local_first = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=local_allocation
+            )
+            helper_local_second = ttl.make_dfb(
+                "bf16", shape=(1, 2), allocation_group=local_allocation
+            )
+
+        @ttl.operation()
+        def composed_allocation(enabled):
+            caller_shared = ttl.make_dfb(
+                "bf16", shape=(1, 2), allocation_group=shared_allocation
+            )
+            for iteration in range(2):
+                if enabled:
+                    allocation_helper()
+
+        return composed_allocation
+
+    spec = make_operation()._spec
+    resource_statements = [
+        statement
+        for statement in spec.fn_ast.body
+        if atom_rules.setup_assign_target(statement) is not None
+    ]
+    assert len(resource_statements) == 5
+
+    eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(_bind_dfb_allocation_groups(spec.allocation_groups))
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast), eval_scope, spec.operation_identity
+        )
+
+    caller_shared = dfbs["caller_shared"]
+    helper_shared = next(
+        dfb for name, dfb in dfbs.items() if name.startswith("helper_shared__")
+    )
+    helper_local = [
+        dfb for name, dfb in dfbs.items() if name.startswith("helper_local_")
+    ]
+    assert helper_shared.allocation_group is caller_shared.allocation_group
+    assert len(helper_local) == 2
+    assert helper_local[0].allocation_group is helper_local[1].allocation_group
+    assert helper_local[0].allocation_group is not caller_shared.allocation_group
+
+
+def test_dfb_allocation_group_alias_topology_changes_operation_identity():
+    """The cache identity distinguishes shared and independent groups."""
+
+    def make_operation(shared_identity):
+        first_group = ttl.make_dfb_allocation_group()
+        second_group = (
+            first_group if shared_identity else ttl.make_dfb_allocation_group()
+        )
+
+        @ttl.operation()
+        def grouped_operation():
+            first_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                allocation_group=first_group,
+            )
+            second_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                allocation_group=second_group,
+            )
+
+        return grouped_operation
+
+    shared = make_operation(shared_identity=True)
+    independent = make_operation(shared_identity=False)
+
+    assert shared._spec.operation_identity != independent._spec.operation_identity
+
+
+def test_captured_and_local_dfb_allocation_groups_receive_distinct_ordinals():
+    """One binding context covers inlined captures and caller declarations."""
+
+    def make_operation():
+        captured_group = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            helper_dfb = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=captured_group
+            )
+
+        @ttl.operation()
+        def composed_allocation():
+            allocation_helper()
+            local_group = ttl.make_dfb_allocation_group()
+            caller_dfb = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=local_group
+            )
+
+        return composed_allocation
+
+    spec = make_operation()._spec
+    eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(_bind_dfb_allocation_groups(spec.allocation_groups))
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast), eval_scope, spec.operation_identity
+        )
+
+    helper_dfb, caller_dfb = dfbs.values()
+    assert helper_dfb.allocation_group.ordinal == 0
+    assert caller_dfb.allocation_group.ordinal == 1
 
 
 def test_composition_preserves_one_synchronized_dfb_reset_identity():

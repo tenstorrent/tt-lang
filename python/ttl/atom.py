@@ -62,6 +62,13 @@ from .condition import (
     _dispatch_condition_topology,
 )
 from .dfb_reset import DFBReset, _bind_dfb_resets, _dfb_reset_topology
+from .dfb_allocation_group import (
+    DFBAllocationGroup,
+    _bind_dfb_allocation_groups,
+    _dfb_allocation_group_binding_scope,
+    _dfb_allocation_group_topology,
+    make_dfb_allocation_group,
+)
 from .dataflow_buffer import (
     DataflowBuffer,
     _reset_cb_counter,
@@ -204,6 +211,7 @@ class _AtomSpec:
     external_pipenets: Dict[str, PipeNet]
     logical_kernels: Dict[str, Kernel]
     dispatch_conditions: Dict[str, DispatchCondition]
+    allocation_groups: Dict[str, DFBAllocationGroup]
     dfb_resets: Dict[str, DFBReset]
 
 
@@ -278,6 +286,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         inlined_pipenets,
         inlined_logical_kernels,
         inlined_dispatch_conditions,
+        inlined_allocation_groups,
         inlined_dfb_resets,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
@@ -295,6 +304,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     dispatch_conditions: Dict[str, DispatchCondition] = dict(
         inlined_dispatch_conditions
     )
+    allocation_groups: Dict[str, DFBAllocationGroup] = dict(inlined_allocation_groups)
     dfb_resets: Dict[str, DFBReset] = dict(inlined_dfb_resets)
     captured_logical_kernels: Dict[str, Kernel] = {}
     captured_names = sorted(loaded_names & captured_values.keys())
@@ -319,6 +329,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             continue
         elif isinstance(value, DispatchCondition):
             dispatch_conditions[capture_name] = value
+        elif isinstance(value, DFBAllocationGroup):
+            allocation_groups[capture_name] = value
         elif isinstance(value, DFBReset):
             dfb_resets[capture_name] = value
             for participant_index, participant in enumerate(value.participants):
@@ -342,6 +354,17 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             )
 
     operation_identity = _operation_identity(fn)
+    allocation_group_topology = _dfb_allocation_group_topology(allocation_groups)
+    if allocation_group_topology:
+        encoded_group_topology = ",".join(
+            str(ordinal) for ordinal in allocation_group_topology
+        )
+        group_topology_digest = hashlib.sha256(
+            encoded_group_topology.encode("ascii")
+        ).hexdigest()[:16]
+        operation_identity = (
+            f"{operation_identity}[dfb_allocation_groups={group_topology_digest}]"
+        )
     topology = _dispatch_condition_topology(dispatch_conditions)
     if topology:
         encoded_topology = ";".join(
@@ -376,6 +399,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     frozen_scope.update(compile_time_captures)
     frozen_scope.update(logical_kernels)
     frozen_scope.update(dispatch_conditions)
+    frozen_scope.update(allocation_groups)
     frozen_scope.update(dfb_resets)
     source = ast.unparse(fn_def)
 
@@ -395,6 +419,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         external_pipenets=external_pipenets,
         logical_kernels=logical_kernels,
         dispatch_conditions=dispatch_conditions,
+        allocation_groups=allocation_groups,
         dfb_resets=dfb_resets,
     )
 
@@ -552,6 +577,7 @@ def _lift_setup(
     ns.setdefault("make_dfb", make_dfb)
     ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
     ns.setdefault("make_tensor_backed_dfb", make_tensor_backed_dfb)
+    ns.setdefault("make_dfb_allocation_group", make_dfb_allocation_group)
     ns.setdefault("Kernel", Kernel)
     ns.setdefault("ttl", _ttl)
 
@@ -644,10 +670,12 @@ def _compile_atom(
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
     logical_kernels = dict(spec.logical_kernels)
     bound_dispatch_conditions = _bind_dispatch_conditions(spec.dispatch_conditions)
+    bound_allocation_groups = _bind_dfb_allocation_groups(spec.allocation_groups)
     bound_dfb_resets = _bind_dfb_resets(spec.dfb_resets)
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(logical_kernels)
     eval_scope.update(bound_dispatch_conditions)
+    eval_scope.update(bound_allocation_groups)
     eval_scope.update(bound_dfb_resets)
     eval_scope.update(bound_arguments)
 
@@ -668,11 +696,12 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, dfbs, nets, lifted_logical_kernels = _lift_setup(
-        copy.deepcopy(spec.fn_ast),
-        eval_scope,
-        operation_identity=spec.operation_identity,
-    )
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        stripped_fn, dfbs, nets, lifted_logical_kernels = _lift_setup(
+            copy.deepcopy(spec.fn_ast),
+            eval_scope,
+            operation_identity=spec.operation_identity,
+        )
     logical_kernels.update(lifted_logical_kernels)
     selector_scope = dict(eval_scope)
     selector_scope.update(logical_kernels)
@@ -906,7 +935,7 @@ def operation(
         validate_operation_interface(fn)
         global_captures = inspect.getclosurevars(fn).globals
         for name, value in sorted(global_captures.items()):
-            if isinstance(value, (DispatchCondition, DFBReset)):
+            if isinstance(value, (DispatchCondition, DFBAllocationGroup, DFBReset)):
                 raise ValueError(
                     f"@ttl.operation {fn.__name__!r}: "
                     f"{type(value).__name__} {name!r} must be created by an "

@@ -54,30 +54,6 @@ getQuiescenceFailureName(DFBQuiescenceFailureReason failure) {
   llvm_unreachable("unknown DFB quiescence failure");
 }
 
-static llvm::StringRef getConflictReasonName(DFBConflictReason reason) {
-  switch (reason) {
-  case DFBConflictReason::DescriptorMismatch:
-    return "descriptor-mismatch";
-  case DFBConflictReason::StorageMismatch:
-    return "storage-mismatch";
-  case DFBConflictReason::UnknownLaunchNodeDomain:
-    return "unknown-launch-node-domain";
-  case DFBConflictReason::UnprovenQuiescence:
-    return "unproven-quiescence";
-  case DFBConflictReason::TransactionMismatch:
-    return "transaction-mismatch";
-  case DFBConflictReason::PointerOwnerMismatch:
-    return "pointer-owner-mismatch";
-  case DFBConflictReason::ConcurrentLifetime:
-    return "concurrent-lifetime";
-  case DFBConflictReason::ResetDomainWrite:
-    return "reset-domain-write";
-  case DFBConflictReason::StaticConfigurationMismatch:
-    return "static-configuration-mismatch";
-  }
-  llvm_unreachable("unknown DFB conflict reason");
-}
-
 static llvm::StringRef getPointerProcessorName(DFBPointerProcessor processor) {
   switch (processor) {
   case DFBPointerProcessor::Noc0:
@@ -424,7 +400,8 @@ static void printConflictEvidence(llvm::raw_ostream &output,
   for (const DFBConflictEvidence &evidence : model.getEvidence()) {
     output << "DFB conflict lhs=" << evidence.lhsLogicalId
            << " rhs=" << evidence.rhsLogicalId
-           << " reason=" << getConflictReasonName(evidence.reason) << " node=";
+           << " reason=" << getDFBConflictReasonName(evidence.reason)
+           << " node=";
     if (evidence.node) {
       printNode(output, *evidence.node);
     } else {
@@ -451,7 +428,14 @@ void printDFBAllocationDebugReport(
            << " bounded=" << logicalDFB.bounded
            << " compiler_created=" << logicalDFB.compilerCreated
            << " conditionally_bounded=" << logicalDFB.conditionallyBounded
-           << " type=";
+           << " allocation_group=";
+    if (logicalDFB.allocationGroup) {
+      Attribute allocationGroup = logicalDFB.allocationGroup;
+      allocationGroup.print(output);
+    } else {
+      output << "none";
+    }
+    output << " type=";
     logicalDFB.type.print(output);
     output << " tensor_backing=";
     if (logicalDFB.tensorBacking) {

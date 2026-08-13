@@ -17,6 +17,10 @@ from ._src.global_semaphore import (
     is_ttnn_global_semaphore,
 )
 from .condition import DispatchCondition, _bind_dispatch_conditions
+from .dfb_allocation_group import (
+    DFBAllocationGroup,
+    _bind_dfb_allocation_groups,
+)
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
 
@@ -296,6 +300,13 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 if isinstance(value, DispatchCondition)
             }
         )
+        bound_allocation_groups = _bind_dfb_allocation_groups(
+            {
+                name: value
+                for name, value in sorted(nonlocal_captures.items())
+                if isinstance(value, DFBAllocationGroup)
+            }
+        )
         reset_ordinals = {}
         kernel_capture_names = {
             id(value): name
@@ -309,6 +320,9 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     f"dispatch-condition:{binding.ordinal}:"
                     f"{binding.scalar_type.name}"
                 ).encode("ascii")
+            elif isinstance(value, DFBAllocationGroup):
+                binding = bound_allocation_groups[name]
+                encoded = f"dfb-allocation-group:{binding.ordinal}".encode("ascii")
             elif isinstance(value, DFBReset):
                 reset_identity = id(value)
                 ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
