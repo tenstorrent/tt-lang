@@ -26,6 +26,7 @@ from .atom import operation, DFB
 from .kernel import Kernel, KernelKind
 from .condition import DispatchCondition
 from .dfb_reset import DFBReset, DFBResetScope
+from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -55,12 +56,14 @@ __all__ = [
     "DispatchCondition",
     "DFBReset",
     "DFBResetScope",
+    "DFBAllocationGroup",
     "ScalarType",
     "compute",
     "datamovement",
     "make_dataflow_buffer_like",
     "make_dfb",
     "make_tensor_backed_dfb",
+    "make_dfb_allocation_group",
     "copy",
     "node",
     "grid_size",
