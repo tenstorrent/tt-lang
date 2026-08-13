@@ -447,12 +447,13 @@ static bool runPrecedesWithinEachIteration(const AccessRun &before,
 
 /// Requires a release to follow every use owned by its acquisition; textual
 /// acquire/release order alone does not prove storage quiescence.
-static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
+static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release,
+                                    ArrayRef<Operation *> sameKindAcquires) {
   if (acquire->getBlock() != release->getBlock()) {
     return false;
   }
-  SmallVector<Operation *> acquires = {acquire};
-  DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+  DFBAcquireInterval interval =
+      makeDFBAcquireInterval(acquire, sameKindAcquires);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
   return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
@@ -1726,6 +1727,18 @@ static DFBQuiescenceProof computeProtocolLifetime(
   }
   std::optional<DFBPointerOwner> writeOwner;
   std::optional<DFBPointerOwner> readOwner;
+  SmallVector<Operation *> nativeReserves;
+  SmallVector<Operation *> nativeWaits;
+  for (const AccessRun *reserve : reserves) {
+    if (isa<CBReserveOp>(reserve->access->operation)) {
+      nativeReserves.push_back(reserve->access->operation);
+    }
+  }
+  for (const AccessRun *wait : waits) {
+    if (isa<CBWaitOp>(wait->access->operation)) {
+      nativeWaits.push_back(wait->access->operation);
+    }
+  }
   for (auto [reserve, push] : llvm::zip_equal(reserves, pushes)) {
     if (reserve->access->numTiles <= 0) {
       return {DFBQuiescenceFailureReason::MismatchedTransaction,
@@ -1733,7 +1746,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
     if (isa<CBReserveOp>(reserve->access->operation) &&
         !releaseFollowsOwnedUses(reserve->access->operation,
-                                 push->access->operation)) {
+                                 push->access->operation, nativeReserves)) {
       return {DFBQuiescenceFailureReason::IncompleteUseOrder,
               push->access->operation};
     }
@@ -1755,7 +1768,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
     if (isa<CBWaitOp>(wait->access->operation) &&
         !releaseFollowsOwnedUses(wait->access->operation,
-                                 pop->access->operation)) {
+                                 pop->access->operation, nativeWaits)) {
       return {DFBQuiescenceFailureReason::IncompleteUseOrder,
               pop->access->operation};
     }

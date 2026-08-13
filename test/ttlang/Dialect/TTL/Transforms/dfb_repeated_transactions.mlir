@@ -180,3 +180,47 @@ module {
     return
   }
 }
+
+// -----
+
+// Each straight-line acquisition owns only the direct DFB accesses before the
+// next same-kind acquisition. Both producer and consumer runs remain bounded.
+
+// REUSE-LABEL: func.func @straight_line_producer
+// REUSE-SAME: ttl.base_cta_index = 1 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// REUSE-LABEL: func.func @straight_line_consumer
+// REUSE-SAME: ttl.base_cta_index = 1 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// REPORT: DFB logical_id=0 bounded=1
+// REPORT: node (0,0) quiescence=none
+// REPORT-SAME: transactions=[1, 1]
+
+module {
+  func.func @straight_line_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserved_0 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.opaque_call "producer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "producer_use.hpp"} : () -> ()
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserved_1 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.opaque_call "producer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "producer_use.hpp"} : () -> ()
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+
+  func.func @straight_line_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %waited_0 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.opaque_call "consumer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "consumer_use.hpp"} : () -> ()
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %waited_1 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.opaque_call "consumer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "consumer_use.hpp"} : () -> ()
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
