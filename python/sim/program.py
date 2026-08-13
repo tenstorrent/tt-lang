@@ -223,6 +223,9 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
 
             # Create scheduler
             scheduler = GreenletScheduler()
+            # Record the launch grid so tracing and cross-device access
+            # validation can derive each node's device (mesh) coordinate.
+            scheduler.grid = tuple(self.context.get("grid", (1, 1)))
             set_scheduler(scheduler)
 
             # Analyse all three kernel functions (and any reachable helpers)

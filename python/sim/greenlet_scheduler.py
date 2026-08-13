@@ -156,6 +156,10 @@ class GreenletScheduler:
         self._timestamp: int = 0
         # Track if kernel has ever made progress (passed at least one block_if_needed check)
         self._has_made_progress: Dict[KernelId, bool] = {}
+        # Launch grid for the running program, used to derive a node's device
+        # (mesh) coordinate for device-aware tracing and access validation.
+        # Set by Program before run(); empty until then.
+        self.grid: Tuple[int, ...] = ()
 
     def add_kernel(
         self,

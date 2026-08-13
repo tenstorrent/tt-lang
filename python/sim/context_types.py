@@ -42,11 +42,19 @@ class SimulatorConfig:
 
 @dataclass
 class TraceEvent:
-    """A single recorded trace event."""
+    """A single recorded trace event.
+
+    ``node`` is the linear-node label (e.g. ``"node3"``).  ``device`` is the
+    device-mesh coordinate the node belongs to, as a list of ints (e.g.
+    ``[1, 0]``); it is the empty list for single-device (rank <= 2) grids and
+    ``None`` when no node could be attributed to the event.
+    """
 
     event: str
     tick: int
     kernel: Optional[str]
+    node: Optional[str] = None
+    device: Optional[list[int]] = None
     data: Dict[str, Any] = field(default_factory=dict)
 
 

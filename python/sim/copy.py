@@ -23,6 +23,7 @@ from .copyhandlers import (
 from .dfb import Block
 from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
+from .mesh_access import validate_mesh_access
 from .trace import TRACE, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .pipe import Pipe, SrcPipeIdentity
@@ -124,6 +125,13 @@ class CopyTransaction:
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
+
+        # Enforce that a mesh-sharded tensor is only accessed within the slice
+        # owned by the current node's device-mesh coordinate.
+        if isinstance(src, Tensor):
+            validate_mesh_access(src, "read")
+        if isinstance(dst, Tensor):
+            validate_mesh_access(dst, "write")
 
         if TRACE.enabled:
             trace(

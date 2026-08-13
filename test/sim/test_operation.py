@@ -131,6 +131,47 @@ class TestGridSize:
         # Should not raise
         test_operation(a, b)
 
+    def test_grid_size_and_node_in_operation_4d(self):
+        """Test grid_size and node decomposition with a 4D grid.
+
+        Each node asserts its own coordinate stays within the 2x3x2x2 grid
+        bounds; a wrong decomposition would raise on at least one node and fail
+        the run.  ttl.node(dims=1) must equal the linear node index recovered
+        from the 4D coordinate.
+        """
+
+        @ttl.operation(grid=(2, 3, 2, 2))
+        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute():
+                d1, d2, d3, d4 = cast(Shape, ttl.grid_size(dims=4))
+                assert (d1, d2, d3, d4) == (2, 3, 2, 2)
+                coord = cast(Shape, ttl.node(dims=4))
+                assert len(coord) == 4
+                assert 0 <= coord[0] < 2
+                assert 0 <= coord[1] < 3
+                assert 0 <= coord[2] < 2
+                assert 0 <= coord[3] < 2
+                # Row-major linear index from the 4D coordinate matches node(dims=1).
+                linear = ((coord[0] * 3 + coord[1]) * 2 + coord[2]) * 2 + coord[3]
+                assert linear == cast(int, ttl.node(dims=1))
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+        a = make_zeros_tensor(32, 32)
+        b = make_zeros_tensor(32, 32)
+
+        # Should not raise.
+        test_operation(a, b)
+
     def test_grid_size_outside_operation_raises(self):
         """Test that grid_size raises error when called outside operation context."""
         with pytest.raises(RuntimeError, match="grid not available"):

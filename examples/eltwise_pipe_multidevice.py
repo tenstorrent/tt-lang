@@ -1,0 +1,204 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
+# type: ignore
+import math
+
+import ttl
+import ttnn
+
+from utils.correctness import assert_with_ulp
+
+CARD_R, CARD_C = 2, 2  # device-mesh axes: a 2x2 grid of virtual cards
+CX, CY = 8, 8  # Tensix core grid
+
+
+@ttl.operation(grid=(CARD_R, CARD_C, CX, CY))
+def eltwise_pipe(
+    a_in: ttnn.Tensor,
+    b_in: ttnn.Tensor,
+    c_in: ttnn.Tensor,
+    out: ttnn.Tensor,
+) -> None:
+
+    # Set granularity
+    granularity = 2
+    # Assuming lightweight op input validation should be here
+    assert a_in.shape == b_in.shape == out.shape
+    assert a_in.shape[0] % granularity == 0
+
+    # c_in is one tile (32x32).  The compute kernel below uses
+    # ``ttl.block.broadcast(c_block, dims=[0], shape=a_block.shape)`` which,
+    # per spec step (1), takes only row 0 of the source tile and replicates
+    # it across the remaining rows before tiling across the grid - so only
+    # row 0 of c_in contributes to the output.
+    tile_h, tile_w = ttl.TILE_SHAPE
+    assert c_in.shape == (
+        tile_h,
+        tile_w,
+    ), f"c_in must be one tile ({tile_h}x{tile_w}), got {c_in.shape}"
+
+    row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
+    col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
+
+    # Parallelizing by columns here to get reuse on C.  Only the pipe's
+    # destinations run the loops below (every other node returns early on
+    # ``is_active()``), so the columns are split over the multicast group -- one
+    # node per card -- rather than over all ``prod(grid)`` nodes.  Dividing by the
+    # full node count would leave columns unwritten whenever there are more
+    # column tiles than cards.
+    mcast_nodes = CARD_R * CARD_C
+    cols_per_node = math.ceil(col_tiles / mcast_nodes)
+    block_count = 2
+
+    # Create circular buffers
+    a_in_dfb = ttl.make_dataflow_buffer_like(
+        a_in, shape=(granularity, 1), block_count=block_count
+    )
+    b_in_dfb = ttl.make_dataflow_buffer_like(
+        b_in, shape=(granularity, 1), block_count=block_count
+    )
+    c_in_dfb = ttl.make_dataflow_buffer_like(
+        c_in, shape=(1, 1), block_count=block_count
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(granularity, 1), block_count=block_count
+    )
+
+    pipe = ttl.Pipe((0, 0, 0, 0), (slice(0, CARD_R), slice(0, CARD_C), 0, 0))
+    pipe_net = ttl.PipeNet([pipe])
+
+    @ttl.compute()
+    def compute_func():
+        if not pipe_net.is_active():
+            return  # This node is not participating in C multicast
+        node_num = ttl.node(dims=1)  # node index over the full mesh
+        node_mcast_idx = node_num // (CX * CY)  # node index over the multicast group
+
+        start_col_tile = node_mcast_idx * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
+
+        c_block = c_in_dfb.wait()  # blocking
+
+        for ct in range(start_col_tile, end_col_tile):
+            # Reuse C across rows of A, B
+            for rt_block in range(row_tiles // granularity):
+                print(
+                    "Compute: ", f"node={node_num}", f"column={ct}", f"block={rt_block}"
+                )
+                # again, these return Block pointers:
+                a_block = a_in_dfb.wait()  # blocking
+                b_block = b_in_dfb.wait()  # blocking
+                # NOTE: Please consider making non-approx the default for eltwise unary, but leave the option for the user to specify approx=True
+                out_block = out_dfb.reserve()  # blocking
+
+                # Use store() to properly populate the Block with computed results
+                # Broadcast c_block along dim 0 (rows) to match a_block/b_block shape
+                result = a_block * b_block + ttl.block.broadcast(
+                    c_block, dims=[0], shape=a_block.shape
+                )
+                out_block.store(result)
+
+                # finalize push, this advances the dfb pointers, the writing happened at the line above
+                out_block.push()
+                # finalize pop, this advances the dfb pointers, essentially freeing the memory
+                # After poping, the corresponding Block(a_block) points to stale data. Should probably make it an error to access it at that point
+                a_block.pop()
+                # ditto
+                b_block.pop()
+        c_block.pop()
+
+    @ttl.datamovement()
+    def dm0():
+        if not pipe_net.is_active():
+            return  # This node is not participating in C multicast
+
+        node_num = ttl.node(dims=1)  # node index
+
+        # Pipe communication setup - must happen before main loop
+        with c_in_dfb.reserve() as c_block:
+
+            def pipe_src(pipe_id):
+                print(f"dm0 (C multicast SRC): node={node_num}")
+                # C is only 1 tile
+                tx = ttl.copy(c_in[slice(0, 1), slice(0, 1)], c_block)
+                tx.wait()
+                tx2 = ttl.copy(c_block, pipe_id)
+                tx2.wait()
+
+            def pipe_dst(pipe_id):
+                print(f"dm0 (C multicast DST): node={node_num}")
+                tx = ttl.copy(pipe_id, c_block)
+                tx.wait()
+
+            pipe_net.if_src(pipe_src)
+            pipe_net.if_dst(pipe_dst)
+
+        node_mcast_idx = node_num // (CX * CY)  # node index over the multicast group
+        start_col_tile = node_mcast_idx * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
+
+        for ct in range(start_col_tile, end_col_tile):
+            for rt_block in range(row_tiles // granularity):
+                print("dm0: ", f"node={node_num}", f"column={ct}", f"block={rt_block}")
+                row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
+                col_slice = slice(ct, ct + 1)
+                # Write the dfbs just as above
+                a_block = a_in_dfb.reserve()
+                tx = ttl.copy(a_in[row_slice, col_slice], a_block)
+                tx.wait()
+                a_block.push()
+                b_block = b_in_dfb.reserve()
+                tx = ttl.copy(b_in[row_slice, col_slice], b_block)
+                tx.wait()
+                b_block.push()
+
+    @ttl.datamovement()
+    def dm1():
+        if not pipe_net.is_active():
+            return  # This node is not participating in C multicast
+        node_num = ttl.node(dims=1)  # node index
+        node_mcast_idx = node_num // (CX * CY)  # node index over the multicast group
+
+        start_col_tile = node_mcast_idx * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
+
+        for ct in range(start_col_tile, end_col_tile):
+            for rt_block in range(row_tiles // granularity):
+                print("dm1: ", f"node={node_num}", f"column={ct}", f"block={rt_block}")
+                row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
+                col_slice = slice(ct, ct + 1)
+
+                out_block = out_dfb.wait()
+
+                tx = ttl.copy(out_block, out[row_slice, col_slice])
+                tx.wait()
+                out_block.pop()
+
+
+def main() -> None:
+    dim = 128
+    tile_h, tile_w = 32, 32
+    a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
+    b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
+    c_in = ttnn.rand((tile_h, tile_w), dtype=ttnn.float32)
+    out = ttnn.empty((dim, dim), dtype=ttnn.float32)
+
+    eltwise_pipe(a_in, b_in, c_in, out)
+
+    # Golden: per spec, ``broadcast(c_block, dims=[0], shape=a_block.shape)``
+    # broadcasts row 0 of the source tile across the rest of the rows (step 1)
+    # then replicates the resulting tile across the grid (step 2).  The
+    # effective per-element c contribution is therefore ``c_in[0, j % tile_w]``
+    # regardless of the row; rows 1..31 of the random ``c_in`` tile are not
+    # visible in the output.
+    c_row = ttnn.to_torch(c_in)[0:1, :]
+    c_full = ttnn.from_torch(c_row.repeat(dim, dim // tile_w))
+    golden = a_in * b_in + c_full
+    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out))
+
+
+if __name__ == "__main__":
+    main()

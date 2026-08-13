@@ -31,10 +31,11 @@ Event categories and their events:
     pipe      : pipe_send, pipe_recv
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from .context import get_context
 from .context_types import TraceEvent
+from .nodecontext import node_mesh_coord
 
 # All defined event categories.  Pass ALL_CATEGORIES to :func:`set_tracing`
 # to enable everything; pass an empty frozenset to disable.
@@ -133,11 +134,43 @@ def trace(event: str, **data: Any) -> None:
         "Tracing must only be used inside a scheduled operation."
     )
 
+    # Resolve the linear node: prefer the currently scheduled kernel; fall back
+    # to an explicit ``node`` in the event data (operation_start/operation_end
+    # are emitted by the program loop with no kernel currently scheduled).
+    explicit = data.get("node")
+    explicit_node = explicit if isinstance(explicit, int) else None
+    linear_node: Optional[int] = None
+    kid = scheduler.get_current_kernel_id()
+    if kid is not None:
+        linear_node = kid.linear_node
+        # If a call site also passes an explicit ``node``, it must match the
+        # currently scheduled kernel. A mismatch means the event is being
+        # attributed to the wrong node (an instrumentation bug), so fail loudly
+        # rather than silently preferring the kernel's node. Raise unconditionally
+        # (not ``assert``) so the check survives running under ``-O``.
+        if explicit_node is not None and explicit_node != linear_node:
+            raise RuntimeError(
+                f"trace('{event}') node mismatch: explicit node {explicit_node} "
+                f"does not match the scheduled kernel "
+                f"'{scheduler.get_current_kernel_name()}' (node {linear_node})."
+            )
+    else:
+        linear_node = explicit_node
+
+    node_label: Optional[str] = None
+    device_coord: Optional[list[int]] = None
+    if linear_node is not None:
+        node_label = f"node{linear_node}"
+        grid = getattr(scheduler, "grid", ()) or ()
+        device_coord = list(node_mesh_coord(linear_node, grid))
+
     ctx.trace_events.append(
         TraceEvent(
             event=event,
             tick=scheduler.tick,
             kernel=scheduler.get_current_kernel_name(),
+            node=node_label,
+            device=device_coord,
             data=data,
         )
     )

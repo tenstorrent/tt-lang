@@ -137,6 +137,7 @@ def run_script_in_process(
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
         "eltwise_pipe_node3.py",
+        "eltwise_pipe_multidevice.py",
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),

@@ -48,6 +48,123 @@ def _get_from_frame(var_name: str, error_msg: str) -> Any:
     raise RuntimeError(error_msg)
 
 
+def node_coord_from_linear(linear_node: Index, grid: Shape) -> tuple[int, ...]:
+    """Decompose a linear node index into per-axis grid coordinates.
+
+    Uses the same row-major, outermost-first convention as :func:`node`: for a
+    grid ``(g0, g1, ..., g_{k-1})`` the returned coordinate ``(c0, ..., c_{k-1})``
+    satisfies ``linear_node = ((c0 * g1 + c1) * g2 + ...)``.
+    """
+    nid = int(linear_node)
+    coords: List[int] = []
+    for s in reversed(grid):
+        coords.append(nid % s)
+        nid //= s
+    coords.reverse()
+    return tuple(coords)
+
+
+def mesh_axes_of_grid(grid: Shape) -> tuple[int, ...]:
+    """Return the leading mesh-axis sizes of a grid.
+
+    A grid's trailing two dimensions are the Tensix core grid; any leading
+    dimensions are device-mesh axes (one virtual device per leading-coordinate
+    combination).  Grids of rank <= 2 describe a single device and therefore
+    have no mesh axes.
+    """
+    return tuple(grid[:-2]) if len(grid) > 2 else ()
+
+
+def node_mesh_coord(linear_node: Index, grid: Shape) -> tuple[int, ...]:
+    """Return the device-mesh coordinate a node belongs to.
+
+    The mesh coordinate is the leading portion of the node's full grid
+    coordinate, covering only the mesh axes (see :func:`mesh_axes_of_grid`).
+    For single-device grids (rank <= 2) this is the empty tuple.
+    """
+    n_mesh = len(mesh_axes_of_grid(grid))
+    if n_mesh == 0:
+        return ()
+    return node_coord_from_linear(linear_node, grid)[:n_mesh]
+
+
+def pipe_crosses_mesh(src: NodeCoord, dst: Any, grid: Shape) -> bool:
+    """Return True if a pipe from ``src`` to ``dst`` spans more than one device.
+
+    A pipe is "fabric" (cross-device) when its source and any destination differ
+    on a mesh axis (the leading ``len(grid) - 2`` grid dims; see
+    :func:`mesh_axes_of_grid`).  Otherwise it stays within a single device's core
+    grid and lowers to an on-chip NoC transfer.
+
+    ``dst`` may be a single coordinate or a :class:`~sim.typedefs.NodeRange`
+    (a tuple that may contain ``slice`` objects for multicast); a slice on a mesh
+    axis that covers any value other than the source's coordinate makes the pipe
+    fabric.  Grids of rank <= 2 have no mesh axes, so the result is always False.
+
+    Multicast slices are assumed forward and ascending (``start < stop``, unit
+    step), which :mod:`sim.pipe` enforces when a pipe is created -- strided
+    multicast is rejected there.  A hand-built slice violating that (a negative
+    step, say) spans an empty range here and reads as non-fabric.
+
+    Endpoints are accepted in two unambiguous forms and normalized to full grid
+    coordinates before comparison:
+
+    * A bare linear index (an ``int`` or a 1-tuple): unflattened via
+      :func:`node_coord_from_linear`.  Both node-flattening conventions agree on
+      a single linear index, so this is unambiguous.
+    * A full grid-rank coordinate: used directly (this is the only form that may
+      carry ``slice`` multicast selectors).
+
+    A multi-element coordinate shorter than the grid rank is ambiguous: the
+    simulator's :func:`node` flattens the *leading* axes while
+    :func:`flatten_node_index` flattens differently, so its entries cannot be
+    mapped one-to-one to mesh axes.  Such a coordinate raises rather than guess;
+    the trace-only caller (:func:`sim.copyhandlers._pipe_is_fabric`) treats that
+    as non-fabric so tracing never crashes an otherwise-valid run.
+
+    Raises:
+        ValueError: If ``src`` or ``dst`` is a multi-element coordinate whose
+            rank is neither 1 nor ``len(grid)`` (and the grid has mesh axes).
+    """
+    n_mesh = len(mesh_axes_of_grid(grid))
+    if n_mesh == 0:
+        return False
+
+    rank = len(grid)
+
+    def _to_full(coord: Any, what: str) -> tuple[Any, ...]:
+        if isinstance(coord, int):
+            return node_coord_from_linear(coord, grid)
+        coord_t = tuple(coord)
+        if len(coord_t) == 1 and not isinstance(coord_t[0], slice):
+            return node_coord_from_linear(coord_t[0], grid)
+        if len(coord_t) == rank:
+            return coord_t
+        raise ValueError(
+            f"pipe {what} {coord_t} is rank {len(coord_t)} but grid {tuple(grid)} "
+            f"is rank {rank}; use a full-rank coordinate or a bare linear index "
+            f"to classify mesh crossing"
+        )
+
+    src_t = _to_full(src, "src")
+    dst_t = _to_full(dst, "dst")
+
+    for axis in range(n_mesh):
+        src_coord = src_t[axis]
+        dst_sel = dst_t[axis]
+        match dst_sel:
+            case slice():
+                start = dst_sel.start if dst_sel.start is not None else 0
+                stop = dst_sel.stop if dst_sel.stop is not None else grid[axis]
+                step = dst_sel.step if dst_sel.step is not None else 1
+                if any(v != src_coord for v in range(start, stop, step)):
+                    return True
+            case _:
+                if dst_sel != src_coord:
+                    return True
+    return False
+
+
 def flatten_node_index(node_coord: NodeCoord) -> Index:
     """Flatten a NodeCoord to a linear node index.
 

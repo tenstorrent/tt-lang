@@ -217,7 +217,13 @@ def _write_jsonl_trace(path: Path, events: list) -> None:
     """Write trace events to a JSON Lines file.
 
     Each line is a self-contained JSON object with flat fields:
-    event, tick, kernel, and any event-specific data.
+    event, tick, kernel, node, device, and any event-specific data.
+
+    ``node`` is the *global* linear-node label (``"node{N}"``), where ``N`` is
+    the node's row-major index over the entire launch grid -- not a within-device
+    local index.  ``device`` is the device-mesh coordinate that node belongs to
+    (a list of ints; empty for single-device grids).  Both are omitted from a
+    record when unset.
 
     Args:
         path: Output file path.
@@ -230,7 +236,17 @@ def _write_jsonl_trace(path: Path, events: list) -> None:
                 "kernel": ev.kernel,
                 "event": ev.event,
             }
-            record.update(ev.data)
+            if ev.node is not None:
+                record["node"] = ev.node
+            if ev.device is not None:
+                record["device"] = ev.device
+            # Merge event-specific data without clobbering the canonical fields
+            # above. Some events (operation_start/end) carry a legacy int "node"
+            # in their data payload; the promoted top-level node/device win so
+            # the serialized schema stays consistent across event types.
+            for key, value in ev.data.items():
+                if key not in record:
+                    record[key] = value
             f.write(json.dumps(record) + "\n")
 
 

@@ -3081,3 +3081,488 @@ class TestAllGather2DMesh:
         t = ttnn.Tensor(torch.ones(4, 4))
         with pytest.raises(ValueError, match="Mesh device is required"):
             ttnn.all_gather(t, dim=0)
+
+
+# ---------------------------------------------------------------------------
+# N-D mesh support (>= 3 mesh axes)
+# ---------------------------------------------------------------------------
+
+
+class TestMeshShapeNd:
+    """MeshShape accepts an arbitrary number of axes."""
+
+    def test_1d_shape(self) -> None:
+        s = ttnn.MeshShape(8)
+        assert s.dims == (8,)
+        assert s.num_devices == 8
+        assert s.rows == 8
+        assert s.cols == 1
+
+    def test_2d_shape_back_compat(self) -> None:
+        s = ttnn.MeshShape(2, 4)
+        assert s.dims == (2, 4)
+        assert s.rows == 2
+        assert s.cols == 4
+        assert s.num_devices == 8
+
+    def test_3d_shape(self) -> None:
+        s = ttnn.MeshShape(2, 2, 2)
+        assert s.dims == (2, 2, 2)
+        assert s.num_devices == 8
+        assert list(s) == [2, 2, 2]
+        assert s[2] == 2
+
+    def test_open_mesh_device_nd(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        assert mesh.num_devices == 8
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one axis"):
+            ttnn.MeshShape()
+
+    def test_accepts_a_single_sequence(self) -> None:
+        """A lone tuple/list is unpacked, matching ttnn.MeshShape((1, n)) call sites."""
+        assert ttnn.MeshShape((1, 4)).dims == (1, 4)
+        assert ttnn.MeshShape([2, 2, 2]).dims == (2, 2, 2)
+        with pytest.raises(ValueError, match="at least one axis"):
+            ttnn.MeshShape(())
+
+    def test_non_positive_axis_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            ttnn.MeshShape(0)
+        with pytest.raises(ValueError, match="must be positive"):
+            ttnn.MeshShape(2, -1)
+
+    def test_equality_and_hashing(self) -> None:
+        assert ttnn.MeshShape(2, 2) == ttnn.MeshShape(2, 2)
+        assert ttnn.MeshShape(2, 2) != ttnn.MeshShape(2, 4)
+        assert ttnn.MeshShape(4) != ttnn.MeshShape(2, 2)
+        # Usable as dict keys / set members via a matching __hash__.
+        assert hash(ttnn.MeshShape(2, 2)) == hash(ttnn.MeshShape(2, 2))
+        assert len({ttnn.MeshShape(2, 2), ttnn.MeshShape(2, 2)}) == 1
+        # Comparisons against unrelated types are not equal (never raise).
+        assert ttnn.MeshShape(2, 2) != (2, 2)
+
+
+class TestReplicatedAxisCollective:
+    """Collectives over a *replicated* mesh axis of more than one device.
+
+    ``all_reduce`` / ``all_gather`` skip any axis with ``dims[k] is None``.  That is
+    correct for a size-1 axis (nothing to combine), but a replicated axis spanning
+    several devices holds one identical copy per device, which ``ttnn`` would
+    combine.  These tests pin the divergence so it is visible rather than implied
+    by the axis-selection filter.
+    """
+
+    def _replicated_axis0(self) -> Any:
+        """Tensor of ones on a 2x2 mesh: axis 0 replicates, axis 1 shards dim 0."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        return ttnn.from_torch(
+            torch.ones(4, 2),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(None, 0)),
+        )
+
+    def test_sharding_axis_still_reduces(self) -> None:
+        """Guard the working case: the partitioned axis sums its two shards."""
+        result = ttnn.all_reduce(self._replicated_axis0(), cluster_axis=1).to_torch()
+        assert result.unique().tolist() == [2.0]
+
+    @pytest.mark.xfail(
+        reason="Replicated axis is skipped; ttnn would sum the n identical replicas",
+        strict=True,
+    )
+    def test_all_reduce_over_replicated_axis_sums_replicas(self) -> None:
+        """Two devices hold identical copies, so the sum is twice the input."""
+        result = ttnn.all_reduce(self._replicated_axis0(), cluster_axis=0).to_torch()
+        assert result.unique().tolist() == [2.0]
+
+    @pytest.mark.xfail(
+        reason="Replicated axis is skipped; ttnn would concatenate the n replicas",
+        strict=True,
+    )
+    def test_all_gather_over_replicated_axis_concatenates_replicas(self) -> None:
+        """Gathering two replicas along dim 0 doubles the rows."""
+        gathered = ttnn.all_gather(self._replicated_axis0(), dim=0, cluster_axis=0)
+        assert gathered.shape == (8, 2)
+
+
+class TestShardTensorToMeshAxisLayout:
+    """ShardTensorToMesh keeps the opened mesh's axis layout in its MeshShardInfo.
+
+    ``cluster_axis`` indexes the mesh device in ``ttnn``, so the recorded
+    ``mesh_shape`` must mirror the mesh that was opened for those indices to mean
+    the same thing here.  The shard count is always ``mesh.num_devices`` because
+    the split spreads over every device.
+    """
+
+    def _shard(self, *mesh_dims: int, dim: int = 0) -> Any:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(*mesh_dims))
+        return ttnn.from_torch(
+            torch.arange(8.0).reshape(4, 2),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=dim),
+        )
+
+    def test_single_axis_mesh(self) -> None:
+        msi = self._shard(4).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((4,), (0,))
+
+    def test_row_vector_mesh_keeps_axis_position(self) -> None:
+        """MeshShape(1, n) records the split on axis 1, as ttnn's cluster_axis=1 expects."""
+        msi = self._shard(1, 4).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((1, 4), (None, 0))
+        assert msi.num_devices == 4
+
+    def test_column_vector_mesh_keeps_axis_position(self) -> None:
+        msi = self._shard(4, 1).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((4, 1), (0, None))
+
+    def test_multi_axis_mesh_flattens_to_preserve_shard_count(self) -> None:
+        """A 2x4 mesh holds 8 shards, which no single axis of 2 or 4 can express."""
+        msi = self._shard(2, 4).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((8,), (0,))
+        assert msi.num_devices == 8
+
+    def test_degenerate_mesh_mirrors_shape(self) -> None:
+        """An all-size-1 mesh is one device; the shape still mirrors what was opened."""
+        assert self._shard(1).mesh_shard_info.mesh_shape == (1,)
+        assert self._shard(1, 1).mesh_shard_info.mesh_shape == (1, 1)
+
+    def test_cluster_axis_matches_ttnn_on_row_vector_mesh(self) -> None:
+        """On MeshShape(1, n), axis 1 is the n-device axis and axis 0 is a no-op."""
+        t = self._shard(1, 4)
+        all_axes = ttnn.all_reduce(t, cluster_axis=None).to_torch()
+        assert torch.equal(ttnn.all_reduce(t, cluster_axis=1).to_torch(), all_axes)
+        # Axis 0 spans a single device, so there is nothing to combine across it.
+        assert torch.equal(ttnn.all_reduce(t, cluster_axis=0).to_torch(), t.to_torch())
+        # all_gather agrees on which axis carries the shards.
+        assert ttnn.all_gather(t, dim=0, cluster_axis=1).shape == (16, 2)
+
+    def test_flattened_mesh_rejects_second_axis(self) -> None:
+        """A flattened multi-axis mesh exposes one axis, so axis 1 is out of range."""
+        t = self._shard(2, 4)
+        with pytest.raises(ValueError, match="cluster_axis 1 out of range"):
+            ttnn.all_reduce(t, cluster_axis=1)
+
+
+class TestShardTensorNdMesh:
+    """ShardTensorNdMesh records N-axis MeshShardInfo via from_torch."""
+
+    def test_3d_shard_records_mesh_shard_info(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        t = ttnn.from_torch(
+            torch.zeros(4, 4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.mesh_shape == (2, 2, 2)
+        assert t.mesh_shard_info.dims == (0, 1, 2)
+        assert t.mesh_shard_info.num_devices == 8
+
+    def test_normalizes_negative_dims(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        t = ttnn.from_torch(
+            torch.zeros(4, 4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(-3, None, -1)
+            ),
+        )
+        assert t.mesh_shard_info.dims == (0, None, 2)
+
+    def test_mismatched_lengths_raise(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        with pytest.raises(ValueError, match="same number of axes"):
+            ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 2, 2), dims=(0, 1))
+
+    def test_mesh_shard_info_rejects_mismatched_lengths(self) -> None:
+        """MeshShardInfo keeps mesh_shape and dims parallel however it is built."""
+        with pytest.raises(ValueError, match="same number of axes"):
+            ttnn.MeshShardInfo(mesh_shape=(2, 2), dims=(0,))
+
+
+class TestAllReduceMathOp:
+    """all_reduce refuses a reduction it does not implement.
+
+    Only the sum is implemented, and ``math_op`` would otherwise be absorbed by
+    the ``**kwargs`` accepted for API compatibility, so a caller asking for max
+    would silently receive a sum.  Wrong values are worse than an unsupported-op
+    error, so the operator is checked.
+    """
+
+    def _sharded(self) -> Any:
+        """Two shards holding 1s and 5s: a sum gives 6, a max would give 5."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2))
+        return ttnn.from_torch(
+            torch.tensor([[1.0, 1.0], [5.0, 5.0]]),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+
+    def test_default_sums(self) -> None:
+        assert ttnn.all_reduce(self._sharded()).to_torch()[0].tolist() == [6.0, 6.0]
+
+    @pytest.mark.parametrize("math_op", ["Max", "Min", "Mul"])
+    def test_non_sum_reduction_raises(self, math_op: str) -> None:
+        with pytest.raises(NotImplementedError, match="only the sum reduction"):
+            ttnn.all_reduce(self._sharded(), math_op=math_op)
+
+    def test_sum_like_math_op_is_accepted(self) -> None:
+        """An explicit sum request still works, however the caller spells it."""
+
+        class _ReduceType:
+            name = "Sum"
+
+        assert ttnn.all_reduce(self._sharded(), math_op="Sum").to_torch()[
+            0
+        ].tolist() == [6.0, 6.0]
+        assert ttnn.all_reduce(self._sharded(), math_op=_ReduceType()).to_torch()[
+            0
+        ].tolist() == [6.0, 6.0]
+
+
+class TestMapperMeshShapeValidation:
+    """A mapper's mesh_shape must describe the mesh it is given.
+
+    Shard counts, ownership boundaries and collective result shapes are all read
+    off ``mesh_shape``, so a mesh_shape describing more (or fewer) devices than
+    the mesh holds would have the tensor validated and gathered against a mesh
+    that does not exist.  Only the device total is constrained, not the layout.
+    """
+
+    def test_nd_mapper_rejects_wrong_device_total(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))  # 4 devices
+        with pytest.raises(ValueError, match="describes 8 devices but the mesh has 4"):
+            ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 4), dims=(0, 1))
+
+    def test_2d_mapper_rejects_wrong_device_total(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        with pytest.raises(ValueError, match="describes 64 devices but the mesh has 4"):
+            ttnn.ShardTensor2dMesh(mesh, mesh_shape=(8, 8), dims=(0, 1))
+
+    def test_2d_mapper_rejects_mismatched_lengths(self) -> None:
+        """The axis-count check ShardTensorNdMesh has, on the 2D mapper too."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        with pytest.raises(ValueError, match="same number of axes"):
+            ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0,))  # type: ignore[arg-type]
+
+    def test_same_total_different_layout_is_allowed(self) -> None:
+        """Describing a MeshShape(4) mesh as (1, 4) is a relabelling, not an error."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(4))
+        mapper = ttnn.ShardTensor2dMesh(mesh, mesh_shape=(1, 4), dims=(None, 0))
+        assert mapper.mesh_shape == (1, 4)
+
+
+class TestMapperDimRangeValidation:
+    """An out-of-range tensor dim is rejected instead of wrapping modulo ndim.
+
+    Wrapping turns a typo into a silently different sharding: on a 2-D tensor
+    ``dim=2`` would become dim 0, and ``dims=(0, -4)`` would become ``(0, 0)`` --
+    two mesh axes on one dimension, which surfaces later as an "unsupported
+    hierarchical sharding" error that blames the sharding rather than the dim.
+    """
+
+    def _from_torch(self, mapper: Any) -> Any:
+        return ttnn.from_torch(
+            torch.zeros(256, 256), layout=ttnn.ROW_MAJOR_LAYOUT, mesh_mapper=mapper
+        )
+
+    @pytest.mark.parametrize("dim", [2, 5, -3])
+    def test_shard_tensor_to_mesh_rejects_out_of_range(self, dim: int) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(4))
+        with pytest.raises(ValueError, match="out of range for a 2-dimensional tensor"):
+            self._from_torch(ttnn.ShardTensorToMesh(mesh, dim=dim))
+
+    @pytest.mark.parametrize("dims", [(0, 7), (0, -4)])
+    def test_nd_mapper_rejects_out_of_range(self, dims: tuple[int, int]) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        with pytest.raises(ValueError, match="out of range for a 2-dimensional tensor"):
+            self._from_torch(ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 2), dims=dims))
+
+    def test_in_range_negative_dims_still_normalize(self) -> None:
+        """Only out-of-range values are rejected; torch-style negatives still work."""
+        mesh4 = ttnn.open_mesh_device(ttnn.MeshShape(4))
+        assert self._from_torch(
+            ttnn.ShardTensorToMesh(mesh4, dim=-2)
+        ).mesh_shard_info.dims == (0,)
+        mesh2x2 = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        assert self._from_torch(
+            ttnn.ShardTensorNdMesh(mesh2x2, mesh_shape=(2, 2), dims=(0, -1))
+        ).mesh_shard_info.dims == (0, 1)
+
+
+class TestAllReduceNd:
+    """all_reduce across an N-D mesh reduces along every active axis."""
+
+    def _tensor(self) -> Any:
+        # Shape (4, 4, 4); shard each axis along a distinct tensor dim.
+        data = torch.zeros(4, 4, 4)
+        # Fill so each (dim0-half, dim1-half, dim2-half) octant is distinct.
+        idx = 0
+        for a in range(2):
+            for b in range(2):
+                for c in range(2):
+                    idx += 1
+                    data[a * 2 : a * 2 + 2, b * 2 : b * 2 + 2, c * 2 : c * 2 + 2] = idx
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        return ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+
+    def test_reduce_all_axes_sums_all_octants(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=None)
+        r = result.to_torch()
+        # Sum of octant values 1..8 = 36; every position holds the same total.
+        assert torch.allclose(r, torch.full((4, 4, 4), 36.0))
+
+    def test_reduce_single_axis(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=2)
+        r = result.to_torch()
+        # cluster_axis=2 sums the two dim-2 halves only.
+        # Octant (a=0,b=0): values 1 (c=0) and 2 (c=1) -> 3 in both halves.
+        assert torch.allclose(r[0:2, 0:2, 0:2], torch.full((2, 2, 2), 3.0))
+        assert torch.allclose(r[0:2, 0:2, 2:4], torch.full((2, 2, 2), 3.0))
+
+
+class TestAllGatherNd:
+    """all_gather across an N-D mesh round-trips to the full tensor."""
+
+    def test_gather_all_axes_along_shard_dims(self) -> None:
+        data = torch.arange(64, dtype=torch.float32).reshape(4, 4, 4)
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorNdMesh(
+                mesh, mesh_shape=(2, 2, 2), dims=(0, 1, 2)
+            ),
+        )
+        # Gathering a single axis along its own shard dim duplicates that dim.
+        result = ttnn.all_gather(t, dim=0, cluster_axis=0)
+        r = result.to_torch()
+        assert r.shape == torch.Size([8, 4, 4])
+        assert torch.allclose(r[0:4], data)
+        assert torch.allclose(r[4:8], data)
+
+    def test_out_of_range_gather_dim_raises(self) -> None:
+        """A gather dim the tensor does not have is rejected, not wrapped."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2))
+        t = ttnn.from_torch(
+            torch.zeros(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        with pytest.raises(ValueError, match="all_gather dim 3 is out of range"):
+            ttnn.all_gather(t, dim=3)
+        # An in-range negative dim still resolves normally.
+        assert ttnn.all_gather(t, dim=-2).to_torch().shape == torch.Size([8, 4])
+
+
+class TestAllGatherPerDeviceView:
+    """Per-device views after gathering one axis of a two-axis mesh.
+
+    A gather leaves ``mesh_shard_info`` untouched and represents "every device now
+    holds the gathered result" by stacking identical copies along the gathered
+    axis's shard dim.  The consequence is worth pinning: the *other* axis keeps
+    partitioning its own dimension, so each device ends up with its own block of
+    that axis gathered across the axis that was collected -- not the whole tensor.
+    """
+
+    def _quadrants(self) -> tuple[Any, torch.Tensor]:
+        """4x4 over a 2x2 mesh; device (a, b) owns the quadrant holding a*2+b+1."""
+        data = torch.zeros(4, 4)
+        for a in range(2):
+            for b in range(2):
+                data[a * 2 : a * 2 + 2, b * 2 : b * 2 + 2] = a * 2 + b + 1
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0, 1)),
+        )
+        return t, data
+
+    def test_gather_column_axis_keeps_row_blocking(self) -> None:
+        t, _ = self._quadrants()
+        result = ttnn.all_gather(t, dim=1, cluster_axis=1)
+        out = result.to_torch()
+        # Axis 1 held 2 shards, so its shard dim (dim 1) carries 2 copies.
+        assert out.shape == torch.Size([4, 8])
+        # Metadata is unchanged, and still divides evenly over both axes.
+        assert result.mesh_shard_info.mesh_shape == (2, 2)
+        assert result.mesh_shard_info.dims == (0, 1)
+
+        rows, cols = out.shape[0] // 2, out.shape[1] // 2
+        for i in range(2):
+            for j in range(2):
+                view = out[i * rows : (i + 1) * rows, j * cols : (j + 1) * cols]
+                # Device (i, j) sees row block i gathered over the column axis:
+                # the two quadrant values of that row block, and nothing else.
+                assert sorted(set(view.flatten().tolist())) == [
+                    i * 2 + 1.0,
+                    i * 2 + 2.0,
+                ]
+
+    def test_gather_row_axis_keeps_column_blocking(self) -> None:
+        """The mirror case: collecting axis 0 leaves axis 1's blocking intact."""
+        t, _ = self._quadrants()
+        out = ttnn.all_gather(t, dim=0, cluster_axis=0).to_torch()
+        assert out.shape == torch.Size([8, 4])
+        rows, cols = out.shape[0] // 2, out.shape[1] // 2
+        for i in range(2):
+            for j in range(2):
+                view = out[i * rows : (i + 1) * rows, j * cols : (j + 1) * cols]
+                # Device (i, j) sees column block j gathered over the row axis.
+                assert sorted(set(view.flatten().tolist())) == [j + 1.0, j + 3.0]
+
+
+class TestAllReduce2dMesh:
+    """all_reduce over a 2-axis mesh (the device layout a 4D launch grid maps to)."""
+
+    def _tensor(self) -> Any:
+        # Shape (4, 4) split into four quadrants over a 2x2 mesh; quadrant (a, b)
+        # holds the value a*2 + b + 1 (i.e. 1, 2, 3, 4).
+        data = torch.zeros(4, 4)
+        for a in range(2):
+            for b in range(2):
+                data[a * 2 : a * 2 + 2, b * 2 : b * 2 + 2] = a * 2 + b + 1
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        return ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0, 1)),
+        )
+
+    def test_reduce_all_axes_sums_all_quadrants(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=None)
+        r = result.to_torch()
+        # Both axes reduced: every element holds 1 + 2 + 3 + 4 = 10.
+        assert torch.allclose(r, torch.full((4, 4), 10.0))
+
+    def test_reduce_single_axis(self) -> None:
+        result = ttnn.all_reduce(self._tensor(), cluster_axis=1)
+        r = result.to_torch()
+        # cluster_axis=1 reduces along dim 1 (column halves) only:
+        # row half 0 -> 1 + 2 = 3; row half 1 -> 3 + 4 = 7, broadcast across columns.
+        assert torch.allclose(r[0:2], torch.full((2, 4), 3.0))
+        assert torch.allclose(r[2:4], torch.full((2, 4), 7.0))
+
+    def test_negative_cluster_axis_is_normalized(self) -> None:
+        # -1 on a 2-axis mesh is axis 1; must match the explicit axis-1 result.
+        neg = ttnn.all_reduce(self._tensor(), cluster_axis=-1).to_torch()
+        pos = ttnn.all_reduce(self._tensor(), cluster_axis=1).to_torch()
+        assert torch.allclose(neg, pos)
+
+    def test_out_of_range_cluster_axis_raises(self) -> None:
+        with pytest.raises(ValueError, match="cluster_axis 2 out of range"):
+            ttnn.all_reduce(self._tensor(), cluster_axis=2)
+        with pytest.raises(ValueError, match="cluster_axis -3 out of range"):
+            ttnn.all_gather(self._tensor(), dim=0, cluster_axis=-3)
