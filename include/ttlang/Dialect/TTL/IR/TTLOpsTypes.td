@@ -99,6 +99,8 @@ def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 def TTL_AccumulationInitialModeAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationInitialMode,
                "accumulation_initial_mode">;
+def TTL_DFBTileStoreKindAttr
+    : EnumAttr<TTL_Dialect, TTL_DFBTileStoreKind, "dfb_tile_store_kind">;
 def TTL_InputClampingAttr
     : EnumAttr<TTL_Dialect, TTL_InputClamping, "input_clamping">;
 
