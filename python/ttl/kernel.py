@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
 
 from .condition import DispatchCondition
+from .dfb_allocation_group import DFBAllocationGroup
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
 
@@ -243,6 +244,7 @@ def _operation_identity(function: Callable) -> str:
 
     encoded_captures = []
     condition_ordinals = {}
+    allocation_group_ordinals = {}
     reset_ordinals = {}
     kernel_capture_names = {
         id(value): name
@@ -258,6 +260,12 @@ def _operation_identity(function: Callable) -> str:
             encoded = (f"dispatch-condition:{ordinal}:{value.scalar_type.name}").encode(
                 "ascii"
             )
+        elif isinstance(value, DFBAllocationGroup):
+            group_identity = id(value)
+            ordinal = allocation_group_ordinals.setdefault(
+                group_identity, len(allocation_group_ordinals)
+            )
+            encoded = f"dfb-allocation-group:{ordinal}".encode("ascii")
         elif isinstance(value, DFBReset):
             reset_identity = id(value)
             ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))

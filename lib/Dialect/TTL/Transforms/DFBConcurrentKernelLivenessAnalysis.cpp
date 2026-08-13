@@ -593,6 +593,7 @@ static LogicalResult collectLogicalDFBs(
       logicalDFB.logicalId = logicalId;
       logicalDFB.type = declaration.getResult().getType();
       logicalDFB.tensorBacking = declaration.getTensorBackingAttr();
+      logicalDFB.allocationGroup = assignment.allocationGroup;
       logicalDFB.compilerCreated =
           declaration->hasAttr(kCompilerAllocatedAttrName);
       logicalDFBs.push_back(std::move(logicalDFB));
@@ -1501,24 +1502,26 @@ static void appendTransactionRun(DFBPerNodeLifetime &lifetime,
   lifetime.transactionRuns.push_back({executionCount, tilesPerExecution});
 }
 
-/// Proves that every acquire in a finite transaction sequence names one
-/// contiguous interval. A reset may canonicalize a safe nonzero final offset,
-/// but it cannot repair an earlier acquire that crossed the allocation end.
-static bool
-proveNonStraddlingTransactionRuns(ArrayRef<DFBTransactionRun> transactionRuns,
-                                  std::uint64_t physicalTileCount) {
-  std::uint64_t pointerOffset = 0;
+} // namespace
+
+FailureOr<std::uint64_t>
+advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
+                            std::uint64_t physicalTileCount,
+                            std::uint64_t pointerOffset) {
+  if (physicalTileCount == 0 || pointerOffset >= physicalTileCount) {
+    return failure();
+  }
   for (const DFBTransactionRun &run : transactionRuns) {
     if (run.executionCount == 0 || run.tilesPerExecution <= 0 ||
         static_cast<std::uint64_t>(run.tilesPerExecution) > physicalTileCount) {
-      return false;
+      return failure();
     }
     std::uint64_t tilesPerExecution = run.tilesPerExecution;
     std::uint64_t remainingTiles = physicalTileCount - pointerOffset;
     std::uint64_t executionsBeforeBoundary = remainingTiles / tilesPerExecution;
     if (remainingTiles % tilesPerExecution != 0) {
       if (run.executionCount > executionsBeforeBoundary) {
-        return false;
+        return failure();
       }
       pointerOffset += run.executionCount * tilesPerExecution;
       continue;
@@ -1536,7 +1539,7 @@ proveNonStraddlingTransactionRuns(ArrayRef<DFBTransactionRun> transactionRuns,
     std::uint64_t executionsPerCycle = physicalTileCount / tilesPerExecution;
     if (physicalTileCount % tilesPerExecution != 0) {
       if (remainingExecutions > executionsPerCycle) {
-        return false;
+        return failure();
       }
       pointerOffset = remainingExecutions * tilesPerExecution;
       continue;
@@ -1544,8 +1547,10 @@ proveNonStraddlingTransactionRuns(ArrayRef<DFBTransactionRun> transactionRuns,
     pointerOffset =
         (remainingExecutions % executionsPerCycle) * tilesPerExecution;
   }
-  return true;
+  return pointerOffset;
 }
+
+namespace {
 
 /// Derives exact-domain or possible-domain per-node lifetime facts. Possible
 /// facts control reuse only after proving conditional boundedness.
@@ -1826,9 +1831,9 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
   }
   if (hasCanonicalResetTerminator &&
-      !proveNonStraddlingTransactionRuns(
+      failed(advanceDFBTransactionCursor(
           lifetime.transactionRuns,
-          static_cast<std::uint64_t>(physicalTileCount))) {
+          static_cast<std::uint64_t>(physicalTileCount)))) {
     return {DFBQuiescenceFailureReason::MismatchedTransaction,
             reserves.front()->access->operation};
   }

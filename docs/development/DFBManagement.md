@@ -21,6 +21,12 @@ share one physical index without merging their producer/consumer protocols.
 Every user declaration carries `dfb_id`. Compiler-created declarations may
 omit it until module finalization assigns a unique identity.
 
+User declarations may also carry `allocation_group`. Equal typed group
+identities require those logical DFBs to use one physical index. The identity
+does not merge logical protocols, add synchronization, or reset DFB state. The
+allocator validates the group contract before contracting its members into one
+allocation vertex.
+
 ## Tensor-backed storage
 
 `ttl.make_tensor_backed_dfb` binds a DFB's complete capacity to a byte range
@@ -65,6 +71,11 @@ launch-node storage segments in `ttl.dfb_allocations`. Tensor-backed segments
 do not contribute static DFB L1 bytes because the tensor allocator already
 accounts for their storage. Scratch and tensor-backed segments may use the
 same physical DFB index only on disjoint launch nodes.
+
+Allocation groups do not weaken tensor storage identity. Tensor-backed group
+members must have the same DFB capacity descriptor, and their backing ranges
+must satisfy the normal per-node storage compatibility rules. The scratch-only
+capacity-envelope rule described below does not apply to tensor-backed members.
 
 The simulator exposes the same constructor signature but rejects it because
 simulated tensor-backed storage is not implemented.
@@ -1124,12 +1135,18 @@ index to logical DFBs whose lifetimes cannot overlap. The default analysis
 considers all kernel functions concurrently, including user-declared DFBs
 shared across data-movement and compute kernels.
 
-Two DFBs may share an index only if they have identical `CircularBufferType`
-(shape, element type, block count), equal transaction tile counts, and a
-transaction count that divides the physical capacity. These conditions ensure
-one physical allocation has one page size, capacity, data format, and legal
-ring-pointer progression. `CircularBufferType` is an MLIR-uniqued type, so
-exact type equality is a pointer comparison.
+Ordinary reuse requires identical `CircularBufferType` values (shape, element
+type, and block count). An explicit allocation group may combine scratch DFBs
+with different block shapes or block counts when their element types and page
+formats are identical. The physical descriptor then uses the largest total
+capacity. Both mechanisms require complete quiescent lifecycles. Ordinary reuse
+also requires matching transaction runs unless a synchronized reset establishes
+canonical state. Allocation groups instead advance one cumulative symbolic
+cursor through each ordered member's exact transaction runs and reject any
+acquire that would cross the shared physical envelope. These conditions retain
+one page format, sufficient storage, and legal ring-pointer progression.
+`CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
+is a pointer comparison.
 
 ### Logical identity
 
@@ -1151,6 +1168,13 @@ rewriting `cb_index`. Repeated finalization therefore cannot merge logical
 DFBs that already share a physical slot. Allocation visits DFBs in immutable
 declaration order. Changing logical ID values therefore does not affect
 acceptance.
+
+The frontend creates allocation groups with
+`ttl.make_dfb_allocation_group()`. Composition, operation splitting, and
+logical-kernel replication preserve the declaration identity as a module-local
+`#ttl.dfb_allocation_group<ordinal>` attribute. The ordinal has no runtime
+meaning. Every declaration of one logical DFB must carry the same group or no
+group; partial propagation is rejected.
 
 ### Concurrent-kernel lifetime analysis
 
@@ -1448,9 +1472,17 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
 `DFBPhysicalAllocationPlanner` consumes those immutable facts and constructs a
 typed conflict model before selecting any assignment. Every edge retains the
 logical DFB pair, optional launched node, source operations, and one of the
-following reasons: descriptor mismatch, unknown launch-node domain, unproven
-quiescence, transaction mismatch, pointer-owner mismatch, or concurrent
-lifetime.
+following reasons: descriptor mismatch, storage mismatch, unknown launch-node
+domain, unproven quiescence, transaction mismatch, pointer-owner mismatch,
+static-configuration mismatch, or concurrent lifetime.
+
+Before coloring, each allocation group is checked pairwise with the normal
+conflict construction except for exact descriptor equality. The replacement
+compatibility check requires identical element types, scratch storage for an
+unequal capacity envelope, compatible static compute configuration, and no
+lifecycle conflict. A successful group is contracted to one graph vertex. A
+failed group request is a compilation error rather than permission to allocate
+its members separately.
 
 #### Allocation diagnostics
 
@@ -1472,6 +1504,11 @@ frontiers. Frontier entries are access-occurrence indices that refer to the
 numbered access records and their source locations. Each conflict records both
 logical IDs, the typed reason, an applicable launch node, and source
 operations.
+
+For each validated allocation group, the report records its member logical
+IDs, maximum byte capacity, `handoff=proven`, and every compatible descriptor
+conflict replaced by the physical envelope. Logical DFB and final-assignment
+rows also retain the typed group identity.
 
 The report evaluates each base launch node with every unknown-domain access
 treated as possible. Exact-zero execution excludes an access. These rows use
@@ -1572,6 +1609,13 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       add pointer-owner conflict unless read and write owners match
       add concurrent-lifetime conflict unless A precedes B or B precedes A
 
+  for each typed allocation group:
+    validate every member pair with descriptor equality disabled
+    reject incompatible element types or tensor-backed capacity envelopes
+    reject any storage, static-configuration, protocol, owner, domain, or
+      lifetime conflict
+    compute the largest scratch byte capacity required by a member
+
   if reuseUserDFBs:
     candidates = all logical DFBs in immutable declaration order
   else:
@@ -1581,6 +1625,7 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     candidates = compilerDFBs
 
   conflicts = typed conflict graph induced by candidates
+  contract each validated allocation group to one allocation vertex
   assignment = deterministicFirstFit(conflicts)
   pairwiseConflictLowerBound = findCliqueLowerBound(conflicts)
   if assignment exceeds the physical-index limit:
@@ -1656,7 +1701,9 @@ earliest-event antichain and completes no later than the terminal pop.
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
 
-1. A and B have the same page shape, data format, and block count.
+1. A and B either have identical descriptors or belong to one validated
+   scratch allocation group with the same element type and a physical capacity
+   at least as large as both logical capacities.
 2. They use the same transaction tile count, and that count divides their
    physical capacity. Their ring pointers therefore advance by equal increments
    and wrap only at the allocation boundary.
@@ -1700,7 +1747,9 @@ mutually conflicting lifetimes are rejected without target metadata.
 `test/python/test_user_dfb_reuse.py` recursively composes copy atoms into an
 operation with 33 logical DFBs. Reuse reduces the physical allocation for all
 targets. A focused Blackhole case disables reuse and executes all 33 distinct
-indices.
+indices. The same file checks a typed allocation group whose two differently
+sized scratch DFBs execute in different logical kernels and share the largest
+capacity envelope for BF16 and FP32 with DRAM and L1 tensors.
 
 ### Module attribute and runtime integration
 
@@ -1728,9 +1777,12 @@ initialization.
 ```text
 buildRuntimeDescriptors(assignments):
   for assignment in assignments:
-    reject assignment.physicalIndex if another assignment at that index
-        has a different exact type
-    allocationByIndex.insert(assignment.physicalIndex, assignment.type)
+    if assignment.physicalIndex is new:
+      allocationByIndex.insert(assignment.physicalIndex, assignment.type)
+    else if assignment.type differs from the selected type:
+      require both assignments belong to one allocation group
+      require identical element types and scratch storage
+      retain the type with the largest byte capacity
 
   for (index, type) in allocationByIndex sorted by index:
     emit {dfb_index = index,
@@ -1740,10 +1792,11 @@ buildRuntimeDescriptors(assignments):
           block_count = type.blockCount}
 ```
 
-Every finalized declaration contributes to the table. Type equality makes
-each deduplicated descriptor valid for every declaration at that physical
-index, and deriving the page size from the same element type used by lowering
-keeps compiler and runtime allocation sizes equal.
+Every finalized declaration contributes to the table. Exact-type reuse keeps
+one unchanged descriptor. A validated allocation group retains one element
+type and selects a descriptor with the maximum required scratch bytes.
+Deriving the page size from the same element type used by lowering keeps
+compiler and runtime page formats equal.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
@@ -1756,10 +1809,11 @@ the same physical configuration as direct execution.
 Setting `reuse-user-dfbs=false` retains physical sharing already expressed by
 equal provisional user indices but does not introduce new sharing between user
 DFBs. It compacts the distinct provisional values, then assigns only
-compiler-created DFBs. Both allocation modes use the same concurrent lifetime
-proof and conflict relation for every DFB whose index they select. Both modes
-emit the complete `ttl.dfb_allocations` table and assign identities to
-compiler-created declarations.
+compiler-created DFBs. An allocation-group declaration is rejected in this
+mode because its required sharing cannot be honored. Both modes use the same
+concurrent lifetime proof and conflict relation for every DFB whose index they
+select. Both modes emit the complete `ttl.dfb_allocations` table and assign
+identities to compiler-created declarations.
 
 ```text
 allocateWithoutUserReuse(module, lifetimes):
@@ -1850,13 +1904,13 @@ with releases before finalization.
   pointer state between NOC0, NOC1, Pack, and Unpack. Reuse across different
   hardware pointer owners requires an explicit state transfer or reset.
 
-- **Storage compatibility.** Exact `CircularBufferType` equality forbids reuse
-  across different block shapes, tile dimensions, element types, or block
-  counts. A broader compatibility relation would need one physical descriptor
-  that satisfies every logical DFB assigned to it, including page size,
-  capacity, and data format.
-  A max-capacity descriptor could support some unequal logical types, but it
-  must also prove compatible transaction counts and address calculations.
+- **Storage compatibility.** Automatic reuse still requires exact
+  `CircularBufferType` equality. Typed allocation groups support a
+  scratch-only capacity envelope across different block shapes and block counts
+  with one exact page format. Different element types, tile formats,
+  tensor-backed capacities, or statically incompatible compute configurations
+  remain invalid. General page-format reconfiguration would require a typed
+  synchronized epoch transition and runtime descriptor updates.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One
