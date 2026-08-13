@@ -126,6 +126,19 @@ static bool insideKernelFunction(mlir::Operation *op) {
   return success();
 }
 
+::mlir::LogicalResult PackWaitedTileOp::verify() {
+  if (!getOutOfOrder()) {
+    return emitOpError("requires out_of_order packing");
+  }
+  auto dfbType = getOutCb().getType();
+  uint64_t capacityTiles = static_cast<uint64_t>(dfbType.getNumElements());
+  if (getAcquiredTiles() != capacityTiles) {
+    return emitOpError() << "acquired_tiles must equal DFB capacity "
+                         << capacityTiles << ", got " << getAcquiredTiles();
+  }
+  return success();
+}
+
 static std::string verifyTilizeUntilizeCBs(CBType tilizedCB, CBType scalarCB) {
   if (mlir::isa<ttcore::TileType>(scalarCB.getElementType())) {
     return "Input to TilizeOp or Output to UntilizeOp must have scalar "
