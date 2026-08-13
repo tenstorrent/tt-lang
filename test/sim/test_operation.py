@@ -706,13 +706,15 @@ class TestPerNodeBodyExecution:
         assert sorted(setup_nodes) == [0, 1, 2, 3]
         assert sorted(kernel_nodes) == [0, 2]
 
-    def test_a_unified_statement_with_no_thread_runs_on_all_three(self) -> None:
+    def test_a_unified_statement_with_no_thread_runs_on_every_selected_kernel(
+        self,
+    ) -> None:
         """In a unified body, only setup and pinned statements run once per node.
 
         Thread assignment pins a statement through the TT-Lang call it makes, so a
-        statement that makes none belongs to no thread and is replicated onto all
-        three kernels -- where a side effect happens three times per node, while
-        the hoisted construction happens once.  Documented in
+        statement that makes none belongs to no thread and is replicated onto every
+        kernel the operation selects -- where a side effect happens once per such
+        kernel per node, while the hoisted construction happens once.  Documented in
         docs/sphinx/simulator.md, and worth pinning because it is the difference
         between a unified body and the same body written as explicit kernels.
         """
@@ -731,10 +733,11 @@ class TestPerNodeBodyExecution:
 
         test_operation(make_zeros_tensor(32, 32), make_zeros_tensor(32, 32))
 
-        # Two nodes: the statement that pins no thread runs on each of the three
-        # kernels, and each node's three kernels see the one buffer its lifted
+        # The body only moves data, so it selects one data movement kernel and no
+        # compute kernel. Two nodes: the statement that pins no thread runs on that
+        # one kernel, and each node's kernels see the one buffer its lifted
         # construction built.
-        assert len(buffers_seen) == 6
+        assert len(buffers_seen) == 2
         assert len(set(buffers_seen)) == 2
 
 

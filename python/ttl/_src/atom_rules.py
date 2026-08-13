@@ -41,7 +41,10 @@ DFB_FACTORY_NAMES: Set[str] = {
     "make_tensor_backed_dfb",
 }
 PIPE_FACTORY_NAMES: Set[str] = {"Pipe", "PipeNet"}
-SETUP_FACTORY_NAMES: Set[str] = DFB_FACTORY_NAMES | PIPE_FACTORY_NAMES
+KERNEL_FACTORY_NAMES: Set[str] = {"Kernel"}
+SETUP_FACTORY_NAMES: Set[str] = (
+    DFB_FACTORY_NAMES | PIPE_FACTORY_NAMES | KERNEL_FACTORY_NAMES
+)
 
 # Decorators that mark a hand-written kernel of a multi-kernel operation.
 KERNEL_DECORATORS: Set[str] = {"compute", "datamovement"}
@@ -250,9 +253,9 @@ def is_pipe_list_expr(node: ast.expr) -> bool:
 
 
 def setup_assign_target(stmt: ast.stmt) -> Optional[str]:
-    """If ``stmt`` is a DFB/Pipe/PipeNet construction assign, return its name.
+    """If ``stmt`` constructs a static operation resource, return its name.
 
-    Recognizes ``name = <dfb/pipe-factory>(...)`` and ``name = [<pipes>]``
+    Recognizes ``name = <dfb/pipe/kernel-factory>(...)`` and ``name = [<pipes>]``
     (a pipe list feeding a later PipeNet). A single ``Name`` target is required,
     because the construction is lifted out of the body and every thread that needs
     the object refers to it by that name."""

@@ -9,10 +9,11 @@ leaving thread assignment to the compiler. The simulator, however, executes an
 operation as three cooperating kernels (one compute + two data movement).
 
 Rather than re-derive thread assignment, this module reuses the compiler
-frontend's splitter, ``ttl._src.atom_split.split_function_body``, which returns
-three statement bodies -- ``trisc`` (compute), ``ncrisc`` (default data
-movement), and ``brisc`` (pipe senders). Those map onto the simulator's
-compute / dm0 / dm1 kernels. The unified body is rewritten into an equivalent
+frontend's splitter, ``ttl._src.atom_split.split_function_body``, which returns a
+body per logical kernel. The three the simulator can run -- ``KernelKind.COMPUTE``,
+``KernelKind.DATA_MOVEMENT``, and the implicit pipe-source data-movement kernel --
+map onto the simulator's compute / dm0 / dm1 kernels. The unified body is rewritten
+into an equivalent
 multi-kernel function (shared dataflow-buffer construction hoisted into the
 outer scope, three nested ``@ttl.compute`` / ``@ttl.datamovement`` kernels
 capturing those buffers), which the existing multi-kernel machinery then runs
@@ -37,6 +38,7 @@ are worded and located for the simulator's users.
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import functools
 import importlib.util
@@ -98,9 +100,57 @@ def _load_frontend_module(filename: str) -> types.ModuleType:
     )
 
 
+@contextlib.contextmanager
+def _frontend_ttl_package():
+    """Make ``ttl.kernel`` importable for the duration of a frontend load.
+
+    The splitter imports the compiler's logical-kernel selectors as
+    ``ttl.kernel``, but the simulator has replaced ``sys.modules["ttl"]`` with a
+    namespace object carrying no submodules. Installing a real package rooted at
+    the frontend source directory lets that one import resolve against the
+    compiler's own definitions, so both frontends compare identical selectors.
+
+    ``ttl.kernel`` reads the logical kernel names from the TableGen-generated
+    dialect bindings, which a simulator-only install does not build. They are
+    supplied here from the same ``.td`` spelling so the names stay in agreement.
+    """
+    frontend_root = Path(__file__).resolve().parent.parent / "ttl"
+    if not (frontend_root / "kernel.py").is_file():
+        yield  # bundled wheel layout: the splitter ships without the package
+        return
+
+    class _LogicalKernelKind:
+        Compute = "compute"
+        DataMovement = "data_movement"
+
+    package = types.ModuleType("ttl")
+    package.__path__ = [str(frontend_root)]
+    dialects = types.ModuleType("ttl.dialects")
+    dialects.__path__ = [str(frontend_root / "dialects")]
+    enum_gen = types.ModuleType("ttl.dialects._ttl_enum_gen")
+    enum_gen.LogicalKernelKind = _LogicalKernelKind
+
+    installed = {
+        "ttl": package,
+        "ttl.dialects": dialects,
+        "ttl.dialects._ttl_enum_gen": enum_gen,
+    }
+    saved = {name: sys.modules.get(name) for name in installed}
+    sys.modules.update(installed)
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
 def _load_atom_split() -> types.ModuleType:
     """The compiler frontend's thread-assignment splitter."""
-    return _load_frontend_module("atom_split.py")
+    with _frontend_ttl_package():
+        return _load_frontend_module("atom_split.py")
 
 
 def _rules() -> types.ModuleType:
@@ -278,13 +328,14 @@ def _api_ops_by_thread(api: Any) -> tuple[Dict[int, str], Dict[int, str]]:
     reaching one under another name changes nothing.
     """
     atom_split = _load_atom_split()
+    control_placement = atom_split._Placement.CONTROL
     pinning: Dict[int, str] = {}
     control: Dict[int, str] = {}
-    for name, thread in atom_split._TTL_OPS.items():
+    for name, placement in atom_split._TTL_OPS.items():
         op = getattr(api, name, None)
         if op is None:
             continue
-        (control if thread == "control" else pinning)[id(op)] = name
+        (control if placement is control_placement else pinning)[id(op)] = name
     for namespace in atom_split._TTL_NAMESPACES:
         holder = getattr(api, namespace, None)
         if holder is None:
@@ -651,15 +702,34 @@ def build_multikernel_function(
         local_dfb_names=local_dfbs,
     )
 
+    kernel_kind = atom_split.KernelKind
+    compute = kernel_kind.COMPUTE
+    data_movement = kernel_kind.DATA_MOVEMENT
+    pipe_source = atom_split._PIPE_SOURCE_KERNEL
+
+    # The simulator runs the fixed three-kernel core, so a body that selects a
+    # user-declared logical kernel has no thread to run it on.
+    unsupported = [
+        k for k in split.kernels if k not in (compute, data_movement, pipe_source)
+    ]
+    if unsupported:
+        raise ValueError(
+            "the simulator runs only the implicit compute and data movement "
+            "kernels; it cannot run the user-declared logical kernels "
+            f"{sorted(str(k) for k in unsupported)}"
+        )
+
     kernels = [
         _make_kernel_def(
-            "_ttl_compute", _COMPUTE_BINDING, _strip_setup(split.body_for("trisc"))
+            "_ttl_compute", _COMPUTE_BINDING, _strip_setup(split.body_for(compute))
         ),
         _make_kernel_def(
-            "_ttl_dm0", _DATAMOVEMENT_BINDING, _strip_setup(split.body_for("ncrisc"))
+            "_ttl_dm0",
+            _DATAMOVEMENT_BINDING,
+            _strip_setup(split.body_for(data_movement)),
         ),
         _make_kernel_def(
-            "_ttl_dm1", _DATAMOVEMENT_BINDING, _strip_setup(split.body_for("brisc"))
+            "_ttl_dm1", _DATAMOVEMENT_BINDING, _strip_setup(split.body_for(pipe_source))
         ),
     ]
 

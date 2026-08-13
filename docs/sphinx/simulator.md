@@ -74,12 +74,15 @@ relied upon.
 
 In a thread-unified operation -- one written without explicit `@ttl.compute` /
 `@ttl.datamovement` kernels -- a statement is run by the thread it belongs to,
-and a statement that belongs to no particular thread is run by all three. Thread
-assignment pins a statement through the TT-Lang call it makes, so a `ttl.copy`
-runs once per node on its data movement thread, while a statement making no such
-call is replicated onto the three kernels and runs three times per node. Setup is
+and a statement that belongs to no particular thread is replicated onto every
+kernel the operation selects. Thread assignment pins a statement through the
+TT-Lang call it makes, so a `ttl.copy` runs once per node on its data movement
+thread, while a statement making no such call runs once per selected kernel per
+node. How many kernels an operation selects follows from the calls its body
+makes, so a body that only moves data selects no compute kernel and the
+replicated statement does not run there. Setup is
 the exception: dataflow buffer and pipe construction is lifted out of the body and
-runs once per node, ahead of the kernels, which is what makes the three of them
+runs once per node, ahead of the kernels, which is what makes them
 share one buffer. A statement kept for its side effect rather than its dataflow is
 therefore worth writing inside a kernel, where its thread is stated.
 
