@@ -1836,6 +1836,34 @@ def test_read_index_routes_to_data_movement():
     assert "ttl.read_index" in _kind_src(result, KernelKind.DATA_MOVEMENT)
 
 
+def test_raw_element_access_routes_to_data_movement():
+    """Raw scalar DFB access and its dependence remain on data movement."""
+    function = _fn(
+        """
+        def kernel():
+            source_block = source_dfb.wait()
+            destination_block = destination_dfb.reserve()
+            value = ttl.raw_element_read(source_block, 0, 3)
+            ttl.raw_element_write(destination_block, 0, 7, value)
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        local_dfb_names={"source_dfb", "destination_dfb"},
+    )
+
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    data_movement_source = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "ttl.raw_element_read" not in compute_source
+    assert "ttl.raw_element_write" not in compute_source
+    assert "value = ttl.raw_element_read(source_block, 0, 3)" in data_movement_source
+    assert (
+        "ttl.raw_element_write(destination_block, 0, 7, value)" in data_movement_source
+    )
+
+
 def test_compute_and_data_movement_route_to_separate_logical_kernels():
     """Copies and compute operations receive distinct logical kernels."""
     fn = _fn(

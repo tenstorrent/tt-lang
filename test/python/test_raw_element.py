@@ -98,6 +98,37 @@ def reserved_scratch_swap_kernel(out):
             transaction.wait()
 
 
+def make_composed_raw_swap_kernel():
+    """Compose raw scalar access through a nested operation."""
+
+    @ttl.operation()
+    def swap_endpoints(source_dfb, destination_block):
+        source_block = source_dfb.wait()
+        first_value = ttl.raw_element_read(source_block, 0, 0)
+        last_value = ttl.raw_element_read(source_block, 0, 31)
+        ttl.raw_element_write(destination_block, 0, 0, last_value)
+        ttl.raw_element_write(destination_block, 0, 31, first_value)
+
+    @ttl.operation(grid=(1, 1))
+    def composed_raw_swap(inp, out):
+        source_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        destination_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, 1), block_count=2
+        )
+
+        source_destination = source_dfb.reserve()
+        ttl.copy(inp[0, 0], source_destination)
+        destination_block = destination_dfb.reserve()
+        ttl.copy(inp[0, 0], destination_block)
+        swap_endpoints(source_dfb, destination_block)
+        ttl.copy(destination_block, out[0, 0])
+
+    return composed_raw_swap
+
+
+composed_raw_swap_kernel = make_composed_raw_swap_kernel()
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("memory", ["dram", "l1"])
 def test_subtile_endpoint_swap(device, dtype, memory):
@@ -114,6 +145,24 @@ def test_subtile_endpoint_swap(device, dtype, memory):
 
     assert result[0, 0].item() == torch_input[0, 31].item()
     assert result[0, 31].item() == torch_input[0, 0].item()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_composed_raw_element_access(device, dtype, memory):
+    """Atom splitting places nested raw access on data-movement threads."""
+    torch_input = torch.arange(32, dtype=dtype).reshape(1, 32)
+    torch_expected = torch_input.clone()
+    torch_expected[0, 0] = torch_input[0, 31]
+    torch_expected[0, 31] = torch_input[0, 0]
+    converter = to_dram if memory == "dram" else to_l1
+    input_tensor = converter(torch_input, device, tile=[1, 32])
+    output_tensor = converter(torch.zeros_like(torch_input), device, tile=[1, 32])
+
+    composed_raw_swap_kernel(input_tensor, output_tensor)
+    result = ttnn.to_torch(output_tensor)
+
+    assert_allclose(result.float(), torch_expected.float(), rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])

@@ -58,6 +58,8 @@ _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     "copy_tensor_page": _Placement.DATA_MOVEMENT,
     "element_read": _Placement.DATA_MOVEMENT,
     "element_write": _Placement.DATA_MOVEMENT,
+    "raw_element_read": _Placement.DATA_MOVEMENT,
+    "raw_element_write": _Placement.DATA_MOVEMENT,
     "read_index": _Placement.DATA_MOVEMENT,
     # Compute
     "fill": KernelKind.COMPUTE,
