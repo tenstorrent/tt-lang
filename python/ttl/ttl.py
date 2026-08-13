@@ -25,6 +25,7 @@ from .ttl_api import compute, datamovement, Program
 from .atom import operation, DFB
 from .kernel import Kernel, KernelKind
 from .condition import DispatchCondition
+from .dfb_reset import DFBReset, DFBResetScope
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -52,6 +53,8 @@ __all__ = [
     "Kernel",
     "KernelKind",
     "DispatchCondition",
+    "DFBReset",
+    "DFBResetScope",
     "ScalarType",
     "compute",
     "datamovement",

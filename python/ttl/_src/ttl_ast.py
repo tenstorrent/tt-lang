@@ -15,6 +15,7 @@ from ttl.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
 from ..condition import DispatchCondition, _BoundDispatchCondition
+from ..dfb_reset import DFBReset, DFBResetScope, _BoundDFBReset
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
@@ -24,7 +25,12 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
-from ..kernel import _DFB_RELEASE_METHODS
+from ..kernel import (
+    Kernel,
+    KernelKind,
+    _DFB_RELEASE_METHODS,
+    _selector_sort_key,
+)
 from ..scalar import ScalarType
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
@@ -1165,6 +1171,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     val is ScalarType
                     or isinstance(val, ScalarType)
                     or isinstance(val, _BoundDispatchCondition)
+                    or isinstance(val, _BoundDFBReset)
                 ):
                     continue
                 elif is_ttnn_global_semaphore(val):
@@ -1887,6 +1894,48 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return condition
 
+    def _resolve_dfb_reset(self, node):
+        """Resolve an operation-local synchronized reset declaration."""
+        reset = self._resolve_static_reference(node)
+        if isinstance(reset, DFBReset):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_reset must be captured by an "
+                "enclosing @ttl.operation factory",
+            )
+        if not isinstance(reset, _BoundDFBReset):
+            type_detail = (
+                ""
+                if reset is _MISSING_STATIC_VALUE
+                else f", got {type(reset).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_reset must be a ttl.DFBReset" + type_detail,
+            )
+        return reset
+
+    def _logical_kernel_attr(self, participant):
+        kind = participant if isinstance(participant, KernelKind) else participant.kind
+        ir_kind = {
+            KernelKind.COMPUTE: ttl.ir.LogicalKernelKind.Compute,
+            KernelKind.DATA_MOVEMENT: ttl.ir.LogicalKernelKind.DataMovement,
+        }[kind]
+        if isinstance(participant, KernelKind):
+            return ttl.ir.LogicalKernelAttr.get(self.ctx, ir_kind, None, None, None)
+        if not isinstance(participant, Kernel) or participant._identity is None:
+            raise TypeError(
+                "DFBReset participant Kernel must be captured by the enclosing "
+                "@ttl.operation"
+            )
+        return ttl.ir.LogicalKernelAttr.get(
+            self.ctx,
+            ir_kind,
+            participant.identity,
+            participant._operation_identity,
+            participant._implicit_role,
+        )
+
     def _resolve_dfb_value(self, node, param_name):
         """Resolve one DFB expression and reject other SSA values."""
         value = self.visit(node)
@@ -1998,6 +2047,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
                 result_type=ttl.ScalarType.I64, # optional scalar result
                 condition_result=active,        # dispatch-stable condition
+                dfb_reset=reset,                # synchronized reset identity
+                dfb_reset_targets=[scratch],    # reset interface state
             )
 
         DFBs use explicit forms in template_args and may appear directly in
@@ -2046,6 +2097,8 @@ class TTLGenericCompiler(TTCompilerBase):
             "include_paths",
             "result_type",
             "condition_result",
+            "dfb_reset",
+            "dfb_reset_targets",
         }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
@@ -2119,6 +2172,60 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._resolve_dfb_effect(element) for element in effects_node.elts
             ]
 
+        reset_attr = None
+        reset_targets = []
+        has_reset = "dfb_reset" in kw_map
+        has_reset_targets = "dfb_reset_targets" in kw_map
+        if has_reset_targets and not has_reset:
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_reset_targets requires dfb_reset",
+            )
+        if has_reset:
+            reset = self._resolve_dfb_reset(kw_map["dfb_reset"])
+            if reset.scope is DFBResetScope.TARGETS and not has_reset_targets:
+                self._raise_error(
+                    node,
+                    "ttl.call_extern_func() targeted DFB reset requires "
+                    "dfb_reset_targets",
+                )
+            if reset.scope is DFBResetScope.ALL_LOCAL and has_reset_targets:
+                self._raise_error(
+                    kw_map["dfb_reset_targets"],
+                    "ttl.call_extern_func() all-local DFB reset cannot declare "
+                    "dfb_reset_targets",
+                )
+            if has_reset_targets:
+                targets_node = kw_map["dfb_reset_targets"]
+                if not isinstance(targets_node, ast.List) or not targets_node.elts:
+                    self._raise_error(
+                        targets_node,
+                        "ttl.call_extern_func() dfb_reset_targets must be a "
+                        "nonempty list",
+                    )
+                reset_targets = [
+                    self._resolve_dfb_value(element, "dfb_reset_targets")
+                    for element in targets_node.elts
+                ]
+                if any(
+                    target in reset_targets[:target_index]
+                    for target_index, target in enumerate(reset_targets)
+                ):
+                    self._raise_error(
+                        targets_node,
+                        "ttl.call_extern_func() dfb_reset_targets must be " "distinct",
+                    )
+            participant_attrs = [
+                self._logical_kernel_attr(participant)
+                for participant in sorted(reset.participants, key=_selector_sort_key)
+            ]
+            reset_attr = ttl.ir.SynchronizedDFBResetAttr.get(
+                self.ctx,
+                reset.ordinal,
+                reset.scope is DFBResetScope.ALL_LOCAL,
+                participant_attrs,
+            )
+
         unknown_dfb_access = False
         if "unknown_dfb_access" in kw_map:
             unknown_dfb_access = self._resolve_static_bool(
@@ -2134,6 +2241,17 @@ class TTLGenericCompiler(TTCompilerBase):
                 node,
                 "ttl.call_extern_func() cannot combine result_type and "
                 "condition_result",
+            )
+        if reset_attr is not None and (
+            "result_type" in kw_map
+            or "condition_result" in kw_map
+            or resolved_dfb_effects
+            or unknown_dfb_access
+        ):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() synchronized DFB reset cannot return "
+                "a value or declare protocol effects or unknown DFB access",
             )
 
         result_types = []
@@ -2180,6 +2298,35 @@ class TTLGenericCompiler(TTCompilerBase):
             for template_arg in resolved_template_args
             if template_arg.kind == ttl.ir.ExternalTemplateArgKind.DFBDescriptor
         )
+        if reset_attr is not None:
+            if "dfb_dependencies" in kw_map:
+                self._raise_error(
+                    kw_map["dfb_dependencies"],
+                    "ttl.call_extern_func() synchronized DFB reset targets "
+                    "must be declared with dfb_reset_targets",
+                )
+            if reset.scope is DFBResetScope.ALL_LOCAL:
+                if automatic_dependencies:
+                    self._raise_error(
+                        node,
+                        "ttl.call_extern_func() all-local DFB reset cannot "
+                        "pass DFB function arguments or descriptors",
+                    )
+            else:
+                if any(
+                    dependency not in reset_targets
+                    for dependency in automatic_dependencies
+                ):
+                    self._raise_error(
+                        kw_map["dfb_reset_targets"],
+                        "ttl.call_extern_func() dfb_reset_targets must include "
+                        "every DFB function argument and descriptor",
+                    )
+                dependency_dfb_operands = [
+                    target
+                    for target in reset_targets
+                    if target not in automatic_dependencies
+                ]
         if any(
             dependency in automatic_dependencies
             or dependency in dependency_dfb_operands[:dependency_index]
@@ -2197,6 +2344,7 @@ class TTLGenericCompiler(TTCompilerBase):
             or ordered_dependencies
             or resolved_dfb_effects
             or unknown_dfb_access
+            or reset_attr is not None
         ):
             self._raise_error(
                 node,
@@ -2245,6 +2393,7 @@ class TTLGenericCompiler(TTCompilerBase):
             dfb_effects=effects_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
             condition_result=condition_result_attr,
+            dfb_reset=reset_attr,
         )
         if result_types:
             return opaque_call
