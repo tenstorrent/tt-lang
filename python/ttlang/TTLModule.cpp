@@ -119,6 +119,40 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("ordinal", &DispatchConditionAttr::getOrdinal)
       .def_prop_ro("scalar_type", &DispatchConditionAttr::getScalarType);
 
+  tt_attribute_class<SynchronizedDFBResetAttr>(m, "SynchronizedDFBResetAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal, bool allLocal,
+             const std::vector<MlirAttribute> &participants) {
+            MLIRContext *cppContext = unwrap(context);
+            SmallVector<LogicalKernelAttr> participantAttrs;
+            participantAttrs.reserve(participants.size());
+            for (MlirAttribute participant : participants) {
+              participantAttrs.push_back(
+                  cast<LogicalKernelAttr>(unwrap(participant)));
+            }
+            SynchronizedDFBResetAttr attribute =
+                SynchronizedDFBResetAttr::getCheckedInstance(
+                    UnknownLoc::get(cppContext), cppContext, ordinal, allLocal,
+                    participantAttrs);
+            if (!attribute) {
+              throw nb::value_error("invalid synchronized DFB reset");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("all_local"),
+          nb::arg("participants"))
+      .def_prop_ro("ordinal", &SynchronizedDFBResetAttr::getOrdinal)
+      .def_prop_ro("all_local", &SynchronizedDFBResetAttr::getAllLocal)
+      .def_prop_ro("participants", [](SynchronizedDFBResetAttr attribute) {
+        std::vector<MlirAttribute> participants;
+        participants.reserve(attribute.getParticipants().size());
+        for (LogicalKernelAttr participant : attribute.getParticipants()) {
+          participants.push_back(wrap(participant));
+        }
+        return participants;
+      });
+
   nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
       .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
       .value("Boolean", ExternalTemplateArgKind::Boolean)

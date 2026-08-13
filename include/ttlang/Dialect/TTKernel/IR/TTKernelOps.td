@@ -133,6 +133,36 @@ def TTKernel_PackTileOp : TTKernel_Op<"pack_tile"> {
     }];
 }
 
+def TTKernel_PackWaitedTileOp : TTKernel_Op<"pack_waited_tile"> {
+    let summary = "Replace a tile in a waited full-ring DFB transaction.";
+    let description = [{
+      Copies one DST tile into a consumer-owned DFB page without reserving or
+      publishing producer space. `acquired_tiles` must equal the DFB capacity,
+      and `out_index` is relative to the acquired read window. The operation is
+      legal only when the producer write pointer and consumer read pointer are
+      separately proved to address the same ring position.
+
+      The operation changes neither occupancy nor either DFB pointer. A prior
+      consumer wait owns the pages until the corresponding pop. The compiler
+      must prove that the original page value is consumed before replacement
+      and that following accesses occur before the pop.
+    }];
+
+    let arguments = (ins
+      IndexLike:$dst_index,
+      TTKernel_CB:$out_cb,
+      IndexLike:$out_index,
+      DefaultValuedAttr<BoolAttr, "true">:$out_of_order,
+      ConfinedAttr<I64Attr, [IntPositive]>:$acquired_tiles
+    );
+
+    let assemblyFormat = [{
+      `(` $dst_index `,` $out_cb `,` $out_index `,` $out_of_order `)`
+      attr-dict `:` functional-type(operands, results)
+    }];
+    let hasVerifier = 1;
+}
+
 def TTKernel_PackTileBlockOp : TTKernel_Op<"pack_tile_block"> {
     let summary = "PackTileBlock op.";
     let description = [{
