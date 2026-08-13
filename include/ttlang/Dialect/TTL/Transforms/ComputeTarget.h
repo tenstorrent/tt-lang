@@ -6,7 +6,9 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_COMPUTETARGET_H
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
@@ -16,6 +18,22 @@
 #include <string>
 
 namespace mlir::tt::ttl {
+
+/// Target-independent tile properties of one broadcast operation.
+struct BroadcastCapability {
+  ttcore::TileType inputType;
+  ttcore::TileType resultType;
+  std::optional<BcastType> tileBroadcast;
+};
+
+/// Target-independent tile properties of one reduction operation.
+struct ReductionCapability {
+  ttcore::TileType inputType;
+  ttcore::TileType scalerType;
+  ttcore::TileType resultType;
+  ReduceType reduceType;
+  ttkernel::ReduceDim reduceDimension;
+};
 
 /// Resolve the optional architecture selected by the module attribute or
 /// default device. Both sources must agree when present.
@@ -47,6 +65,12 @@ public:
   virtual LogicalResult
   validatePassthroughTileType(ttcore::TileType tileType,
                               std::string &failureReason) const = 0;
+
+  virtual LogicalResult validateBroadcast(const BroadcastCapability &capability,
+                                          std::string &failureReason) const = 0;
+
+  virtual LogicalResult validateReduction(const ReductionCapability &capability,
+                                          std::string &failureReason) const = 0;
 
   virtual LogicalResult
   validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
