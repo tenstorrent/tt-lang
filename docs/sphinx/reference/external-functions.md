@@ -275,23 +275,31 @@ C++ function arguments. DFBs in `func_args` and DFB descriptors in
 `template_args` are dependencies automatically. `dfb_dependencies` must
 contain distinct DFBs that are not already automatic dependencies.
 
-`dfb_effects` is an ordered list of synchronous DFB protocol actions. Each
-action references one dependency and has a positive, statically resolvable tile
-count:
+`dfb_effects` is an ordered static list expression of synchronous DFB protocol
+actions. Each action references one dependency and has a positive, statically
+resolvable tile count. Literal lists may be concatenated with `+` or repeated
+with `*` and a nonnegative, statically resolvable integer. The frontend
+expands the expression to one ordered effect list:
 
 ```python
+chunk_count = 2
 ttl.call_extern_func(
     HEADER,
     "external_stage",
     template_args=[ttl.get_dfb_id(source)],
     func_args=[source],
     dfb_dependencies=[destination],
-    dfb_effects=[
-        ttl.DFBEffect.wait(source, tiles=2),
-        ttl.DFBEffect.pop(source, tiles=2),
-        ttl.DFBEffect.reserve(destination, tiles=1),
-        ttl.DFBEffect.push(destination, tiles=1),
-    ],
+    dfb_effects=(
+        chunk_count
+        * [
+            ttl.DFBEffect.wait(source, tiles=1),
+            ttl.DFBEffect.pop(source, tiles=1),
+        ]
+        + [
+            ttl.DFBEffect.reserve(destination, tiles=chunk_count),
+            ttl.DFBEffect.push(destination, tiles=chunk_count),
+        ]
+    ),
     kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
