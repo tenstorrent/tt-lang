@@ -12,9 +12,9 @@
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @point_to_point_transport()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -64,9 +64,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @collective_transport()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_dfb = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %dst_dfb = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {
         isCollective = true}
@@ -116,9 +116,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @grouped_transport()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 4}
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 4} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
-    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 4}
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 4} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>

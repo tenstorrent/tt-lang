@@ -22,7 +22,7 @@ func.func @conflicting_pipe_transfer_contracts(%condition: i1)
     scf.yield %collective
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   }
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -52,7 +52,7 @@ func.func @conflicting_pipe_transfer_contracts(%condition: i1)
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @conflicting_pipe_device_transfers(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
         deviceTransfer = #device_transfer_0}
@@ -94,7 +94,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func private @pipe_callsite_receiver(
       %pipe: !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
-    %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst = ttl.cb_reserve %dst_cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -146,27 +146,31 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         deviceTransfer = #fabric_transfer}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
 
-    %local = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %local = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
 
-    %reserved = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    // expected-note @below {{receiver DFB 1: push reserve owns no matching receiver post}}
-    %post = ttl.copy %pipe, %reserved
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    // expected-error @below {{fabric pipe transfer requires computed receiver DFB addresses}}
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %post : !ttl.transfer_handle
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %reserved = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-note @below {{receiver DFB 1: non-pipe push does not advance one full physical DFB}}
+      %post = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-error @below {{fabric pipe transfer requires computed receiver DFB addresses}}
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
     func.return
   }
 }
@@ -202,9 +206,9 @@ func.func @unknown_role_predicate()
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @conflicting_device_transfers()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %send_pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
         deviceTransfer = #send_device_transfer}
@@ -246,7 +250,7 @@ func.func @wait_with_distinct_pipe_receive_sources(%condition: i1)
     attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst0 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -280,9 +284,9 @@ func.func @wait_with_distinct_pipe_receive_sources(%condition: i1)
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @partial_receiver_block_rejected()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[4, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -315,9 +319,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 func.func @gather_receiver_reservation_past_dfb_end()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 3}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
-  %src = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %src = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -361,7 +365,7 @@ func.func @gather_receiver_reservation_past_dfb_end()
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @repeated_receiver_reservation_past_dfb_end()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 3}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -392,7 +396,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
   func.func @repeated_receiver_reservation_past_dfb_end_sender()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -419,9 +423,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // semaphores.
 func.func @pipe_wait_requires_one_static_post(%condition: i1)
     attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-  %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -469,9 +473,9 @@ func.func @pipe_wait_requires_one_static_post(%condition: i1)
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @collective_destination_addresses_differ_by_destination()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -483,7 +487,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
       %recv = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1]
           : tensor<1x2x!ttcore.tile<32x32, f32>>
           to tensor<1x1x!ttcore.tile<32x32, f32>>
-      // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 1: post is not consumed by a receiver push}}
+      // expected-note @below {{receiver core_x=1, core_y=0 uses receiver DFB 1: post is not consumed by a receiver push}}
       %post = ttl.copy %p, %recv
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -520,9 +524,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @mismatched_pipe_transfer_block_spans()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -569,9 +573,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @mismatched_pipe_transfer_destination_group_depths()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -618,9 +622,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @collective_destination_address_dynamic_offset_rejected(
       %offset: index) attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -655,40 +659,48 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @collective_branch_schedule_rejected(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe_a = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
     %pipe_b = ttl.create_pipe src(2, 0) dst(1, 0) to(2, 0) net 1
         : !ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>
     scf.if %condition {
-      %recv_a = ttl.cb_reserve %dst
-          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 0: post is not consumed by a receiver push}}
-      %post_a = ttl.copy %pipe_a, %recv_a
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      // expected-error @below {{collective pipe receiver address sequences are not proven equal for every transfer occurrence; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
-      %send_a = ttl.copy %src, %pipe_a
-          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-             !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>)
-          -> !ttl.transfer_handle<write>
+      ttl.if_dst %pipe_a : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+        %recv_a = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        // expected-note @below {{receiver core_x=1, core_y=0 uses receiver DFB 0: post is not consumed by a receiver push}}
+        %post_a = ttl.copy %pipe_a, %recv_a
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+      }
+      ttl.if_src %pipe_a : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+        // expected-error @below {{collective pipe receiver address sequences are not proven equal for every transfer occurrence; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
+        %send_a = ttl.copy %src, %pipe_a
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+      }
     } else {
-      %recv_b = ttl.cb_reserve %dst
-          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      %post_b = ttl.copy %pipe_b, %recv_b
-          : (!ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>,
-             tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      %send_b = ttl.copy %src, %pipe_b
-          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-             !ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>)
-          -> !ttl.transfer_handle<write>
+      ttl.if_dst %pipe_b : !ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1> {
+        %recv_b = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %post_b = ttl.copy %pipe_b, %recv_b
+            : (!ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+      }
+      ttl.if_src %pipe_b : !ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1> {
+        %send_b = ttl.copy %src, %pipe_b
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>)
+            -> !ttl.transfer_handle<write>
+      }
     }
     func.return
   }
@@ -703,9 +715,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @collective_asymmetric_non_pipe_traffic_rejected()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %collective = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -730,7 +742,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
       %recv = ttl.cb_reserve %dst
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 1: push reserve owns no matching receiver post}}
+      // expected-note @below {{receiver core_x=1, core_y=0 uses receiver DFB 1: non-pipe push does not advance one full physical DFB}}
       %token = ttl.pipe_transfer.post %transfer, %recv
           : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.pipe_token<net 0>
@@ -763,9 +775,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @collective_nonuniform_receiver_sequence_rejected()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %collective = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -841,25 +853,29 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @pipe_payload_element_type_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %recv = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{pipe receiver destination 'tensor<1x1x!ttcore.tile<32x32, bf16>>' cannot hold sender DFB block with 1 element(s) of type '!ttcore.tile<32x32, f32>'}}
-    %post = ttl.copy %pipe, %recv
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
-    // expected-note @below {{corresponding pipe send is here}}
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-error @below {{pipe receiver destination 'tensor<1x1x!ttcore.tile<32x32, bf16>>' cannot hold sender DFB block with 1 element(s) of type '!ttcore.tile<32x32, f32>'}}
+      %post = ttl.copy %pipe, %recv
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-note @below {{corresponding pipe send is here}}
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
     func.return
   }
 }
@@ -872,25 +888,29 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @pipe_payload_exceeds_receiver_destination()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %recv = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    // expected-error @below {{pipe receiver destination 'tensor<1x1x!ttcore.tile<32x32, f32>>' cannot hold sender DFB block with 2 element(s) of type '!ttcore.tile<32x32, f32>'}}
-    %post = ttl.copy %pipe, %recv
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    // expected-note @below {{corresponding pipe send is here}}
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{pipe receiver destination 'tensor<1x1x!ttcore.tile<32x32, f32>>' cannot hold sender DFB block with 2 element(s) of type '!ttcore.tile<32x32, f32>'}}
+      %post = ttl.copy %pipe, %recv
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-note @below {{corresponding pipe send is here}}
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
     func.return
   }
 }
@@ -903,23 +923,27 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @pipe_payload_requires_tile_element_type()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], f32, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], f32, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %recv = ttl.cb_reserve %dst
-        : <[1, 1], f32, 1> -> tensor<1x1xf32>
-    %post = ttl.copy %pipe, %recv
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1xf32>)
-        -> !ttl.transfer_handle
-    // expected-error @below {{pipe transfer source DFB element type must be tile}}
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 1], f32, 1>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst
+          : <[1, 1], f32, 1> -> tensor<1x1xf32>
+      %post = ttl.copy %pipe, %recv
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1xf32>)
+          -> !ttl.transfer_handle
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-error @below {{pipe transfer source DFB element type must be tile}}
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], f32, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
     func.return
   }
 }

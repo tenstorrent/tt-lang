@@ -88,19 +88,30 @@ getPipeExecutionLocation(LaunchNodeCoord node, DeviceTransferAttr transfer,
 ///
 /// A known domain contains an exact finite set of launch-grid coordinates. An
 /// unknown domain means a coordinate-dependent predicate could not be evaluated
-/// statically, so clients must not treat the node set as complete. Domain
-/// algebra preserves unknown inputs because verifiers cannot prove disjointness
-/// from incomplete launch-node facts.
+/// statically. Its optional upper bound contains every coordinate that may
+/// execute the program point. Domain algebra preserves both exactness and
+/// conservative bounds.
 struct LaunchNodeDomain {
   bool known = true;
+  bool hasUpperBound = true;
   std::set<LaunchNodeCoord> nodes;
 
-  /// Return a domain whose node set is not statically known.
+  /// Return an unbounded domain whose node set is not statically known.
   static LaunchNodeDomain unknown();
+
+  /// Return an unknown subset of `domain`.
+  static LaunchNodeDomain unknownWithin(const LaunchNodeDomain &domain);
 
   /// Return true when both domains are known and this domain is contained in
   /// `rhs`.
   bool isSubsetOf(const LaunchNodeDomain &rhs) const;
+
+  /// Return true when every possible node in this domain is contained in the
+  /// exact `rhs` domain.
+  bool isUpperBoundSubsetOf(const LaunchNodeDomain &rhs) const;
+
+  /// Return the known conservative upper-bound nodes, when they exist.
+  const std::set<LaunchNodeCoord> *getUpperBoundNodes() const;
 
   /// Return the launch domain reached through either domain.
   LaunchNodeDomain unionWith(const LaunchNodeDomain &rhs) const;
@@ -267,6 +278,20 @@ bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
     Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
     const LaunchExecutionLocation &rhsLocation,
     const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument);
+
+/// Prove equivalent unresolved control between each operation and an
+/// exclusive ancestor whose invocation count is accounted for separately.
+bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
+    Operation *lhs, Operation *lhsExclusiveAncestor,
+    const LaunchExecutionLocation &lhsLocation, Operation *rhs,
+    Operation *rhsExclusiveAncestor, const LaunchExecutionLocation &rhsLocation,
+    const LaunchNodeDomainState &state,
+    IntegerExpressionEvaluator::ValueEvaluator lhsContextValueEvaluator,
+    IntegerExpressionEvaluator::ValueEvaluator rhsContextValueEvaluator,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>

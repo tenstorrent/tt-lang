@@ -92,13 +92,45 @@ struct PipeEvent {
   PipeType pipeType;
   DeviceTransferAttr deviceTransfer;
   PipeEventKind kind;
+  // Exact analyzed domain, or unknown when a predicate cannot be evaluated.
   LaunchNodeDomain domain;
+  // Known conservative domain used to enumerate possible schedule events.
+  LaunchNodeDomain scheduleDomain;
   Operation *unanalyzableOp = nullptr;
   /// Receive post whose token is observed by a receive-wait event.
   Operation *receivePost = nullptr;
   Operation *selectedForeachOp = nullptr;
   int64_t selectedRecordIndex = -1;
 };
+
+PipeEvent makePipeEvent(Operation *op, Value pipe, PipeType pipeType,
+                        DeviceTransferAttr deviceTransfer, PipeEventKind kind,
+                        const LaunchNodeDomain &domain,
+                        const LaunchNodeDomain &roleDomain,
+                        Operation *unanalyzableOp, Operation *receivePost,
+                        Operation *selectedForeachOp,
+                        int64_t selectedRecordIndex) {
+  LaunchNodeDomain exactDomain = domain.intersectWith(roleDomain);
+  LaunchNodeDomain scheduleDomain = exactDomain;
+  if (!scheduleDomain.known) {
+    if (const std::set<LaunchNodeCoord> *upperBound =
+            exactDomain.getUpperBoundNodes()) {
+      scheduleDomain = LaunchNodeDomain{};
+      scheduleDomain.nodes = *upperBound;
+    }
+  }
+  return PipeEvent{op,
+                   pipe,
+                   pipeType,
+                   deviceTransfer,
+                   kind,
+                   std::move(exactDomain),
+                   std::move(scheduleDomain),
+                   unanalyzableOp,
+                   receivePost,
+                   selectedForeachOp,
+                   selectedRecordIndex};
+}
 
 /// Return the source or destination execution location for `event`.
 FailureOr<LaunchExecutionLocation>
@@ -192,10 +224,10 @@ struct ModuleState {
           record.getDstEndY(), records.getPipeNetId());
       LaunchNodeDomain roleDomain =
           getPipeRecordRoleLaunchNodeDomain(record, role);
-      events.push_back(PipeEvent{op, pipe, pipeType, record.getDeviceTransfer(),
-                                 kind, domain.intersectWith(roleDomain),
-                                 unanalyzableOp, receivePost, foreachOp,
-                                 static_cast<int64_t>(recordIndex)});
+      events.push_back(
+          makePipeEvent(op, pipe, pipeType, record.getDeviceTransfer(), kind,
+                        domain, roleDomain, unanalyzableOp, receivePost,
+                        foreachOp, static_cast<int64_t>(recordIndex)));
     }
   }
 
@@ -206,11 +238,12 @@ struct ModuleState {
     SmallVector<PipeEvent> events;
     Operation *op = copyOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
-      events.push_back(PipeEvent{
-          op, copyOp.getDst(), pipeType, DeviceTransferAttr(),
-          PipeEventKind::Send,
-          domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType)),
-          unanalyzableOp, nullptr, nullptr, -1});
+      events.push_back(
+          makePipeEvent(op, copyOp.getDst(), pipeType, DeviceTransferAttr(),
+                        PipeEventKind::Send, domain,
+                        getPipeSourceLaunchNodeDomain(pipeType), unanalyzableOp,
+                        /*receivePost=*/nullptr, /*selectedForeachOp=*/nullptr,
+                        /*selectedRecordIndex=*/-1));
       return events;
     }
     FailureOr<SelectedPipeRecords> selectedDst =
@@ -229,12 +262,13 @@ struct ModuleState {
     }
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       if (isPipeReceiveCopy(copyOp)) {
-        events.push_back(
-            PipeEvent{op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
-                      PipeEventKind::ReceivePost,
-                      domain.intersectWith(getPipeDestinationLaunchNodeDomain(
-                          pipeType, launchDomains.baseDomain)),
-                      unanalyzableOp, nullptr, nullptr, -1});
+        events.push_back(makePipeEvent(
+            op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
+            PipeEventKind::ReceivePost, domain,
+            getPipeDestinationLaunchNodeDomain(pipeType,
+                                               launchDomains.baseDomain),
+            unanalyzableOp, /*receivePost=*/nullptr,
+            /*selectedForeachOp=*/nullptr, /*selectedRecordIndex=*/-1));
       }
       return events;
     }
@@ -272,12 +306,13 @@ struct ModuleState {
     SmallVector<PipeEvent> events;
     Operation *op = waitOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      events.push_back(
-          PipeEvent{op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
-                    PipeEventKind::ReceiveWait,
-                    domain.intersectWith(getPipeDestinationLaunchNodeDomain(
-                        pipeType, launchDomains.baseDomain)),
-                    unanalyzableOp, copyOp.getOperation(), nullptr, -1});
+      events.push_back(makePipeEvent(
+          op, copyOp.getSrc(), pipeType, DeviceTransferAttr(),
+          PipeEventKind::ReceiveWait, domain,
+          getPipeDestinationLaunchNodeDomain(pipeType,
+                                             launchDomains.baseDomain),
+          unanalyzableOp, copyOp.getOperation(),
+          /*selectedForeachOp=*/nullptr, /*selectedRecordIndex=*/-1));
     } else {
       FailureOr<SelectedPipeRecords> selected =
           getSelectedPipeRecords(copyOp.getSrc());
@@ -459,6 +494,9 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       Operation *unanalyzableOp, Twine primaryMessage,
                       ArrayRef<std::pair<int64_t, PipeRole>> roles,
                       ModuleState &state) {
+  if (current.isUpperBoundSubsetOf(allowed)) {
+    return;
+  }
   if (!current.known) {
     auto diag = op->emitOpError()
                 << "could not statically analyze the PipeNet guard "
@@ -471,9 +509,6 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
           << "this expression is not statically analyzable";
     }
     state.sawError = true;
-    return;
-  }
-  if (current.isSubsetOf(allowed)) {
     return;
   }
   LaunchNodeDomain extra = current.subtract(allowed);
@@ -1135,7 +1170,11 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
 /// Constant and unresolved factors in one schedule occurrence count.
 struct PipeExecutionCountExpression {
   std::uint64_t constantFactor = 1;
-  SmallVector<Operation *> unresolvedOps;
+  struct UnresolvedFactor {
+    Operation *op;
+    Operation *exclusiveAncestor;
+  };
+  SmallVector<UnresolvedFactor> unresolvedFactors;
 };
 
 std::optional<Value> resolveFunctionArgument(BlockArgument argument,
@@ -1178,6 +1217,52 @@ std::optional<std::uint64_t> getExactPipeExecutionCount(
   return analysis.getExecutionCount(op);
 }
 
+Operation *
+getEnclosingActiveRecordLoop(Operation *op,
+                             ArrayRef<ActivePipeNetRecord> activeRecords) {
+  Operation *enclosingLoop = nullptr;
+  for (const ActivePipeNetRecord &activeRecord : activeRecords) {
+    if (activeRecord.loopOp->isProperAncestor(op)) {
+      enclosingLoop = activeRecord.loopOp;
+    }
+  }
+  return enclosingLoop;
+}
+
+// Selected record loops are separate factors in the complete count.
+std::optional<std::uint64_t> getSelectedRecordLocalExecutionCount(
+    Operation *op, Operation *recordLoop,
+    const LaunchExecutionLocation &location, ArrayRef<PipeCallSite> callSites,
+    ArrayRef<ActivePipeNetRecord> activeRecords, ModuleState &state) {
+  assert(recordLoop && recordLoop->isProperAncestor(op) &&
+         "record-local operation must be nested in its record loop");
+  auto resolveActiveFunctionArgument = [&](BlockArgument argument) {
+    return resolveFunctionArgument(argument, callSites);
+  };
+  ExecutionCountAnalysis analysis(
+      recordLoop->getRegion(0),
+      [&](Value value) -> std::optional<llvm::APInt> {
+        if (std::optional<llvm::APInt> recordValue =
+                evaluateActivePipeNetRecordValue(
+                    value, activeRecords, resolveActiveFunctionArgument)) {
+          return recordValue;
+        }
+        return evaluateIntegerAtLaunchLocation(value, location,
+                                               state.launchDomains);
+      },
+      [&](Region &region) -> std::optional<std::uint64_t> {
+        if (llvm::any_of(activeRecords,
+                         [&](const ActivePipeNetRecord &activeRecord) {
+                           return region.getParentOp() == activeRecord.loopOp;
+                         })) {
+          return 1;
+        }
+        return getRegionInvocationCountAtLaunchLocation(region, location,
+                                                        state.launchDomains);
+      });
+  return analysis.getExecutionCount(op);
+}
+
 /// Separate proven constant factors from operations whose execution counts are
 /// symbolic. Multiplication composes caller invocation counts with the local
 /// count of an event inside a helper.
@@ -1186,10 +1271,17 @@ getPipeExecutionCountExpression(const PipeScheduleNode &node,
                                 ModuleState &state) {
   PipeExecutionCountExpression expression;
   auto collectFactor = [&](Operation *op) -> LogicalResult {
-    std::optional<std::uint64_t> maybeCount = getExactPipeExecutionCount(
-        op, node.location, node.callSites, node.activeRecords, state);
+    Operation *recordLoop =
+        getEnclosingActiveRecordLoop(op, node.activeRecords);
+    std::optional<std::uint64_t> maybeCount =
+        recordLoop
+            ? getSelectedRecordLocalExecutionCount(
+                  op, recordLoop, node.location, node.callSites,
+                  node.activeRecords, state)
+            : getExactPipeExecutionCount(op, node.location, node.callSites,
+                                         node.activeRecords, state);
     if (!maybeCount) {
-      expression.unresolvedOps.push_back(op);
+      expression.unresolvedFactors.push_back({op, recordLoop});
       return success();
     }
     std::optional<std::uint64_t> maybeProduct =
@@ -1206,14 +1298,22 @@ getPipeExecutionCountExpression(const PipeScheduleNode &node,
       return std::nullopt;
     }
   }
+  for (const ActivePipeNetRecord &activeRecord : node.activeRecords) {
+    if (failed(collectFactor(activeRecord.loopOp))) {
+      return std::nullopt;
+    }
+  }
   if (failed(collectFactor(node.op))) {
     return std::nullopt;
+  }
+  if (!node.activeRecords.empty()) {
+    return expression;
   }
   if (!node.executionCountDivisor) {
     return std::nullopt;
   }
   if (*node.executionCountDivisor != 1) {
-    if (!expression.unresolvedOps.empty() ||
+    if (!expression.unresolvedFactors.empty() ||
         expression.constantFactor % *node.executionCountDivisor != 0) {
       return std::nullopt;
     }
@@ -1255,11 +1355,12 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
       getPipeExecutionCountExpression(rhs, state);
   if (!maybeLhs || !maybeRhs ||
       maybeLhs->constantFactor != maybeRhs->constantFactor ||
-      maybeLhs->unresolvedOps.size() != maybeRhs->unresolvedOps.size()) {
+      maybeLhs->unresolvedFactors.size() !=
+          maybeRhs->unresolvedFactors.size()) {
     return false;
   }
   return llvm::all_of(
-      llvm::zip(maybeLhs->unresolvedOps, maybeRhs->unresolvedOps),
+      llvm::zip(maybeLhs->unresolvedFactors, maybeRhs->unresolvedFactors),
       [&](auto pair) {
         auto resolveLhsFunctionArgument = [&](BlockArgument argument) {
           return resolveFunctionArgument(argument, lhs.callSites);
@@ -1267,9 +1368,23 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
         auto resolveRhsFunctionArgument = [&](BlockArgument argument) {
           return resolveFunctionArgument(argument, rhs.callSites);
         };
-        return proveEqualUnresolvedExecutionCountAtLaunchLocations(
-            std::get<0>(pair), lhs.location, std::get<1>(pair), rhs.location,
-            state.launchDomains, resolveLhsFunctionArgument,
+        const PipeExecutionCountExpression::UnresolvedFactor &lhsFactor =
+            std::get<0>(pair);
+        const PipeExecutionCountExpression::UnresolvedFactor &rhsFactor =
+            std::get<1>(pair);
+        auto evaluateLhsContextValue = [&](Value value) {
+          return evaluateActivePipeNetRecordValue(value, lhs.activeRecords,
+                                                  resolveLhsFunctionArgument);
+        };
+        auto evaluateRhsContextValue = [&](Value value) {
+          return evaluateActivePipeNetRecordValue(value, rhs.activeRecords,
+                                                  resolveRhsFunctionArgument);
+        };
+        return proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
+            lhsFactor.op, lhsFactor.exclusiveAncestor, lhs.location,
+            rhsFactor.op, rhsFactor.exclusiveAncestor, rhs.location,
+            state.launchDomains, evaluateLhsContextValue,
+            evaluateRhsContextValue, resolveLhsFunctionArgument,
             resolveRhsFunctionArgument);
       });
 }
@@ -1347,7 +1462,7 @@ private:
     std::optional<PipeExecutionCountExpression> maybeCount =
         getPipeExecutionCountExpression(nodes[postNodeId], state);
     bool mayRepeat = !maybeCount || maybeCount->constantFactor > 1 ||
-                     !maybeCount->unresolvedOps.empty();
+                     !maybeCount->unresolvedFactors.empty();
     if (!mayRepeat ||
         provesSameIterationCompletion(postNodeId, sendIt->second)) {
       return success();
@@ -1659,28 +1774,6 @@ LogicalResult verifyPipeEventRegionsHaveOneBlock(
   return result;
 }
 
-/// Reject events whose launch-node set is not known exactly. Omitting such an
-/// event from coordinate-specific schedules could accept an invalid program.
-LogicalResult verifyPipeEventDomainsKnown(const ModuleState &state) {
-  LogicalResult result = success();
-  for (const PipeEvent &event : state.pipeEvents) {
-    if (event.domain.known) {
-      continue;
-    }
-    auto diag = event.op->emitOpError()
-                << "cannot verify PipeNet synchronization because this "
-                << getPipeEventName(event.kind)
-                << " has an unknown launch-node domain";
-    if (event.unanalyzableOp) {
-      diag.attachNote(event.unanalyzableOp->getLoc())
-          << "this coordinate-dependent condition cannot be evaluated "
-             "statically";
-    }
-    result = failure();
-  }
-  return result;
-}
-
 /// Visit pipe events in the order executed by one kernel thread.
 ///
 /// Direct helper calls are expanded at each call site. A PipeNet foreach body
@@ -1709,7 +1802,7 @@ WalkResult walkPipeEventsInProgramOrder(
     if (eventIt != state.pipeEventIndices.end()) {
       for (std::size_t eventIndex : eventIt->second) {
         const PipeEvent &event = state.pipeEvents[eventIndex];
-        if (!knownLaunchNodeDomainContains(event.domain, coord)) {
+        if (!knownLaunchNodeDomainContains(event.scheduleDomain, coord)) {
           continue;
         }
         if (event.selectedForeachOp) {
@@ -1839,8 +1932,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       getFunctionsReachableFromKernelThreads(module, symbolTables);
   if (failed(verifyPipeEventFunctionsReachable(state, reachableFunctions)) ||
       failed(verifyPipeEventRegionsHaveOneBlock(
-          module, state, functionsWithPipeEvents, symbolTables)) ||
-      failed(verifyPipeEventDomainsKnown(state))) {
+          module, state, functionsWithPipeEvents, symbolTables))) {
     state.sawError = true;
     return;
   }
@@ -1850,7 +1942,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   std::map<LaunchExecutionLocation, std::size_t> scheduleNodeCounts;
   LaunchNodeDomain eventDomain;
   for (const PipeEvent &event : state.pipeEvents) {
-    eventDomain = eventDomain.unionWith(event.domain);
+    eventDomain = eventDomain.unionWith(event.scheduleDomain);
   }
   const std::set<LaunchNodeCoord> &scheduleCoords = eventDomain.nodes;
 

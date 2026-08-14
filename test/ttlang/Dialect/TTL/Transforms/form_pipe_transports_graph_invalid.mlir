@@ -7,7 +7,7 @@
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unanalyzable_send_guard(%offset: index)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %source = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %source = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -21,7 +21,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %zero = arith.constant 0 : index
     %condition = arith.cmpi eq, %sum, %zero : index
     scf.if %condition {
-      // expected-error @below {{cannot determine whether the pipe source executes this send}}
+      // expected-error @below {{cannot prove that this pipe send executes only on its source node}}
       %send = ttl.pipe_transfer.send %transfer, %source
           : (!ttl.pipe_transfer,
              !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)

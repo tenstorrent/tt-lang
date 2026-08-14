@@ -15,9 +15,9 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPECAPACITYANALYSIS_H
 
 // PipeGraph contains one transfer node per send and its corresponding receiver
-// posts, one endpoint per receiver, and one physical DFB node per receiver
-// coordinate and finalized DFB index. Transfer nodes remain distinct even when
-// they have the same PipeKey.
+// posts, one endpoint per receiver, and one logical DFB lifecycle node per
+// receiver coordinate. Each lifecycle node also records its physical index.
+// Transfer nodes remain distinct even when they have the same PipeKey.
 //
 // The safety invariant is graph-local. For ordinary DFB storage, a receiver
 // pop may release sender capacity only when its receiver DFB node has exactly

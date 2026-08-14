@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Casting.h"
@@ -86,20 +87,6 @@ static bool isExactlyDomain(Operation *op, const LaunchNodeDomain &expected,
   return pipeGraph.getOperationLaunchDomain(op) == expected;
 }
 
-static std::optional<int64_t> getDFBIndexFromView(Value view) {
-  Value cb = getAttachedCB(view);
-  if (!cb) {
-    return std::nullopt;
-  }
-  return getCBIndex(cb);
-}
-
-static bool isReceiverDFBView(Value view,
-                              const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> maybeDFBIndex = getDFBIndexFromView(view);
-  return maybeDFBIndex && *maybeDFBIndex == receiverDFB.dfbIndex;
-}
-
 static PipeCapacityEndpointFacts
 getCapacityEndpointFacts(const PipeGraph &pipeGraph,
                          const PipeReceiverEndpoint &receiverEndpoint) {
@@ -117,6 +104,19 @@ getCapacityEndpointFacts(const PipeGraph &pipeGraph,
       PipeTransferSendOp(),
       {},
   };
+}
+
+static bool isReceiverPostForDFB(PipeTransferPostOp postOp,
+                                 const PipeTransferNode &transferNode,
+                                 const PipeReceiverDFBKey &receiverDFB,
+                                 const PipeGraph &pipeGraph) {
+  return llvm::any_of(transferNode.receiverEndpoints,
+                      [&](PipeReceiverEndpointId endpointId) {
+                        const PipeReceiverEndpoint &endpoint =
+                            pipeGraph.getPipeReceiverEndpoint(endpointId);
+                        return endpoint.postOp == postOp.getOperation() &&
+                               endpoint.receiverDFB == receiverDFB;
+                      });
 }
 
 static bool checkPosts(const PipeCapacityEndpointFacts &endpointFacts,
@@ -142,7 +142,8 @@ static bool checkPosts(const PipeCapacityEndpointFacts &endpointFacts,
       valid = false;
       continue;
     }
-    if (!isReceiverDFBView(postOp.getDst(), endpointFacts.receiverDFB)) {
+    if (!isReceiverPostForDFB(postOp, transferNode, endpointFacts.receiverDFB,
+                              pipeGraph)) {
       debugRejectEndpoint(endpointFacts,
                           "post destination is not the receiver DFB");
       valid = false;
