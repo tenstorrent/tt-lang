@@ -32,6 +32,15 @@ struct DFBProtocolEffect {
   unsigned sequenceIndex = 0;
 };
 
+/// One typed non-transactional access to a DFB dependency occurrence.
+struct DFBNonTransactionalAccess {
+  mlir::Value dfb;
+  DFBNonTransactionalAccessKind kind =
+      DFBNonTransactionalAccessKind::InterfacePreserved;
+  unsigned dependencyIndex = 0;
+  unsigned sequenceIndex = 0;
+};
+
 inline bool isProducerDFBProtocolEffect(DFBProtocolEffectKind kind) {
   return kind == DFBProtocolEffectKind::Reserve ||
          kind == DFBProtocolEffectKind::Push;

@@ -82,6 +82,18 @@ func.func @dfb_protocol_metadata() attributes {ttl.kernel_thread = #ttkernel.thr
 
 // -----
 
+// A typed non-transactional access retains its dependency occurrence.
+// CHECK-LABEL: func.func @dfb_interface_preserved_access
+// CHECK: %[[DESCRIPTOR:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.opaque_call "inspect" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%[[DESCRIPTOR]] : !ttl.cb<{{.*}}>) dfb_accesses [#ttl.dfb_non_transactional_access<interface_preserved, 0>] () {header = "inspect.hpp"}
+func.func @dfb_interface_preserved_access() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %descriptor = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  ttl.opaque_call "inspect" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%descriptor : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_accesses [#ttl.dfb_non_transactional_access<interface_preserved, 0>] () {header = "inspect.hpp"} : () -> ()
+  return
+}
+
+// -----
+
 // Dependency occurrence indices remain valid when operand adaptation maps a
 // dependency-only operand to the same DFB as a function argument.
 // CHECK-LABEL: func.func @adapted_dependency_occurrences

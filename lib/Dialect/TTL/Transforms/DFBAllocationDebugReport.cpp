@@ -32,6 +32,15 @@ static llvm::StringRef getProtocolEffectName(DFBProtocolEffectKind effect) {
 }
 
 static llvm::StringRef
+getNonTransactionalAccessName(DFBNonTransactionalAccessKind access) {
+  switch (access) {
+  case DFBNonTransactionalAccessKind::InterfacePreserved:
+    return "interface_preserved";
+  }
+  llvm_unreachable("unknown DFB non-transactional access");
+}
+
+static llvm::StringRef
 getQuiescenceFailureName(DFBQuiescenceFailureReason failure) {
   switch (failure) {
   case DFBQuiescenceFailureReason::None:
@@ -143,6 +152,10 @@ static void printAccesses(llvm::raw_ostream &output,
     } else {
       output << "none";
     }
+    if (access.nonTransactionalAccess) {
+      output << " non_transactional="
+             << getNonTransactionalAccessName(*access.nonTransactionalAccess);
+    }
     output << " tiles=" << access.numTiles
            << " sequence=" << access.sequenceIndex << " domain=";
     printDomain(output, access.launchDomain);
@@ -253,6 +266,9 @@ static void printResetEpochs(llvm::raw_ostream &output,
         } else {
           output << "none";
         }
+        if (epoch.interfaceStatePreserved) {
+          output << ",interface_state_preserved=1";
+        }
         output << ",terminal_state="
                << (epoch.terminalStateCanonical ? "canonical" : "protocol")
                << '}';
@@ -277,6 +293,8 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.terminalReadPointerOwner ==
                    rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
+               lhsEpoch.interfaceStatePreserved ==
+                   rhsEpoch.interfaceStatePreserved &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
@@ -305,6 +323,7 @@ static bool hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
+      lhs.interfaceStatePreserved != rhs.interfaceStatePreserved ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs)) {
     return false;
@@ -345,8 +364,11 @@ static void printPossibleLifetimes(
            << getQuiescenceFailureName(lifetime.quiescence.failure)
            << " domain_assumption=unknown-possible may_be_active="
            << lifetime.mayBeActive
-           << " conditional_execution=" << lifetime.conditionalExecutionProven
-           << " node_count=" << group.nodes.size();
+           << " conditional_execution=" << lifetime.conditionalExecutionProven;
+    if (lifetime.interfaceStatePreserved) {
+      output << " interface_state_preserved=1";
+    }
+    output << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
       llvm::interleaveComma(group.nodes, output, [&](LaunchNodeCoord node) {
@@ -387,7 +409,11 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     output << " quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
            << " domain_assumption=exact conditional_execution="
-           << lifetime.conditionalExecutionProven << " evidence=";
+           << lifetime.conditionalExecutionProven;
+    if (lifetime.interfaceStatePreserved) {
+      output << " interface_state_preserved=1";
+    }
+    output << " evidence=";
     printOperation(output, lifetime.quiescence.evidence);
     output << " occurrences=";
     printOccurrences(output, lifetime);
