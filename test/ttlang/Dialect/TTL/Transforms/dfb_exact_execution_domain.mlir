@@ -49,6 +49,50 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Multiple unknown domains on a launch grid larger than the retained
+// execution-analysis set are refined without losing their disjointness.
+
+// REUSE-LABEL: func.func @large_grid_disjoint_subsets
+// REUSE: %[[LOW:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 40 : index}
+// REUSE-NEXT: %[[HIGH:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+
+module attributes {ttl.launch_grid = array<i64: 65, 1>} {
+  func.func @large_grid_disjoint_subsets(%runtime_offset: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %low = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 40 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %high = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %split = arith.constant 32 : index
+    %runtime_sum = arith.addi %core_x, %runtime_offset : index
+    %runtime_condition = arith.cmpi eq, %runtime_sum, %zero : index
+    %low_node = arith.cmpi slt, %core_x, %split : index
+    %low_runtime = arith.andi %runtime_condition, %low_node : i1
+    %low_condition = arith.ori %low_runtime, %low_node : i1
+    scf.if %low_condition {
+      ttl.opaque_call "low_access" (%low)
+          {header = "effects.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    %high_node = arith.cmpi sge, %core_x, %split : index
+    %high_runtime = arith.andi %runtime_condition, %high_node : i1
+    %high_condition = arith.ori %high_runtime, %high_node : i1
+    scf.if %high_condition {
+      ttl.opaque_call "high_access" (%high)
+          {header = "effects.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
 // Zero executions on only part of the launch grid do not establish an empty
 // domain. Both unknown DFBs remain distinct.
 
