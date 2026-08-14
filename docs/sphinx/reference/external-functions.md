@@ -14,6 +14,7 @@ ttl.call_extern_func(
     func_args=None,
     dfb_dependencies=None,
     dfb_effects=None,
+    dfb_accesses=None,
     unknown_dfb_access=False,
     include_paths=None,
     kernel=None,
@@ -255,7 +256,7 @@ When an external function consumes `ttl.get_dfb_id(dfb)`, the same DFB must be
 a dependency through `func_args`, `ttl.dfb_descriptor(dfb)`, or
 `dfb_dependencies`. An index value does not declare storage access by itself.
 
-## DFB dependencies and protocol effects
+## DFB dependencies, protocol effects, and interface access
 
 `dfb_dependencies` declares DFB storage used by external C++ without adding
 C++ function arguments. DFBs in `func_args` and DFB descriptors in
@@ -297,6 +298,32 @@ call duration, including when operand adaptation aliases multiple occurrences
 to the same SSA DFB. Every aliased occurrence requires its own effects to avoid
 an opaque call-duration access.
 
+`dfb_accesses` is an ordered list of synchronous, non-transactional access
+summaries. `ttl.DFBAccess.interface_preserved(dfb)` states that the external
+function may temporarily inspect or modify the selected DFB interface but
+restores its complete configuration, pointers, occupancy, and initialization
+state before returning:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "read_resident_tensor",
+    template_args=[ttl.dfb_descriptor(format_descriptor)],
+    func_args=[ttl.raw_addr(resident_tensor)],
+    dfb_accesses=[
+        ttl.DFBAccess.interface_preserved(format_descriptor),
+    ],
+    kernel=ttl.KernelKind.COMPUTE,
+)
+```
+
+The summary makes the call-duration storage access and identity state
+transition explicit. It does not establish ordering with another logical DFB;
+allocation reuse still requires the complete access interval to precede or
+follow every access to the other DFB. One dependency occurrence cannot declare
+both a protocol effect and a non-transactional access. An omitted occurrence
+remains conservative.
+
 `unknown_dfb_access=True` declares that external C++ may access user-managed
 DFBs not present in the dependency list. This is distinct from malformed
 metadata. It disables user DFB physical-index reuse in every allocation scope
@@ -307,8 +334,8 @@ Every listed effect is complete when the external function returns. External
 work that continues after return requires separate explicit completion
 semantics and cannot be represented by this synchronous effect list. Effects
 describe external behavior; they do not emit reserve, push, wait, or pop calls.
-Dependency-only operands and all effect metadata leave the generated C++ call
-signature unchanged.
+Dependency-only operands, protocol effects, and non-transactional access
+metadata leave the generated C++ call signature unchanged.
 
 The IR stores each effect as a generated enum and a typed attribute indexing
 the call's ordered dependency-occurrence list. Occurrence positions do not

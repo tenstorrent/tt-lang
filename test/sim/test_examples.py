@@ -111,6 +111,9 @@ _SPEC_EXAMPLES_EXPECT_FAILURE = {
     "spec/dataflow_buffer/allocation_group.py": (
         "has no attribute 'make_dfb_allocation_group'"
     ),
+    "spec/dataflow_buffer/interface_preserved_external_access.py": (
+        "has no attribute 'call_extern_func'"
+    ),
     "spec/semaphore/many_to_one_barrier.py": "has no attribute 'Semaphore'",
     "spec/semaphore/one_to_many_barrier.py": "has no attribute 'Semaphore'",
 }

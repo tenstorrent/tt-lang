@@ -1286,10 +1286,16 @@ Those DFBs remain unbounded and conflict with every other allocation candidate.
 The external call does not disable reuse among other DFBs whose visible
 lifecycles remain bounded.
 
-`dfb_dependencies` declares dependency-only storage, and ordered typed
-`dfb_effects` summarize synchronous reserve, push, wait, and pop actions.
-`unknown_dfb_access=True` declares access to user-managed DFBs outside the
-listed set and conservatively prevents affected physical-index reuse. These
+`dfb_dependencies` declares dependency-only storage, ordered typed
+`dfb_effects` summarize synchronous reserve, push, wait, and pop actions, and
+`dfb_accesses` describes typed synchronous accesses without queue transactions.
+`ttl.DFBAccess.interface_preserved(dfb)` states that the callee restores the
+selected dependency's complete interface state before returning. The call
+remains a storage access, so reuse still requires strict lifetime order; the
+summary only establishes an identity queue-state transition. One dependency
+occurrence cannot declare both a protocol effect and a non-transactional
+access. `unknown_dfb_access=True` declares access to user-managed DFBs outside
+the listed set and conservatively prevents affected physical-index reuse. These
 contracts describe external behavior without adding calls or inspecting C++.
 
 An exact static `dfb_effects` sequence may describe cumulative queue state
