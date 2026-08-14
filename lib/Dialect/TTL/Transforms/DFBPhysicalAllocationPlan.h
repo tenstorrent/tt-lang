@@ -58,6 +58,14 @@ struct DFBKernelBaseIndexAssignment {
   int32_t baseIndex = 0;
 };
 
+/// Static kernel-configuration evidence that forbids one logical DFB alias.
+struct DFBStaticConfigurationConflict {
+  int64_t lhsLogicalId = 0;
+  int64_t rhsLogicalId = 0;
+  Operation *lhsOperation = nullptr;
+  Operation *rhsOperation = nullptr;
+};
+
 /// Semantic reason that two logical DFBs cannot share one physical index.
 enum class DFBConflictReason {
   DescriptorMismatch,
@@ -67,6 +75,7 @@ enum class DFBConflictReason {
   TransactionMismatch,
   PointerOwnerMismatch,
   ConcurrentLifetime,
+  StaticConfigurationMismatch,
 };
 
 /// Source evidence that explains why one logical DFB pair cannot share.
@@ -146,9 +155,11 @@ public:
   /// sharing, dense indices, runtime descriptors, and hardware capacity.
   /// Unknown lifetime facts add conflicts and can cause rejection, but cannot
   /// permit unsafe sharing.
-  DFBPhysicalAllocationPlanner(Operation *operation, bool reuseUserDFBs,
-                               std::uint64_t exactColoringSearchStateLimit,
-                               AnalysisManager analysisManager);
+  DFBPhysicalAllocationPlanner(
+      Operation *operation, bool reuseUserDFBs,
+      std::uint64_t exactColoringSearchStateLimit,
+      ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
+      AnalysisManager analysisManager);
 
   /// Returns true when the complete allocation plan is valid.
   bool succeeded() const { return errorMessage.empty(); }
