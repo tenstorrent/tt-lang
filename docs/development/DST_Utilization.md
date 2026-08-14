@@ -547,7 +547,7 @@ algorithm assigns each op a depth (longest path from any root in the
 dependency graph), then sorts by a 6-component key:
 
 1. depthLevel — dependency depth (correctness constraint)
-2. category — [`TileOpCategory`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h#L178-L187) enum: Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary < CopyDst < DstIndex (no Reduce entry yet — reduction ops do not exist in TTL; when added, they would likely slot between Bcast and Transpose as full-init CB-input ops)
+2. category — [`TileOpCategory`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h) enum: Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary < CopyDst < DstIndex < Fill (Fill is a constant `fill_tile` write to DST with no tile operands)
 3. opName — groups identical op types for init sharing (string comparison for determinism)
 4. initAffinity — groups ops sharing one init call (e.g., COL vs ROW bcasts, copies from different CBs)
 5. dstIdx — DST register index for deterministic ordering

@@ -323,8 +323,10 @@ def _warn_over_hardware_limits(node_footprints: Dict[int, tuple[int, int]]) -> N
     if dfb_count > max_dfbs:
         warnings.warn(
             f"Kernel defines {dfb_count} dataflow buffers{dfb_where}, "
-            f"but the hardware limit is {max_dfbs}. "
-            f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+            f"but the configured limit is {max_dfbs}. "
+            f"Reduce the number of ttl.make_dataflow_buffer_like() calls, "
+            f"or raise the limit with --max-dfbs. Blackhole supports 64 "
+            f"physical DFB indices; Wormhole B0 and Quasar support 32.",
             stacklevel=stacklevel,
         )
 

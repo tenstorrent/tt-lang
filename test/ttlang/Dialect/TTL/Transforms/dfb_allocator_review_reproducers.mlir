@@ -41,8 +41,9 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // Each data DFB conflicts only with the next DFB in A-B-C-D order. Processing
 // them as A, D, B, C makes first-fit use three indices although two suffice.
-// This six-index result is valid and below the hardware limit, so proving the
-// smaller assignment would not change acceptance. The independent oracle adds
+// This six-index result is valid and below the conservative 32-index capacity
+// applied without target metadata, so proving the smaller assignment would not
+// change acceptance. The independent oracle adds
 // 30 DFBs that all conflict pairwise to verify the case where exact search must
 // reduce 33 first-fit indices to the available 32.
 

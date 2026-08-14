@@ -165,7 +165,7 @@ module {
 // An unbounded lifetime conflicts with every other lifetime. Thirty-three
 // unbounded logical DFBs must be rejected rather than unsafely compacted.
 
-// expected-error @below {{DFB allocation needs 33 unspilled physical indices but hardware supports at most 32}}
+// expected-error @below {{DFB allocation needs 33 unspilled physical indices, exceeding the conservative 32-DFB-index capacity used when target metadata is absent}}
 module {
   func.func @unbounded_over_capacity()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,

@@ -397,6 +397,30 @@ the `build-docker` job builds and pushes it before any other downstream
 job consumes it. Subsequent pushes of the same submodule SHA set reuse
 the cached image.
 
+(tagging-after-an-uplift-merge)=
+### Tagging after an uplift merge
+
+Wait for the merge's CI run on `main` to finish building the toolchain before
+pushing the release tag. A run reads caches only from its own ref and the
+default branch, and the uplift PR's cache lives under `refs/pull/<N>/merge`, so
+a tag pushed before `main` has cached the toolchain rebuilds it from source --
+about an hour and a half, concurrent with the identical build on `main`.
+
+The tag run cannot skip it: `call-build-docker.yml`'s `build-images` restores
+the toolchain with `fail-on-cache-miss: true` and bakes it into the IRD image.
+Dispatching `call-build-docker.yml` separately resolves the same cache scopes
+and rebuilds too.
+
+Confirm the cache exists first; the key uses seven-character submodule SHAs:
+
+```bash
+gh api "repos/tenstorrent/tt-lang/actions/caches?per_page=100" \
+  --jq '.actions_caches[] | select(.key | startswith("Linux-toolchain")) | "\(.ref)  \(.key)"'
+```
+
+Look for `Linux-toolchain_llvm-<llvm7>_ttmetal-<ttmetal7>` at
+`ref=refs/heads/main` matching the uplifted submodules, then push the tag.
+
 ### CI: toolchain cache and Docker images
 
 CI uses two caching layers that must be rebuilt when submodule SHAs change:
@@ -506,11 +530,18 @@ Push policy across events:
 | PR (uplift)                            | refused by probe     | yes                            | no                           |
 | PR (non-uplift, container content)     | no (dryrun)          | n/a                            | no                           |
 | Main push (uplift)                     | refused by probe     | yes                            | yes                          |
-| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | no (`build-docker` skipped)  |
+| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | yes (`retag-latest`)         |
 | Tag push (release, via publish-pypi)   | yes                  | n/a                            | no                           |
 | `workflow_dispatch`                    | only if `push: true` | only if `push: true`           | only if `push: true` on main |
 
-For a final release:
+`build-docker` pushes `:latest`, but runs only when the probe reports the image
+missing. For an image published before the main push -- by an uplift PR's run or
+a release tag's `publish-pypi.yml` run -- the `retag-latest` job moves `:latest`
+onto the resolved tag instead, copying the manifest with
+`docker buildx imagetools create` rather than rebuilding.
+
+For a final release (see [Tagging after an uplift
+merge](#tagging-after-an-uplift-merge) before tagging an uplift):
 
 ```bash
 git tag vX.Y.Z

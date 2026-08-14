@@ -27,7 +27,7 @@ pytestmark = pytest.mark.requires_device
 # TTNN interop rejects non-tilized tensors before DFB lowering, so TILE is the
 # only supported tensor layout for these runtime cases.
 TILE = 32
-OVER_CAPACITY_COMPOSITION_LEVELS = 5
+OVER_CAPACITY_COMPOSITION_LEVELS = 6
 EXTERNAL_COMPOSITION_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 6
 EXTERNAL_COMPOSITION_PHYSICAL_DFBS = 8
 # The external fp32 pack step produces approximately 1/256 output increments.
@@ -188,7 +188,7 @@ _external_f32_composition = _make_external_composition_kernel("float32", False)
 _tensor_backed_bf16_composition = _make_external_composition_kernel("bf16", True)
 _tensor_backed_f32_composition = _make_external_composition_kernel("float32", True)
 
-assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 32
+assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 64
 
 
 def _count_final_dfb_allocations(final_mlir_path):
@@ -300,11 +300,14 @@ def test_external_composition_requires_dfb_reuse(
         else scratch_operation
     )
 
-    # The disabled mode requires one physical index for each of the 38 logical
-    # DFBs, proving that enabled execution cannot fit without index reuse.
+    # The disabled mode requires one physical index for each logical DFB,
+    # exceeding every supported target capacity.
     with pytest.raises(
         RuntimeError,
-        match=("need 38 unspilled DFB indices " "but hardware supports at most 32"),
+        match=(
+            "need 70 unspilled DFB indices, exceeding the "
+            "(?:64-DFB-index Blackhole|32-DFB-index Wormhole B0) target capacity"
+        ),
     ):
         operation(
             lhs,

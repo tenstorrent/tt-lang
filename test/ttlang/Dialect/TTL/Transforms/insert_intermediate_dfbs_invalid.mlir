@@ -1,6 +1,6 @@
-// Negative test: exceeding maximum circular buffer count.
+// Negative test: exceeding the conservative DFB-index capacity.
 // The insert pass creates compiler-allocated DFBs without checking the limit;
-// the finalize pass enforces the hardware maximum after index reuse.
+// the finalize pass enforces target capacity after index reuse.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices{reuse-user-dfbs=false})'
 
 // -----
@@ -8,9 +8,9 @@
 // All 32 CB indices (0-31) are occupied by user DFBs. The add result
 // feeds reduce, which requires a compiler-allocated DFB at index 32.
 // After reuse (only one intermediate, nothing to reuse), the total DFB
-// count is 33, exceeding the hardware maximum of 32.
+// count is 33, exceeding the 32-index capacity used without target metadata.
 
-// expected-error @below {{need 33 unspilled DFB indices but hardware supports at most 32 (1 compiler-allocated after proven reuse)}}
+// expected-error @below {{need 33 unspilled DFB indices, exceeding the conservative 32-DFB-index capacity used when target metadata is absent (1 compiler-allocated after proven reuse)}}
 module {
 func.func @exceeds_max_cb_count()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

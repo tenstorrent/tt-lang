@@ -21,11 +21,12 @@ namespace mlir::tt::ttl {
 /// at kernel entry, where finalization can assign physical indices
 /// consistently. The provisional index is unique within the kernel;
 /// finalization assigns module-wide indices, performs lifetime-based reuse, and
-/// validates the hardware limit. The completed compiler pipeline emits a
-/// balanced reserve/push/wait/pop lifecycle whose pop executes before the same
-/// static reserve repeats, so one slot is sufficient. The builder's insertion
-/// point is left at the new `bind_cb`; callers that need to emit elsewhere
-/// should wrap the call in `OpBuilder::InsertionGuard`.
+/// validates the selected target's physical DFB-index capacity. The completed
+/// compiler pipeline emits a balanced reserve/push/wait/pop lifecycle whose
+/// pop executes before the same static reserve repeats, so one slot is
+/// sufficient. The builder's insertion point is left at the new `bind_cb`;
+/// callers that need to emit elsewhere should wrap the call in
+/// `OpBuilder::InsertionGuard`.
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     func::FuncOp kernel, OpBuilder &builder);
 

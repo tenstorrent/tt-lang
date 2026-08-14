@@ -474,7 +474,7 @@ if __name__ == "__main__":
                 result.returncode == 0
             ), f"Expected success with --max-dfbs 2, got stderr: {result.stderr}"
             assert (
-                "hardware limit is 2" in result.stderr
+                "configured limit is 2" in result.stderr
             ), f"Expected DFB limit warning in stderr, got: {result.stderr}"
         finally:
             script.unlink()
@@ -593,7 +593,7 @@ if __name__ == "__main__":
             assert (
                 result.returncode == 0
             ), f"Expected success with --max-dfbs 0, got stderr: {result.stderr}"
-            assert "hardware limit is 0" in result.stderr
+            assert "configured limit is 0" in result.stderr
         finally:
             script.unlink()
 

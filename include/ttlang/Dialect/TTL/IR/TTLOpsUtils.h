@@ -481,6 +481,7 @@ enum class TileOpCategory : uint8_t {
   SFPUBinary = 5, // DST -> DST binary (MATH-only init)
   CopyDst = 6,    // DST -> DST copy
   DstIndex = 7,   // Zero-cost SSA name for one existing DST slot
+  Fill = 8,       // const -> DST (MATH-only fill_tile_init, no tile operands)
   Unknown = 255
 };
 

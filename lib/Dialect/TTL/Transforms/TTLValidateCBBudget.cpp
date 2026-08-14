@@ -121,8 +121,7 @@ struct TTLValidateCBBudgetPass
       return;
     }
     uint64_t totalBytes = *maybeTotalBytes;
-    SmallVector<int64_t, kMaxCircularBuffers> sortedIndices =
-        footprint.getSortedPhysicalIndices();
+    SmallVector<int64_t> sortedIndices = footprint.getSortedPhysicalIndices();
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
       for (int64_t idx : sortedIndices) {
