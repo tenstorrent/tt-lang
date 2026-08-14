@@ -1246,10 +1246,11 @@ capacity. Both mechanisms require complete quiescent lifecycles. Ordinary reuse
 also requires matching write- and read-pointer runs unless a synchronized reset
 establishes canonical state. The matched sequences must remain boundary-safe
 when repeated from their terminal offsets. Allocation groups instead advance
-independent write and read cursors through each ordered member and require equal
-offsets at every handoff. Any pointer movement that crosses the shared physical
-envelope is rejected. These conditions retain one page format, sufficient
-storage, and legal ring-pointer progression.
+independent write and read cursors through each ordered member. A terminal
+synchronized reset establishes equal canonical offsets before the next
+handoff; otherwise the offsets must already be equal. Any pointer movement that
+crosses the shared physical envelope is rejected. These conditions retain one
+page format, sufficient storage, and legal ring-pointer progression.
 `CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
 is a pointer comparison.
 

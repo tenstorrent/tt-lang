@@ -128,6 +128,8 @@ struct DFBLifecycleEpoch {
   SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  std::optional<DFBPointerOwner> terminalWritePointerOwner;
+  std::optional<DFBPointerOwner> terminalReadPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
@@ -248,7 +250,42 @@ public:
   bool hasConditionallyInconsistentOrder(unsigned lhsIndex, unsigned rhsIndex,
                                          LaunchNodeCoord node) const;
 
+  /// Returns true when one reset-delimited epoch ends before another.
+  bool isEpochOrderedBefore(unsigned beforeIndex, unsigned beforeEpochIndex,
+                            unsigned afterIndex, unsigned afterEpochIndex,
+                            LaunchNodeCoord node) const;
+
+  /// Returns epoch ordering while treating unknown domains as possible.
+  bool isConditionallyEpochOrderedBefore(unsigned beforeIndex,
+                                         unsigned beforeEpochIndex,
+                                         unsigned afterIndex,
+                                         unsigned afterEpochIndex,
+                                         LaunchNodeCoord node) const;
+
+  /// Returns true when two epochs contain mutually reachable access events.
+  bool hasInconsistentEpochOrder(unsigned lhsIndex, unsigned lhsEpochIndex,
+                                 unsigned rhsIndex, unsigned rhsEpochIndex,
+                                 LaunchNodeCoord node) const;
+
+  /// Returns inconsistent epoch order with unknown domains included.
+  bool hasConditionallyInconsistentEpochOrder(unsigned lhsIndex,
+                                              unsigned lhsEpochIndex,
+                                              unsigned rhsIndex,
+                                              unsigned rhsEpochIndex,
+                                              LaunchNodeCoord node) const;
+
 private:
+  struct EpochOrdering {
+    SmallVector<unsigned> logicalOffsets;
+    SmallVector<llvm::BitVector> orderedBefore;
+    SmallVector<llvm::BitVector> inconsistent;
+  };
+
+  bool queryEpochRelation(ArrayRef<EpochOrdering> orderings, unsigned lhsIndex,
+                          unsigned lhsEpochIndex, unsigned rhsIndex,
+                          unsigned rhsEpochIndex, LaunchNodeCoord node,
+                          bool inconsistent) const;
+
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
@@ -260,6 +297,8 @@ private:
   SmallVector<SmallVector<llvm::BitVector>> inconsistentOrderByNode;
   SmallVector<SmallVector<llvm::BitVector>>
       conditionallyInconsistentOrderByNode;
+  SmallVector<EpochOrdering> epochOrderedBeforeByNode;
+  SmallVector<EpochOrdering> conditionallyEpochOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };
