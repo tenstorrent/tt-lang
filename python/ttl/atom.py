@@ -26,6 +26,7 @@ the explicit multi-kernel form.
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 import functools
 import hashlib
@@ -39,7 +40,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
 
-from ._src.atom_inline import inline_atom_calls
+from ._src.atom_inline import (
+    _INLINED_OPERATION_STATEMENT,
+    _collect_local_names,
+    inline_atom_calls,
+)
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
 from .compiler_options import CompilerOptions
@@ -383,6 +388,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         inlined_allocation_groups,
         inlined_dfb_resets,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
+    _hoist_inlined_resource_declarations(fn_def, scope, name)
     _validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -571,6 +577,121 @@ def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
     if _call_name(stmt.value) in _SETUP_FACTORY_NAMES or _is_pipe_list_expr(stmt.value):
         return stmt.targets[0].id
     return None
+
+
+class _OperationResourceNameCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names = set()
+
+    def visit_Assign(self, node):
+        resource_name = _setup_assign_target(node)
+        if resource_name is not None:
+            self.names.add(resource_name)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_ClassDef(self, node):
+        return
+
+
+def _operation_resource_names(fn_def: ast.FunctionDef) -> set:
+    collector = _OperationResourceNameCollector()
+    for statement in fn_def.body:
+        collector.visit(statement)
+    return collector.names
+
+
+def _hoist_inlined_resource_declarations(
+    fn_def: ast.FunctionDef,
+    scope: Dict[str, Any],
+    operation_name: str,
+) -> None:
+    """Restore setup placement for resources introduced by composition."""
+
+    resource_names = _operation_resource_names(fn_def)
+    parameter_names = {
+        argument.arg
+        for argument in (
+            fn_def.args.posonlyargs + fn_def.args.args + fn_def.args.kwonlyargs
+        )
+    }
+    local_names = _collect_local_names(fn_def)
+    static_names = set(scope) | set(dir(builtins)) | resource_names | parameter_names
+    dynamic_local_names = local_names - resource_names - parameter_names
+
+    def rewrite_body(
+        statements: List[ast.stmt], *, operation_top_level: bool
+    ) -> Tuple[List[ast.stmt], List[ast.stmt]]:
+        rewritten = []
+        hoisted = []
+        for statement in statements:
+            if isinstance(
+                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                rewritten.append(statement)
+                continue
+
+            nested_resources = []
+            for attribute in ("body", "orelse", "finalbody"):
+                body = getattr(statement, attribute, None)
+                if not isinstance(body, list):
+                    continue
+                if not body or not isinstance(body[0], ast.stmt):
+                    continue
+                rewritten_body, body_resources = rewrite_body(
+                    body, operation_top_level=False
+                )
+                if attribute == "body" and not rewritten_body:
+                    rewritten_body = [ast.copy_location(ast.Pass(), statement)]
+                setattr(statement, attribute, rewritten_body)
+                nested_resources.extend(body_resources)
+
+            handlers = getattr(statement, "handlers", None)
+            if isinstance(handlers, list):
+                for handler in handlers:
+                    if not isinstance(handler, ast.ExceptHandler):
+                        continue
+                    handler.body, handler_resources = rewrite_body(
+                        handler.body, operation_top_level=False
+                    )
+                    if not handler.body:
+                        handler.body = [ast.copy_location(ast.Pass(), handler)]
+                    nested_resources.extend(handler_resources)
+
+            if operation_top_level:
+                rewritten.extend(nested_resources)
+            else:
+                hoisted.extend(nested_resources)
+
+            is_inlined_resource = bool(
+                getattr(statement, _INLINED_OPERATION_STATEMENT, False)
+                and _setup_assign_target(statement) is not None
+            )
+            if is_inlined_resource and not operation_top_level:
+                loaded_names = _loaded_names_in(statement)
+                dependencies = (loaded_names & dynamic_local_names) | (
+                    loaded_names - static_names - local_names
+                )
+                if dependencies:
+                    raise ValueError(
+                        f"@ttl.operation {operation_name!r}: composed resource "
+                        "declaration cannot be hoisted because it depends on "
+                        f"operation-local values {sorted(dependencies)}"
+                    )
+                hoisted.append(statement)
+                continue
+            rewritten.append(statement)
+        return rewritten, hoisted
+
+    fn_def.body, unplaced_resources = rewrite_body(
+        fn_def.body, operation_top_level=True
+    )
+    assert not unplaced_resources
 
 
 def _collect_assignment_targets(target: ast.expr, names: set) -> None:
