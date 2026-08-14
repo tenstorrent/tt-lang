@@ -7,12 +7,14 @@
 #include "DFBValueLifetimeAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <functional>
 
@@ -381,7 +383,7 @@ static LogicalResult collectComputeInstrumentation(
                                 placements, failureReason);
 }
 
-static FailureOr<Type> getResultTileType(Operation *source) {
+static FailureOr<ttcore::TileType> getResultTileType(Operation *source) {
   if (source->getNumResults() != 1) {
     return failure();
   }
@@ -389,7 +391,41 @@ static FailureOr<Type> getResultTileType(Operation *source) {
   if (!tensorType) {
     return failure();
   }
-  return ttcore::TileType::get(tensorType.getElementType());
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return failure();
+  }
+  return tileType;
+}
+
+static ExpFlagsPlan buildExpFlagsPlan(ExpOp exp,
+                                      FloatAttr scaleOverride = nullptr) {
+  FloatAttr scale = scaleOverride ? scaleOverride : exp.getScaleAttr();
+  return ExpFlagsPlan{
+      exp.getApproxAttr(),
+      scale,
+      exp.getInputClampingAttr(),
+      exp.getIterationsAttr(),
+  };
+}
+
+/// Returns true when folding `producer` into `consumer` would move its effect
+/// past an observable operation.
+static bool hasInterveningComputeSideEffect(Operation *producer,
+                                            Operation *consumer) {
+  if (producer->getBlock() != consumer->getBlock() ||
+      !producer->isBeforeInBlock(consumer)) {
+    return true;
+  }
+  for (Operation *operation = producer->getNextNode();
+       operation && operation != consumer;
+       operation = operation->getNextNode()) {
+    if (isRelocatableComputeInstrumentation(operation) ||
+        !isMemoryEffectFree(operation)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
@@ -407,6 +443,22 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
                                               std::string &failureReason) {
   DenseSet<Operation *> fusedOperations(plan.trace.opsInOrder.begin(),
                                         plan.trace.opsInOrder.end());
+  DenseMap<Operation *, MulUnaryConstOp> scaledExpInputs;
+  DenseSet<Operation *> deferredExpScaleMuls;
+  for (Operation *operation : plan.trace.opsInOrder) {
+    auto exp = dyn_cast<ExpOp>(operation);
+    if (!exp || exp.getScaleAttr()) {
+      continue;
+    }
+    auto multiply = exp.getInput().getDefiningOp<MulUnaryConstOp>();
+    if (multiply && multiply->hasOneUse() &&
+        fusedOperations.contains(multiply) &&
+        !hasInterveningComputeSideEffect(multiply, exp)) {
+      scaledExpInputs.try_emplace(exp, multiply);
+      deferredExpScaleMuls.insert(multiply);
+    }
+  }
+
   DenseMap<Operation *, SmallVector<MatmulOp>> foldCandidates;
   for (Operation *operation : plan.trace.opsInOrder) {
     auto matmul = dyn_cast<MatmulOp>(operation);
@@ -464,9 +516,10 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       operationPlan.operands.push_back({value, rootInputIndex});
       return success();
     };
-    FailureOr<Type> resultTileType = getResultTileType(operation);
+    FailureOr<ttcore::TileType> resultTileType = getResultTileType(operation);
     if (failed(resultTileType)) {
-      failureReason = "fused operation result is not a ranked tensor";
+      failureReason =
+          "fused operation result must be a tensor of ttcore.tile elements";
       return failure();
     }
     operationPlan.resultTileType = *resultTileType;
@@ -514,10 +567,18 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
         return failure();
       }
       operationPlan.transposeRhs = foldedMatmul.getTransposeRhs();
+    } else if (deferredExpScaleMuls.contains(operation)) {
+      operationPlan.recipe = FusedOperationRecipe::DeferredExpScale;
     } else if (isElementwiseOp(operation) || isa<FillOp>(operation)) {
-      for (Value operand : getElementwiseOperands(operation)) {
-        if (failed(addOperand(operand, FusedInputRole::Parallel))) {
+      if (auto multiply = scaledExpInputs.lookup(operation)) {
+        if (failed(addOperand(multiply.getInput(), FusedInputRole::Parallel))) {
           return failure();
+        }
+      } else {
+        for (Value operand : getElementwiseOperands(operation)) {
+          if (failed(addOperand(operand, FusedInputRole::Parallel))) {
+            return failure();
+          }
         }
       }
       operationPlan.recipe = FusedOperationRecipe::TileOperation;
@@ -525,6 +586,13 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
         operationPlan.constantValue = multiply.getValueAttr();
       } else if (auto fill = dyn_cast<FillOp>(operation)) {
         operationPlan.constantValue = fill.getValueAttr();
+      } else if (auto exp = dyn_cast<ExpOp>(operation)) {
+        if (auto multiply = scaledExpInputs.lookup(operation)) {
+          operationPlan.expFlags =
+              buildExpFlagsPlan(exp, multiply.getValueAttr());
+        } else {
+          operationPlan.expFlags = buildExpFlagsPlan(exp);
+        }
       }
     } else {
       failureReason = "fused operation has no tile-level recipe";
@@ -822,6 +890,12 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
     buildIdentityIterationPlan(plan);
     return success();
   }
+  if (auto exp = dyn_cast<ExpOp>(plan.source)) {
+    plan.recipe = ComputeOpCreationRecipe::Elementwise;
+    plan.expFlags = buildExpFlagsPlan(exp);
+    buildIdentityIterationPlan(plan);
+    return success();
+  }
   if (isa<TransposeOp>(plan.source)) {
     plan.recipe = ComputeOpCreationRecipe::Transpose;
     MLIRContext *context = plan.source->getContext();
@@ -995,6 +1069,131 @@ bool isComputeOpCreationElision(Operation *source) {
   auto typecast = dyn_cast<TypecastOp>(source);
   return typecast &&
          typecast.getInput().getType() == typecast.getResult().getType();
+}
+
+static std::string formatTensorOfTilesDiagnostic(StringRef role, Type type) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  stream << role << " must be a tensor of ttcore.tile elements, got " << type;
+  return stream.str();
+}
+
+static std::optional<PlanningDiagnostic>
+validateMatmulComputeTypes(MatmulOp matmul,
+                           const ComputeTargetEnvironment &target) {
+  auto lhsType = cast<RankedTensorType>(matmul.getLhs().getType());
+  auto rhsType = cast<RankedTensorType>(matmul.getRhs().getType());
+  auto resultType = cast<RankedTensorType>(matmul.getResult().getType());
+  auto lhsTileType = dyn_cast<ttcore::TileType>(lhsType.getElementType());
+  auto rhsTileType = dyn_cast<ttcore::TileType>(rhsType.getElementType());
+  auto resultTileType = dyn_cast<ttcore::TileType>(resultType.getElementType());
+  if (!lhsTileType || !rhsTileType || !resultTileType) {
+    return PlanningDiagnostic{
+        matmul, "matmul operands and result must be tensors of ttcore.tile "
+                "elements"};
+  }
+
+  std::string failureReason;
+  if (failed(target.validateMatmulTileTypes(
+          lhsTileType, rhsTileType, resultTileType, matmul.getTransposeRhs(),
+          failureReason))) {
+    return PlanningDiagnostic{matmul, std::move(failureReason)};
+  }
+  return std::nullopt;
+}
+
+static std::optional<PlanningDiagnostic>
+validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
+                       const ComputeTargetEnvironment &target) {
+  DenseSet<Operation *> validatedMatmuls;
+  auto validateMatmul =
+      [&](MatmulOp matmul) -> std::optional<PlanningDiagnostic> {
+    if (!validatedMatmuls.insert(matmul.getOperation()).second) {
+      return std::nullopt;
+    }
+    return validateMatmulComputeTypes(matmul, target);
+  };
+
+  if (auto matmul = dyn_cast<MatmulOp>(plan.source)) {
+    if (std::optional<PlanningDiagnostic> diagnostic = validateMatmul(matmul)) {
+      return diagnostic;
+    }
+  }
+  for (const FusedOperationPlan &operationPlan : plan.fusedOperations) {
+    if (auto matmul = dyn_cast<MatmulOp>(operationPlan.source)) {
+      if (std::optional<PlanningDiagnostic> diagnostic =
+              validateMatmul(matmul)) {
+        return diagnostic;
+      }
+    }
+    if (operationPlan.foldedMatmul) {
+      if (std::optional<PlanningDiagnostic> diagnostic =
+              validateMatmul(*operationPlan.foldedMatmul)) {
+        return diagnostic;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<PlanningDiagnostic>
+recordComputeTileTypes(ComputeOpCreationPlan &plan,
+                       const ComputeTargetEnvironment &target) {
+  if (std::optional<PlanningDiagnostic> diagnostic =
+          validatePlannedMatmuls(plan, target)) {
+    return diagnostic;
+  }
+  auto validateTileType = [&](ttcore::TileType tileType,
+                              std::string &failureReason) {
+    return target.validateKernelTileType(tileType, failureReason);
+  };
+
+  auto resultTileType =
+      dyn_cast<ttcore::TileType>(plan.resultType.getElementType());
+  if (!resultTileType) {
+    return PlanningDiagnostic{
+        plan.source,
+        formatTensorOfTilesDiagnostic("compute result", plan.resultType)};
+  }
+  plan.resultTileType = resultTileType;
+
+  std::string failureReason;
+  if (failed(validateTileType(resultTileType, failureReason))) {
+    return PlanningDiagnostic{plan.source, "compute result " + failureReason};
+  }
+  if (failed(target.validateOperation(plan.source, failureReason))) {
+    return PlanningDiagnostic{plan.source, std::move(failureReason)};
+  }
+
+  for (auto [inputIndex, input] : llvm::enumerate(plan.inputs)) {
+    RankedTensorType inputType = getTensorType(input);
+    auto inputTileType =
+        inputType ? dyn_cast<ttcore::TileType>(inputType.getElementType())
+                  : ttcore::TileType{};
+    if (!inputTileType) {
+      std::string role = "compute input " + std::to_string(inputIndex);
+      return PlanningDiagnostic{
+          plan.source,
+          formatTensorOfTilesDiagnostic(role, inputType ? Type(inputType)
+                                                        : input.getType())};
+    }
+    plan.inputTileTypes.push_back(inputTileType);
+    if (failed(validateTileType(inputTileType, failureReason))) {
+      return PlanningDiagnostic{plan.source, "compute input " +
+                                                 std::to_string(inputIndex) +
+                                                 " " + failureReason};
+    }
+  }
+  for (const FusedOperationPlan &operationPlan : plan.fusedOperations) {
+    if (failed(validateTileType(operationPlan.resultTileType, failureReason))) {
+      return PlanningDiagnostic{operationPlan.source,
+                                "fused compute result " + failureReason};
+    }
+    if (failed(target.validateOperation(operationPlan.source, failureReason))) {
+      return PlanningDiagnostic{operationPlan.source, std::move(failureReason)};
+    }
+  }
+  return std::nullopt;
 }
 
 bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
@@ -1187,6 +1386,7 @@ static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
 buildComputeOpCreationPlan(Operation *source,
                            const DFBValueLifetimeAnalysis &lifetimes,
                            const DominanceInfo &dominanceInfo,
+                           const ComputeTargetEnvironment &target,
                            std::string &failureReason) {
   if (source->getNumResults() != 1) {
     return rejectComputeOpCreation(
@@ -1249,6 +1449,14 @@ buildComputeOpCreationPlan(Operation *source,
     return rejectComputeOpCreation(
         source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
         std::move(failureReason));
+  }
+
+  if (plan.kind != ComputeOpCreationKind::Elide) {
+    if (std::optional<PlanningDiagnostic> invalidIR =
+            recordComputeTileTypes(plan, target)) {
+      return PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>::
+          invalidIR(invalidIR->operation, std::move(invalidIR->message));
+    }
   }
 
   // Identity typecasts preserve position and storage. They neither form a
@@ -1348,10 +1556,9 @@ buildComputeOpCreationPlan(Operation *source,
                         ComputeOpCreationRejection>::planned(std::move(plan));
 }
 
-static FailureOr<PassthroughStorePlan>
-buildPassthroughStorePlan(StoreOp store,
-                          const DFBValueLifetimeAnalysis &lifetimes,
-                          std::string &failureReason) {
+static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
+    StoreOp store, const DFBValueLifetimeAnalysis &lifetimes,
+    const ComputeTargetEnvironment &target, std::string &failureReason) {
   SmallVector<Value> inputChain = {store.getTensor()};
   while (Operation *definition = inputChain.back().getDefiningOp()) {
     if (!isComputeOpCreationElision(definition)) {
@@ -1374,6 +1581,16 @@ buildPassthroughStorePlan(StoreOp store,
     failureReason = "store input is not a ranked tensor";
     return failure();
   }
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    failureReason =
+        formatTensorOfTilesDiagnostic("passthrough store input", tensorType);
+    return failure();
+  }
+  if (failed(target.validateOperation(store, failureReason))) {
+    failureReason = "passthrough store " + failureReason;
+    return failure();
+  }
   if (lifetimes.getAvailability(input, store) ==
       DFBValueAvailability::MayBeReleased) {
     failureReason =
@@ -1389,6 +1606,7 @@ buildPassthroughStorePlan(StoreOp store,
   plan.outputView = store.getView();
   plan.outputDFB = reserve.getCb();
   plan.tensorType = tensorType;
+  plan.tileType = tileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
@@ -1457,7 +1675,7 @@ ComputeOpCreationPlanner::build() const {
 
     std::string failureReason;
     PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection> creation =
-        buildComputeOpCreationPlan(source, lifetimes, dominanceInfo,
+        buildComputeOpCreationPlan(source, lifetimes, dominanceInfo, target,
                                    failureReason);
     if (creation.isInvalidIR()) {
       invalidIR = creation.getInvalidIR();
@@ -1642,7 +1860,7 @@ ComputeOpCreationPlanner::build() const {
   kernel->walk([&](StoreOp store) {
     std::string failureReason;
     FailureOr<PassthroughStorePlan> plan =
-        buildPassthroughStorePlan(store, lifetimes, failureReason);
+        buildPassthroughStorePlan(store, lifetimes, target, failureReason);
     if (succeeded(plan)) {
       kernelPlan.passthroughStores.try_emplace(store, std::move(*plan));
     } else {

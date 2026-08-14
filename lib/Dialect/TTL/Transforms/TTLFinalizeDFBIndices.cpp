@@ -68,6 +68,29 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
         "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
+    SmallVector<Attribute> storageSegmentAttributes;
+    for (const DFBPhysicalStorageSegment &segment :
+         descriptor.storageSegments) {
+      SmallVector<Attribute> nodeAttributes;
+      for (LaunchNodeCoord node : segment.launchDomain.nodes) {
+        nodeAttributes.push_back(
+            builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
+                                  builder.getI64IntegerAttr(node.y)}));
+      }
+      SmallVector<NamedAttribute> segmentAttributes;
+      segmentAttributes.push_back(
+          builder.getNamedAttr("nodes", builder.getArrayAttr(nodeAttributes)));
+      if (segment.tensorBacking) {
+        segmentAttributes.push_back(
+            builder.getNamedAttr("tensor_backing", segment.tensorBacking));
+      }
+      storageSegmentAttributes.push_back(
+          builder.getDictionaryAttr(segmentAttributes));
+    }
+    if (!storageSegmentAttributes.empty()) {
+      entryAttributes.push_back(builder.getNamedAttr(
+          "storage_segments", builder.getArrayAttr(storageSegmentAttributes)));
+    }
     descriptorAttributes.push_back(
         DictionaryAttr::get(context, entryAttributes));
   }

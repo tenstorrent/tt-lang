@@ -65,7 +65,7 @@ def add_loop_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 # CHECK: %[[LHS:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[OUT:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[RHS:.+]] = ttl.bind_cb{cb_index = 1

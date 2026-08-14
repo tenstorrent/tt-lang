@@ -133,3 +133,26 @@ func.func @preserve_nested_pure_consumer_order(
   }
   return
 }
+
+// A transpose is a modeled DFB-to-DST operation and sorts before independent
+// DST operations so its full initialization executes first.
+
+// CHECK-LABEL: func.func @schedule_transpose_before_dst_operations
+// CHECK:       ttl.dst_section {
+// CHECK-NEXT:    %[[TRANSPOSE:.*]] = ttl.tile_transpose
+// CHECK-NEXT:    %[[DST:.*]] = ttl.dst_index
+// CHECK-NEXT:    %[[EXP:.*]] = ttl.tile_exp %[[DST]]
+// CHECK-NEXT:  }
+func.func @schedule_transpose_before_dst_operations(
+    %input: !ttcore.tile<32x32, bf16>,
+    %output: !ttcore.tile<32x32, bf16>) {
+  %dst0 = arith.constant 0 : index
+  %dst1 = arith.constant 1 : index
+  ttl.dst_section {
+    %dst = ttl.dst_index %input[%dst0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %exp = ttl.tile_exp %dst into dst[%dst0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %transpose = ttl.tile_transpose %input, %output into dst[%dst1] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+    ttl.yield
+  }
+  return
+}

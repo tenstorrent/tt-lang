@@ -33,14 +33,14 @@ func.func @acquire_two_compute_lowers(%t0: !ttcore.tile<32x32, f32>, %t1: !ttcor
   // First region
   ttl.tile_regs_acquire
   %c0 = arith.constant 0 : index
-  %a = ttl.tile_add %t0, %t1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %a = ttl.tile_add %t0, %t1 into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttl.tile_regs_commit
   ttl.tile_regs_wait
   ttl.tile_regs_release
 
   // Second region
   ttl.tile_regs_acquire
-  %b = ttl.tile_mul %a, %t1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %b = ttl.tile_mul %a, %t1 into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttl.tile_regs_commit
   ttl.tile_regs_wait
   ttl.tile_regs_release
@@ -60,8 +60,8 @@ func.func @acquire_chain_lowers(%t0: !ttcore.tile<32x32, f32>,
                                 %t2: !ttcore.tile<32x32, f32>) {
   ttl.tile_regs_acquire
   %c0 = arith.constant 0 : index
-  %a = ttl.tile_add %t0, %t1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  %b = ttl.tile_mul %a, %t2 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %a = ttl.tile_add %t0, %t1 into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %b = ttl.tile_mul %a, %t2 into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   %c = ttl.tile_exp %b into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttl.tile_regs_commit
   ttl.tile_regs_wait

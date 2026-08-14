@@ -6,8 +6,45 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::tt::ttl {
+
+FailureOr<ttcore::TileType> getTileType(Type type) {
+  if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
+    return tileType;
+  }
+  auto tensorType = dyn_cast<RankedTensorType>(type);
+  if (!tensorType) {
+    return failure();
+  }
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return failure();
+  }
+  return tileType;
+}
+
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (inputType.getShape() != resultType.getShape()) {
+    diagnostic << "input and result tile shapes must match, but got input: "
+               << inputType << ", result: " << resultType;
+    return failure();
+  }
+  if (!ttcore::isFloat(inputType.getDataType()) ||
+      !ttcore::isFloat(resultType.getDataType())) {
+    diagnostic
+        << "only supports floating-point tile data types, but got input: "
+        << inputType << ", result: " << resultType;
+    return failure();
+  }
+  return success();
+}
 
 FailureOr<int64_t> getDFBId(Value cb) {
   auto bindOp = getDFBDeclaration(cb);
@@ -19,6 +56,37 @@ FailureOr<int64_t> getDFBId(Value cb) {
     return failure();
   }
   return dfbId->getSExtValue();
+}
+
+FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type) {
+  uint64_t pagesPerBlock = 1;
+  for (int64_t dimension : type.getShape()) {
+    if (dimension <= 0) {
+      return failure();
+    }
+    std::optional<uint64_t> product = llvm::checkedMulUnsigned(
+        pagesPerBlock, static_cast<uint64_t>(dimension));
+    if (!product) {
+      return failure();
+    }
+    pagesPerBlock = *product;
+  }
+  return pagesPerBlock;
+}
+
+FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
+  Type elementType = type.getElementType();
+  if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
+    return tileType.getSizeBytes();
+  }
+  if (!elementType.isIntOrFloat()) {
+    return failure();
+  }
+  uint64_t bitWidth = elementType.getIntOrFloatBitWidth();
+  if (bitWidth == 0 || bitWidth % 8 != 0) {
+    return failure();
+  }
+  return bitWidth / 8;
 }
 
 LogicalResult verifyDFBOperandIdentities(
@@ -98,6 +166,352 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
       getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
 }
 
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (lhsType.getDataType() != rhsType.getDataType()) {
+    diagnostic << "element data type mismatch: lhs has " << lhsType
+               << " but rhs has " << rhsType;
+    return failure();
+  }
+  if (resultType.getDataType() != lhsType.getDataType()) {
+    diagnostic << "result element data type " << resultType
+               << " must match input element data type " << lhsType;
+    return failure();
+  }
+
+  int64_t rhsK = transposeRhs ? rhsType.getWidth() : rhsType.getHeight();
+  if (lhsType.getWidth() != rhsK) {
+    diagnostic << "tile K dimension mismatch: lhs tile width "
+               << lhsType.getWidth() << " does not match rhs tile "
+               << (transposeRhs ? "width " : "height ") << rhsK;
+    return failure();
+  }
+
+  int64_t expectedResultWidth =
+      transposeRhs ? rhsType.getHeight() : rhsType.getWidth();
+  if (resultType.getHeight() != lhsType.getHeight() ||
+      resultType.getWidth() != expectedResultWidth) {
+    diagnostic << "result tile dimensions " << resultType.getHeight() << "x"
+               << resultType.getWidth() << " do not match expected "
+               << lhsType.getHeight() << "x" << expectedResultWidth;
+    return failure();
+  }
+  return success();
+}
+
+/// FPU binary execution requires both operands to address the same tile
+/// coordinates.
+static bool hasMatchingFPUInputIndices(Operation *operation) {
+  assert(operation->getNumOperands() >= 2 &&
+         "binary tile op with execution alternatives must have two data "
+         "operands");
+  Value lhs = operation->getOperand(0);
+  Value rhs = operation->getOperand(1);
+
+  if (auto lhsArgument = dyn_cast<BlockArgument>(lhs)) {
+    auto rhsArgument = dyn_cast<BlockArgument>(rhs);
+    if (!rhsArgument || lhsArgument.getOwner() != rhsArgument.getOwner()) {
+      return false;
+    }
+    auto computeOp =
+        dyn_cast_or_null<ComputeOp>(lhsArgument.getOwner()->getParentOp());
+    if (!computeOp) {
+      return false;
+    }
+    unsigned numInputs = computeOp.getNumInputs();
+    if (lhsArgument.getArgNumber() >= numInputs ||
+        rhsArgument.getArgNumber() >= numInputs) {
+      return false;
+    }
+    auto indexingMaps = computeOp.getIndexingMapsArray();
+    return indexingMaps[lhsArgument.getArgNumber()] ==
+           indexingMaps[rhsArgument.getArgNumber()];
+  }
+
+  auto lhsExtract = lhs.getDefiningOp<tensor::ExtractOp>();
+  auto rhsExtract = rhs.getDefiningOp<tensor::ExtractOp>();
+  return lhsExtract && rhsExtract &&
+         lhsExtract.getIndices() == rhsExtract.getIndices();
+}
+
+SmallVector<TileExecutionStrategy, 2>
+getDefaultLegalTileExecutionStrategies(Operation *operation) {
+  if (!operation->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    return {};
+  }
+
+  SmallVector<TileExecutionStrategy, 2> strategies{TileExecutionStrategy::SFPU};
+  auto resultType =
+      dyn_cast<ttcore::TileType>(operation->getResult(0).getType());
+  if (resultType && ttcore::isFloat(resultType.getDataType()) &&
+      hasMatchingFPUInputIndices(operation)) {
+    strategies.insert(strategies.begin(), TileExecutionStrategy::FPU);
+  }
+  return strategies;
+}
+
+FailureOr<TileExecutionInfo>
+getDefaultTileExecutionInfo(Operation *operation,
+                            std::optional<TileExecutionStrategy> strategy) {
+  TileExecutionInfo info;
+  info.operandRoutes.assign(operation->getNumOperands(),
+                            TileOperandRoute::None);
+  info.dstOperandsMaterializedByOperation.resize(operation->getNumOperands());
+  info.resultInDst = operation->hasTrait<TTLDstResultOpTrait>();
+
+  if (isa<CopyTileOp>(operation)) {
+    info.primitive = TilePrimitive::Copy;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
+  if (isa<CopyDstOp>(operation)) {
+    info.primitive = TilePrimitive::Copy;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    return info;
+  }
+  if (isa<DstIndexOp>(operation)) {
+    info.primitive = TilePrimitive::DstIndex;
+    return info;
+  }
+  if (isa<TileStoreOp>(operation)) {
+    info.primitive = TilePrimitive::Store;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    return info;
+  }
+  if (auto broadcast = dyn_cast<TileBcastOp>(operation)) {
+    switch (broadcast.getBcastType()) {
+    case BcastType::Col:
+      info.primitive = TilePrimitive::BroadcastColumn;
+      break;
+    case BcastType::Row:
+      info.primitive = TilePrimitive::BroadcastRow;
+      break;
+    case BcastType::Scalar:
+      info.primitive = TilePrimitive::BroadcastScalar;
+      break;
+    }
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
+  if (auto reduce = dyn_cast<TileReduceOp>(operation)) {
+    info.primitive = TilePrimitive::Reduce;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    switch (reduce.getReduceDim()) {
+    case ttkernel::ReduceDim::Row:
+      info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceRow;
+      break;
+    case ttkernel::ReduceDim::Col:
+      info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceColumn;
+      break;
+    case ttkernel::ReduceDim::Scalar:
+      info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceScalar;
+      break;
+    }
+    return info;
+  }
+  if (isa<TileTransposeOp>(operation)) {
+    info.primitive = TilePrimitive::Transpose;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
+  if (isa<TileFillOp>(operation)) {
+    info.primitive = TilePrimitive::Fill;
+    return info;
+  }
+  if (auto matmul = dyn_cast<TileMatmulBlockOp>(operation)) {
+    info.primitive = TilePrimitive::Matmul;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    if (matmul.getAccumulator()) {
+      info.operandRoutes[2] = TileOperandRoute::Dst;
+      info.dstOperandsMaterializedByOperation.set(2);
+    }
+    info.fullFp32Accumulation = FullFp32AccumulationKind::Matmul;
+    info.accumulatesIntoDst = true;
+    return info;
+  }
+  if (isa<TileAccumulateOp>(operation)) {
+    info.primitive = TilePrimitive::ElementwiseBinary;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    info.accumulatesIntoDst = true;
+    return info;
+  }
+  if (operation->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    if (!strategy) {
+      return failure();
+    }
+    info.primitive = TilePrimitive::ElementwiseBinary;
+    TileOperandRoute route = *strategy == TileExecutionStrategy::FPU
+                                 ? TileOperandRoute::DataflowBuffer
+                                 : TileOperandRoute::Dst;
+    info.operandRoutes[0] = route;
+    info.operandRoutes[1] = route;
+    info.accumulatesIntoDst = *strategy == TileExecutionStrategy::FPU;
+    return info;
+  }
+  if (operation->hasTrait<TTLTileBinaryOpTrait>()) {
+    info.primitive = TilePrimitive::ElementwiseBinary;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    info.operandRoutes[1] = TileOperandRoute::Dst;
+    return info;
+  }
+  if (operation->hasTrait<TTLTileUnaryOpTrait>()) {
+    info.primitive = TilePrimitive::ElementwiseUnary;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    return info;
+  }
+  return failure();
+}
+
+LogicalResult verifyTileExecutionInfo(Operation *operation,
+                                      const TileExecutionInfo &info) {
+  if (info.primitive == TilePrimitive::Unknown) {
+    operation->emitOpError("does not define a tile execution primitive");
+    return failure();
+  }
+  if (info.operandRoutes.size() != operation->getNumOperands()) {
+    operation->emitOpError() << "defines " << info.operandRoutes.size()
+                             << " tile operand routes for "
+                             << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  if (info.dstOperandsMaterializedByOperation.size() !=
+      operation->getNumOperands()) {
+    operation->emitOpError()
+        << "defines " << info.dstOperandsMaterializedByOperation.size()
+        << " DST operand materialization entries for "
+        << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  return success();
+}
+
+FailureOr<TileExecutionStrategy>
+getSelectedTileExecutionStrategy(Operation *operation) {
+  auto strategyAttr = operation->getAttrOfType<TileExecutionStrategyAttr>(
+      kTileExecutionStrategyAttrName);
+  if (!strategyAttr) {
+    return failure();
+  }
+  return strategyAttr.getValue();
+}
+
+FailureOr<TileExecutionInfo>
+getSelectedTileExecutionInfo(Operation *operation) {
+  auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
+  if (!executionOp) {
+    return failure();
+  }
+  if (executionOp.getLegalExecutionStrategies().empty()) {
+    return executionOp.getTileExecutionInfo(std::nullopt);
+  }
+  FailureOr<TileExecutionStrategy> strategy =
+      getSelectedTileExecutionStrategy(operation);
+  if (failed(strategy)) {
+    return failure();
+  }
+  return executionOp.getTileExecutionInfo(*strategy);
+}
+
+LogicalResult
+verifyTileExecutionStrategy(Operation *operation,
+                            ArrayRef<TileExecutionStrategy> legalStrategies) {
+  Attribute rawStrategy = operation->getAttr(kTileExecutionStrategyAttrName);
+  auto strategyAttr = dyn_cast_or_null<TileExecutionStrategyAttr>(rawStrategy);
+  if (rawStrategy && !strategyAttr) {
+    operation->emitOpError()
+        << kTileExecutionStrategyAttrName
+        << " must be a #ttl.tile_execution_strategy attribute";
+    return failure();
+  }
+  if (legalStrategies.empty() && strategyAttr) {
+    operation->emitOpError()
+        << kTileExecutionStrategyAttrName
+        << " is only valid on tile operations with execution-strategy "
+           "alternatives";
+    return failure();
+  }
+  if (strategyAttr &&
+      !llvm::is_contained(legalStrategies, strategyAttr.getValue())) {
+    operation->emitOpError() << "explicit " << kTileExecutionStrategyAttrName
+                             << " is not legal for its operands";
+    return failure();
+  }
+  return success();
+}
+
+/// Return an operand route after all required strategies have been selected.
+static TileOperandRoute getRequiredOperandRoute(OpOperand &operand) {
+  auto executionOp = dyn_cast<TileExecutionOpInterface>(operand.getOwner());
+  if (!executionOp) {
+    assert(!isTileComputeOp(operand.getOwner()) &&
+           "tile operation must implement TileExecutionOpInterface");
+    return TileOperandRoute::None;
+  }
+  FailureOr<TileExecutionInfo> info =
+      getSelectedTileExecutionInfo(operand.getOwner());
+  assert(succeeded(info) && "tile execution strategy must be resolved");
+  assert(operand.getOperandNumber() < info->operandRoutes.size() &&
+         "tile execution semantics must define every operand route");
+  return info->operandRoutes[operand.getOperandNumber()];
+}
+
+bool isDstInput(OpOperand &operand) {
+  return getRequiredOperandRoute(operand) == TileOperandRoute::Dst;
+}
+
+bool isDstInputMaterializedByOperation(OpOperand &operand) {
+  FailureOr<TileExecutionInfo> info =
+      getSelectedTileExecutionInfo(operand.getOwner());
+  assert(succeeded(info) && "tile execution strategy must be resolved");
+  assert(operand.getOperandNumber() <
+             info->dstOperandsMaterializedByOperation.size() &&
+         "tile execution semantics must define every DST materialization bit");
+  return info->dstOperandsMaterializedByOperation.test(
+      operand.getOperandNumber());
+}
+
+LogicalResult verifyTileExecutionSemantics(Operation *root) {
+  WalkResult walkResult = root->walk([&](Operation *operation) {
+    auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
+    if (!executionOp) {
+      if (isTileComputeOp(operation)) {
+        operation->emitOpError("does not implement TileExecutionOpInterface");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
+    SmallVector<TileExecutionStrategy, 2> legalStrategies =
+        executionOp.getLegalExecutionStrategies();
+    if (failed(verifyTileExecutionStrategy(operation, legalStrategies))) {
+      return WalkResult::interrupt();
+    }
+    FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(operation);
+    if (failed(info)) {
+      if (!legalStrategies.empty()) {
+        operation->emitOpError()
+            << "requires a selected " << kTileExecutionStrategyAttrName
+            << " attribute; run ttl-set-compute-kernel-config before DST "
+               "assignment, scheduling, or lowering";
+      } else {
+        operation->emitOpError("has no tile execution semantics");
+      }
+      return WalkResult::interrupt();
+    }
+    return failed(verifyTileExecutionInfo(operation, *info))
+               ? WalkResult::interrupt()
+               : WalkResult::advance();
+  });
+  return failure(walkResult.wasInterrupted());
+}
+
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
                                               int64_t rank) {
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
@@ -138,6 +552,29 @@ FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
   return failure();
 }
 
+FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe) {
+  pipe = traceUnrealizedCasts(pipe);
+  if (auto selectedSrc = pipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return SelectedPipeRecords{selectedSrc.getRecords(), nullptr};
+  }
+  if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
+    return SelectedPipeRecords{selectedDst.getRecords(), nullptr};
+  }
+
+  auto blockArgument = mlir::dyn_cast<BlockArgument>(pipe);
+  if (!blockArgument || blockArgument.getArgNumber() != 0) {
+    return failure();
+  }
+  Operation *owner = blockArgument.getOwner()->getParentOp();
+  if (auto foreachSrc = mlir::dyn_cast<PipeNetForeachSrcOp>(owner)) {
+    return SelectedPipeRecords{foreachSrc.getRecords(), owner};
+  }
+  if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(owner)) {
+    return SelectedPipeRecords{foreachDst.getRecords(), owner};
+  }
+  return failure();
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//
@@ -158,38 +595,36 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
   return lhsType.getDimSize(0) * rhsType.getDimSize(1);
 }
 
-/// Interface defaults assert for missing DST operands because callers use this
+/// Interface defaults require resolved DST operands because callers use this
 /// after DST assignment, where unresolved tile residency is invalid IR.
-static void appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
-                                      Value operand) {
+static LogicalResult
+appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
+                          Value operand) {
   if (!isTileValue(operand)) {
-    return;
+    return success();
   }
   FailureOr<DstFootprint> footprint = getDstFootprint(operand);
-  assert(succeeded(footprint) && "DST operand has no DST footprint");
+  if (failed(footprint)) {
+    return failure();
+  }
   footprints.push_back(*footprint);
+  return success();
 }
 
-/// Ordinary DST-input tile ops read tile operands from their producer slots.
-/// FPU-eligible strategy-dependent binary ops read from DFBs instead.
-SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
+FailureOr<SmallVector<DstFootprint, 2>>
+getDefaultDstReadFootprints(Operation *op) {
   SmallVector<DstFootprint, 2> footprints;
-  if (isa<CopyTileOp, DstIndexOp>(op)) {
-    return footprints;
+  FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(op);
+  if (failed(info)) {
+    return failure();
   }
-  if (auto store = dyn_cast<TileStoreOp>(op)) {
-    appendDstOperandFootprint(footprints, store.getTile());
-    return footprints;
-  }
-  if (auto accumulate = dyn_cast<TileAccumulateOp>(op)) {
-    appendDstOperandFootprint(footprints, accumulate.getAccumulator());
-    return footprints;
-  }
-  if (op->hasTrait<TTLDSTInputsTrait>() ||
-      (op->hasTrait<TTLStrategyDependentBinaryOpTrait>() &&
-       !isFPUEligibleBinaryOp(op))) {
-    for (Value operand : op->getOperands()) {
-      appendDstOperandFootprint(footprints, operand);
+  for (OpOperand &operand : op->getOpOperands()) {
+    if (info->operandRoutes[operand.getOperandNumber()] !=
+        TileOperandRoute::Dst) {
+      continue;
+    }
+    if (failed(appendDstOperandFootprint(footprints, operand.get()))) {
+      return failure();
     }
   }
   return footprints;
@@ -289,7 +724,12 @@ FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op) {
   if (!dstAccess) {
     return SmallVector<int64_t>{};
   }
-  return getConstantDstIndices(dstAccess.getDstReadFootprints());
+  FailureOr<SmallVector<DstFootprint, 2>> footprints =
+      dstAccess.getDstReadFootprints();
+  if (failed(footprints)) {
+    return failure();
+  }
+  return getConstantDstIndices(*footprints);
 }
 
 FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op) {
@@ -320,10 +760,19 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileMatmulBlockOp>(op)) {
     return TileOpCategory::FPUBinary;
   }
-  // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
+  if (isa<TileTransposeOp>(op)) {
+    return TileOpCategory::Transpose;
+  }
+  if (isa<TileFillOp>(op)) {
+    return TileOpCategory::Fill;
+  }
 
-  if (isFPUEligibleBinaryOp(op)) {
-    return TileOpCategory::FPUBinary;
+  if (op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    FailureOr<TileExecutionStrategy> strategy =
+        getSelectedTileExecutionStrategy(op);
+    assert(succeeded(strategy) && "tile execution strategy must be resolved");
+    return *strategy == TileExecutionStrategy::FPU ? TileOpCategory::FPUBinary
+                                                   : TileOpCategory::SFPUBinary;
   }
   // SFPU unary: tile unary ops that operate in-place on DST.
   if (op->hasTrait<TTLTileUnaryOpTrait>()) {

@@ -471,6 +471,65 @@ def test_publish_pypi_supports_release_sha_from_main() -> None:
     assert "inputs.ttlang_sha" not in publish_job
 
 
+def test_main_push_moves_latest_when_the_image_already_exists() -> None:
+    """:latest must track main when build-docker is skipped as already-built."""
+    workflow = CI_WORKFLOW.read_text()
+    retag_job = workflow.split("\n  retag-latest:", 1)[1].split(
+        "\n  build-wheel-images:", 1
+    )[0]
+
+    assert "needs: resolve-docker-tag" in retag_job
+    assert "github.event_name == 'push'" in retag_job
+    assert "github.ref == 'refs/heads/main'" in retag_job
+    # Runs exactly when build-docker does not.
+    assert "needs.resolve-docker-tag.outputs.needs_rebuild == 'false'" in retag_job
+    assert "packages: write" in retag_job
+    assert ".github/scripts/retag-docker-latest.sh" in retag_job
+
+    script = (SCRIPTS_DIR / "retag-docker-latest.sh").read_text()
+    assert "docker buildx imagetools create" in script
+    assert "tt-lang-ird-ubuntu-24-04" in script
+    assert "tt-lang-dist-ubuntu-24-04" in script
+
+
+def test_release_tag_builds_ird_and_manylinux_images_independently() -> None:
+    """A release-tag push must publish the IRD image ci.yml's probe requires.
+
+    The two image builds are separate reusable workflows and must both run,
+    concurrently, off the tagged commit.
+    """
+    workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    build_wheel_images_job = workflow.split("\n  build-wheel-images:", 1)[1].split(
+        "\n  build-docker:", 1
+    )[0]
+    build_docker_job = workflow.split("\n  build-docker:", 1)[1].split(
+        "\n  build-wheels:", 1
+    )[0]
+
+    assert "uses: ./.github/workflows/call-build-wheel-images.yml" in (
+        build_wheel_images_job
+    )
+    assert "if: ${{ github.event_name == 'push' || inputs.docker_tag == '' }}" in (
+        build_wheel_images_job
+    )
+
+    assert "uses: ./.github/workflows/call-build-docker.yml" in build_docker_job
+    assert "if: ${{ github.event_name == 'push' }}" in build_docker_job
+    assert "push: true" in build_docker_job
+    # Pushing to GHCR under the release tag needs packages: write.
+    assert "packages: write" in build_docker_job
+    # On a tag push github.sha is already the tagged commit; overriding the
+    # source would decouple the published image from the release.
+    assert "ttlang_sha_override" not in build_docker_job
+
+    assert "needs: preflight" in build_wheel_images_job
+    # IRD publication must not depend on preflight. preflight fails the PyPI
+    # alignment check on an S3-only pin (TT_METAL_TAG ahead of the public ttnn
+    # provenance tag), and a dependent job is skipped when its needs fail, which
+    # would leave those releases without the image ci.yml's probe requires.
+    assert "needs:" not in build_docker_job
+
+
 def test_publish_pypi_terminal_jobs_override_skipped_docker_build_status() -> None:
     workflow = PUBLISH_PYPI_WORKFLOW.read_text()
     publish_job = workflow.split("\n  publish:", 1)[1].split("\n  dry-run-summary:", 1)[

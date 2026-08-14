@@ -1,15 +1,14 @@
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true})' | FileCheck %s --check-prefix=COMPUTED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=COMPUTED
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s --check-prefix=PUBLISHED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=RECEIVER-POST
 
-// Summary: Verifies that the PipeNet option selects receiver-published or
-// computed addresses while preserving receiver-post synchronization.
+// Summary: Verifies that the PipeNet options select receiver-published or
+// computed addresses and receiver-post or capacity-counter synchronization.
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @point_to_point_pipe
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.noc_semaphore_inc
-  // COMPUTED: ttkernel.experimental.semaphore_wait(
   // COMPUTED: ttkernel.noc_async_write
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
   // COMPUTED-NOT: ttkernel.load_from_l1
@@ -66,13 +65,15 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-DAG: %[[BLOCK_COUNT:.*]] = arith.constant 4 : i32
   // COMPUTED-DAG: %[[REPEAT_STRIDE:.*]] = arith.constant 2 : i32
   // COMPUTED-DAG: %[[BLOCK_BYTES:.*]] = arith.constant 4096 : i32
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[BLOCK_BYTES]]
+  // COMPUTED: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr
   // COMPUTED: %[[SLOT:.*]] = memref.load %[[SLOT_COUNTER:.*]]
   // COMPUTED-NEXT: %[[SLOT_OFFSET:.*]] = arith.muli %[[SLOT]], %[[BLOCK_BYTES]]
   // COMPUTED-NEXT: %[[DST_ADDR:.*]] = arith.addi {{.*}}, %[[SLOT_OFFSET]]
   // COMPUTED-NEXT: %[[ADVANCED_SLOT:.*]] = arith.addi %[[SLOT]], %[[REPEAT_STRIDE]]
   // COMPUTED-NEXT: %[[NEXT_SLOT:.*]] = arith.remui %[[ADVANCED_SLOT]], %[[BLOCK_COUNT]]
   // COMPUTED-NEXT: memref.store %[[NEXT_SLOT]], %[[SLOT_COUNTER]]
-  // COMPUTED-NEXT: ttkernel.noc_async_write {{.*}}, %[[DST_ADDR]], %[[BLOCK_BYTES]]
+  // COMPUTED-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[SRC_ADDR]], %[[DST_ADDR]]
   // COMPUTED-NOT: ttkernel.load_from_l1
   // COMPUTED: return
 
@@ -90,10 +91,13 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // PUBLISHED: return
   // PUBLISHED-LABEL: func.func @repeated_reservation_reaches_dfb_end_sender
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED-DAG: %[[PUBLISHED_BLOCK_BYTES:.*]] = arith.constant 4096 : i32
   // PUBLISHED: %[[ADDRESS_TABLE:.*]] = ttkernel.get_common_arg_val
   // PUBLISHED-NEXT: %[[ADDRESS_TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[ADDRESS_TABLE]])
+  // PUBLISHED: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[PUBLISHED_BLOCK_BYTES]]
+  // PUBLISHED: %[[PUBLISHED_SRC_ADDR:.*]] = ttkernel.get_write_ptr
   // PUBLISHED-NEXT: %[[PUBLISHED_DST_ADDR:.*]] = ttkernel.load_from_l1(%[[ADDRESS_TABLE_PTR]]
-  // PUBLISHED: ttkernel.noc_async_write {{.*}}, %[[PUBLISHED_DST_ADDR]]
+  // PUBLISHED-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[PUBLISHED_SRC_ADDR]], %[[PUBLISHED_DST_ADDR]]
   // PUBLISHED: return
   func.func @repeated_reservation_reaches_dfb_end()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
@@ -218,8 +222,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // PUBLISHED: %[[X_MATCHES:.*]] = arith.cmpi eq, %[[CURRENT_X]], %[[ZERO]] : index
   // PUBLISHED-NEXT: %[[Y_MATCHES:.*]] = arith.cmpi eq, %[[CURRENT_Y]], %[[ZERO]] : index
   // PUBLISHED-NEXT: %[[RECEIVER_IS_SOURCE:.*]] = arith.andi %[[X_MATCHES]], %[[Y_MATCHES]] : i1
+  // PUBLISHED-NEXT: %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[TABLE_ADDRESS]])
   // PUBLISHED-NEXT: scf.if %[[RECEIVER_IS_SOURCE]] {
-  // PUBLISHED-NEXT:   %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[TABLE_ADDRESS]])
   // PUBLISHED-NEXT:   ttkernel.store_to_l1(%[[PUBLISHED_ADDRESS]], %[[TABLE_PTR]], %[[ZERO_I32]])
   // PUBLISHED-NEXT: } else {
   // PUBLISHED-NEXT:   ttkernel.noc_inline_dw_write(core[%[[SOURCE_X]], %[[SOURCE_Y]]], %[[TABLE_ADDRESS]], %[[PUBLISHED_ADDRESS]], {{.*}})
@@ -270,6 +274,11 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   // PUBLISHED: ttkernel.noc_async_write_multicast
   // PUBLISHED: return
 
+  // RECEIVER-POST-LABEL: func.func @uniform_multicast
+  // RECEIVER-POST-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // RECEIVER-POST-NOT: ttkernel.noc_inline_dw_write
+  // RECEIVER-POST: ttkernel.noc_async_write_multicast
+  // RECEIVER-POST: return
   func.func @uniform_multicast()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -279,7 +288,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe
-        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        {kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
       %recv = ttl.cb_reserve %dst_cb
@@ -353,6 +362,61 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     ttl.wait %send : !ttl.transfer_handle<write>
     ttl.wait %recv : !ttl.transfer_handle
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// The capacity protocol requires computed addressing, so disabling the option
+// also disables capacity: the computed case emits sender-local capacity-counter
+// operations, while the published case uses receiver-post synchronization.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  // COMPUTED-LABEL: func.func @capacity_pipe
+  // COMPUTED: ttkernel.experimental.semaphore_wait_min
+  // COMPUTED-NOT: ttkernel.store_to_l1
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: return
+
+  // PUBLISHED-LABEL: func.func @capacity_pipe
+  // PUBLISHED-NOT: arith.subi
+  // PUBLISHED-NOT: ttkernel.store_to_l1
+  // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED-NOT: arith.subi
+  // PUBLISHED-NOT: ttkernel.store_to_l1
+  // PUBLISHED: return
+
+  // RECEIVER-POST-LABEL: func.func @capacity_pipe
+  // RECEIVER-POST-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // Receiver post increments sender-ready before the receiver completion wait.
+  // RECEIVER-POST: ttkernel.noc_semaphore_inc
+  // RECEIVER-POST: ttkernel.experimental.semaphore_wait_min
+  // RECEIVER-POST: ttkernel.cb_push_back
+  // RECEIVER-POST: ttkernel.cb_pop_front
+  // The pop does not release capacity; the sender consumes the ready post.
+  // RECEIVER-POST-NOT: ttkernel.noc_semaphore_inc
+  // RECEIVER-POST: ttkernel.experimental.semaphore_wait(
+  // RECEIVER-POST: ttkernel.noc_semaphore_set
+  func.func @capacity_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+    ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      %ready = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src_cb
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
     func.return
   }
 }

@@ -53,6 +53,12 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
+  {
+    TTLFormPipeTransportsOptions transportOpts;
+    transportOpts.groupSize = options.pipeBatchTiles;
+    transportOpts.l1BudgetOverride = options.l1BudgetOverride;
+    pm.addPass(createTTLFormPipeTransports(transportOpts));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
@@ -64,6 +70,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
+    configOpts.matmulFullFp32 = options.matmulFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
     pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
   }
@@ -87,11 +94,17 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
-  pm.addPass(createTTLValidateCBBudget());
+  {
+    TTLValidateCBBudgetOptions budgetOpts;
+    budgetOpts.l1BudgetOverride = options.l1BudgetOverride;
+    pm.addPass(createTTLValidateCBBudget(budgetOpts));
+  }
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
     ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
+    ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
+    ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
@@ -108,7 +121,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
-    pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());
+    pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }

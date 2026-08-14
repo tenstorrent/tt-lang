@@ -4,6 +4,7 @@
 
 #include "ComputeOpCreationPlanning.h"
 #include "DFBValueLifetimeAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
@@ -234,6 +235,26 @@ static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
 // Tile op emission for fusion
 //===----------------------------------------------------------------------===//
 
+static Value emitExpTileOp(OpBuilder &builder, Location loc, Type tileType,
+                           Value input, const ExpFlagsPlan &flags) {
+  FloatAttr scale = flags.scale;
+  if (scale && !flags.approx.getValue()) {
+    // The current accurate BF16 LLK path passes this runtime value to
+    // immediate-only SFPMULI. Keep accurate semantics by materializing the
+    // scale as a supported tile multiply before invoking unscaled exp.
+    input = createTileOpWithPlaceholderDstIndex<TileMulUnaryConstOp>(
+        builder, loc, tileType, input, scale);
+    scale = nullptr;
+  }
+
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  auto tileOp =
+      ExpTileOp::create(builder, loc, tileType, input, dstIndex, flags.approx,
+                        scale, flags.inputClamping, flags.iterations);
+  addPlaceholderDstIndexAttr(tileOp.getOperation());
+  return tileOp.getResult();
+}
+
 /// Creates the generic tile operation selected by a verified fused plan.
 static Value emitTileOpFor(OpBuilder &builder, Location loc,
                            const FusedOperationPlan &operationPlan,
@@ -252,6 +273,16 @@ static Value emitTileOpFor(OpBuilder &builder, Location loc,
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // ExpOp is excluded from TTLElementwiseOps.def because it carries hardware
+  // flags that must be forwarded to the tile operation.
+  if (isa<ExpOp>(sourceOp)) {
+    assert(tileOperands.size() == 1 && "exp fusion requires one tile operand");
+    assert(operationPlan.expFlags &&
+           "exp recipe must record its hardware flags");
+    return emitExpTileOp(builder, loc, tileType, tileOperands[0],
+                         *operationPlan.expFlags);
+  }
 
   if (isa<MulUnaryConstOp>(sourceOp)) {
     assert(tileOperands.size() == 1 &&
@@ -375,7 +406,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       return rewriter.notifyMatchFailure(
           sinkOp, "fused operation dependency is unavailable");
     }
-    if (operationPlan.recipe == FusedOperationRecipe::DeferredMatmul) {
+    if (operationPlan.recipe == FusedOperationRecipe::DeferredMatmul ||
+        operationPlan.recipe == FusedOperationRecipe::DeferredExpScale) {
       continue;
     }
     availableValues.insert(operationPlan.source->getResult(0));
@@ -426,21 +458,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Build the body region
   Block *body = rewriter.createBlock(&computeOp.getBody());
 
-  // Each block argument's tile type is derived from its corresponding
-  // tensor's element type so mixed-dtype fusion (e.g., bf16 input + f32
-  // intermediate produced by a fused `ttl.typecast`) preserves per-value
-  // precision. The output block arg type matches the sink tensor.
-  Type outputTileType = ttcore::TileType::get(type.getElementType());
-  auto getInputTileType = [&](Value root) -> Type {
-    auto inputTensor = cast<RankedTensorType>(root.getType());
-    return ttcore::TileType::get(inputTensor.getElementType());
-  };
-
-  for (Value root : creation.inputs) {
-    body->addArgument(getInputTileType(root), loc);
+  for (ttcore::TileType inputTileType : creation.inputTileTypes) {
+    body->addArgument(inputTileType, loc);
   }
   for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(outputTileType, loc);
+    body->addArgument(creation.resultTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
@@ -496,6 +518,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     case FusedOperationRecipe::DeferredMatmul:
       assert(!instrumentationEmitter.hasAfter(op) &&
              "instrumented matmul must not be folded into its user");
+      continue;
+    case FusedOperationRecipe::DeferredExpScale:
+      instrumentationEmitter.emitAfter(op);
       continue;
     case FusedOperationRecipe::MatmulAccumulator: {
       assert(operationPlan.foldedMatmul && operationPlan.accumulator &&
@@ -581,16 +606,6 @@ static LogicalResult buildComputeFromInputs(
   ValueRange inputs(creation->inputs);
   RankedTensorType outputType = creation->resultType;
 
-  SmallVector<Type> inputTileTypes;
-  for (Value input : inputs) {
-    auto inputType = getTensorType(input);
-    if (!inputType) {
-      return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
-    }
-    inputTileTypes.push_back(ttcore::TileType::get(inputType.getElementType()));
-  }
-  Type outputTileType = ttcore::TileType::get(outputType.getElementType());
-
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation->iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
@@ -625,18 +640,19 @@ static LogicalResult buildComputeFromInputs(
                                      rewriter.getArrayAttr(iteratorTypes));
 
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  for (Type inputTileType : inputTileTypes) {
+  for (ttcore::TileType inputTileType : creation->inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
   for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(outputTileType, loc);
+    body->addArgument(creation->resultTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
   ComputeInstrumentationEmitter instrumentationEmitter(
       rewriter, creation->instrumentation);
   instrumentationEmitter.emitLeading();
-  Value result = emitTileOp(rewriter, loc, outputTileType, body, *creation);
+  Value result =
+      emitTileOp(rewriter, loc, creation->resultTileType, body, *creation);
   instrumentationEmitter.emitAfter(op);
   for (StoreOp store : outputs.stores) {
     emitTileStore(rewriter, loc, result, computeOp, store, outputs);
@@ -756,6 +772,30 @@ struct LowerUnaryToCompute : PlannedComputeRewritePattern<TTLOp> {
                                 PatternRewriter &rewriter) const override {
     return buildUnaryCompute<TileOp>(op.getOperation(), rewriter, op.getInput(),
                                      this->kernelPlan);
+  }
+};
+
+/// Pattern for ttl.exp: TTL tensor op -> ttl.compute with ttl.tile_exp,
+/// forwarding the exp hardware flags. Dedicated (not the generic unary
+/// template) because exp carries extra attributes.
+struct LowerExpToCompute : PlannedComputeRewritePattern<ExpOp> {
+  using PlannedComputeRewritePattern<ExpOp>::PlannedComputeRewritePattern;
+
+  LogicalResult matchAndRewrite(ExpOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!getAttachedCB(op.getInput())) {
+      return tryFusion(op.getOperation(), rewriter, this->kernelPlan);
+    }
+
+    return buildComputeFromInputs(
+        op, rewriter, ComputeOpCreationRecipe::Elementwise, this->kernelPlan,
+        [](OpBuilder &builder, Location location, Type tileType, Block *body,
+           const ComputeOpCreationPlan &creation) {
+          assert(creation.expFlags &&
+                 "exp recipe must record its hardware flags");
+          return emitExpTileOp(builder, location, tileType,
+                               body->getArgument(0), *creation.expFlags);
+        });
   }
 };
 
@@ -1008,10 +1048,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         rewriter.getArrayAttr(iteratorTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = inputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc);
-    body->addArgument(tileType, loc);
+    body->addArgument(plan.tileType, loc);
+    body->addArgument(plan.tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
     SmallVector<Value> iterIndices =
@@ -1219,10 +1257,58 @@ static void populateTTLToComputePatternsForMode(
     RewritePatternSet &patterns, TTLToComputeMode mode,
     const KernelComputeOpCreationPlan &kernelPlan);
 
+static LogicalResult
+validateExistingComputeOps(func::FuncOp kernel,
+                           const ComputeTargetEnvironment &target) {
+  bool hasErrors = false;
+  kernel.walk([&](ComputeOp compute) {
+    bool requiresComputeShape = false;
+    compute.walk([&](Operation *operation) {
+      std::optional<ComputePrimitive> primitive =
+          getComputePrimitive(operation);
+      if (!primitive) {
+        return;
+      }
+      requiresComputeShape |= *primitive != ComputePrimitive::Passthrough;
+      std::string failureReason;
+      if (failed(target.validateOperation(operation, failureReason))) {
+        operation->emitOpError(failureReason);
+        hasErrors = true;
+      }
+    });
+    if (requiresComputeShape) {
+      for (BlockArgument argument : compute.getBody().front().getArguments()) {
+        auto tileType = dyn_cast<ttcore::TileType>(argument.getType());
+        if (!tileType) {
+          continue;
+        }
+        std::string failureReason;
+        if (failed(target.validateKernelTileType(tileType, failureReason))) {
+          compute.emitOpError() << "block argument " << argument.getArgNumber()
+                                << " " << failureReason;
+          hasErrors = true;
+        }
+      }
+    }
+  });
+  return failure(hasErrors);
+}
+
 static LogicalResult runTTLToCompute(func::FuncOp kernel,
                                      TTLToComputeMode mode) {
   if (kernel.isExternal()) {
     return success();
+  }
+
+  std::string targetFailureReason;
+  FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+      ComputeTargetEnvironment::get(kernel, targetFailureReason);
+  if (failed(target)) {
+    kernel.emitOpError(targetFailureReason);
+    return failure();
+  }
+  if (failed(validateExistingComputeOps(kernel, **target))) {
+    return failure();
   }
 
   // Validate bcast ops before running patterns. Emitting errors here (outside
@@ -1248,7 +1334,7 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
          "lifetime analysis has no recoverable rejection");
   std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
       std::move(plannedLifetimes).takePlan();
-  ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes);
+  ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes, **target);
   PlanningResult<KernelComputeOpCreationPlan> plannedKernel =
       creationPlanner.build();
   if (plannedKernel.isInvalidIR()) {
@@ -1357,6 +1443,7 @@ static void populateTTLToComputePatternsForMode(
   patterns.add<Lower##TTL_OP>(ctx, kernelPlan);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  patterns.add<LowerExpToCompute>(ctx, kernelPlan);
   patterns.add<LowerBlockBroadcastToCompute>(ctx, kernelPlan);
   patterns.add<LowerMatmulToCompute>(ctx, kernelPlan);
   patterns.add<LowerReduceToCompute>(ctx, kernelPlan);

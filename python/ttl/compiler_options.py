@@ -59,7 +59,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
-        help="Use FPU for binary add/sub/mul (default: enabled).",
+        help="Allow FPU strategy selection for binary add/sub/mul (default: enabled).",
     )
     p.add_argument(
         "--ttl-block-matmul",
@@ -87,14 +87,14 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reduce_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for reduce operations (default: enabled).",
+        help="Prefer FP32 accumulation for reduce operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-matmul-full-fp32",
         default=None,
         dest="matmul_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for matmul operations (default: enabled).",
+        help="Prefer FP32 accumulation for matmul operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-strict-f32-acc",
@@ -121,6 +121,34 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="pipe_computed_addresses",
         action=argparse.BooleanOptionalAction,
         help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-capacity-sync",
+        default=None,
+        dest="pipe_capacity_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Use capacity-counter synchronization when a computed-address "
+        "transfer's receiver wait and pop run on the receiver NOC thread and "
+        "pass the DFB ownership and count proofs; disabling uses receiver-post "
+        "synchronization (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-global-semaphores-only",
+        default=None,
+        dest="pipe_global_semaphores_only",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Allocate all compiler-managed PipeNet synchronization counters in "
+            "GlobalSemaphore storage, leaving local hardware semaphore ids "
+            "available to the application (default: disabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-pipe-batch-tiles",
+        default=None,
+        dest="pipe_batch_tiles",
+        type=int,
+        help="Limit logical transfers per PipeTransport group; 0 selects automatically and 1 disables grouping (default: 0).",
     )
     p.add_argument(
         "--ttl-reuse-user-dfbs",
@@ -152,8 +180,9 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="l1_budget",
         type=int,
-        help="Override L1 CB budget in bytes (default: auto-detect from device, "
-        "or architecture default when no device is available).",
+        help="Override the L1 allocation budget in bytes used by DFB validation "
+        "and PipeTransport selection (default: auto-detect from device, or "
+        "architecture default when no device is available).",
     )
     return p
 
@@ -188,7 +217,8 @@ class CompilerOptions:
     """Compiler pipeline options for kernel compilation.
 
     Frozen so it's hashable and usable directly as a cache key component.
-    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en,
+    math_fidelity).
 
     Priority ordering (highest wins)::
 
@@ -211,6 +241,9 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
+    pipe_capacity_sync: bool = True
+    pipe_global_semaphores_only: bool = False
+    pipe_batch_tiles: int = 0
     reuse_user_dfbs: bool = True
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False

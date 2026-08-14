@@ -144,7 +144,8 @@ public:
       AccumulationTargetArch targetArch = AccumulationTargetArch::Unknown);
 
   /// Create a cost model using the target architecture recorded on `op`.
-  static AccumulationCostModel forOperation(Operation *op);
+  /// Fails when the recorded architecture cannot be resolved.
+  static FailureOr<AccumulationCostModel> forOperation(Operation *op);
 
   /// Return the target architecture used by this model.
   AccumulationTargetArch getTargetArch() const { return targetArch; }

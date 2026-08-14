@@ -38,7 +38,7 @@ func.func @matmul_lhs_rank3(
 func.func @matmul_element_mismatch(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<3x4x!ttcore.tile<32x32, f32>>) -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
-  // expected-error @below {{element type mismatch}}
+  // expected-error @below {{element data type mismatch}}
   %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, f32>> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
   return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
 }
@@ -71,7 +71,7 @@ func.func @matmul_dynamic_lhs(
 func.func @matmul_result_element_mismatch(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x4x!ttcore.tile<32x32, f32>> {
-  // expected-error @below {{result element type '!ttcore.tile<32x32, f32>' must match input element type '!ttcore.tile<32x32, bf16>'}}
+  // expected-error @below {{result element data type !ttcore.tile<32x32, f32> must match input element data type !ttcore.tile<32x32, bf16>}}
   %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, f32>>
   return %r : tensor<2x4x!ttcore.tile<32x32, f32>>
 }
@@ -98,4 +98,64 @@ func.func @matmul_transpose_bad_result(
   // expected-error @below {{result shape [2, 3] does not match expected [2, 4]}}
   %r = ttl.matmul %a, %b {transpose_rhs} : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<4x3x!ttcore.tile<32x32, bf16>> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
   return %r : tensor<2x3x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: physical tile K dimensions must match independently of tensor K.
+func.func @matmul_tile_k_mismatch(
+    %a: tensor<1x2x!ttcore.tile<4x32, bf16>>,
+    %b: tensor<2x1x!ttcore.tile<16x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<4x32, bf16>> {
+  // expected-error @below {{tile K dimension mismatch: lhs tile width 32 does not match rhs tile height 16}}
+  %r = ttl.matmul %a, %b
+      : tensor<1x2x!ttcore.tile<4x32, bf16>>,
+        tensor<2x1x!ttcore.tile<16x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<4x32, bf16>>
+  return %r : tensor<1x1x!ttcore.tile<4x32, bf16>>
+}
+
+// -----
+
+// Test: result physical dimensions derive from the two operands.
+func.func @matmul_tile_result_mismatch(
+    %a: tensor<1x2x!ttcore.tile<4x32, bf16>>,
+    %b: tensor<2x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<8x32, bf16>> {
+  // expected-error @below {{result tile dimensions 8x32 do not match expected 4x32}}
+  %r = ttl.matmul %a, %b
+      : tensor<1x2x!ttcore.tile<4x32, bf16>>,
+        tensor<2x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  return %r : tensor<1x1x!ttcore.tile<8x32, bf16>>
+}
+
+// -----
+
+// Test: transpose_rhs contracts the physical widths of both operands.
+func.func @matmul_transpose_tile_k_mismatch(
+    %a: tensor<1x2x!ttcore.tile<32x16, bf16>>,
+    %b: tensor<1x2x!ttcore.tile<32x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{tile K dimension mismatch: lhs tile width 16 does not match rhs tile width 32}}
+  %r = ttl.matmul %a, %b {transpose_rhs}
+      : tensor<1x2x!ttcore.tile<32x16, bf16>>,
+        tensor<1x2x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: transpose_rhs result width is the rhs physical tile height.
+func.func @matmul_transpose_tile_result_mismatch(
+    %a: tensor<1x2x!ttcore.tile<4x32, bf16>>,
+    %b: tensor<1x2x!ttcore.tile<16x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<4x32, bf16>> {
+  // expected-error @below {{result tile dimensions 4x32 do not match expected 4x16}}
+  %r = ttl.matmul %a, %b {transpose_rhs}
+      : tensor<1x2x!ttcore.tile<4x32, bf16>>,
+        tensor<1x2x!ttcore.tile<16x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<4x32, bf16>>
+  return %r : tensor<1x1x!ttcore.tile<4x32, bf16>>
 }

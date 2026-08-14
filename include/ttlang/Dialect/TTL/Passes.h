@@ -29,8 +29,7 @@ namespace mlir::tt::ttl {
 
 /// Populate patterns for lowering ttl.tile_* ops to TTKernel.
 void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
-                                          RewritePatternSet &patterns,
-                                          bool reduceFullFp32 = true);
+                                          RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttl
 

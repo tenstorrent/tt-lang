@@ -6,29 +6,47 @@
 
 import itertools
 
+import pytest
+
 import ttl.ttl_api as ttl_api
 
 
 class _FakeMemoryConfig:
-    def __init__(self, memory_space):
+    def __init__(self, memory_space, memory_layout):
         self.buffer_type = memory_space
+        self.memory_layout = memory_layout
+
+
+class _FakeTile:
+    def __init__(self, tile_shape):
+        self.tile_shape = tile_shape
 
 
 class _FakeTensor:
     def __init__(
         self,
         shape=(32, 32),
+        padded_shape=None,
         dtype="ttnn.bfloat16",
         memory_space="L1",
+        memory_layout="HEIGHT_SHARDED",
         layout="TILE",
+        tile=(32, 32),
+        allocation_capacity=1 << 20,
     ):
         self.shape = shape
+        self.padded_shape = padded_shape or shape
         self.dtype = dtype
         self.layout = layout
-        self._memory_config = _FakeMemoryConfig(memory_space)
+        self._memory_config = _FakeMemoryConfig(memory_space, memory_layout)
+        self._tile = _FakeTile(tile)
+        self.allocation_capacity = allocation_capacity
 
     def memory_config(self):
         return self._memory_config
+
+    def get_tile(self):
+        return self._tile
 
     def device(self):
         return None
@@ -100,12 +118,91 @@ def test_operation_cache_reuses_compiled_kernel_for_same_tensor_config(monkeypat
     def copy_kernel(input_tensor, output_tensor):
         pass
 
-    first_result = copy_kernel(_FakeTensor(), _FakeTensor())
-    second_result = copy_kernel(_FakeTensor(), _FakeTensor())
+    first_input = _FakeTensor()
+    first_output = _FakeTensor()
+    second_input = _FakeTensor()
+    second_output = _FakeTensor()
+    first_result = copy_kernel(first_input, first_output)
+    second_result = copy_kernel(second_input, second_output)
 
     assert len(compile_calls) == 1
     assert first_result == second_result == compile_calls[0]["program_hash"]
     assert len(compile_calls[0]["compiled_kernel"].runtime_args) == 2
+    assert compile_calls[0]["compiled_kernel"].runtime_args == [
+        (first_input, first_output),
+        (second_input, second_output),
+    ]
+
+
+def test_operation_propagates_math_fidelity(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1), math_fidelity="HiFi3")
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(_FakeTensor(), _FakeTensor())
+
+    assert compile_calls[0]["compile_options"]["math_fidelity"] == "HiFi3"
+
+
+def test_cache_key_separates_math_fidelity(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    tensors = (_FakeTensor(), _FakeTensor())
+    common_options = {
+        "args": tensors,
+        "resolved_grid": (1, 1),
+        "fp32_dest_acc_en": False,
+        "dst_full_sync_en": False,
+        "target_arch": "blackhole",
+    }
+
+    hifi2_key = ttl_api._make_cache_key(math_fidelity="HiFi2", **common_options)
+    hifi4_key = ttl_api._make_cache_key(math_fidelity="HiFi4", **common_options)
+
+    assert hifi2_key != hifi4_key
+
+
+def test_operation_rejects_invalid_math_fidelity():
+    with pytest.raises(ValueError, match="math_fidelity must be one of"):
+        ttl_api.operation(grid=(1, 1), math_fidelity="HiFi5")
+
+
+def test_operation_cache_reuses_kernel_across_allocation_capacities(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(
+        _FakeTensor(allocation_capacity=2048),
+        _FakeTensor(allocation_capacity=2048),
+    )
+    copy_kernel(
+        _FakeTensor(allocation_capacity=4096),
+        _FakeTensor(allocation_capacity=4096),
+    )
+
+    assert len(compile_calls) == 1
+
+
+def test_operation_cache_separates_tensor_alias_partitions(monkeypatch):
+    """Backing argument identity affects captured tensor-storage indices."""
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    shared_tensor = _FakeTensor()
+    copy_kernel(shared_tensor, shared_tensor)
+    copy_kernel(_FakeTensor(), _FakeTensor())
+    copy_kernel(shared_tensor, shared_tensor)
+
+    assert len(compile_calls) == 2
 
 
 def test_operation_cache_separates_tensor_config_changes(monkeypatch):
@@ -120,10 +217,19 @@ def test_operation_cache_separates_tensor_config_changes(monkeypatch):
     copy_kernel(_FakeTensor(memory_space="DRAM"), _FakeTensor(memory_space="DRAM"))
     copy_kernel(_FakeTensor(layout="ROW_MAJOR"), _FakeTensor(layout="ROW_MAJOR"))
     copy_kernel(_FakeTensor(dtype="ttnn.float32"), _FakeTensor(dtype="ttnn.float32"))
+    copy_kernel(
+        _FakeTensor(padded_shape=(64, 32)),
+        _FakeTensor(padded_shape=(64, 32)),
+    )
+    copy_kernel(
+        _FakeTensor(memory_layout="WIDTH_SHARDED"),
+        _FakeTensor(memory_layout="WIDTH_SHARDED"),
+    )
+    copy_kernel(_FakeTensor(tile=(16, 32)), _FakeTensor(tile=(16, 32)))
 
     program_hashes = {call["program_hash"] for call in compile_calls}
-    assert len(compile_calls) == 5
-    assert len(program_hashes) == 5
+    assert len(compile_calls) == 8
+    assert len(program_hashes) == 8
 
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
@@ -141,6 +247,58 @@ def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
     assert len(compile_calls) == 2
     assert first_result != second_result
     assert first_result == repeated_first_result
+
+
+def test_operation_cache_separates_effective_l1_budgets(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(
+        input_tensor, output_tensor, options="--ttl-l1-budget 98304"
+    )
+    second_result = copy_kernel(
+        input_tensor, output_tensor, options="--ttl-l1-budget 73760"
+    )
+    repeated_first_result = copy_kernel(
+        input_tensor, output_tensor, options="--ttl-l1-budget 98304"
+    )
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
+    assert first_result == repeated_first_result
+    assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
+    assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+
+
+def test_operation_cache_separates_device_derived_l1_budgets(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    budgets = iter((98304, 73760, 98304))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+    repeated_first_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
+    assert first_result == repeated_first_result
+    assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
+    assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
 
 
 def _make_scaled_kernel(scale):

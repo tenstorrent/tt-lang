@@ -469,16 +469,22 @@ func.func @tile_page_sizes()
 
 // -----
 
-// Scalar DFBs use one scalar element per hardware page and do not imply tile
-// dimensions.
+// Whole-byte scalar DFBs use one scalar element per hardware page and do not
+// imply tile dimensions.
 
-// SCALAR: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = f32, num_tiles = 128 : i32, page_size = 4 : i32}]}
-// SCALAR-LABEL: func.func @scalar_page_size
-func.func @scalar_page_size()
+// SCALAR: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = i8, num_tiles = 128 : i32, page_size = 1 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = i16, num_tiles = 64 : i32, page_size = 2 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = f32, num_tiles = 32 : i32, page_size = 4 : i32}, {block_count = 2 : i32, dfb_index = 3 : i32, element_type = i64, num_tiles = 16 : i32, page_size = 8 : i32}]}
+// SCALAR-LABEL: func.func @scalar_page_sizes
+func.func @scalar_page_sizes()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
-  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-      : !ttl.cb<[128], f32, 2>
+                ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
+  %i8 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+      : !ttl.cb<[128], i8, 2>
+  %i16 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+      : !ttl.cb<[64], i16, 2>
+  %f32 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+      : !ttl.cb<[32], f32, 2>
+  %i64 = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index}
+      : !ttl.cb<[16], i64, 2>
   return
 }
 

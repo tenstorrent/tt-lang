@@ -51,21 +51,21 @@ def _make_explicit_kernel():
                     x0 = inp_dfb.wait()
                     acc0 = acc_dfb.reserve()
                     acc0.store(x0)
-                    acc0.push()
-                    x0.pop()
+                    acc0.push(kernel=ttl.KernelKind.COMPUTE)
+                    x0.pop(kernel=ttl.KernelKind.COMPUTE)
                     for _ in range(DIM_TILES - 1):
                         xj = inp_dfb.wait()
                         av = acc_dfb.wait()
                         acc_next = acc_dfb.reserve()
                         acc_next.store(av + xj)
-                        acc_next.push()
-                        av.pop()
-                        xj.pop()
+                        acc_next.push(kernel=ttl.KernelKind.COMPUTE)
+                        av.pop(kernel=ttl.KernelKind.COMPUTE)
+                        xj.pop(kernel=ttl.KernelKind.COMPUTE)
                     final = acc_dfb.wait()
                     o = out_dfb.reserve()
                     o.store(final)
-                    o.push()
-                    final.pop()
+                    o.push(kernel=ttl.KernelKind.COMPUTE)
+                    final.pop(kernel=ttl.KernelKind.COMPUTE)
 
         @ttl.datamovement()
         def dm_read():
@@ -76,6 +76,7 @@ def _make_explicit_kernel():
                     for j in range(DIM_TILES):
                         blk = inp_dfb.reserve()
                         ttl.copy(inp[tile_idx, j], blk).wait()
+                        blk.push(kernel=ttl.KernelKind.DATA_MOVEMENT)
 
         @ttl.datamovement()
         def dm_write():
@@ -85,6 +86,7 @@ def _make_explicit_kernel():
                 if tile_idx < seq_tiles:
                     blk = out_dfb.wait()
                     ttl.copy(blk, out[tile_idx, 0]).wait()
+                    blk.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
 
     return explicit_kernel
 
