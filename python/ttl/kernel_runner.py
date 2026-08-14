@@ -873,9 +873,7 @@ def build_kernel_descriptors(
     pipe_computed_address_base_addresses: Optional[Dict[int, int]] = None,
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
-    descriptor_resource_plans: Optional[
-        Sequence[_KernelDescriptorResourcePlan]
-    ] = None,
+    descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.

@@ -164,7 +164,6 @@ def test_unified_operation_propagates_runtime_resource_factory(monkeypatch):
             "fp32_dest_acc_en": None,
             "dst_full_sync_en": None,
             "math_fidelity": None,
-            "device_domain": None,
             "runtime_resource_factory": make_resources,
         },
         (),
