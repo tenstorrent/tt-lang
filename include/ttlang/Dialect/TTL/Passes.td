@@ -1094,11 +1094,16 @@ def TTLFinalizeDFBIndices
 
     Every storage-accessing operation with a direct DFB operand is treated as a
     runtime access from operation entry through completion. Every direct DFB
-    operand of `ttl.opaque_call` is a possible read or write; both require the
-    same storage-liveness interval. Identity-only `ttl.attach_cb` and
+    operand of `ttl.opaque_call` is a possible read or write unless a typed
+    summary describes that dependency occurrence. An `inspect` access is
+    bounded by the call and contributes no queue-state transition because the
+    callee does not publish, consume, or leave the DFB changed. Its storage
+    lifetime must still be strictly ordered relative to another logical DFB on
+    the same physical index. Identity-only `ttl.attach_cb` and
     `ttl.get_dfb_id` operations do not access storage. An external call whose
     C++ body implements the DFB protocol does not provide the visible reserve,
-    push, wait, and pop operations required to prove a bounded lifecycle.
+    push, wait, and pop operations required to prove a bounded lifecycle unless
+    it supplies exact typed protocol effects.
 
     Disabling `reuse-user-dfbs` compacts distinct provisional user indices
     without introducing new sharing between user DFBs, then assigns only

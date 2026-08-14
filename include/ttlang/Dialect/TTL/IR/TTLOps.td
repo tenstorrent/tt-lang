@@ -2036,7 +2036,8 @@ def TTL_ResetAllDFBsOp
 def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
      DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface,
-                               ["getDFBIndexOperands",
+                               ["getDFBNonTransactionalAccesses",
+                                "getDFBIndexOperands",
                                 "hasUnknownDFBAccess"]>]> {
   let summary = "Call an external C/C++ function by name";
   let description = [{
@@ -2069,9 +2070,16 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     `getDFBDependencyOperands()` and carries a positive static tile count no
     greater than the selected DFB's capacity. Every listed effect occurs on
     every execution of the call. Repeated effects retain list order. The summary
-    does not emit protocol calls. Effects omitted for a dependency occurrence
-    leave its access opaque. If one DFB occupies multiple dependency
-    occurrences, every occurrence requires its own effects to avoid an opaque
+    does not emit protocol calls.
+
+    The ordered `dfb_accesses` list describes synchronous DFB accesses that do
+    not perform queue transactions. `inspect` states that a callee may read the
+    dependency's descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. One dependency occurrence cannot declare
+    both a protocol effect and an inspection because their relative execution
+    order would be unspecified. Effects and accesses omitted for a dependency
+    occurrence leave its access opaque. If one DFB occupies multiple dependency
+    occurrences, every occurrence requires its own summary to avoid an opaque
     access. The
     `unknown_dfb_access` unit attribute declares that the callee may also access
     unlisted user-managed DFBs and disables physical-index reuse in affected
@@ -2108,8 +2116,9 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     `condition_result` states that the scalar result evaluates one immutable
     dispatch-stable condition. Calls using the same typed identity may be
     evaluated independently in different logical kernels. Such a call cannot
-    access a DFB, declare DFB effects, or declare unknown DFB access because
-    condition evaluation is stable and repeat-safe rather than stateful.
+    access a DFB, declare DFB effects or non-transactional accesses, or declare
+    unknown DFB access because condition evaluation is stable and repeat-safe
+    rather than stateful.
 
     Example:
     ```mlir
@@ -2129,6 +2138,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<ArrayAttr>:$template_args,
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
+    OptionalAttr<TTL_DFBNonTransactionalAccessArrayAttr>:$dfb_accesses,
     UnitAttr:$unknown_dfb_access,
     OptionalAttr<TTL_DispatchConditionAttr>:$condition_result
   );
@@ -2140,6 +2150,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
      type($dependency_dfb_operands) `)`)?
     (`dfb_effects` $dfb_effects^)?
+    (`dfb_accesses` $dfb_accesses^)?
     ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];

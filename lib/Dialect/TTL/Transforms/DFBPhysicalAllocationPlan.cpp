@@ -196,6 +196,10 @@ struct AllocationGroupNodeEpoch {
     return epoch ? epoch->terminalStateCanonical
                  : lifetime->terminalStateCanonical;
   }
+
+  bool isInspectionOnly() const {
+    return epoch ? epoch->inspectionOnly : lifetime->inspectionOnly;
+  }
 };
 
 static void appendAllocationGroupNodeEpochs(
@@ -511,25 +515,31 @@ private:
       bool terminalStateCompatible = false;
       bool pointerOwnersCompatible = false;
       if (lhsBeforeRhs || rhsBeforeLhs) {
+        bool hasIdentityTransition =
+            before->inspectionOnly || after->inspectionOnly;
         terminalStateCompatible =
-            before->terminalStateCanonical || !requireMatchingTransactions ||
+            hasIdentityTransition || before->terminalStateCanonical ||
+            !requireMatchingTransactions ||
             haveCompatibleCursorRuns(*before, *after, physicalTileCount);
         pointerOwnersCompatible =
-            before->terminalStateCanonical ||
+            hasIdentityTransition || before->terminalStateCanonical ||
             (before->terminalWritePointerOwner == after->writePointerOwner &&
              before->terminalReadPointerOwner == after->readPointerOwner);
       } else {
         // Preserve the more specific state diagnosis when lifetimes are also
         // unordered; ordering alone must not obscure a protocol mismatch.
+        bool hasIdentityTransition =
+            lhsLifetime->inspectionOnly || rhsLifetime->inspectionOnly;
         terminalStateCompatible =
-            !requireMatchingTransactions ||
+            hasIdentityTransition || !requireMatchingTransactions ||
             (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
                                       physicalTileCount) &&
              haveCompatibleCursorRuns(*rhsLifetime, *lhsLifetime,
                                       physicalTileCount));
         pointerOwnersCompatible =
-            lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
-            lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner;
+            hasIdentityTransition ||
+            (lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
+             lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner);
       }
       if (!terminalStateCompatible) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
@@ -913,6 +923,13 @@ static LogicalResult validateAllocationGroupCursor(
     AllocationGroupCursorState cursorState;
     const AllocationGroupNodeEpoch *previousEpoch = nullptr;
     for (const AllocationGroupNodeEpoch &epoch : activeEpochs) {
+      if (epoch.isInspectionOnly()) {
+        if (epoch.hasCanonicalTerminalState()) {
+          cursorState = {};
+          previousEpoch = &epoch;
+        }
+        continue;
+      }
       bool pointerOwnersCompatible =
           !previousEpoch || previousEpoch->hasCanonicalTerminalState() ||
           (previousEpoch->getTerminalWritePointerOwner() ==

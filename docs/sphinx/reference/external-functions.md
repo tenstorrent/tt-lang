@@ -14,6 +14,7 @@ ttl.call_extern_func(
     func_args=None,
     dfb_dependencies=None,
     dfb_effects=None,
+    dfb_accesses=None,
     unknown_dfb_access=False,
     include_paths=None,
     kernel=None,
@@ -255,12 +256,20 @@ When an external function consumes `ttl.get_dfb_id(dfb)`, the same DFB must be
 a dependency through `func_args`, `ttl.dfb_descriptor(dfb)`, or
 `dfb_dependencies`. An index value does not declare storage access by itself.
 
-## DFB dependencies and protocol effects
+## DFB dependencies, protocol effects, and interface access
 
 `dfb_dependencies` declares DFB storage used by external C++ without adding
 C++ function arguments. DFBs in `func_args` and DFB descriptors in
-`template_args` are dependencies automatically. `dfb_dependencies` must
-contain distinct DFBs that are not already automatic dependencies.
+`template_args` are dependencies automatically. `dfb_dependencies` entries
+must identify distinct source occurrences and must not repeat an automatic
+dependency source.
+
+The Python frontend accepts one DFB in multiple automatic dependency positions
+when every occurrence remains opaque. An effect or access summary names a DFB
+expression, not a C++ argument position, so a summarized occurrence must be
+unambiguous. Distinct formal parameters retain separate occurrences even when
+the caller supplies the same DFB for those parameters. A local alias does not
+create a distinct occurrence.
 
 `dfb_effects` is an optional call-wide list of synchronous DFB protocol actions
 in the exact order the external function executes them. Each action explicitly
@@ -335,19 +344,44 @@ state. The reset implementation must complete earlier interface work before
 publishing arrival. Storage reuse is permitted only after reset completion. This
 does not validate the external function's internal queue protocol.
 
+`dfb_accesses` is an ordered list of synchronous, non-transactional access
+summaries. `ttl.DFBAccess.inspect(dfb)` states that the external function may
+read the selected DFB's descriptor or contents but does not publish, consume,
+or leave that DFB changed when it returns:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "read_resident_tensor",
+    template_args=[ttl.dfb_descriptor(format_descriptor)],
+    func_args=[ttl.raw_addr(resident_tensor)],
+    dfb_accesses=[
+        ttl.DFBAccess.inspect(format_descriptor),
+    ],
+    kernel=ttl.KernelKind.COMPUTE,
+)
+```
+
+The summary makes the call-duration storage access and identity state
+transition explicit. It does not establish ordering with another logical DFB;
+allocation reuse still requires the complete access interval to precede or
+follow every access to the other DFB. One dependency occurrence cannot declare
+both a protocol effect and a non-transactional access. An omitted occurrence
+remains conservative.
+
 `unknown_dfb_access=True` declares that external C++ may access user-managed
 DFBs not present in the declared dependencies. This is distinct from malformed
 metadata. For allocation, the call becomes an opaque occurrence on every
 user-managed DFB in each scope where it may execute, including listed DFBs.
 Listed dependencies and effects remain available to other verification.
 
-Every listed effect action is complete when the external function returns.
-Associated interface work may remain active while the declared protocol retains
-ownership; it must complete before the terminal consumer release or a
-synchronized reset. Effects describe external behavior; they do not emit
-reserve, push, wait, or pop calls.
-Dependency-only operands and all effect metadata leave the generated C++ call
-signature unchanged.
+Every listed effect or non-transactional access is complete when the external
+function returns. Associated interface work may remain active while the
+declared protocol retains ownership; it must complete before the terminal
+consumer release or a synchronized reset. Effects describe external behavior;
+they do not emit reserve, push, wait, or pop calls. Dependency-only operands,
+protocol effects, and non-transactional access metadata leave the generated
+C++ call signature unchanged.
 
 The IR stores each effect as a generated enum and a typed attribute. Its
 dependency index identifies an element of the value sequence returned by the

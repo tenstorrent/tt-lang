@@ -222,6 +222,32 @@ void populateTTLModule(nb::module_ &m) {
                    &DFBProtocolEffectAttr::getDependencyIndex)
       .def_prop_ro("num_tiles", &DFBProtocolEffectAttr::getNumTiles);
 
+  nb::enum_<DFBNonTransactionalAccessKind>(m, "DFBNonTransactionalAccessKind")
+      .value("Inspect", DFBNonTransactionalAccessKind::Inspect);
+
+  tt_attribute_class<DFBNonTransactionalAccessAttr>(
+      m, "DFBNonTransactionalAccessAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, DFBNonTransactionalAccessKind kind,
+             int64_t dependencyIndex) {
+            MLIRContext *cppContext = unwrap(context);
+            DFBNonTransactionalAccessAttr attribute =
+                DFBNonTransactionalAccessAttr::getChecked(
+                    [cppContext]() {
+                      return emitError(UnknownLoc::get(cppContext));
+                    },
+                    cppContext, kind, dependencyIndex);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB non-transactional access");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("dependency_index"))
+      .def_prop_ro("kind", &DFBNonTransactionalAccessAttr::getKind)
+      .def_prop_ro("dependency_index",
+                   &DFBNonTransactionalAccessAttr::getDependencyIndex);
+
   //===--------------------------------------------------------------------===//
   // SliceAttr
   //===--------------------------------------------------------------------===//

@@ -37,6 +37,7 @@ from .auto_profile import (
     get_line_mapper,
     is_auto_profile_enabled,
 )
+from .atom_inline import _DFB_SOURCE_OCCURRENCE
 from .global_semaphore import (
     get_ttnn_global_semaphore_address,
     is_ttnn_global_semaphore,
@@ -86,6 +87,13 @@ class _ExternalTemplateArg:
 
     kind: object
     value: object
+    dfb_source_occurrence: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _ExternalDFBDependency:
+    dfb: object
+    source_occurrence: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,7 @@ class _ExternalDFBEffect:
     kind: object
     dfb: object
     num_tiles: int
+    source_occurrence: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -103,6 +112,15 @@ class _ExternalDFBEffectRepeat:
 
     count: int
     effects: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class _ExternalDFBAccess:
+    """One parsed external-call non-transactional DFB access."""
+
+    kind: object
+    dfb: object
+    source_occurrence: Optional[str]
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
@@ -1726,7 +1744,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(
                     node.args[0], f"{wrapper_name} argument must be a DFB"
                 )
-            return _ExternalTemplateArg(kind, dfb_value)
+            return _ExternalTemplateArg(
+                kind,
+                dfb_value,
+                getattr(node.args[0], _DFB_SOURCE_OCCURRENCE, None),
+            )
 
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "get_dfb_id"):
             return _dfb_reference(arg_kind.DFBIndex)
@@ -2016,6 +2038,47 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return value
 
+    def _resolve_external_dfb_reference(self, node, param_name):
+        return _ExternalDFBDependency(
+            self._resolve_dfb_value(node, param_name),
+            getattr(node, _DFB_SOURCE_OCCURRENCE, None),
+        )
+
+    def _resolve_external_dfb_dependency_index(
+        self, reference, ordered_dependencies, diagnostic_node, summary_name
+    ):
+        value_matches = [
+            dependency_index
+            for dependency_index, dependency in enumerate(ordered_dependencies)
+            if dependency.dfb == reference.dfb
+        ]
+        if reference.source_occurrence is not None:
+            exact_matches = [
+                dependency_index
+                for dependency_index in value_matches
+                if ordered_dependencies[dependency_index].source_occurrence
+                == reference.source_occurrence
+            ]
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+            if len(exact_matches) > 1:
+                value_matches = exact_matches
+        if len(value_matches) == 1:
+            return value_matches[0]
+        if len(value_matches) > 1:
+            self._raise_error(
+                diagnostic_node,
+                f"ttl.call_extern_func() DFB {summary_name} reference is "
+                "ambiguous because the DFB appears in multiple dependency "
+                "positions; use a distinct composed-operation DFB parameter "
+                "for each position and reference it directly",
+            )
+        self._raise_error(
+            diagnostic_node,
+            f"ttl.call_extern_func() DFB {summary_name} references a DFB that "
+            "is not a function argument, descriptor, or dependency",
+        )
+
     def _visit_reset_dfbs(self, node, reset_all):
         api_name = "reset_all_dfbs" if reset_all else "reset_dfbs"
         if len(node.args) != 1:
@@ -2111,8 +2174,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 keyword_values["tiles"],
                 "ttl.call_extern_func() effect tiles must be positive",
             )
-        dfb = self._resolve_dfb_value(node.args[0], "dfb_effects")
-        return _ExternalDFBEffect(effect_kinds[effect_name], dfb, num_tiles)
+        dfb = self._resolve_external_dfb_reference(node.args[0], "dfb_effects")
+        return _ExternalDFBEffect(
+            effect_kinds[effect_name],
+            dfb.dfb,
+            num_tiles,
+            dfb.source_occurrence,
+        )
 
     def _is_dfb_effect_repeat(self, node):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -2201,6 +2269,43 @@ class TTLGenericCompiler(TTCompilerBase):
         self._append_dfb_effect_sequence(parsed_effects, resolved_effects)
         return resolved_effects
 
+    def _resolve_dfb_access(self, node):
+        """Resolve ``DFBAccess.inspect(dfb)`` to a typed fact."""
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_accesses element must be "
+                "ttl.DFBAccess.inspect",
+            )
+
+        access_owner = node.func.value
+        is_qualified_owner = (
+            isinstance(access_owner, ast.Attribute)
+            and access_owner.attr == "DFBAccess"
+            and isinstance(access_owner.value, ast.Name)
+            and access_owner.value.id == "ttl"
+        )
+        is_direct_owner = (
+            isinstance(access_owner, ast.Name) and access_owner.id == "DFBAccess"
+        )
+        if not (is_qualified_owner or is_direct_owner) or (node.func.attr != "inspect"):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_accesses element must be "
+                "ttl.DFBAccess.inspect",
+            )
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node,
+                "ttl.DFBAccess.inspect() requires exactly one DFB argument",
+            )
+        dfb = self._resolve_external_dfb_reference(node.args[0], "dfb_accesses")
+        return _ExternalDFBAccess(
+            ttl.ir.DFBNonTransactionalAccessKind.Inspect,
+            dfb.dfb,
+            dfb.source_occurrence,
+        )
+
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
         if len(node.args) != 1 or node.keywords:
@@ -2244,6 +2349,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     ttl.DFBEffect.wait(dfb, tiles=1),
                     ttl.DFBEffect.pop(dfb, tiles=1),
                 ],
+                dfb_accesses=[ttl.DFBAccess.inspect(descriptor_dfb)],
                 unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
                 result_type=ttl.ScalarType.I64, # optional scalar result
@@ -2292,6 +2398,7 @@ class TTLGenericCompiler(TTCompilerBase):
             "func_args",
             "dfb_dependencies",
             "dfb_effects",
+            "dfb_accesses",
             "unknown_dfb_access",
             "include_paths",
             "result_type",
@@ -2317,6 +2424,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 resolved_template_args.append(self._resolve_template_arg_value(elt))
 
         func_args = []
+        func_arg_nodes = []
         unsigned_arg_indices = []
         if "func_args" in kw_map:
             fa_node = kw_map["func_args"]
@@ -2343,8 +2451,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 if requires_unsigned_cast:
                     unsigned_arg_indices.append(len(func_args))
                 func_args.append(arg)
+                func_arg_nodes.append(elt)
 
         dependency_dfb_operands = []
+        dependency_dfb_references = []
         if "dfb_dependencies" in kw_map:
             dependency_node = kw_map["dfb_dependencies"]
             if not isinstance(dependency_node, ast.List):
@@ -2352,15 +2462,30 @@ class TTLGenericCompiler(TTCompilerBase):
                     dependency_node,
                     "ttl.call_extern_func() dfb_dependencies must be a list",
                 )
-            dependency_dfb_operands = [
-                self._resolve_dfb_value(element, "dfb_dependencies")
+            dependency_dfb_references = [
+                self._resolve_external_dfb_reference(element, "dfb_dependencies")
                 for element in dependency_node.elts
+            ]
+            dependency_dfb_operands = [
+                dependency.dfb for dependency in dependency_dfb_references
             ]
 
         resolved_dfb_effects = []
         if "dfb_effects" in kw_map:
             effects_node = kw_map["dfb_effects"]
             resolved_dfb_effects = self._resolve_dfb_effect_sequence(effects_node)
+
+        resolved_dfb_accesses = []
+        if "dfb_accesses" in kw_map:
+            accesses_node = kw_map["dfb_accesses"]
+            if not isinstance(accesses_node, ast.List):
+                self._raise_error(
+                    accesses_node,
+                    "ttl.call_extern_func() dfb_accesses must be a list",
+                )
+            resolved_dfb_accesses = [
+                self._resolve_dfb_access(element) for element in accesses_node.elts
+            ]
 
         unknown_dfb_access = False
         if "unknown_dfb_access" in kw_map:
@@ -2412,32 +2537,55 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
         automatic_dependencies = [
-            func_arg
-            for func_arg in func_args
+            _ExternalDFBDependency(
+                func_arg,
+                getattr(func_arg_node, _DFB_SOURCE_OCCURRENCE, None),
+            )
+            for func_arg, func_arg_node in zip(func_args, func_arg_nodes)
             if ttl.CircularBufferType.maybe_downcast(getattr(func_arg, "type", None))
             is not None
         ]
         automatic_dependencies.extend(
-            template_arg.value
+            _ExternalDFBDependency(
+                template_arg.value, template_arg.dfb_source_occurrence
+            )
             for template_arg in resolved_template_args
             if template_arg.kind == ttl.ir.ExternalTemplateArgKind.DFBDescriptor
         )
-        if any(
-            dependency in automatic_dependencies
-            or dependency in dependency_dfb_operands[:dependency_index]
-            for dependency_index, dependency in enumerate(dependency_dfb_operands)
+
+        def is_same_source_occurrence(lhs, rhs):
+            if lhs.dfb != rhs.dfb:
+                return False
+            if lhs.source_occurrence is not None and rhs.source_occurrence is not None:
+                return lhs.source_occurrence == rhs.source_occurrence
+            return True
+
+        def has_repeated_source_occurrence(dependencies, prior_dependencies=()):
+            previous_dependencies = list(prior_dependencies)
+            for dependency in dependencies:
+                if any(
+                    is_same_source_occurrence(dependency, previous)
+                    for previous in previous_dependencies
+                ):
+                    return True
+                previous_dependencies.append(dependency)
+            return False
+
+        if has_repeated_source_occurrence(
+            dependency_dfb_references, automatic_dependencies
         ):
             self._raise_error(
                 kw_map["dfb_dependencies"],
                 "ttl.call_extern_func() dfb_dependencies must contain only "
                 "distinct dependency-only DFBs",
             )
-        ordered_dependencies = automatic_dependencies + dependency_dfb_operands
+        ordered_dependencies = automatic_dependencies + dependency_dfb_references
 
         if condition_result_attr is not None and (
             template_dfb_operands
             or ordered_dependencies
             or resolved_dfb_effects
+            or resolved_dfb_accesses
             or unknown_dfb_access
         ):
             self._raise_error(
@@ -2448,20 +2596,33 @@ class TTLGenericCompiler(TTCompilerBase):
 
         effect_attrs = []
         for effect in resolved_dfb_effects:
-            try:
-                dependency_index = ordered_dependencies.index(effect.dfb)
-            except ValueError:
-                self._raise_error(
-                    kw_map["dfb_effects"],
-                    "ttl.call_extern_func() DFB effect references a DFB that "
-                    "is not a function argument, descriptor, or dependency",
-                )
+            dependency_index = self._resolve_external_dfb_dependency_index(
+                effect,
+                ordered_dependencies,
+                kw_map["dfb_effects"],
+                "effect",
+            )
             effect_attrs.append(
                 ttl.ir.DFBProtocolEffectAttr.get(
                     self.ctx,
                     effect.kind,
                     dependency_index,
                     effect.num_tiles,
+                )
+            )
+        access_attrs = []
+        for access in resolved_dfb_accesses:
+            dependency_index = self._resolve_external_dfb_dependency_index(
+                access,
+                ordered_dependencies,
+                kw_map["dfb_accesses"],
+                "access",
+            )
+            access_attrs.append(
+                ttl.ir.DFBNonTransactionalAccessAttr.get(
+                    self.ctx,
+                    access.kind,
+                    dependency_index,
                 )
             )
         template_args_attr = (
@@ -2473,6 +2634,7 @@ class TTLGenericCompiler(TTCompilerBase):
             else None
         )
         effects_attr = ArrayAttr.get(effect_attrs) if effect_attrs else None
+        accesses_attr = ArrayAttr.get(access_attrs) if access_attrs else None
         unknown_dfb_access_attr = UnitAttr.get(self.ctx) if unknown_dfb_access else None
 
         opaque_call = ttl.opaque_call(
@@ -2485,6 +2647,7 @@ class TTLGenericCompiler(TTCompilerBase):
             template_args=template_args_attr,
             unsigned_arg_indices=unsigned_arg_indices_attr,
             dfb_effects=effects_attr,
+            dfb_accesses=accesses_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
             condition_result=condition_result_attr,
         )

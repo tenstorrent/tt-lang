@@ -100,6 +100,7 @@ _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
 _TTL_NAMESPACES: Dict[str, Union[KernelKind, _Placement]] = {
     "math": KernelKind.COMPUTE,
     "block": KernelKind.COMPUTE,
+    "DFBAccess": _Placement.CONTROL,
     "DFBEffect": _Placement.CONTROL,
 }
 
