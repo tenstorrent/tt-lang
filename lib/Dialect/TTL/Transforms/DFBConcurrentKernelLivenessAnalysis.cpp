@@ -101,9 +101,35 @@ public:
            !reachable[destination].test(source);
   }
 
-  bool wouldCreateCycle(unsigned source, unsigned destination) const {
-    assert(source < reachable.size() && destination < reachable.size());
-    return source == destination || reachable[destination].test(source);
+  /// Atomically adds acyclic edges to a graph whose transitive closure is
+  /// current. Only predecessors of each source gain reachability, and they
+  /// gain exactly the existing successor set of its destination.
+  bool tryAddEdgesAndUpdateReachability(
+      ArrayRef<std::pair<unsigned, unsigned>> edges) {
+    assert(reachable.size() == successors.size() &&
+           "transitive closure must be current before incremental updates");
+    SmallVector<llvm::BitVector> candidateReachability = reachable;
+    for (auto [source, destination] : edges) {
+      if (source == destination ||
+          candidateReachability[destination].test(source)) {
+        return false;
+      }
+      if (candidateReachability[source].test(destination)) {
+        continue;
+      }
+      llvm::BitVector newlyReachable = candidateReachability[destination];
+      for (llvm::BitVector &sourceReachability : candidateReachability) {
+        if (sourceReachability.test(source)) {
+          sourceReachability |= newlyReachable;
+        }
+      }
+    }
+
+    for (auto [source, destination] : edges) {
+      addEdge(source, destination);
+    }
+    reachable = std::move(candidateReachability);
+    return true;
   }
 
 private:
@@ -1302,8 +1328,7 @@ static void buildProgramOrderGraph(
   }
 }
 
-/// Adds the completion edge implied by each matching push/wait transaction.
-/// Conditional runs require equivalent structured execution conditions.
+/// Conditional runs match only under equivalent structured conditions.
 static bool
 proveEquivalentConditionalRuns(const AccessRun &lhs, const AccessRun &rhs,
                                LaunchNodeCoord node,
@@ -1330,7 +1355,8 @@ static bool tryAddCumulativeQueueEdges(
     LaunchNodeCoord node, const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains);
 
-static void addMatchedPushWaitEdges(
+/// Adds exact and cumulative producer-to-consumer synchronization edges.
+static void addProtocolSynchronizationEdges(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs, HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
@@ -1403,7 +1429,11 @@ static void addMatchedPushWaitEdges(
         graph.addEdge(pushCompletion, waitCompletion);
       }
     }
-
+  }
+  // Cumulative queue proofs must observe every exact push/wait edge. This also
+  // makes the result independent of logical DFB collection order.
+  graph.computeReachability();
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     tryAddCumulativeQueueEdges(logicalDFB, graph, operationEvents, accessEvents,
                                executionCounts, accessRuns, node, domainState,
                                includeUnknownDomains);
@@ -1893,14 +1923,12 @@ static bool tryAddCumulativeQueueEdges(
   if (physicalTileCount <= 0) {
     return false;
   }
-  HappensBeforeGraph orderedGraph = graph;
-  orderedGraph.computeReachability();
   CumulativeQueueSideResult producer = proveCumulativeQueueSide(
       producerRuns, DFBProtocolEffectKind::Reserve, DFBProtocolEffectKind::Push,
-      physicalTileCount, node, orderedGraph, operationEvents, accessEvents);
+      physicalTileCount, node, graph, operationEvents, accessEvents);
   CumulativeQueueSideResult consumer = proveCumulativeQueueSide(
       consumerRuns, DFBProtocolEffectKind::Wait, DFBProtocolEffectKind::Pop,
-      physicalTileCount, node, orderedGraph, operationEvents, accessEvents);
+      physicalTileCount, node, graph, operationEvents, accessEvents);
   if (!producer.side || !consumer.side ||
       failed(normalizeCumulativeTransactions(producer.side->cursorRuns,
                                              consumer.side->cursorRuns))) {
@@ -1915,16 +1943,9 @@ static bool tryAddCumulativeQueueEdges(
     return false;
   }
 
-  HappensBeforeGraph candidate = graph;
-  candidate.computeReachability();
-  for (auto [source, destination] : *synchronizationEdges) {
-    if (candidate.wouldCreateCycle(source, destination)) {
-      return false;
-    }
-    candidate.addEdge(source, destination);
-    candidate.computeReachability();
+  if (!graph.tryAddEdgesAndUpdateReachability(*synchronizationEdges)) {
+    return false;
   }
-  graph = std::move(candidate);
   return true;
 }
 
@@ -2825,10 +2846,9 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                            operationEvents, accessEvents, resetBoundaryEvents,
                            executionCounts, accessRuns,
                            /*includeUnknownDomains=*/false);
-    addMatchedPushWaitEdges(logicalDFBs, graph, operationEvents, accessEvents,
-                            executionCounts, accessRuns, node, domainState,
-                            /*includeUnknownDomains=*/false);
-    graph.computeReachability();
+    addProtocolSynchronizationEdges(
+        logicalDFBs, graph, operationEvents, accessEvents, executionCounts,
+        accessRuns, node, domainState, /*includeUnknownDomains=*/false);
 
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
       if (!knownLaunchNodeDomainContains(logicalDFB.launchDomain, node)) {
@@ -2874,11 +2894,10 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                            possibleAccessEvents, possibleResetBoundaryEvents,
                            executionCounts, possibleAccessRuns,
                            /*includeUnknownDomains=*/true);
-    addMatchedPushWaitEdges(logicalDFBs, possibleGraph, possibleOperationEvents,
-                            possibleAccessEvents, executionCounts,
-                            possibleAccessRuns, node, domainState,
-                            /*includeUnknownDomains=*/true);
-    possibleGraph.computeReachability();
+    addProtocolSynchronizationEdges(
+        logicalDFBs, possibleGraph, possibleOperationEvents,
+        possibleAccessEvents, executionCounts, possibleAccessRuns, node,
+        domainState, /*includeUnknownDomains=*/true);
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
       if (logicalDFB.launchDomain.known) {
         continue;

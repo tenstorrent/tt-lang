@@ -228,3 +228,79 @@ module {
     return
   }
 }
+
+// -----
+
+// The helper DFB orders two producer kernels for the cumulative DFB. The
+// cumulative proof must observe that exact synchronization even though the
+// cumulative DFB has the lower logical identity.
+
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: node (0,0) quiescence=none
+// CHECK-SAME: transactions=[4, 4, 4] write_cursor_runs=[4, 8] read_cursor_runs=[8, 4]
+
+module {
+  func.func @split_producer_first()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %cumulative = ttl.bind_cb {cb_index = 0, block_count = 3}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 3>
+    %ordering = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 1>
+    ttl.opaque_call "split_producer_first"
+        dfb_dependencies(
+          %cumulative, %ordering
+          : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 3>,
+            !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 1>)
+        dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 4>,
+                     #ttl.dfb_protocol_effect<push, 0, 4>,
+                     #ttl.dfb_protocol_effect<reserve, 1, 4>,
+                     #ttl.dfb_protocol_effect<push, 1, 4>]
+        () {header = "effects.hpp"} : () -> ()
+    return
+  }
+
+  func.func @split_producer_second()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %cumulative = ttl.bind_cb {cb_index = 0, block_count = 3}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 3>
+    %ordering = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 1>
+    ttl.opaque_call "split_producer_second"
+        dfb_dependencies(
+          %cumulative, %ordering
+          : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 3>,
+            !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 1>)
+        dfb_effects [#ttl.dfb_protocol_effect<wait, 1, 4>,
+                     #ttl.dfb_protocol_effect<pop, 1, 4>,
+                     #ttl.dfb_protocol_effect<reserve, 0, 8>,
+                     #ttl.dfb_protocol_effect<push, 0, 8>]
+        () {header = "effects.hpp"} : () -> ()
+    return
+  }
+
+  func.func @split_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 1 : i32,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %cumulative = ttl.bind_cb {cb_index = 0, block_count = 3}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "split_consumer"
+        dfb_dependencies(
+          %cumulative : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 3>)
+        dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 8>,
+                     #ttl.dfb_protocol_effect<pop, 0, 8>,
+                     #ttl.dfb_protocol_effect<wait, 0, 4>,
+                     #ttl.dfb_protocol_effect<pop, 0, 4>]
+        () {header = "effects.hpp"} : () -> ()
+    return
+  }
+}
