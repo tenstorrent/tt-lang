@@ -95,9 +95,6 @@ materializing a partial program. Validation includes the following rules:
 - Definition names and values must be strings, and definitions for one logical
   kernel must not conflict.
 - Runtime argument vectors for one descriptor must have equal lengths.
-- Caller runtime arguments must not collide with compiler-managed fabric-route
-  arguments.
-
 Core specialization can produce several descriptors for one logical kernel.
 Definitions apply to every descriptor for that identity. Runtime arguments are
 partitioned by coordinate, and every coordinate must match exactly one

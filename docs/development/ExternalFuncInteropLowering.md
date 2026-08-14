@@ -178,8 +178,7 @@ identity. Definitions are copied to every matching descriptor because the
 descriptors compile the same source. Runtime argument records are partitioned
 by coordinate, and every record must match exactly one descriptor. Overlapping
 specialized descriptor ranges are an internal compiler error. Caller runtime
-arguments and compiler-managed fabric-route arguments cannot target the same
-descriptor.
+arguments remain associated with their selected logical descriptor.
 
 Resource structure participates in the TT-Metal program-cache identity. The
 structural fingerprint includes logical identities, descriptor coordinates,
@@ -190,9 +189,7 @@ semaphore structure selects a different program-cache identity.
 
 Objects in `lifetimes` remain referenced through execution. The compiled
 operation replaces its retained owner tuple only after successful execution,
-so a failed invocation preserves the previous valid owners. Mesh and
-`device_domain` execution plan the factory result once and apply the same plan
-to every child program; worker coordinates do not become mesh coordinates.
+so a failed invocation preserves the previous valid owners.
 
 An emitted runner for a resource-aware operation requires the factory on every
 call:
