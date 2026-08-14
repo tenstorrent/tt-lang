@@ -328,10 +328,7 @@ class PipeNet:
 
         return (
             "graph-pipenet",
-            tuple(
-                (component.name, tuple(component.extent))
-                for component in self.graph.domain.components
-            ),
+            self.graph.domain._operation_identity_capture(),
             tuple(
                 (
                     device_identity(edge.source),

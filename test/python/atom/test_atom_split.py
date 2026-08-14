@@ -350,6 +350,28 @@ def test_operation_identity_encodes_graph_pipenet_topology():
     assert identity_for((0, 1)) != identity_for((0, 2))
 
 
+def test_operation_identity_encodes_device_domain():
+    """Device-domain components distinguish factory-created operations."""
+
+    def identity_for(domain):
+        def selected_operation():
+            return domain
+
+        return _operation_identity(selected_operation)
+
+    regular = ttl.DeviceDomain((2, 3), name="worker")
+    same_regular = ttl.DeviceDomain((2, 3), name="worker")
+    different_extent = ttl.DeviceDomain((2, 4), name="worker")
+    product = ttl.DeviceDomain.product(
+        rack=ttl.DeviceDomain((2,)),
+        worker=ttl.DeviceDomain((3,)),
+    )
+
+    assert identity_for(regular) == identity_for(same_regular)
+    assert identity_for(regular) != identity_for(different_extent)
+    assert identity_for(regular) != identity_for(product)
+
+
 def test_operation_identity_encodes_global_semaphore_address(monkeypatch):
     """Global semaphore addresses distinguish compiled template identities."""
 
