@@ -1,7 +1,6 @@
 // Verify configuration reports unavailable full-fp32 reduction before
 // TTKernel conversion.
-// RUN: ttlang-opt %s --verify-diagnostics \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config),convert-ttl-to-ttkernel)'
+// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-set-compute-kernel-config,convert-ttl-to-ttkernel)'
 
 // Blackhole row reduction cannot use full-fp32 accumulation (tt-metal #47311).
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {

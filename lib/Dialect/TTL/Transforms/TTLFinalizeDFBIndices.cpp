@@ -12,7 +12,11 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeKernelConfigAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -27,6 +31,44 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+static FailureOr<SmallVector<DFBStaticConfigurationConflict>>
+collectStaticConfigurationConflicts(
+    ModuleOp moduleOp,
+    const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis) {
+  LaunchNodeDomainState launchDomains;
+  launchDomains.initialize(moduleOp);
+  SmallVector<DFBStaticConfigurationConflict> conflicts;
+  for (func::FuncOp function : moduleOp.getOps<func::FuncOp>()) {
+    if (getKernelThreadType(function) != ttkernel::ThreadType::Compute) {
+      continue;
+    }
+    FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
+        KernelTargetEnvironment::get(function);
+    if (failed(target)) {
+      return failure();
+    }
+    FailureOr<KernelRequirements> requirements =
+        collectKernelRequirements(function, launchDomains);
+    if (failed(requirements)) {
+      return failure();
+    }
+    for (const DFBConfigurationAliasConflict &conflict :
+         collectDFBConfigurationAliasConflicts(**target, *requirements)) {
+      FailureOr<int64_t> lhsLogicalId =
+          logicalIdentityAnalysis.getLogicalId(conflict.lhsDFB);
+      FailureOr<int64_t> rhsLogicalId =
+          logicalIdentityAnalysis.getLogicalId(conflict.rhsDFB);
+      assert(succeeded(lhsLogicalId) && succeeded(rhsLogicalId) &&
+             "configuration DFB uses must resolve to logical identities");
+      if (*lhsLogicalId != *rhsLogicalId) {
+        conflicts.push_back({*lhsLogicalId, *rhsLogicalId,
+                             conflict.lhsOperation, conflict.rhsOperation});
+      }
+    }
+  }
+  return conflicts;
+}
 
 /// Materializes decisions already validated by physical allocation analysis.
 static void
@@ -104,9 +146,28 @@ struct TTLFinalizeDFBIndicesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
+        getAnalysis<DFBLogicalIdentityAnalysis>();
+    if (!logicalIdentityAnalysis.succeeded()) {
+      Operation *errorOperation = logicalIdentityAnalysis.getErrorOperation();
+      if (!errorOperation) {
+        errorOperation = moduleOp.getOperation();
+      }
+      errorOperation->emitOpError()
+          << logicalIdentityAnalysis.getErrorMessage();
+      signalPassFailure();
+      return;
+    }
+    FailureOr<SmallVector<DFBStaticConfigurationConflict>>
+        staticConfigurationConflicts = collectStaticConfigurationConflicts(
+            moduleOp, logicalIdentityAnalysis);
+    if (failed(staticConfigurationConflicts)) {
+      signalPassFailure();
+      return;
+    }
     DFBPhysicalAllocationPlanner allocationPlanner(
         moduleOp, reuseUserDFBs, exactColoringSearchStateLimit,
-        getAnalysisManager());
+        *staticConfigurationConflicts, getAnalysisManager());
     if (!allocationPlanner.succeeded()) {
       Operation *errorOperation = allocationPlanner.getErrorOperation();
       if (!errorOperation) {
