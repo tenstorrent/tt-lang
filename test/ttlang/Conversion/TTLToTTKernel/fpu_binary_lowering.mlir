@@ -4,14 +4,10 @@
 // SFPU ops (ttkernel.add_binary_tile). FPU ops read from CBs, not DST.
 
 // FPU path (default): add_tiles reads from CB, binary_op_init_common init.
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config, ttl-assign-dst, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   --split-input-file | FileCheck %s --check-prefix=FPU
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops,ttl-schedule-operations,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=FPU
 
 // SFPU path: add_binary_tile reads from DST, init_sfpu init.
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   --split-input-file | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops,ttl-schedule-operations,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // =============================================================================
 // Test 1: Simple FPU binary add (2x2 bf16)

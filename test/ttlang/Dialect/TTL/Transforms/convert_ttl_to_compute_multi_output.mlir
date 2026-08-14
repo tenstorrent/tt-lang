@@ -4,7 +4,7 @@
 // Covers: binary, unary, fused chains, 3 outputs, and larger shapes.
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s --check-prefix=COMPUTE
-// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,canonicalize,cse))' | FileCheck %s --check-prefix=DST
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,canonicalize,cse))' | FileCheck %s --check-prefix=DST
 
 // ---- Test 1: Binary add, 1x1 shape, 2 outputs ----
 
