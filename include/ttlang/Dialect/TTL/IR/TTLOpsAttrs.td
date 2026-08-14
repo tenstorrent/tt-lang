@@ -80,6 +80,103 @@ def TTL_PipeTransferKindAttr : TTL_Attr<"PipeTransferKind",
   let assemblyFormat = "`<` $value `>`";
 }
 
+def TTL_DeviceDomainComponentAttr :
+    TTL_Attr<"DeviceDomainComponent", "device_domain_component"> {
+  let summary = "Named rectangular component of a device domain";
+  let description = [{
+    Defines one named rectangular index space in a logical device domain. The
+    extent contains one positive value per dimension.
+  }];
+  let parameters = (ins
+    "StringAttr":$name,
+    "DenseI64ArrayAttr":$extent
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceDomainAttr : TTL_Attr<"DeviceDomain", "device_domain"> {
+  let summary = "Logical index set of devices";
+  let description = [{
+    Defines the logical devices over which a transfer graph is expressed. A
+    single component represents a regular domain. Multiple components form a
+    product domain. Components describe only index-set semantics; physical
+    topology and routing are not part of this attribute.
+
+    Example:
+
+    ```mlir
+    #ttl.device_domain<components =
+      <name = "board", extent = [2]>,
+      <name = "device", extent = [4]>
+    >
+    ```
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"DeviceDomainComponentAttr">:$components
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceRefAttr : TTL_Attr<"DeviceRef", "device_ref"> {
+  let summary = "Member of a logical device domain";
+  let description = [{
+    Identifies one logical device using one coordinate array per domain
+    component. Coordinates use the component order declared by the associated
+    device domain.
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"DenseI64ArrayAttr">:$coordinates
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceRangeAttr : TTL_Attr<"DeviceRange", "device_range"> {
+  let summary = "Half-open range in a logical device domain";
+  let description = [{
+    Defines a rectangular range `[lo, hi)` using two device references from
+    the same domain.
+  }];
+  let parameters = (ins
+    "DeviceRefAttr":$lo,
+    "DeviceRefAttr":$hi
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_TransferEdgeAttr : TTL_Attr<"TransferEdge", "transfer_edge"> {
+  let summary = "Directed edge between logical devices";
+  let description = [{
+    Defines a transfer from one source device to either one destination device
+    or a destination range. Exactly one destination form is present.
+  }];
+  let parameters = (ins
+    "DeviceRefAttr":$source,
+    OptionalParameter<"DeviceRefAttr">:$destination,
+    OptionalParameter<"DeviceRangeAttr">:$destinationRange
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DeviceTransferAttr : TTL_Attr<"DeviceTransfer", "device_transfer"> {
+  let summary = "Device edge bound to a node-level pipe";
+  let description = [{
+    Binds one logical device-domain edge to a node-level pipe. The attribute
+    records device semantics required by target lowering without describing a
+    physical topology, route, link, or hop count.
+  }];
+  let parameters = (ins
+    "DeviceDomainAttr":$domain,
+    "TransferEdgeAttr":$edge
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_TileExecutionStrategyAttr
     : TTL_Attr<"TileExecutionStrategy", "tile_execution_strategy"> {
   let summary = "Selected tile execution strategy";
@@ -146,7 +243,8 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
     Encodes one static PipeNet record for PipeNet foreach ops. The owning
     `#ttl.pipenet_records` attribute contains the PipeNet id; each record
     contains source and destination coordinates plus a flag selecting
-    point-to-point or collective semantics.
+    point-to-point or collective semantics. `deviceTransfer` identifies the
+    logical-device edge for graph PipeNets and is absent for local PipeNets.
 
     `isCollective` is a frontend-supplied flag, not derived from coordinates:
     `slice(i, i + 1)` is a singleton collective record with one destination
@@ -160,7 +258,8 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
     "int64_t":$dstStartY,
     "int64_t":$dstEndX,
     "int64_t":$dstEndY,
-    DefaultValuedParameter<"bool", "false">:$isCollective
+    DefaultValuedParameter<"bool", "false">:$isCollective,
+    OptionalParameter<"DeviceTransferAttr">:$deviceTransfer
   );
 
   let assemblyFormat = "`<` struct(params) `>`";
