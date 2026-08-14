@@ -132,6 +132,18 @@ lookupOperationLaunchDomain(Operation *op, PipeGraphAnalysisState &state) {
   return it->second;
 }
 
+static bool
+isProvenInactiveAtAllLocations(Operation *op,
+                               ArrayRef<LaunchExecutionLocation> locations,
+                               PipeGraphAnalysisState &state) {
+  return !locations.empty() &&
+         llvm::all_of(locations, [&](const auto &location) {
+           std::optional<std::uint64_t> executionCount =
+               getExactExecutionCountAtLaunchLocation(op, location, state);
+           return executionCount && *executionCount == 0;
+         });
+}
+
 static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
   return {receiver.x, receiver.y};
 }
@@ -495,6 +507,17 @@ collectReceiverEndpointsByDFB(ArrayRef<PipeReceiverEndpoint> endpoints) {
   return endpointsByReceiverDFB;
 }
 
+static bool hasOrderIndependentReceiverReservations(
+    ArrayRef<PipeReceiverEndpointId> endpoints, const PipeGraph &pipeGraph) {
+  return !endpoints.empty() &&
+         llvm::all_of(endpoints, [&](PipeReceiverEndpointId endpointId) {
+           const ReceiverDFBInfo &receiverInfo =
+               pipeGraph.getPipeReceiverEndpoint(endpointId).receiverDFBInfo;
+           return receiverInfo.receiverSlotSpanBlocks ==
+                  receiverInfo.blockCount;
+         });
+}
+
 static void debugRejectReceiverSchedule(const PipeReceiverDFBKey &receiverDFB,
                                         llvm::StringRef reason) {
   LLVM_DEBUG({
@@ -644,17 +667,26 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     PipeGraphAnalysisState &analysisState) {
   ReceiverEndpointsByDFB endpointsByReceiverDFB =
       collectReceiverEndpointsByDFB(pipeReceiverEndpoints);
-  llvm::DenseMap<PipeReceiverDFBKey, std::optional<ReceiverControlContext>>
-      scheduleContextByReceiverDFB;
+  llvm::DenseSet<PipeReceiverDFBKey>
+      receiverDFBsWithOrderIndependentReservations;
+  llvm::DenseSet<PipeReceiverDFBKey> receiverDFBsWithProvenAddressOrder;
   for (const auto &[receiverDFB, endpoints] : endpointsByReceiverDFB) {
+    // A full-DFB reservation returns the producer pointer to block zero, so
+    // its address cannot depend on producer order.
+    if (hasOrderIndependentReceiverReservations(endpoints, *this)) {
+      receiverDFBsWithOrderIndependentReservations.insert(receiverDFB);
+      receiverDFBsWithProvenAddressOrder.insert(receiverDFB);
+      continue;
+    }
     FailureOr<std::optional<ReceiverControlContext>> maybeContext =
         getProvenReceiverScheduleContext(receiverDFB, endpoints, *this,
                                          analysisState);
     if (failed(maybeContext)) {
       return failure();
     }
-    scheduleContextByReceiverDFB.try_emplace(receiverDFB,
-                                             std::move(*maybeContext));
+    if (*maybeContext) {
+      receiverDFBsWithProvenAddressOrder.insert(receiverDFB);
+    }
   }
 
   // Recurrence facts accumulated for one endpoint during the producer walk.
@@ -775,7 +807,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       }
       EndpointSlotAssignment &endpointAssignment =
           assignmentByEndpoint[*endpointIt];
-      if (!scheduleContextByReceiverDFB.lookup(receiverDFB)) {
+      if (!receiverDFBsWithProvenAddressOrder.contains(receiverDFB)) {
         endpointAssignment.valid = false;
         continue;
       }
@@ -804,7 +836,8 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       } else {
         slot = reserveIt->second;
       }
-      if (!postDomain.known) {
+      if (!postDomain.known &&
+          !receiverDFBsWithOrderIndependentReservations.contains(receiverDFB)) {
         endpointAssignment.valid = false;
         continue;
       }
@@ -964,6 +997,25 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
       continue;
     }
 
+    SmallVector<LaunchExecutionLocation> receiverLocations;
+    for (PipeTransferPostOp postOp : posts) {
+      const PipeReceiverEndpoint *endpoint =
+          findPostReceiverEndpoint(postOp, receiverDFB, *this);
+      assert(endpoint && "matching receiver post must have an endpoint");
+      DeviceTransferAttr deviceTransfer =
+          getPipeTransferNode(endpoint->transferNode).deviceTransfer;
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(
+              postOp.getOperation(), getLaunchNodeCoord(receiverDFB.receiver),
+              deviceTransfer, PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        return failure();
+      }
+      if (!llvm::is_contained(receiverLocations, *maybeLocation)) {
+        receiverLocations.push_back(*maybeLocation);
+      }
+    }
+
     bool valid = true;
     auto reject = [&](llvm::StringRef reason) {
       debugRejectPipeOnlyProducerStream(receiverDFB, reason);
@@ -981,6 +1033,10 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
           LaunchNodeDomain pushDomain =
               lookupOperationLaunchDomain(pushOp.getOperation(), analysisState);
           if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
+            return;
+          }
+          if (isProvenInactiveAtAllLocations(
+                  pushOp.getOperation(), receiverLocations, analysisState)) {
             return;
           }
           // Unresolved outer control is safe only when the ownership and
