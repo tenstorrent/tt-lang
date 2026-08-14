@@ -4,18 +4,18 @@
 
 #pragma once
 
+#include <cstdint>
+
+#if defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_BRISC)
 #include "api/compile_time_args.h"
 #include "api/core_local_mem.h"
-
-#if defined(COMPILE_FOR_TRISC)
-#include "api/compute/compute_kernel_api.h"
-#elif defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_BRISC)
 #include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/noc.h"
 #include "api/tensor/noc_traits.h"
 #endif
 
 #if defined(COMPILE_FOR_TRISC)
+#include "api/compute/compute_kernel_api.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
 #include "api/compute/pack.h"
 #include "api/compute/reg_api.h"
