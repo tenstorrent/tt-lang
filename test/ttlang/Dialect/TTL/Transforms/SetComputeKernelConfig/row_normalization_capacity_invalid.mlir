@@ -1,6 +1,6 @@
 // Verifies rejection when an explicit kernel configuration cannot satisfy a
 // fixed-block destination residency requirement.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled dst-full-sync-en=disabled reduce-full-fp32=0 matmul-full-fp32=0 enable-fpu-binary-ops=0}))' --verify-diagnostics
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled dst-full-sync-en=disabled reduce-full-fp32=0 matmul-full-fp32=0 enable-fpu-binary-ops=0})' --verify-diagnostics
 
 #identity = affine_map<(row, column) -> (row, column)>
 
