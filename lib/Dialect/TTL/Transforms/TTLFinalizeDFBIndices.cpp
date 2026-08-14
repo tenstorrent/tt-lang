@@ -21,7 +21,11 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <string>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -141,6 +145,68 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
   }
   moduleOp->setAttr(kDFBAllocationsAttrName,
                     ArrayAttr::get(context, descriptorAttributes));
+
+  ArrayRef<DFBAssumedAllocationGroup> assumedGroups =
+      allocationPlan.getAssumedAllocationGroups();
+  if (assumedGroups.empty()) {
+    moduleOp->removeAttr(kAssumedDFBAllocationGroupsAttrName);
+    return;
+  }
+  SmallVector<Attribute> assumedGroupAttributes;
+  for (const DFBAssumedAllocationGroup &group : assumedGroups) {
+    SmallVector<Attribute> memberAttributes;
+    for (int64_t logicalId : group.logicalIds) {
+      memberAttributes.push_back(builder.getI64IntegerAttr(logicalId));
+    }
+    SmallVector<Attribute> assumptionAttributes;
+    for (const DFBAllocationGroupAssumption &assumption : group.assumptions) {
+      SmallVector<NamedAttribute> fields;
+      fields.push_back(builder.getNamedAttr(
+          "reason",
+          builder.getStringAttr(
+              getDFBAllocationGroupAssumptionReasonName(assumption.reason))));
+      fields.push_back(builder.getNamedAttr(
+          "lhs", builder.getI64IntegerAttr(assumption.lhsLogicalId)));
+      if (assumption.rhsLogicalId) {
+        fields.push_back(builder.getNamedAttr(
+            "rhs", builder.getI64IntegerAttr(*assumption.rhsLogicalId)));
+      }
+      assumptionAttributes.push_back(builder.getDictionaryAttr(fields));
+    }
+    assumedGroupAttributes.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("allocation_group", group.allocationGroup),
+        builder.getNamedAttr("members", builder.getArrayAttr(memberAttributes)),
+        builder.getNamedAttr("assumptions",
+                             builder.getArrayAttr(assumptionAttributes)),
+    }));
+  }
+  moduleOp->setAttr(kAssumedDFBAllocationGroupsAttrName,
+                    builder.getArrayAttr(assumedGroupAttributes));
+}
+
+static void emitAssumedAllocationGroupWarnings(
+    const DFBPhysicalAllocationPlan &allocationPlan) {
+  for (const DFBAssumedAllocationGroup &group :
+       allocationPlan.getAssumedAllocationGroups()) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "unsafe DFB allocation-group policy accepted "
+                  << group.allocationGroup << " members=[";
+    llvm::interleaveComma(group.logicalIds, messageStream);
+    messageStream << "] without compiler proof: ";
+    llvm::interleaveComma(group.assumptions, messageStream,
+                          [&](const DFBAllocationGroupAssumption &assumption) {
+                            messageStream
+                                << getDFBAllocationGroupAssumptionReasonName(
+                                       assumption.reason)
+                                << '(' << assumption.lhsLogicalId;
+                            if (assumption.rhsLogicalId) {
+                              messageStream << ',' << *assumption.rhsLogicalId;
+                            }
+                            messageStream << ')';
+                          });
+    group.operation->emitWarning() << messageStream.str();
+  }
 }
 
 struct TTLFinalizeDFBIndicesPass
@@ -169,8 +235,9 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
     DFBPhysicalAllocationPlanner allocationPlanner(
-        moduleOp, reuseUserDFBs, exactColoringSearchStateLimit,
-        *staticConfigurationConflicts, getAnalysisManager());
+        moduleOp, reuseUserDFBs, unsafeAssumeAllocationGroups,
+        exactColoringSearchStateLimit, *staticConfigurationConflicts,
+        getAnalysisManager());
     if (!allocationPlanner.succeeded()) {
       Operation *errorOperation = allocationPlanner.getErrorOperation();
       if (!errorOperation) {
@@ -183,6 +250,7 @@ struct TTLFinalizeDFBIndicesPass
 
     const DFBPhysicalAllocationPlan &allocationPlan =
         allocationPlanner.getPlan();
+    emitAssumedAllocationGroupWarnings(allocationPlan);
     LLVM_DEBUG(llvm::dbgs() << "Total DFB count: "
                             << allocationPlan.getPhysicalDFBCount() << "\n");
 
