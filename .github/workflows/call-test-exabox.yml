@@ -1,0 +1,114 @@
+name: Exabox Hardware Tests
+
+on:
+  workflow_call:
+    inputs:
+      defer_result_check:
+        description: 'Allow the calling workflow to check the aggregate hardware result.'
+        required: false
+        type: boolean
+        default: false
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 90
+      docker_tag:
+        description: 'Docker image tag for the IRD worker container.'
+        required: true
+        type: string
+
+permissions:
+  checks: write
+  contents: read
+  packages: read
+
+jobs:
+  test-galaxy:
+    name: "Hardware Tests (galaxy-bh)"
+    runs-on: exabox-multihost-ci-sc1
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    continue-on-error: ${{ inputs.defer_result_check }}
+
+    # The shared runner provisions this image on the Galaxy worker and also
+    # executes the workflow steps in a CPU-side container.
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      STAGE_DIR: /ci/tt-lang
+      WORKER_SRC: /home/user/tt-lang
+      EXABOX_WORKER_HOME: /home/user
+      EXABOX_REPORT_DIR: /ci/tt-lang-test-reports
+      RUNS_ON: galaxy-bh
+      PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
+      HW_SERIAL_TEST_VISIBLE_DEVICES: 0,1
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Stage workspace on every host
+        id: stage
+        run: .github/scripts/prepare-exabox-workspace.sh stage
+
+      - name: Configure tt-lang
+        run: .github/scripts/run-exabox-hardware-phase.sh configure
+
+      - name: Build tt-lang
+        run: .github/scripts/run-exabox-hardware-phase.sh build
+
+      - name: Install test dependencies
+        run: .github/scripts/run-exabox-hardware-phase.sh install-dependencies
+
+      # Galaxy link failures otherwise appear as unrelated cluster lookup
+      # errors in every device test.
+      - name: Reset cards and check cluster health
+        timeout-minutes: 45
+        run: .github/scripts/run-exabox-hardware-phase.sh reset
+
+      - name: Smoketest
+        run: .github/scripts/run-exabox-hardware-phase.sh smoketest
+
+      - name: Single test (just python, Galaxy one chip)
+        run: .github/scripts/run-exabox-hardware-phase.sh simple-add
+
+      - name: Simulator tests
+        run: .github/scripts/run-exabox-hardware-phase.sh simulator
+
+      - name: Python lit tests
+        run: .github/scripts/run-exabox-hardware-phase.sh python-lit
+
+      - name: Pytests (Python DSL end-to-end tests)
+        run: .github/scripts/run-exabox-hardware-phase.sh python-pytests
+
+      - name: ME2E tests (MLIR input end-to-end tests)
+        run: .github/scripts/run-exabox-hardware-phase.sh me2e
+
+      - name: Hardware compiler example scripts
+        run: .github/scripts/run-exabox-hardware-phase.sh examples
+
+      - name: Tutorial examples
+        run: .github/scripts/run-exabox-hardware-phase.sh tutorials
+
+      - name: Collect test reports
+        if: ${{ always() && steps.stage.outcome == 'success' }}
+        run: .github/scripts/run-exabox-hardware-phase.sh collect-exabox-reports
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v7
+        if: ${{ always() && steps.stage.outcome == 'success' }}
+        with:
+          name: hardware-test-reports-galaxy-bh
+          path: /ci/tt-lang-test-reports/**/*.xml
+          retention-days: 7
+
+      - name: Mark hardware tests complete
+        run: echo "Hardware tests completed successfully."

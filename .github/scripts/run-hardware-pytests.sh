@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Run the hardware Python pytest suite, parallelizing single-device tests across
-# every available chip and running multi_device (fabric mesh) tests serially.
+# every available chip and running compile_only and multi_device tests serially.
 #
 # Chip count is the number of digit-named nodes under /dev/tenstorrent (matching
 # test/lit.cfg.py). With more than one chip, single-device tests run under
 # pytest-xdist (-n <chips>) with each worker restricted to one chip through
-# TT_VISIBLE_DEVICES. The multi_device tests then run serially. With one chip the
-# whole suite runs serially.
+# TT_VISIBLE_DEVICES. Compile-only tests then run without xdist so concurrent
+# compiler subprocesses do not contend for host resources. The multi_device
+# tests run serially after that. With one chip the whole suite runs serially.
 #
 # Env: HW_PYTEST_CHIPS overrides the detected chip count.
 # Env: HW_SERIAL_TEST_VISIBLE_DEVICES restricts device visibility for serial
@@ -64,7 +65,7 @@ run_multi_device_phase() {
 }
 
 if [ "$chips" -gt 1 ]; then
-    echo "Detected ${chips} chips: single-device tests in parallel (-n ${chips}), multi_device serial"
+    echo "Detected ${chips} chips: single-device tests in parallel (-n ${chips}), compile_only and multi_device serial"
     unset TT_VISIBLE_DEVICES
     cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
     rc=0
@@ -74,13 +75,15 @@ if [ "$chips" -gt 1 ]; then
     # one crash into a flood of "Invalid device ID" errors.
     TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
         TTLANG_XDIST_TT_METAL_CACHE_ROOT="$cache_root" \
-        run_pytest_phase "$TEST_DIR" -m "not multi_device" -n "$chips" \
+        run_pytest_phase "$TEST_DIR" -m "not multi_device and not compile_only" -n "$chips" \
         --max-worker-restart=0 "${common[@]}" \
         --junitxml="${REPORT_PREFIX}-parallel.xml" || rc=1
+    run_pytest_phase "$TEST_DIR" -m compile_only \
+        "${common[@]}" --junitxml="${REPORT_PREFIX}-compile-only.xml" || rc=1
     run_multi_device_phase "$TEST_DIR" -m multi_device \
         "${common[@]}" --junitxml="${REPORT_PREFIX}-multidevice.xml" || rc=1
     if [ "$selected_phase_count" -eq 0 ]; then
-        echo "No tests selected by either hardware pytest phase" >&2
+        echo "No tests selected by any hardware pytest phase" >&2
         exit 5
     fi
     exit "$rc"

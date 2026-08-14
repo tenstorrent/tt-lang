@@ -1,18 +1,8 @@
-name: Hardware Tests
+name: N150 Hardware Tests
 
 on:
   workflow_dispatch:
     inputs:
-      runs-on:
-        description: 'Hardware type to run on'
-        required: false
-        type: string
-        default: 'n150'
-      runner_labels:
-        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
-        required: false
-        type: string
-        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -29,16 +19,6 @@ on:
         required: false
         type: boolean
         default: false
-      runs-on:
-        description: 'Hardware type to run on'
-        required: false
-        type: string
-        default: 'n150'
-      runner_labels:
-        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
-        required: false
-        type: string
-        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -55,8 +35,8 @@ permissions:
 
 jobs:
   test-n150:
-    name: "Hardware Tests (${{ inputs.runs-on }})"
-    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    name: "Hardware Tests (n150)"
+    runs-on: tt-ubuntu-2204-n150-stable
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
     continue-on-error: ${{ inputs.defer_result_check }}
 
@@ -74,10 +54,9 @@ jobs:
         shell: bash
 
     env:
-      RUNS_ON: ${{ inputs.runs-on }}
+      RUNS_ON: n150
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
-      HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
 
     steps:
       - name: Checkout tt-lang
@@ -89,93 +68,49 @@ jobs:
         run: git config --global --add safe.directory "$(pwd)"
 
       - name: Configure tt-lang
-        run: |
-          cmake -G Ninja -B build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DTTLANG_USE_TOOLCHAIN=ON \
-              -DTTLANG_ENABLE_PERF_TRACE=ON
+        run: .github/scripts/run-hardware-test-phase.sh configure
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: Linux-ttlang-hw-${{ inputs.runs-on }}
+          key: Linux-ttlang-hw-n150
           max-size: 200M
 
       - name: Build tt-lang
-        run: |
-          source build/env/activate
-          cmake --build build
-          cmake --build build --target ttlang-test-tools
+        run: .github/scripts/run-hardware-test-phase.sh build
 
       - name: Install test dependencies
-        run: |
-          source build/env/activate
-          pip install -r dev-requirements.txt
-
-      # Galaxy links degrade across jobs and the failure reports as a cluster
-      # lookup error in every device test rather than as a device error.
-      - name: Reset cards and check cluster health
-        if: inputs.runs-on == 'galaxy-bh'
-        timeout-minutes: 45
-        run: |
-          source build/env/activate
-          .github/scripts/reset-tt-cards.sh
+        run: .github/scripts/run-hardware-test-phase.sh install-dependencies
 
       - name: Smoketest
-        run: |
-          source build/env/activate
-          python3 test/python/smoketest.py
+        run: .github/scripts/run-hardware-test-phase.sh smoketest
 
       - name: Single test (just python)
-        if: inputs.runs-on != 'galaxy-bh'
-        run: |
-          source build/env/activate
-          python test/python/simple_add.py
-
-      - name: Single test (just python, Galaxy one chip)
-        if: inputs.runs-on == 'galaxy-bh'
-        env:
-          TT_VISIBLE_DEVICES: "0"
-        run: |
-          source build/env/activate
-          python test/python/simple_add.py
+        run: .github/scripts/run-hardware-test-phase.sh simple-add
 
       - name: Simulator tests
-        run: |
-          source build/env/activate
-          python3 -m pytest test/sim -m requires_ttnn -v -n auto --tb=short --timeout=60 --timeout-method=signal --junitxml=build/test/sim-report.xml
+        run: .github/scripts/run-hardware-test-phase.sh simulator
 
       - name: Python lit tests
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-lit.sh build/test/python build/test/python-lit-report
+        run: .github/scripts/run-hardware-test-phase.sh python-lit
 
       - name: Pytests (Python DSL end-to-end tests)
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-pytests.sh test/python build/test/pytest-report
+        run: .github/scripts/run-hardware-test-phase.sh python-pytests
 
       - name: ME2E tests (MLIR input end-to-end tests)
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-pytests.sh test/me2e build/test/me2e-report
+        run: .github/scripts/run-hardware-test-phase.sh me2e
 
       - name: Hardware compiler example scripts
-        run: |
-          set -eo pipefail
-          source build/env/activate
-          bash .github/scripts/compile-and-run-examples.sh
+        run: .github/scripts/run-hardware-test-phase.sh examples
 
       - name: Tutorial examples
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-pytests.sh test/tutorial build/test/tutorial-report
+        run: .github/scripts/run-hardware-test-phase.sh tutorials
 
       - name: Upload test reports
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hardware-test-reports-${{ inputs.runs-on }}
+          name: hardware-test-reports-n150
           path: |
             build/test/me2e-report*.xml
             build/test/python-lit-report*.xml

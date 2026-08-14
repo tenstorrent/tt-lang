@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Workflow contracts for shared Exabox Galaxy testing."""
+
+from __future__ import annotations
+
+from conftest import REPO_ROOT
+
+CALL_BUILD = REPO_ROOT / ".github" / "workflows" / "call-build.yml"
+CALL_BUILD_DOCKER = REPO_ROOT / ".github" / "workflows" / "call-build-docker.yml"
+CALL_TEST_EXABOX = REPO_ROOT / ".github" / "workflows" / "call-test-exabox.yml"
+CALL_TEST_HARDWARE = REPO_ROOT / ".github" / "workflows" / "call-test-hardware.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+MANUAL_TEST_EXABOX = REPO_ROOT / ".github" / "workflows" / "manual-test-exabox.yml"
+IRD_DOCKERFILE = REPO_ROOT / ".github" / "containers" / "Dockerfile"
+INSTALL_EXABOX_WORKER = (
+    REPO_ROOT / ".github" / "containers" / "install-exabox-worker.sh"
+)
+UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
+
+
+def test_enabled_galaxy_tests_use_exabox_instead_of_legacy_runner() -> None:
+    ci_workflow = CI_WORKFLOW.read_text()
+    call_build = CALL_BUILD.read_text()
+    n150_workflow = CALL_TEST_HARDWARE.read_text()
+
+    assert "run_galaxy_tests: true" in ci_workflow
+    assert "uses: ./.github/workflows/call-test-exabox.yml" in call_build
+    assert "if: ${{ inputs.run_galaxy_tests }}" in call_build
+    assert "needs: [test-hardware, test-exabox]" in call_build
+    assert '"in-service", "galaxy-bh"' not in call_build
+    assert "galaxy-bh" not in n150_workflow
+
+
+def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> None:
+    workflow = CALL_TEST_EXABOX.read_text()
+
+    assert "runs-on: exabox-multihost-ci-sc1" in workflow
+    assert "image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:" in workflow
+    assert "run: |" not in workflow
+    assert ".github/scripts/prepare-exabox-workspace.sh stage" in workflow
+    assert workflow.count(".github/scripts/run-exabox-hardware-phase.sh") == 13
+    assert workflow.count("steps.stage.outcome == 'success'") == 2
+    assert "options: --device /dev/tenstorrent" not in workflow
+
+
+def test_manual_workflow_calls_the_reusable_exabox_workflow() -> None:
+    workflow = MANUAL_TEST_EXABOX.read_text()
+
+    assert "workflow_dispatch:" in workflow
+    assert "uses: ./.github/workflows/call-build-docker.yml" in workflow
+    assert "push: true" in workflow
+    assert "uses: ./.github/workflows/call-test-exabox.yml" in workflow
+    assert "docker_tag: ${{ needs.build-image.outputs.docker-tag }}" in workflow
+
+
+def test_ird_image_installs_versioned_exabox_worker_support() -> None:
+    dockerfile = IRD_DOCKERFILE.read_text()
+    installer = INSTALL_EXABOX_WORKER.read_text()
+    build_workflow = CALL_BUILD_DOCKER.read_text()
+    uplift_paths = UPLIFT_PATHS.read_text()
+
+    assert "install-exabox-worker.sh" in dockerfile
+    assert "OMPI_TAG=v5.0.7" in dockerfile
+    assert 'test -x "$OMPI_PREFIX/bin/prted"' in installer
+    assert "build/profiler/build_wasm/traces" in installer
+    assert "prted --version" in build_workflow
+    assert "docker run --rm --user 1001:1001" in build_workflow
+    assert "export HOME=/home/user" in build_workflow
+    assert "export TT_METAL_HOME=/opt/ttlang-toolchain/tt-metal" in build_workflow
+    assert "export PYTHONPATH=$TT_METAL_HOME/python_packages/ttnn" in build_workflow
+    assert 'test -w "$TT_METAL_HOME/build/profiler/build_wasm/traces"' in build_workflow
+    assert 'test -w "$TT_METAL_HOME/generated/profiler"' in build_workflow
+    assert 'python3 -c "import ttnn"' in build_workflow
+    assert ".github/containers/install-exabox-worker.sh" in uplift_paths

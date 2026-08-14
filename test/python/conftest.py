@@ -83,6 +83,11 @@ def pytest_configure(config):
         "multi_device: needs a fabric mesh; excluded from the "
         "per-chip parallel run and executed serially",
     )
+    config.addinivalue_line(
+        "markers",
+        "compile_only: does not execute on a device; executed serially on "
+        "multi-chip hosts",
+    )
 
 
 # =============================================================================

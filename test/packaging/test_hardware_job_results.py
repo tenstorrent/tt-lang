@@ -48,9 +48,9 @@ def _hardware_job(
             }
         )
 
+    caller_job = "test-exabox" if runner_name == "galaxy-bh" else "test-hardware"
     return {
-        "name": f'build / test-hardware ({runner_name}, ["label"]) / '
-        f"Hardware Tests ({runner_name})",
+        "name": f"build / {caller_job} / Hardware Tests ({runner_name})",
         "steps": steps,
     }
 

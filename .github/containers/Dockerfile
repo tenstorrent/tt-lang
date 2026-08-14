@@ -40,6 +40,12 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 ENV DEBIAN_FRONTEND=noninteractive
+ENV OMPI_TAG=v5.0.7
+ENV OMPI_PREFIX=/opt/openmpi-v5.0.7-ulfm
+ENV PATH=$OMPI_PREFIX/bin:$PATH
+ENV LD_LIBRARY_PATH=$OMPI_PREFIX/lib
+ENV CPATH=$OMPI_PREFIX/include
+ENV PKG_CONFIG_PATH=$OMPI_PREFIX/lib/pkgconfig
 
 COPY --from=tt-triage-python /opt/ttlang-toolchain/tt-triage-venv $TTLANG_TOOLCHAIN_DIR/tt-triage-venv/
 
@@ -60,17 +66,18 @@ COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 # `-r requirements-runtime.txt`, so all three sibling files must be copied.
 COPY requirements.txt requirements-runtime.txt dev-requirements.txt /tmp/
 COPY docs/requirements.txt /tmp/docs/requirements.txt
+COPY .github/containers/install-exabox-worker.sh /tmp/install-exabox-worker.sh
 RUN $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
     rm -rf /tmp/requirements.txt /tmp/requirements-runtime.txt /tmp/docs /tmp/dev-requirements.txt && \
     apt-get update && apt-get install -y \
-    ssh \
-    sudo \
     vim \
     nano \
     tmux \
     psmisc \
     bash-completion \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    /tmp/install-exabox-worker.sh && \
+    rm /tmp/install-exabox-worker.sh
 
 # Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
