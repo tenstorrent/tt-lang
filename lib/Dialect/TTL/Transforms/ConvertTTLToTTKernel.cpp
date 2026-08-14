@@ -1804,15 +1804,10 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 // Raw Element Access Lowering
 //===----------------------------------------------------------------------===//
 
-/// Return the scalar type and matching integer type for a raw element access.
-/// f32 -> (i32, 32), bf16 -> (i16, 16).
-static std::pair<Type, unsigned> getIntTypeForFloat(MLIRContext *ctx,
-                                                    Type floatTy) {
-  if (floatTy.isF32()) {
-    return {IntegerType::get(ctx, 32), 32};
-  }
-  assert(floatTy.isBF16());
-  return {IntegerType::get(ctx, 16), 16};
+/// Return the same-width signless integer type used for raw float storage.
+static IntegerType getIntegerStorageType(MLIRContext *context,
+                                         FloatType floatType) {
+  return IntegerType::get(context, floatType.getWidth());
 }
 
 /// Compute the flat element offset for a raw element access operation.
@@ -1954,6 +1949,80 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
   return utils::convertTTLCBToTTKernel(origCB, rewriter, loc, typeConverter);
 }
 
+/// Convert the raw IEEE-754 representation of a finite, nonnegative float to
+/// i32 with truncation toward zero. Both shift operands are clamped because
+/// arith.select evaluates both candidate values.
+static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
+                                         ConversionPatternRewriter &rewriter,
+                                         Location loc) {
+  auto i32Type = rewriter.getI32Type();
+  unsigned outputWidth = i32Type.getWidth();
+  assert(floatType.getWidth() <= outputWidth &&
+         "decode packs the significand into i32");
+  unsigned mantissaWidth = floatType.getFPMantissaWidth() - 1;
+  unsigned exponentWidth = floatType.getWidth() - mantissaWidth - 1;
+  uint32_t exponentMask = (uint32_t{1} << exponentWidth) - 1;
+  uint32_t exponentBias = (uint32_t{1} << (exponentWidth - 1)) - 1;
+
+  auto constant = [&](int64_t value) -> Value {
+    return arith::ConstantIntOp::create(rewriter, loc, value, outputWidth);
+  };
+
+  Value bits = rawBits;
+  if (rawBits.getType().getIntOrFloatBitWidth() < outputWidth) {
+    bits = arith::ExtUIOp::create(rewriter, loc, i32Type, rawBits);
+  }
+
+  Value zero = constant(0);
+  Value maximumShift = constant(outputWidth - 1);
+  auto clampShift = [&](Value shift) -> Value {
+    Value isNegative = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::slt, shift, zero);
+    Value nonnegativeShift =
+        arith::SelectOp::create(rewriter, loc, isNegative, zero, shift);
+    Value isTooLarge =
+        arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sgt,
+                              nonnegativeShift, maximumShift);
+    return arith::SelectOp::create(rewriter, loc, isTooLarge, maximumShift,
+                                   nonnegativeShift);
+  };
+
+  Value mantissaWidthValue = constant(mantissaWidth);
+  Value exponent =
+      arith::ShRUIOp::create(rewriter, loc, bits, mantissaWidthValue);
+  exponent =
+      arith::AndIOp::create(rewriter, loc, exponent, constant(exponentMask));
+  exponent =
+      arith::SubIOp::create(rewriter, loc, exponent, constant(exponentBias));
+
+  uint32_t mantissaMask = (uint32_t{1} << mantissaWidth) - 1;
+  uint32_t hiddenBit = uint32_t{1} << mantissaWidth;
+  Value significand =
+      arith::AndIOp::create(rewriter, loc, bits, constant(mantissaMask));
+  significand =
+      arith::OrIOp::create(rewriter, loc, significand, constant(hiddenBit));
+
+  Value leftShift =
+      arith::SubIOp::create(rewriter, loc, exponent, mantissaWidthValue);
+  Value rightShift =
+      arith::SubIOp::create(rewriter, loc, mantissaWidthValue, exponent);
+  leftShift = clampShift(leftShift);
+  rightShift = clampShift(rightShift);
+
+  Value shiftedLeft =
+      arith::ShLIOp::create(rewriter, loc, significand, leftShift);
+  Value shiftedRight =
+      arith::ShRUIOp::create(rewriter, loc, significand, rightShift);
+  Value usesLeftShift = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::sge, exponent, mantissaWidthValue);
+  Value magnitude = arith::SelectOp::create(rewriter, loc, usesLeftShift,
+                                            shiftedLeft, shiftedRight);
+
+  Value isBelowOne = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::slt, exponent, zero);
+  return arith::SelectOp::create(rewriter, loc, isBelowOne, zero, magnitude);
+}
+
 struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1963,8 +2032,9 @@ struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
     auto loc = op.getLoc();
     auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
     Type scalarTy = op.getResult().getType();
-    auto [intTy, elemWidth] =
-        getIntTypeForFloat(rewriter.getContext(), scalarTy);
+    IntegerType intTy = getIntegerStorageType(rewriter.getContext(),
+                                              mlir::cast<FloatType>(scalarTy));
+    unsigned elemWidth = intTy.getWidth();
 
     auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
                                      rewriter, loc, this->getTypeConverter());
@@ -1986,6 +2056,43 @@ struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
   }
 };
 
+struct ReadIndexLowering : OpConversionPattern<ReadIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ReadIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
+    Type elementType = blockType.getElementType();
+    Type scalarType = getTileElementType(elementType).value_or(elementType);
+    auto floatType = mlir::cast<FloatType>(scalarType);
+    IntegerType integerType =
+        getIntegerStorageType(rewriter.getContext(), floatType);
+    unsigned elementWidth = integerType.getWidth();
+
+    FailureOr<Value> cb =
+        resolveCBForRawElement(adaptor.getBlock(), op.getBlock(), rewriter, loc,
+                               this->getTypeConverter());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(
+          op, "block does not trace to a dataflow buffer");
+    }
+
+    auto [l1Pointer, offset] =
+        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                           elementWidth, rewriter, loc);
+    Value rawBits = ttk::LoadFromL1Op::create(rewriter, loc, integerType,
+                                              l1Pointer, offset);
+    Value integerValue =
+        decodeNonnegativeFloatToI32(rawBits, floatType, rewriter, loc);
+    Value indexValue = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getIndexType(), integerValue);
+    rewriter.replaceOp(op, indexValue);
+    return success();
+  }
+};
+
 struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1995,8 +2102,9 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
     auto loc = op.getLoc();
     auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
     Type scalarTy = op.getValue().getType();
-    auto [intTy, elemWidth] =
-        getIntTypeForFloat(rewriter.getContext(), scalarTy);
+    IntegerType intTy = getIntegerStorageType(rewriter.getContext(),
+                                              mlir::cast<FloatType>(scalarTy));
+    unsigned elemWidth = intTy.getWidth();
 
     auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
                                      rewriter, loc, this->getTypeConverter());
@@ -2059,7 +2167,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // until the tile ops lowering phase. Raw element access ops are lowered here
   // despite carrying the DataMovement trait.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
-    if (llvm::isa<RawElementReadOp, RawElementWriteOp>(op)) {
+    if (llvm::isa<RawElementReadOp, ReadIndexOp, RawElementWriteOp>(op)) {
       return false;
     }
     return tt::ttl::isTileComputeOp(op) ||
@@ -2177,10 +2285,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
       typeConverter, &ctx, pipeTransportPlan);
-  patterns.add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
-               StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering, RawAddrLowering,
-               OpaqueCallLowering, GetDfbIdLowering>(typeConverter, &ctx);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
+           ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
+           OpaqueCallLowering, GetDfbIdLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);
