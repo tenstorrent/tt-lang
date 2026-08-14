@@ -4,7 +4,7 @@
 // A collective reset terminates a producer-only lifecycle and orders the next
 // complete lifecycle in different logical kernels.
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=0,terminal_state=canonical}]
+// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=0,terminal_state=canonical}]
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 // CHECK: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
@@ -455,7 +455,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // Multiple ordered resets partition one logical DFB into multiple producer
 // epochs. The final reset establishes canonical state for the next lifecycle.
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=0,terminal_state=canonical}, {accesses=[2, 3],transactions=[1],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=1,terminal_state=canonical}]
+// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=0,terminal_state=canonical}, {accesses=[2, 3],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=1,terminal_state=canonical}]
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
