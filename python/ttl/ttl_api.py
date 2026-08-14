@@ -88,6 +88,20 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
+from .scalar import ScalarType
+from .condition import (
+    _BoundDispatchCondition,
+    DispatchCondition,
+    _bind_current_dispatch_condition,
+    _dispatch_condition_binding_scope,
+)
+from .dfb_reset import (
+    DFBReset,
+    _BoundDFBReset,
+    _bind_current_dfb_reset,
+    _dfb_reset_binding_scope,
+)
+from .dfb_allocation_group import _dfb_allocation_group_binding_scope
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -120,6 +134,7 @@ from .kernel import (
     _selector_implicit_role,
     _selector_kind,
 )
+from .runtime_resources import ProgramRuntimeResources
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
@@ -794,6 +809,10 @@ class CompiledTTNNKernel:
         mesh_program_placements=None,
         device_domain=None,
         kernel_logical_selectors=None,
+        operation_name="<anonymous>",
+        runtime_resource_factory: Optional[
+            Callable[..., ProgramRuntimeResources]
+        ] = None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -830,6 +849,8 @@ class CompiledTTNNKernel:
                 execution uses ttnn.MeshProgramDescriptor.
             device_domain: Logical device domain used for per-device dispatch.
             kernel_logical_selectors: Logical selector for each compiled kernel.
+            operation_name: User-facing operation name for runtime diagnostics.
+            runtime_resource_factory: Optional per-invocation resource callback.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -857,9 +878,33 @@ class CompiledTTNNKernel:
         )
         self.mesh_program_placements = mesh_program_placements
         self.device_domain = device_domain
-        self.kernel_logical_selectors = kernel_logical_selectors or [
-            None for _ in kernel_paths
-        ]
+        self.kernel_logical_selectors = (
+            list(kernel_logical_selectors)
+            if kernel_logical_selectors is not None
+            else [None for _ in kernel_paths]
+        )
+        if runtime_resource_factory is not None:
+            if len(self.kernel_logical_selectors) != len(kernel_paths):
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                    "requires one logical-kernel selector per compiled kernel; "
+                    f"got {len(self.kernel_logical_selectors)} selectors for "
+                    f"{len(kernel_paths)} kernels"
+                )
+            missing_selector_indices = [
+                kernel_index
+                for kernel_index, selector in enumerate(self.kernel_logical_selectors)
+                if selector is None
+            ]
+            if missing_selector_indices:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                    "requires logical-kernel selectors for compiled kernel indices "
+                    f"{missing_selector_indices}"
+                )
+        self.operation_name = operation_name
+        self.runtime_resource_factory = runtime_resource_factory
+        self._runtime_resource_lifetimes = ()
         self._pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
@@ -921,7 +966,17 @@ class CompiledTTNNKernel:
             device_domain=self.device_domain,
             kernel_fabric_routes=self.kernel_fabric_routes,
             fabric_route_cache=self._fabric_route_cache,
+            runtime_resource_factory=self.runtime_resource_factory,
+            operation_name=self.operation_name,
+            runtime_resource_lifetime_commit=(
+                self._commit_runtime_resource_lifetimes
+                if self.runtime_resource_factory is not None
+                else None
+            ),
         )
+
+    def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
+        self._runtime_resource_lifetimes = lifetimes
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -1214,6 +1269,8 @@ def _compile_ttnn_kernel(
     mesh_program_placements=None,
     device_domain=None,
     target_arch: Optional[str] = None,
+    operation_name: str = "<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1490,6 +1547,8 @@ def _compile_ttnn_kernel(
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
+        operation_name=operation_name,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
     if verbose:
@@ -1532,13 +1591,14 @@ def _compile_ttnn_kernel(
             num_tensors=len(args),
             output_path=runner_path,
             program_hash=program_hash,
-            kernel_name="ttlang_kernel",
+            kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             mesh_program_placements=mesh_program_placements,
             device_domain=device_domain,
             kernel_fabric_routes=kernel_fabric_routes,
+            requires_runtime_resource_factory=runtime_resource_factory is not None,
         )
 
     return compiled_kernel
@@ -1602,6 +1662,8 @@ def _build_pipenet_graph(nets):
 
 def _collect_captures(
     f: Callable,
+    bound_dispatch_conditions: Optional[Mapping[str, _BoundDispatchCondition]] = None,
+    bound_dfb_resets: Optional[Mapping[str, _BoundDFBReset]] = None,
 ) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
@@ -1623,6 +1685,8 @@ def _collect_captures(
     def convert(name, val):
         from .domains import DeviceDomain
 
+        if val is None:
+            return val
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_global_semaphore(val):
@@ -1639,6 +1703,24 @@ def _collect_captures(
             return val
         elif any(_iter_pipe_nets_in_value(val, set())):
             return val
+        elif val is ScalarType or isinstance(val, ScalarType):
+            return val
+        elif isinstance(val, DispatchCondition):
+            bound_condition = (
+                bound_dispatch_conditions.get(name)
+                if bound_dispatch_conditions is not None
+                else None
+            )
+            if bound_condition is not None and bound_condition.declaration is val:
+                return bound_condition
+            return _bind_current_dispatch_condition(val)
+        elif isinstance(val, DFBReset):
+            bound_reset = (
+                bound_dfb_resets.get(name) if bound_dfb_resets is not None else None
+            )
+            if bound_reset is not None and bound_reset.declaration is val:
+                return bound_reset
+            return _bind_current_dfb_reset(val)
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 
@@ -1982,6 +2064,17 @@ def _compile(
         except (TypeError, OSError):
             source_file = "<unknown>"
 
+        bound_dispatch_conditions = {
+            name: _bind_current_dispatch_condition(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DispatchCondition)
+        }
+        bound_dfb_resets = {
+            name: _bind_current_dfb_reset(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DFBReset)
+        }
+
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             source_code = _cleanup_source_code(f)
@@ -2001,7 +2094,7 @@ def _compile(
             return _run_thread_compiler(
                 f.__name__,
                 kernel_type,
-                _collect_captures(f),
+                _collect_captures(f, bound_dispatch_conditions, bound_dfb_resets),
                 f.__globals__,
                 args,
                 kwargs,
@@ -2115,6 +2208,7 @@ def _compile_kernel(
     compiler_options: CompilerOptions = CompilerOptions(),
     device_domain=None,
     l1_budget_override: int = 0,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -2194,7 +2288,12 @@ def _compile_kernel(
             call_kwargs[param.name] = value
         else:
             call_args.append(value)
-    f(*call_args, **call_kwargs)
+    with (
+        _dispatch_condition_binding_scope(),
+        _dfb_allocation_group_binding_scope(),
+        _dfb_reset_binding_scope(),
+    ):
+        f(*call_args, **call_kwargs)
     threads = _get_registered_threads()
 
     if not threads:
@@ -2245,6 +2344,8 @@ def _compile_kernel(
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         logical_kernels=[thread._logical_kernel for thread in threads],
+        operation_name=f.__name__,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -2267,6 +2368,8 @@ def _lower_program_to_kernel(
     mesh_program_placements,
     device_domain,
     logical_kernels=None,
+    operation_name="<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -2668,6 +2771,8 @@ def _lower_program_to_kernel(
             mesh_program_placements=mesh_program_placements,
             device_domain=device_domain,
             target_arch=target_arch,
+            operation_name=operation_name,
+            runtime_resource_factory=runtime_resource_factory,
         )
         return compiled_kernel
 
@@ -2834,6 +2939,7 @@ def pykernel_gen(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     _prepare_call: Optional[Callable] = None,
     device_domain=None,
 ) -> Callable:
@@ -2856,6 +2962,7 @@ def pykernel_gen(
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
         device_domain: Optional logical device domain for mesh execution.
+        runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2919,6 +3026,7 @@ def pykernel_gen(
                 compiler_options=compiler_options,
                 device_domain=device_domain,
                 l1_budget_override=l1_budget_override,
+                runtime_resource_factory=runtime_resource_factory,
             )
 
         return _make_operation_wrapper(
