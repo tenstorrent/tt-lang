@@ -1931,12 +1931,20 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     effect indexes the ordered dependency list and carries a positive static
     tile count. Every listed effect occurs on every execution of the call.
     Repeated effects retain list order. The summary does not emit protocol
-    calls. Effects omitted for a dependency occurrence leave its access opaque
-    for the call duration. If one DFB occupies multiple dependency occurrences,
-    every occurrence requires its own effects to avoid an opaque call-duration
-    access. The `unknown_dfb_access` unit attribute declares that the callee may
-    also access unlisted user-managed DFBs and disables physical-index reuse in
-    affected allocation scopes.
+    calls.
+
+    The ordered `dfb_accesses` list describes synchronous DFB accesses that do
+    not perform queue transactions. `inspect` states that a callee may read the
+    dependency's descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. One dependency occurrence cannot declare
+    both a protocol effect and an inspection because their relative execution
+    order would be unspecified. Effects and accesses omitted for a dependency
+    occurrence leave its access opaque for the call duration. If one DFB
+    occupies multiple dependency occurrences, every occurrence requires its
+    own summary to avoid an opaque call-duration access. The
+    `unknown_dfb_access` unit attribute declares that the callee may also access
+    unlisted user-managed DFBs and disables physical-index reuse in affected
+    allocation scopes.
 
     Every asynchronous DFB access must also complete before the call returns.
     A callee with outstanding asynchronous work requires a separate explicit
@@ -1957,8 +1965,9 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     `condition_result` states that the scalar result evaluates one immutable
     dispatch-stable condition. Calls using the same typed identity may be
     evaluated independently in different logical kernels. Such a call cannot
-    access a DFB, declare DFB effects, or declare unknown DFB access because
-    condition evaluation is stable and repeat-safe rather than stateful.
+    access a DFB, declare DFB effects or non-transactional accesses, or declare
+    unknown DFB access because condition evaluation is stable and repeat-safe
+    rather than stateful.
 
     `dfb_reset` declares a worker-local synchronized reset. Its participant set
     names every logical kernel that executes the same dynamic reset instance.
@@ -1989,6 +1998,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<ArrayAttr>:$template_args,
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
+    OptionalAttr<TTL_DFBNonTransactionalAccessArrayAttr>:$dfb_accesses,
     UnitAttr:$unknown_dfb_access,
     OptionalAttr<TTL_DispatchConditionAttr>:$condition_result,
     OptionalAttr<TTL_SynchronizedDFBResetAttr>:$dfb_reset
@@ -2001,6 +2011,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
      type($dependency_dfb_operands) `)`)?
     (`dfb_effects` $dfb_effects^)?
+    (`dfb_accesses` $dfb_accesses^)?
     (`dfb_reset` $dfb_reset^)?
     ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)

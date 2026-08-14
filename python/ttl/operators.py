@@ -40,6 +40,7 @@ def call_extern_func(
     func_args=None,
     dfb_dependencies=None,
     dfb_effects=None,
+    dfb_accesses=None,
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
@@ -97,6 +98,15 @@ class DFBEffect:
     @staticmethod
     def pop(dfb, *, tiles: int):
         raise RuntimeError("ttl.DFBEffect.pop() is valid only in a compiled kernel")
+
+
+class DFBAccess:
+    """Typed synchronous DFB access by an external call."""
+
+    @staticmethod
+    def inspect(dfb):
+        """Read a DFB without changing its contents or queue position."""
+        raise RuntimeError("ttl.DFBAccess.inspect() is valid only in a compiled kernel")
 
 
 def dfb_descriptor(dfb):
@@ -1342,6 +1352,7 @@ __all__ = [
     "raw_element_write",
     "call_extern_func",
     "DFBEffect",
+    "DFBAccess",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",

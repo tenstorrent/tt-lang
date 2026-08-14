@@ -34,6 +34,7 @@ from .dataflow_buffer import (
     make_tensor_backed_dfb,
 )
 from .operators import (
+    DFBAccess,
     DFBEffect,
     call_extern_func,
     copy,
@@ -70,6 +71,7 @@ __all__ = [
     "matmul",
     "call_extern_func",
     "DFBEffect",
+    "DFBAccess",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
