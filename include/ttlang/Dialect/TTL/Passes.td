@@ -559,14 +559,16 @@ def TTLAssignDST
 }
 
 def TTLSetComputeKernelConfig
-    : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
+    : Pass<"ttl-set-compute-kernel-config", "::mlir::ModuleOp"> {
   let summary = "Resolve compute-kernel configuration";
   let description = [{
     Selects tile execution strategies and resolves kernel-wide destination
     element width, synchronization mode, and per-dataflow-buffer unpack mode.
     Target capabilities, user policy, and target-independent kernel
     requirements are analyzed separately. The pass validates a complete
-    configuration before writing operation or function attributes.
+    configuration for every function before writing operation or function
+    attributes. Module scope provides one immutable launch-domain snapshot and
+    a transformation barrier before destination assignment mutates functions.
   }];
 
   let options = [
@@ -982,6 +984,11 @@ def TTLFinalizeDFBIndices
     order conflicts with every other DFB. Unsupported or unknown control flow
     can reduce reuse but cannot produce an unsafe physical assignment.
 
+    Two DFBs used by one compute kernel may share a physical index only when
+    every target-supported destination width assigns compatible static unpack
+    modes to that index. This constraint is added to the conflict graph before
+    coloring.
+
     An access whose launch domain is otherwise unknown is refined to an exact
     domain when execution-count analysis proves a count on every base launch
     node. Nodes with positive counts belong to the domain; nodes with zero
@@ -990,6 +997,11 @@ def TTLFinalizeDFBIndices
     domains is empty. An inactive scratch DFB may share a compatible physical
     descriptor without a lifetime-order proof because no launched node accesses
     it. Tensor-backed empty domains retain their existing allocation diagnostic.
+    Operations proven to execute zero times on every launch node do not impose
+    runtime compute-configuration requirements, but strategy-dependent tile
+    operations still receive a strategy required by later lowering. Unknown
+    execution remains configuration-constraining. The subsequent compute
+    configuration pass uses the same exact-empty proof.
 
     The allocator represents each logical DFB as a vertex, each pair that
     cannot share as an edge, and each physical index as a color. First-fit

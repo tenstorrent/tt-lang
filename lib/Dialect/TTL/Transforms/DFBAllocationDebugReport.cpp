@@ -69,6 +69,8 @@ static llvm::StringRef getConflictReasonName(DFBConflictReason reason) {
     return "pointer-owner-mismatch";
   case DFBConflictReason::ConcurrentLifetime:
     return "concurrent-lifetime";
+  case DFBConflictReason::StaticConfigurationMismatch:
+    return "static-configuration-mismatch";
   }
   llvm_unreachable("unknown DFB conflict reason");
 }

@@ -1,6 +1,6 @@
 // Verify an explicit 16-bit DST constraint overrides a supported full-fp32
 // preference without warning about the requested fallback.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --verify-diagnostics | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' --verify-diagnostics | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

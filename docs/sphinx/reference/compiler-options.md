@@ -221,7 +221,7 @@ for the algorithm and invariants.
 | `enable-fpu-binary-ops` | bool | `true` | Allow eligible add/sub/mul operations to select FPU. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled})'
+ttlang-opt input.mlir -p 'ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled}'
 ```
 
 #### `ttl-assign-dst`

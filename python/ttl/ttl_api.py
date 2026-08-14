@@ -2301,7 +2301,7 @@ def _lower_program_to_kernel(
         verify = True
 
         # fmt: off
-        set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        set_compute_config_pass = "ttl-set-compute-kernel-config"
         config_options = []
         if fp32_dest_acc_en is not None:
             config_options.append(
@@ -2324,9 +2324,9 @@ def _lower_program_to_kernel(
         )
         if config_options:
             set_compute_config_pass = (
-                "func.func(ttl-set-compute-kernel-config{"
+                "ttl-set-compute-kernel-config{"
                 + " ".join(config_options)
-                + "})"
+                + "}"
             )
 
         # NOTE: Pipeline pass ordering mirrors
