@@ -1012,6 +1012,16 @@ def TTLFinalizeDFBIndices
     DFB without a matched lifecycle or a proven lifetime order conflicts with
     every other DFB.
 
+    Explicit allocation groups may reuse one physical index across
+    reset-delimited epochs from different logical DFBs. Every pair of active
+    epochs on a launch node must have one strict proven order. Each adjacent
+    handoff must either follow a reset that establishes canonical pointer state
+    or preserve both pointer owners. The allocator simulates every epoch's
+    transaction sequence against the group's physical capacity envelope and
+    rejects boundary crossings or unequal read and write offsets. This
+    epoch-level contract applies only to explicit allocation groups; automatic
+    reuse continues to compare complete logical-DFB lifetimes.
+
     Two DFBs used by one compute kernel may share a physical index only when
     every target-supported destination width assigns compatible static unpack
     modes to that index. This constraint is added to the conflict graph before
