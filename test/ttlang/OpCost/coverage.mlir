@@ -10,7 +10,7 @@
 // without MLIR or any dialect.
 
 // CHECK: operations 296
-// CHECK-NEXT: measured-rows 1884
+// CHECK-NEXT: measured-rows 1938
 
 // Operations that occupy no engine: known to the table and costing nothing, as
 // opposed to absent from it, which is unknown and should fail a caller.
@@ -25,7 +25,18 @@
 // dm is zero because the LLK suite builds only TRISC kernels: nothing in it ever
 // runs on NCRISC or BRISC, so every data-movement cost is a placeholder.
 // CHECK-NEXT: engine dm slots 56 measured 0 reachable 0
-// CHECK-NEXT: engine unpack slots 43 measured 10 reachable 8
+// unpack gained add/sub/mul_tiles_init. Their init zone nests rather than
+// partitions -- `binary_op_init_common` issues both of its calls and
+// `binary_tiles_init` only the second -- so measuring the zone whole and
+// measuring its tail attributes both owners from one pair of runs, with the
+// whole still charged to `binary_op_init_common`. All three read 66.0 cycles,
+// as they must: the eltwise type reaches only the math call, so they issue an
+// identical `llk_unpack_AB_init`.
+//
+// The SFPU sources are deliberately not split this way. There `init_sfpu` issues
+// both calls and the operation's own init is MATH(...) only, so there is no
+// second owner to separate and a split would just halve one operation's cost.
+// CHECK-NEXT: engine unpack slots 43 measured 13 reachable 11
 
 // measured 110 against reachable 96. The gap used to be far wider: isolating an
 // SFPU operation's math cost requires unpack_to_dest, which the hardware offers
@@ -46,7 +57,7 @@
 // worse than the placeholder.
 // CHECK-NEXT: engine math slots 208 measured 110 reachable 96
 // CHECK-NEXT: engine pack slots 26 measured 5 reachable 4
-// CHECK-NEXT: total slots 333 measured 125 reachable 108
+// CHECK-NEXT: total slots 333 measured 128 reachable 111
 
 // The outcomes a caller has to handle, one of each.
 // CHECK-NEXT: lookup pack_tile/pack measured {{[0-9.]+}} per-tile

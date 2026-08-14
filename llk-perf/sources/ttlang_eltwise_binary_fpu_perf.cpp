@@ -42,8 +42,12 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const auto& buffer_B         = params.buffer_B;
 #endif
 
+    // Split, but cumulatively rather than disjointly like the math thread -- see
+    // the else branch below. The zone is two calls: hw_configure, and the
+    // operation's own `llk_unpack_AB_init`, which is all `binary_tiles_init`
+    // issues on this thread (eltwise_binary.h:43-45).
+    auto hw_configure = [&]()
     {
-        START_PERF_MEASURE("INIT")
         _llk_unpack_hw_configure_<is_fp32_dest_acc_en>(
             formats.unpack_A_src,
             formats.unpack_B_src,
@@ -53,8 +57,36 @@ void run_kernel(RUNTIME_PARAMETERS params)
             FACE_R_DIM,
             /* num_faces */ 4,
             /* num_faces */ 4);
+    };
+    auto op_init = [&]()
+    {
         _llk_unpack_AB_init_<>(DEFAULT_TENSOR_SHAPE);
-        PROFILER_SYNC();
+    };
+
+    if constexpr (MEASURE_OP_INIT)
+    {
+        hw_configure();
+        {
+            START_PERF_MEASURE("INIT")
+            op_init();
+            PROFILER_SYNC();
+        }
+    }
+    else
+    {
+        // Cumulative, not disjoint: `binary_op_init_common` issues both calls on
+        // this thread (eltwise_binary.h:484-485), so the whole zone is its unpack
+        // half and stays measured. `binary_tiles_init` issues only the second
+        // (eltwise_binary.h:43-45), which the branch above brackets alone. Both
+        // owners come out of the same pair of runs with nothing left over -- the
+        // math zone cannot do this, because there the op-specific call is not
+        // part of `binary_op_init_common` at all.
+        {
+            START_PERF_MEASURE("INIT")
+            hw_configure();
+            op_init();
+            PROFILER_SYNC();
+        }
     }
     {
         START_PERF_MEASURE("TILE_LOOP")

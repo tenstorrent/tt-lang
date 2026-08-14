@@ -285,6 +285,37 @@ def _split_init(common: str, op_suffix: str = "_init"):
     return owners
 
 
+def _split_init_cumulative(common: str):
+    """Owner of an init zone whose halves nest rather than partition.
+
+    On the unpack thread `common` issues *both* calls in the zone, and the
+    operation's own init issues only the second -- `binary_op_init_common` does
+    hw_configure plus `llk_unpack_AB_init` (eltwise_binary.h:484-485), while
+    `binary_tiles_init` does the `llk_unpack_AB_init` alone (eltwise_binary.h:43-45).
+    So the source brackets the whole zone when `measure_op_init` is False and the
+    second call alone when it is True, and both owners come out of the same pair
+    of runs with nothing unattributed:
+
+      False  the whole zone -- `common`'s unpack half, entire
+      True   the second call -- the operation's own init
+
+    The math thread cannot do this, which is why `_split_init` exists separately:
+    there the op-specific call is not part of `common` at all, so the halves
+    genuinely partition and the whole zone belongs to neither.
+    """
+
+    def owners(row) -> Optional[list[str]]:
+        if row.get("measure_op_init") != "True":
+            return [common]
+        op = _mathop(row)
+        if op:
+            return [_init_op(op)]
+        raw = row.get("mathop", "").split(".")[-1]
+        return [f"{raw}_init"] if raw else None
+
+    return owners
+
+
 def _split_init_fixed(op: str):
     """Owner of a split init zone where the operation is fixed, not per row."""
 
@@ -443,18 +474,28 @@ BENCHMARKS: dict[str, Benchmark] = {
     "perf_ttlang_eltwise_binary_fpu": Benchmark(
         source="eltwise_binary_fpu_perf.cpp",
         tile_loop=_lanes(unpack=_one, math=_one, pack=["pack_tile"]),
-        # UNPACK and PACK are `binary_op_init_common`'s own halves -- it issues
-        # every call in those zones (eltwise_binary.h:485-493) -- so each is one
-        # operation, not a lump. MATH is split, separating that operation's math
-        # half from `<op>_init`.
+        # All three init lanes are `binary_op_init_common`'s own halves -- it
+        # issues every call in every one of these zones (eltwise_binary.h:484-493)
+        # -- so none is a lump. UNPACK and MATH additionally carry a second owner
+        # and are split; PACK has no op-specific call to separate and is not.
         #
-        # Its math and pack halves are the same calls `compute_kernel_hw_startup`
+        # The two splits differ, because the nesting does. On MATH the op's init
+        # is a call `binary_op_init_common` does not make, so the halves partition
+        # (`_split_init`). On UNPACK it is one `binary_op_init_common` does make,
+        # so they nest (`_split_init_cumulative`) and the whole zone stays
+        # attributable.
+        #
+        # `binary_tiles_init` passes the eltwise type only to the MATH call
+        # (eltwise_binary.h:40-45), so add/sub/mul_tiles_init issue the identical
+        # `llk_unpack_AB_init`: three slots, one number, expected to agree.
+        #
+        # The math and pack halves are the same calls `compute_kernel_hw_startup`
         # issues, so the datacopy benchmark measures the same work under the other
         # name. They agree to 1.3%, which confirms the attribution rather than
         # corroborating the hardware -- worth stating, because the agreement looks
         # like independent validation and is not.
         init=_lanes(
-            unpack=["binary_op_init_common"],
+            unpack=_split_init_cumulative("binary_op_init_common"),
             math=_split_init("binary_op_init_common"),
             pack=["binary_op_init_common"],
         ),

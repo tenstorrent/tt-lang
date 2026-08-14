@@ -48,6 +48,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
     const EltwiseBinaryReuseDestType reuse_dest_type = EltwiseBinaryReuseDestType::NONE;
 
+    // Deliberately not split on MEASURE_OP_INIT, unlike the math thread. Both
+    // calls below are `init_sfpu`'s own unpack half -- `unary_op_init_common`
+    // issues exactly this hw_configure and this `llk_unpack_A_init`
+    // (eltwise_unary.h:23-25) -- while the SFPU operation's `<op>_tile_init` is
+    // MATH(...) only and touches the unpacker not at all. There is no second
+    // owner here to separate out, so splitting would only cut one operation's
+    // cost in half.
     {
         START_PERF_MEASURE("INIT")
 
