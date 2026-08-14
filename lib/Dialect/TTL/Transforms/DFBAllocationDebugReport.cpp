@@ -211,6 +211,13 @@ static void printTransactionRuns(llvm::raw_ostream &output,
 static void printTransactions(llvm::raw_ostream &output,
                               const DFBPerNodeLifetime &lifetime) {
   printTransactionRuns(output, lifetime.transactionRuns);
+  if (lifetime.writeCursorRuns != lifetime.transactionRuns ||
+      lifetime.readCursorRuns != lifetime.transactionRuns) {
+    output << " write_cursor_runs=";
+    printTransactionRuns(output, lifetime.writeCursorRuns);
+    output << " read_cursor_runs=";
+    printTransactionRuns(output, lifetime.readCursorRuns);
+  }
 }
 
 static void printResetEpochs(llvm::raw_ostream &output,
@@ -222,6 +229,13 @@ static void printResetEpochs(llvm::raw_ostream &output,
         printValues(output, epoch.accessOccurrenceIndices);
         output << ",transactions=";
         printTransactionRuns(output, epoch.transactionRuns);
+        if (epoch.writeCursorRuns != epoch.transactionRuns ||
+            epoch.readCursorRuns != epoch.transactionRuns) {
+          output << ",write_cursor_runs=";
+          printTransactionRuns(output, epoch.writeCursorRuns);
+          output << ",read_cursor_runs=";
+          printTransactionRuns(output, epoch.readCursorRuns);
+        }
         output << ",write_owner=";
         printPointerOwner(output, epoch.writePointerOwner);
         output << ",read_owner=";
@@ -247,6 +261,8 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
         return lhsEpoch.accessOccurrenceIndices ==
                    rhsEpoch.accessOccurrenceIndices &&
                lhsEpoch.transactionRuns == rhsEpoch.transactionRuns &&
+               lhsEpoch.writeCursorRuns == rhsEpoch.writeCursorRuns &&
+               lhsEpoch.readCursorRuns == rhsEpoch.readCursorRuns &&
                lhsEpoch.writePointerOwner == rhsEpoch.writePointerOwner &&
                lhsEpoch.readPointerOwner == rhsEpoch.readPointerOwner &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
@@ -269,9 +285,13 @@ static bool hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalAccessOccurrenceIndices !=
           rhs.terminalAccessOccurrenceIndices ||
       lhs.transactionRuns != rhs.transactionRuns ||
+      lhs.writeCursorRuns != rhs.writeCursorRuns ||
+      lhs.readCursorRuns != rhs.readCursorRuns ||
       lhs.writePointerOwner != rhs.writePointerOwner ||
       lhs.readPointerOwner != rhs.readPointerOwner ||
       lhs.terminalTransactionRuns != rhs.terminalTransactionRuns ||
+      lhs.terminalWriteCursorRuns != rhs.terminalWriteCursorRuns ||
+      lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
