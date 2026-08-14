@@ -102,11 +102,15 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
 /// Protocol state proved for one access interval between synchronized resets.
 struct DFBLifecycleEpoch {
   SmallVector<unsigned> accessOccurrenceIndices;
+  SmallVector<unsigned> earliestEntryEvents;
+  SmallVector<unsigned> terminalCompletionEvents;
   SmallVector<DFBTransactionRun> transactionRuns;
   SmallVector<DFBTransactionRun> writeCursorRuns;
   SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  std::optional<DFBPointerOwner> terminalWritePointerOwner;
+  std::optional<DFBPointerOwner> terminalReadPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
@@ -189,7 +193,29 @@ public:
   bool isConditionallyOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                                     LaunchNodeCoord node) const;
 
+  /// Returns true when one reset-delimited epoch ends before another.
+  bool isEpochOrderedBefore(unsigned beforeIndex, unsigned beforeEpochIndex,
+                            unsigned afterIndex, unsigned afterEpochIndex,
+                            LaunchNodeCoord node) const;
+
+  /// Returns epoch ordering while treating unknown domains as possible.
+  bool isConditionallyEpochOrderedBefore(unsigned beforeIndex,
+                                         unsigned beforeEpochIndex,
+                                         unsigned afterIndex,
+                                         unsigned afterEpochIndex,
+                                         LaunchNodeCoord node) const;
+
 private:
+  struct EpochOrdering {
+    SmallVector<unsigned> logicalOffsets;
+    SmallVector<llvm::BitVector> orderedBefore;
+  };
+
+  bool queryEpochOrdering(ArrayRef<EpochOrdering> orderings,
+                          unsigned beforeIndex, unsigned beforeEpochIndex,
+                          unsigned afterIndex, unsigned afterEpochIndex,
+                          LaunchNodeCoord node) const;
+
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
@@ -197,6 +223,8 @@ private:
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
+  SmallVector<EpochOrdering> epochOrderedBeforeByNode;
+  SmallVector<EpochOrdering> conditionallyEpochOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

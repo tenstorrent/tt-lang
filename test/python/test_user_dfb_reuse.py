@@ -711,6 +711,187 @@ def _make_synchronized_reset_kernel(
     return synchronized_reset_kernel
 
 
+def _make_interleaved_allocation_group_epochs_kernel(
+    data_format, enter_semaphore, exit_semaphore
+):
+    enter_semaphore_address = int(ttnn.get_global_semaphore_address(enter_semaphore))
+    exit_semaphore_address = int(ttnn.get_global_semaphore_address(exit_semaphore))
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset_participants = (
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    )
+    reset_first_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.TARGETS,
+    )
+    reset_second_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.TARGETS,
+    )
+    reset_third_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.TARGETS,
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def interleaved_allocation_group_epochs_kernel(input_tensor, output_tensor):
+        shared_allocation = ttl.make_dfb_allocation_group()
+        noc_stream = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=shared_allocation,
+        )
+        pack_stream = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=shared_allocation,
+        )
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with noc_stream.reserve() as first_noc_destination:
+                ttl.copy(input_tensor[0, 0], first_noc_destination).wait()
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_first_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    pack_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_second_epoch,
+                dfb_reset_targets=[pack_stream],
+            )
+            with noc_stream.reserve() as second_noc_destination:
+                ttl.copy(input_tensor[0, 1], second_noc_destination).wait()
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_third_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            with noc_stream.wait():
+                pass
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_first_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.reserve() as first_pack_destination:
+                first_pack_destination.store(
+                    ttl.block.fill(
+                        3,
+                        shape=first_pack_destination.shape,
+                        dtype=first_pack_destination.dtype,
+                    )
+                )
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    pack_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_second_epoch,
+                dfb_reset_targets=[pack_stream],
+            )
+            with noc_stream.wait():
+                pass
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_third_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.reserve() as second_pack_destination:
+                second_pack_destination.store(
+                    ttl.block.fill(
+                        7,
+                        shape=second_pack_destination.shape,
+                        dtype=second_pack_destination.dtype,
+                    )
+                )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_first_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.wait() as first_pack_source:
+                ttl.copy(first_pack_source, output_tensor[0, 0]).wait()
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    pack_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_second_epoch,
+                dfb_reset_targets=[pack_stream],
+            )
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_third_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.wait() as second_pack_source:
+                ttl.copy(second_pack_source, output_tensor[0, 1]).wait()
+
+    return interleaved_allocation_group_epochs_kernel
+
+
 def _make_allocation_group_kernel(data_format):
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
@@ -1205,6 +1386,52 @@ def test_synchronized_reset_terminates_producer_epoch(
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_allocation_group_reuses_interleaved_reset_epochs(
+    device, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    )
+    enter_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    exit_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_interleaved_allocation_group_epochs_kernel(
+        data_format, enter_semaphore, exit_semaphore
+    )
+
+    element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+        TILE, 2 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "interleaved_allocation_group_epochs.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    for _ in range(2):
+        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    assert _count_final_dfb_allocations(final_mlir_path) == 1
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = torch.cat(
+        (
+            torch.full((TILE, TILE), 3, dtype=torch.float32),
+            torch.full((TILE, TILE), 7, dtype=torch.float32),
+        ),
+        dim=1,
+    )
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
