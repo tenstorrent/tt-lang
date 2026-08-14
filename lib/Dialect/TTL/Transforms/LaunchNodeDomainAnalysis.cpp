@@ -870,7 +870,6 @@ enum class UnresolvedControlFrameKind { ScfIf, AffineIf, ScfFor };
 
 struct UnresolvedControlFrame {
   UnresolvedControlFrameKind kind = UnresolvedControlFrameKind::ScfIf;
-  Operation *operation = nullptr;
   std::size_t regionNumber = 0;
   IntegerSetAttr affinePredicate;
   SmallVector<Value, 3> controlValues;
@@ -953,7 +952,6 @@ getUnresolvedExecutionCountContext(
         continue;
       }
       context.frames.push_back({UnresolvedControlFrameKind::ScfIf,
-                                parent,
                                 region->getRegionNumber(),
                                 nullptr,
                                 {ifOp.getCondition()}});
@@ -972,14 +970,12 @@ getUnresolvedExecutionCountContext(
       }
       UnresolvedControlFrame &frame = context.frames.emplace_back();
       frame.kind = UnresolvedControlFrameKind::AffineIf;
-      frame.operation = parent;
       frame.regionNumber = region->getRegionNumber();
       frame.affinePredicate = affineIfOp.getConditionAttr();
       llvm::append_range(frame.controlValues, affineIfOp.getOperands());
     } else if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
       context.frames.push_back(
           {UnresolvedControlFrameKind::ScfFor,
-           parent,
            region->getRegionNumber(),
            nullptr,
            {forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep()}});
@@ -1265,8 +1261,6 @@ static bool proveEquivalentUnresolvedExecutionContexts(
   for (auto &&[lhsFrame, rhsFrame] :
        llvm::zip_equal(lhsContext.frames, rhsContext.frames)) {
     if (lhsFrame.kind != rhsFrame.kind ||
-        (!requireConditionalExecution &&
-         lhsFrame.operation != rhsFrame.operation) ||
         lhsFrame.regionNumber != rhsFrame.regionNumber ||
         lhsFrame.affinePredicate != rhsFrame.affinePredicate ||
         lhsFrame.controlValues.size() != rhsFrame.controlValues.size() ||
