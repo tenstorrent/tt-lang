@@ -76,9 +76,8 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     if (computeOp) {
       unsigned argIdx = barg.getArgNumber();
       if (auto cbIndex = getCBIndexAttr(computeOp, argIdx)) {
-        // Validate cb_index is in valid range.
-        assert(*cbIndex >= 0 && *cbIndex < kMaxCircularBuffers &&
-               "cb_index must be in range [0, 31]");
+        assert(*cbIndex >= 0 && *cbIndex < getTargetMaxDFBIndices(computeOp) &&
+               "cb_index must be valid for the compilation target");
 
         // Find the bind_cb op with matching cb_index in the function.
         Value result;

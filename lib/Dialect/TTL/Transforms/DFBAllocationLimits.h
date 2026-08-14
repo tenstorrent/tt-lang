@@ -40,8 +40,7 @@ public:
   FailureOr<uint64_t> getTotalBytesWithMinimumAllocations(
       const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const;
   uint64_t getBytes(int64_t physicalIndex) const;
-  llvm::SmallVector<int64_t, kMaxCircularBuffers>
-  getSortedPhysicalIndices() const;
+  llvm::SmallVector<int64_t> getSortedPhysicalIndices() const;
 
 private:
   llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;

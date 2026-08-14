@@ -73,13 +73,15 @@ getOptionalUnpackConstraint(func::FuncOp function) {
   }
 
   SmallVector<int32_t> dataflowBufferIndices(unpackAttribute.asArrayRef());
-  if (llvm::any_of(dataflowBufferIndices, [](int32_t index) {
-        return index < 0 || index >= kMaxCircularBuffers;
+  int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(function);
+  if (llvm::any_of(dataflowBufferIndices, [&](int32_t index) {
+        return index < 0 || index >= targetMaxDFBIndices;
       })) {
     function.emitOpError()
         << kUnpackToDestFp32AttrName
         << " must contain dataflow buffer indices in range [0, "
-        << kMaxCircularBuffers - 1 << "]";
+        << targetMaxDFBIndices - 1 << "] for "
+        << getTargetDFBIndexCapacityDescription(function);
     return failure();
   }
   llvm::sort(dataflowBufferIndices);
@@ -117,10 +119,12 @@ resolveDataflowBufferIndex(Value value, Operation *consumer) {
       consumer->emitOpError("uses a dataflow buffer without a finalized index");
       return failure();
     }
-    if (*dfbIndex < 0 || *dfbIndex >= kMaxCircularBuffers) {
-      consumer->emitOpError() << "uses dataflow buffer index " << *dfbIndex
-                              << " outside the supported range [0, "
-                              << kMaxCircularBuffers - 1 << "]";
+    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(consumer);
+    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
+      consumer->emitOpError()
+          << "uses dataflow buffer index " << *dfbIndex
+          << " outside the supported range [0, " << targetMaxDFBIndices - 1
+          << "] for " << getTargetDFBIndexCapacityDescription(consumer);
       return failure();
     }
     return dfbIndex;
@@ -760,7 +764,7 @@ KernelTargetEnvironment::get(func::FuncOp function) {
 
   std::string targetFailureReason;
   FailureOr<std::optional<ttcore::Arch>> targetArch =
-      resolveComputeTargetArch(function, targetFailureReason);
+      resolveTargetArch(function, targetFailureReason);
   if (failed(targetArch)) {
     module.emitOpError(targetFailureReason);
     return failure();

@@ -29,10 +29,14 @@ struct TTLSetComputeKernelConfigPass
     func::FuncOp function = getOperation();
     FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
         KernelTargetEnvironment::get(function);
+    if (failed(target)) {
+      signalPassFailure();
+      return;
+    }
     FailureOr<KernelConfigPolicy> policy = KernelConfigPolicy::get(
         function, fp32DestAccEn, dstFullSyncEn, reduceFullFp32, matmulFullFp32,
         enableFPUBinaryOps);
-    if (failed(target) || failed(policy)) {
+    if (failed(policy)) {
       signalPassFailure();
       return;
     }

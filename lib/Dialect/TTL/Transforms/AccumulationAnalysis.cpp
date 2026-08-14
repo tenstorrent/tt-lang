@@ -5,7 +5,7 @@
 #include "ttlang/Dialect/TTL/Transforms/AccumulationAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
@@ -350,7 +350,7 @@ FailureOr<AccumulationCostModel>
 AccumulationCostModel::forOperation(Operation *op) {
   std::string failureReason;
   FailureOr<std::optional<ttcore::Arch>> arch =
-      resolveComputeTargetArch(op, failureReason);
+      resolveTargetArch(op, failureReason);
   if (failed(arch)) {
     op->emitOpError(failureReason);
     return failure();

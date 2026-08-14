@@ -13,8 +13,13 @@ setup() {
         "$RESTRICTED_TEXT")
 }
 
+# Empty the environment: a pull_request workflow run exports GITHUB_BASE_REF
+# naming a base branch the fixture repository does not have, and an allow-list
+# also excludes inputs the script reads later. Each test's own `env` runs after
+# this one, so its values take precedence.
 run_check() {
-    run env TTLANG_PUBLIC_CONTENT_SIGNATURES="$TEST_SIGNATURE" "$@"
+    run env -i PATH="$PATH" HOME="$HOME" \
+        TTLANG_PUBLIC_CONTENT_SIGNATURES="$TEST_SIGNATURE" "$@"
 }
 
 @test "accepts an ordinary branch and diff" {

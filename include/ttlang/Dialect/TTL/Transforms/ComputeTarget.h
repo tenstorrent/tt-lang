@@ -35,11 +35,6 @@ struct ReductionCapability {
   ttkernel::ReduceDim reduceDimension;
 };
 
-/// Resolve the optional architecture selected by the module attribute or
-/// default device. Both sources must agree when present.
-FailureOr<std::optional<ttcore::Arch>>
-resolveComputeTargetArch(Operation *operation, std::string &failureReason);
-
 /// Immutable LLK capabilities for one compute target.
 class ComputeTargetEnvironment {
 public:

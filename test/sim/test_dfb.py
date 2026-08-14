@@ -1022,7 +1022,7 @@ def test_per_node_dfb_limit_exceeds_max() -> None:
         def noop_dm1():
             pass
 
-    with pytest.warns(UserWarning, match="hardware limit"):
+    with pytest.warns(UserWarning, match="configured limit"):
         test_kernel(element)
 
 

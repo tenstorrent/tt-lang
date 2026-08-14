@@ -13,7 +13,7 @@ logical assignments and must report the Python-visible physical-index limit.
 """
 
 # REUSE: Compiled kernel ready
-# NOREUSE: need 33 unspilled DFB indices but hardware supports at most 32
+# NOREUSE: need 33 unspilled DFB indices, exceeding the conservative 32-DFB-index capacity used when target metadata is absent
 
 import os
 
