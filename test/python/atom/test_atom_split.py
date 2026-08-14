@@ -392,6 +392,44 @@ def test_operation_identity_encodes_graph_pipenet_topology():
     assert identity_for((0, 1)) != identity_for((0, 2))
 
 
+def test_operation_identity_encodes_nested_metadata():
+    """Nested metadata preserves topology and ignores mapping insertion order."""
+
+    def identity_for(destination, reverse_items):
+        pipe_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=destination)])
+        items = [("pipe_nets", [pipe_net]), ("indices", (0, 1))]
+        if reverse_items:
+            items.reverse()
+        metadata = dict(items)
+
+        def selected_operation():
+            return metadata
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((1, 0), False) == identity_for((1, 0), True)
+    assert identity_for((1, 0), False) != identity_for((2, 0), False)
+
+
+def test_operation_identity_rejects_recursive_metadata():
+    """Recursive metadata cannot produce a finite operation identity."""
+
+    metadata = []
+    metadata.append(metadata)
+
+    def selected_operation():
+        return metadata
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "operation identity cannot encode recursive nonlocal capture "
+            "'metadata' of type list"
+        ),
+    ):
+        _operation_identity(selected_operation)
+
+
 def test_operation_identity_encodes_device_domain():
     """Device-domain components distinguish factory-created operations."""
 
