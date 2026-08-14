@@ -33,6 +33,13 @@
 
 namespace mlir::tt::ttl {
 
+struct RecordExecutionCountAnalysisCache {
+  std::unique_ptr<ExecutionCountAnalysisSharedState> sharedState;
+  ExecutionCountAnalysisQueryCache<
+      std::pair<LaunchExecutionLocation, std::uint64_t>>
+      analysesByContext;
+};
+
 /// Analysis facts and operation indexes used while constructing PipeGraph.
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
   std::unique_ptr<DFBLogicalIdentityAnalysis> dfbLogicalIdentities;
@@ -52,9 +59,7 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::SmallPtrSet<Operation *, 16> pipeRecordControlOps;
   llvm::DenseMap<Operation *, LaunchNodeDomain> pipeRecordIfThenDomains;
   llvm::DenseMap<Operation *, PipeNetRecordLoop> pipeRecordLoops;
-  llvm::DenseMap<Operation *,
-                 std::map<std::pair<LaunchExecutionLocation, std::uint64_t>,
-                          std::unique_ptr<ExecutionCountAnalysis>>>
+  llvm::DenseMap<Operation *, RecordExecutionCountAnalysisCache>
       recordExecutionCountAnalyses;
 };
 
@@ -1442,36 +1447,38 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
   Operation *recordLoop = getSelectedRecordLoop(pipeRef, analysisState);
   auto forOp = cast<scf::ForOp>(recordLoop);
 
-  auto &analysesByContext =
-      analysisState.recordExecutionCountAnalyses[recordLoop];
-  auto context = std::make_pair(location, recordIndex);
-  auto analysisIt = analysesByContext.find(context);
-  if (analysisIt == analysesByContext.end()) {
-    Value inductionVariable = forOp.getInductionVar();
-    llvm::APInt inductionValue(IndexType::kInternalStorageBitWidth,
-                               recordIndex);
-    PipeRecordAttr record = pipeRef.getRecords().getPipes()[recordIndex];
-    auto analysis = std::make_unique<ExecutionCountAnalysis>(
-        forOp.getRegion(),
-        [inductionVariable, inductionValue, record, location,
-         &analysisState](Value value) -> std::optional<llvm::APInt> {
-          if (std::optional<llvm::APInt> recordValue =
-                  evaluateSelectedPipeRecordValue(value, record)) {
-            return recordValue;
-          }
-          if (value == inductionVariable) {
-            return inductionValue;
-          }
-          return evaluateIntegerAtLaunchLocation(value, location,
-                                                 analysisState);
-        },
-        [location, &analysisState](Region &region) {
-          return getRegionInvocationCountAtLaunchLocation(region, location,
-                                                          analysisState);
-        });
-    analysisIt = analysesByContext.emplace(context, std::move(analysis)).first;
+  auto &recordCache = analysisState.recordExecutionCountAnalyses[recordLoop];
+  if (!recordCache.sharedState) {
+    recordCache.sharedState =
+        std::make_unique<ExecutionCountAnalysisSharedState>(forOp.getRegion());
   }
-  return analysisIt->second->getExecutionCount(op);
+  auto context = std::make_pair(location, recordIndex);
+  ExecutionCountAnalysis &analysis =
+      recordCache.analysesByContext.getOrCreate(context, [&] {
+        Value inductionVariable = forOp.getInductionVar();
+        llvm::APInt inductionValue(IndexType::kInternalStorageBitWidth,
+                                   recordIndex);
+        PipeRecordAttr record = pipeRef.getRecords().getPipes()[recordIndex];
+        return std::make_unique<ExecutionCountAnalysis>(
+            *recordCache.sharedState,
+            [inductionVariable, inductionValue, record, location,
+             &analysisState](Value value) -> std::optional<llvm::APInt> {
+              if (std::optional<llvm::APInt> recordValue =
+                      evaluateSelectedPipeRecordValue(value, record)) {
+                return recordValue;
+              }
+              if (value == inductionVariable) {
+                return inductionValue;
+              }
+              return evaluateIntegerAtLaunchLocation(value, location,
+                                                     analysisState);
+            },
+            [location, &analysisState](Region &region) {
+              return getRegionInvocationCountAtLaunchLocation(region, location,
+                                                              analysisState);
+            });
+      });
+  return analysis.getExecutionCount(op);
 }
 
 static std::optional<std::uint64_t> getConcreteTransferExecutionCount(

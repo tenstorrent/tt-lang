@@ -446,7 +446,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
 }
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
-  executionCountAnalysesByFunctionAndLocation.clear();
+  executionCountAnalysesByFunction.clear();
   if (!module->hasAttr(kLaunchGridAttrName)) {
     hasLaunchGrid = false;
   } else {
@@ -743,24 +743,26 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
   if (!function) {
     return std::nullopt;
   }
-  auto &analysesByLocation =
-      state
-          .executionCountAnalysesByFunctionAndLocation[function.getOperation()];
-  auto analysisIt = analysesByLocation.find(location);
-  if (analysisIt == analysesByLocation.end()) {
-    auto analysis = std::make_unique<ExecutionCountAnalysis>(
-        function.getBody(),
-        [location, &state](Value value) {
-          return evaluateLaunchLocationContextValue(value, location, &state);
-        },
-        [location, &state](Region &region) {
-          return getRegionInvocationCountAtLaunchLocation(region, location,
-                                                          state);
-        });
-    analysisIt =
-        analysesByLocation.emplace(location, std::move(analysis)).first;
+  auto &functionCache =
+      state.executionCountAnalysesByFunction[function.getOperation()];
+  if (!functionCache.sharedState) {
+    functionCache.sharedState =
+        std::make_unique<ExecutionCountAnalysisSharedState>(function.getBody());
   }
-  return analysisIt->second->getExecutionCount(op);
+  ExecutionCountAnalysis &analysis =
+      functionCache.analysesByLocation.getOrCreate(location, [&] {
+        return std::make_unique<ExecutionCountAnalysis>(
+            *functionCache.sharedState,
+            [location, &state](Value value) {
+              return evaluateLaunchLocationContextValue(value, location,
+                                                        &state);
+            },
+            [location, &state](Region &region) {
+              return getRegionInvocationCountAtLaunchLocation(region, location,
+                                                              state);
+            });
+      });
+  return analysis.getExecutionCount(op);
 }
 
 /// Return true if evaluating `value` can depend on the current launch
