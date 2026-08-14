@@ -273,6 +273,60 @@ func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor
 
 // -----
 
+// Test: In-DST additive recurrence initializes DST before the reduction loop
+// and stores once after the reduction loop.
+
+#map_acc_init = affine_map<(d0, d1) -> (d0)>
+#map_acc_contrib = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @compute_accumulate_add_reduction
+// CHECK-SAME: (%[[INIT_ARG:.*]]: tensor<2x!ttcore.tile<32x32, f32>>, %[[CONTRIB_ARG:.*]]: tensor<2x3x!ttcore.tile<32x32, f32>>)
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[C3:.*]] = arith.constant 3 : index
+// CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT_ARG]]
+// CHECK-DAG: %[[CONTRIB_CB:.*]] = ttl.attach_cb %[[CONTRIB_ARG]]
+// CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+// CHECK-NEXT: ttl.dst_section {
+// CHECK-NEXT: %[[INIT_TILE:.*]] = tensor.extract %[[INIT_CB]][%[[I]]] : tensor<2x!ttcore.tile<32x32, f32>>
+// CHECK-NEXT: %{{.*}}, %[[ACC_TILE:.*]] = ttl.copy_tile %[[INIT_TILE]][%[[I]]] into dst[%[[C0]]]
+// CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
+// CHECK-NEXT: %[[CONTRIB_TILE:.*]] = tensor.extract %[[CONTRIB_CB]][%[[I]], %[[J]]] : tensor<2x3x!ttcore.tile<32x32, f32>>
+// CHECK-NEXT: %{{.*}}, %[[CONTRIB_DST:.*]] = ttl.copy_tile %[[CONTRIB_TILE]][%[[I]], %[[J]]] into dst[%[[C1]]]
+// CHECK-NEXT: %[[NEXT:.*]] = ttl.tile_accumulate %[[ACC_TILE]], %[[CONTRIB_DST]] add into dst[%[[C0]]]
+// CHECK-NEXT: }
+// CHECK-NEXT: %[[STORE_TILE:.*]] = builtin.unrealized_conversion_cast to !ttcore.tile<32x32, f32>
+// CHECK-NEXT: ttl.tile_store %[[STORE_TILE]], %{{.*}}[%[[I]]] from dst[%[[C0]]]
+// CHECK-NEXT: }
+func.func @compute_accumulate_add_reduction(
+    %init_arg: tensor<2x!ttcore.tile<32x32, f32>>,
+    %contrib_arg: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x!ttcore.tile<32x32, f32>> {
+  %out_init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
+  %cbinit = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>
+  %cbcontrib = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cbout = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>
+  %init_att = ttl.attach_cb %init_arg, %cbinit : (tensor<2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x!ttcore.tile<32x32, f32>>
+  %contrib_att = ttl.attach_cb %contrib_arg, %cbcontrib : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  %out_init_att = ttl.attach_cb %out_init, %cbout : (tensor<2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cbout : <[1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute ins(%init_att, %contrib_att : tensor<2x!ttcore.tile<32x32, f32>>, tensor<2x3x!ttcore.tile<32x32, f32>>) outs(%out_init_att : tensor<2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_acc_init, #map_acc_contrib, #map_acc_init], iterator_types = ["parallel", "reduction"]} {
+  ^bb0(%init_tile: !ttcore.tile<32x32, f32>, %contrib_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %acc_token, %acc = ttl.copy_tile %init_tile[%i] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    %contrib_token, %contrib = ttl.copy_tile %contrib_tile[%i, %j] into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    %next = ttl.tile_accumulate %acc, %contrib add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %next, %out_view[%i] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> tensor<2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
 // Test: Multiple results are inserted with their own indexing maps.
 
 #map_id4 = affine_map<(d0, d1) -> (d0, d1)>

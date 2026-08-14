@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-verify-pipenet-guards,ttl-erase-pipenet-scopes,convert-ttl-to-ttkernel)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-pipenet-guards,ttl-erase-pipenet-scopes,convert-ttl-to-ttkernel)' | FileCheck %s
 
 // Summary: Verifies that ttl.pipenet_scope is erased before TTL-to-TTKernel
 // lowering.
