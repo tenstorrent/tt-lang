@@ -93,28 +93,28 @@ if __name__ == "__main__":
 # CHECK-INITIAL: ttl.pipenet_scope attributes
 # CHECK-INITIAL-SAME: ttl.pipe_net_ids = [0]
 # CHECK-INITIAL-SAME: ttl.pipe_net_roles = [0]
-# CHECK-INITIAL: ttl.if_src
+# CHECK-INITIAL: ttl.pipenet_foreach_src
 # CHECK-INITIAL: ttl.is_src {pipe_net_id = 1 : i64}
 # CHECK-INITIAL: ttl.pipenet_scope attributes
 # CHECK-INITIAL-SAME: ttl.pipe_net_ids = [1]
 # CHECK-INITIAL-SAME: ttl.pipe_net_roles = [0]
-# CHECK-INITIAL: ttl.if_src
+# CHECK-INITIAL: ttl.pipenet_foreach_src
 # CHECK-INITIAL: ttl.is_src {pipe_net_id = 2 : i64}
 # CHECK-INITIAL: ttl.pipenet_scope attributes
 # CHECK-INITIAL-SAME: ttl.pipe_net_ids = [2]
 # CHECK-INITIAL-SAME: ttl.pipe_net_roles = [0]
-# CHECK-INITIAL: ttl.if_src
-# CHECK-INITIAL: ttl.if_dst
+# CHECK-INITIAL: ttl.pipenet_foreach_src
+# CHECK-INITIAL: ttl.pipenet_foreach_dst
 # CHECK-INITIAL: ttl.cb_reserve
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL: ttl.wait
 # CHECK-INITIAL: ttl.cb_push
-# CHECK-INITIAL: ttl.if_dst
+# CHECK-INITIAL: ttl.pipenet_foreach_dst
 # CHECK-INITIAL: ttl.cb_reserve
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL: ttl.wait
 # CHECK-INITIAL: ttl.cb_push
-# CHECK-INITIAL: ttl.if_dst
+# CHECK-INITIAL: ttl.pipenet_foreach_dst
 # CHECK-INITIAL: ttl.cb_reserve
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL: ttl.wait
