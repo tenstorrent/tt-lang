@@ -33,6 +33,13 @@
 
 namespace mlir::tt::ttl {
 
+struct RecordExecutionCountAnalysisCache {
+  std::unique_ptr<ExecutionCountAnalysisSharedState> sharedState;
+  std::map<std::pair<LaunchExecutionLocation, std::uint64_t>,
+           std::unique_ptr<ExecutionCountAnalysis>>
+      analysesByContext;
+};
+
 /// Analysis facts and operation indexes used while constructing PipeGraph.
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
   std::unique_ptr<DFBLogicalIdentityAnalysis> dfbLogicalIdentities;
@@ -52,9 +59,7 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::SmallPtrSet<Operation *, 16> pipeRecordControlOps;
   llvm::DenseMap<Operation *, LaunchNodeDomain> pipeRecordIfThenDomains;
   llvm::DenseMap<Operation *, PipeNetRecordLoop> pipeRecordLoops;
-  llvm::DenseMap<Operation *,
-                 std::map<std::pair<LaunchExecutionLocation, std::uint64_t>,
-                          std::unique_ptr<ExecutionCountAnalysis>>>
+  llvm::DenseMap<Operation *, RecordExecutionCountAnalysisCache>
       recordExecutionCountAnalyses;
 };
 
@@ -1444,8 +1449,12 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
   Operation *recordLoop = getSelectedRecordLoop(pipeRef, analysisState);
   auto forOp = cast<scf::ForOp>(recordLoop);
 
-  auto &analysesByContext =
-      analysisState.recordExecutionCountAnalyses[recordLoop];
+  auto &recordCache = analysisState.recordExecutionCountAnalyses[recordLoop];
+  if (!recordCache.sharedState) {
+    recordCache.sharedState =
+        std::make_unique<ExecutionCountAnalysisSharedState>(forOp.getRegion());
+  }
+  auto &analysesByContext = recordCache.analysesByContext;
   auto context = std::make_pair(location, recordIndex);
   auto analysisIt = analysesByContext.find(context);
   if (analysisIt == analysesByContext.end()) {
@@ -1454,7 +1463,7 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
                                recordIndex);
     PipeRecordAttr record = pipeRef.getRecords().getPipes()[recordIndex];
     auto analysis = std::make_unique<ExecutionCountAnalysis>(
-        forOp.getRegion(),
+        *recordCache.sharedState,
         [inductionVariable, inductionValue, record, location,
          &analysisState](Value value) -> std::optional<llvm::APInt> {
           if (std::optional<llvm::APInt> recordValue =

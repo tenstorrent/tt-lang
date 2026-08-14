@@ -882,6 +882,13 @@ kernel module is instantiated on several devices. A condition remains fully
 dynamic only when it cannot be resolved after both device and launch-node
 coordinates are fixed.
 
+Execution-count specialization shares one immutable baseline dataflow solution
+per function or selected-record loop. Each logical-device-qualified execution
+location has a lightweight query containing its value evaluators, enumeration
+budget, and context-dependent caches. Query retention is bounded, but removing
+a query does not reconstruct the baseline solution. Any IR mutation invalidates
+the baseline and all dependent queries.
+
 For example:
 
 ```text

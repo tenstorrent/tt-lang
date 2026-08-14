@@ -44,8 +44,7 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Each entry owns full-function dataflow state. Bound retained entries so
-/// large logical-device domains cannot keep one full copy per location.
+/// Bound query-local caches while retaining the shared baseline solution.
 constexpr std::size_t kMaxCachedExecutionCountLocationsPerFunction = 64;
 
 /// Result of evaluating a predicate over the launch grid.
@@ -452,7 +451,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
 }
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
-  executionCountAnalysesByFunctionAndLocation.clear();
+  executionCountAnalysesByFunction.clear();
   if (!module->hasAttr(kLaunchGridAttrName)) {
     hasLaunchGrid = false;
   } else {
@@ -757,9 +756,13 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
   if (!function) {
     return std::nullopt;
   }
-  auto &analysesByLocation =
-      state
-          .executionCountAnalysesByFunctionAndLocation[function.getOperation()];
+  auto &functionCache =
+      state.executionCountAnalysesByFunction[function.getOperation()];
+  if (!functionCache.sharedState) {
+    functionCache.sharedState =
+        std::make_unique<ExecutionCountAnalysisSharedState>(function.getBody());
+  }
+  auto &analysesByLocation = functionCache.analysesByLocation;
   auto analysisIt = analysesByLocation.find(location);
   if (analysisIt == analysesByLocation.end()) {
     if (analysesByLocation.size() >=
@@ -767,7 +770,7 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
       analysesByLocation.clear();
     }
     auto analysis = std::make_unique<ExecutionCountAnalysis>(
-        function.getBody(),
+        *functionCache.sharedState,
         [location, &state](Value value) {
           return evaluateLaunchLocationContextValue(value, location, &state);
         },

@@ -180,6 +180,12 @@ struct PipeNetScopeLaunchNodeDomains {
 /// malformed or missing launch-grid attributes leave `hasLaunchGrid` false so
 /// each verifier can emit diagnostics with pass-specific context.
 struct LaunchNodeDomainState {
+  struct ExecutionCountAnalysisFunctionCache {
+    std::unique_ptr<ExecutionCountAnalysisSharedState> sharedState;
+    std::map<LaunchExecutionLocation, std::unique_ptr<ExecutionCountAnalysis>>
+        analysesByLocation;
+  };
+
   LaunchNodeDomain baseDomain;
   llvm::DenseMap<int64_t, LaunchNodeDomain> netSourceDomains;
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
@@ -188,10 +194,8 @@ struct LaunchNodeDomainState {
   /// Reuse each function-and-location analysis across all operations in the
   /// function. The cached analyses reference the current IR and must not be
   /// queried after a transformation mutates the function.
-  mutable llvm::DenseMap<Operation *,
-                         std::map<LaunchExecutionLocation,
-                                  std::unique_ptr<ExecutionCountAnalysis>>>
-      executionCountAnalysesByFunctionAndLocation;
+  mutable llvm::DenseMap<Operation *, ExecutionCountAnalysisFunctionCache>
+      executionCountAnalysesByFunction;
   bool sawError = false;
   bool hasLaunchGrid = false;
   Operation *errorOperation = nullptr;

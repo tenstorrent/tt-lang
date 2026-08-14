@@ -15,6 +15,35 @@
 
 namespace mlir::tt {
 
+class ExecutionCountAnalysis;
+
+/// Owns context-independent dataflow facts for execution-count queries.
+///
+/// The analyzed IR must remain unchanged while this state and its dependent
+/// analyses exist. Constructing multiple ExecutionCountAnalysis instances from
+/// one state reuses the dataflow solution for the root region.
+class ExecutionCountAnalysisSharedState {
+public:
+  explicit ExecutionCountAnalysisSharedState(Region &rootRegion);
+  ~ExecutionCountAnalysisSharedState();
+
+  ExecutionCountAnalysisSharedState(
+      ExecutionCountAnalysisSharedState &&) noexcept;
+  ExecutionCountAnalysisSharedState &
+  operator=(ExecutionCountAnalysisSharedState &&) noexcept;
+
+  ExecutionCountAnalysisSharedState(const ExecutionCountAnalysisSharedState &) =
+      delete;
+  ExecutionCountAnalysisSharedState &
+  operator=(const ExecutionCountAnalysisSharedState &) = delete;
+
+private:
+  class Impl;
+  std::unique_ptr<Impl> impl;
+
+  friend class ExecutionCountAnalysis;
+};
+
 /// Computes exact operation execution counts within one region invocation.
 ///
 /// The analysis composes exact loop trip counts and exact region invocation
@@ -50,6 +79,20 @@ public:
       Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
       RegionInvocationCountEvaluator regionInvocationCountEvaluator,
       Options options);
+
+  /// The shared state's root region is assumed to execute once. Counts are
+  /// relative to that invocation and are unknown for operations outside the
+  /// region. `sharedState` must outlive this analysis.
+  explicit ExecutionCountAnalysis(
+      ExecutionCountAnalysisSharedState &sharedState,
+      SymbolValueEvaluator symbolValueEvaluator = {},
+      RegionInvocationCountEvaluator regionInvocationCountEvaluator = {});
+  /// Allows the consumer to set a different enumeration limit.
+  ExecutionCountAnalysis(
+      ExecutionCountAnalysisSharedState &sharedState,
+      SymbolValueEvaluator symbolValueEvaluator,
+      RegionInvocationCountEvaluator regionInvocationCountEvaluator,
+      Options options);
   ~ExecutionCountAnalysis();
 
   ExecutionCountAnalysis(ExecutionCountAnalysis &&) noexcept;
@@ -66,6 +109,7 @@ public:
 
 private:
   class Impl;
+  std::unique_ptr<ExecutionCountAnalysisSharedState> ownedSharedState;
   std::unique_ptr<Impl> impl;
 };
 
