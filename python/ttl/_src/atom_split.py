@@ -400,7 +400,7 @@ def _classify_ttl_call(
         outer = func.value
         if isinstance(outer.value, ast.Name) and outer.value.id == "ttl":
             namespace = outer.attr
-            if namespace == "DFBEffect":
+            if namespace in {"DFBAccess", "DFBEffect"}:
                 return None
             kind = _TTL_NAMESPACES.get(namespace)
             if kind is None:

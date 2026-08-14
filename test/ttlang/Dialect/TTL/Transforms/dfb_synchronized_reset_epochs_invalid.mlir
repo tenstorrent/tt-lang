@@ -132,6 +132,22 @@ module {
 
 // -----
 
+// Reset calls cannot mix state reset with non-transactional access.
+
+module {
+  func.func @non_transactional_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{'ttl.opaque_call' op synchronized DFB reset cannot declare non-transactional accesses}}
+    ttl.opaque_call "reset" dfb_accesses [#ttl.dfb_non_transactional_access<interface_preserved, 0>] dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    return
+  }
+}
+
+// -----
+
 // A targeted reset requires a nonempty dependency set.
 
 module {
