@@ -104,3 +104,105 @@ func.func @unsupported_tensor_accessor_dtype(%arg0: tensor<1x1x!ttcore.tile<32x3
   ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f16>, #layout>) -> ()
   return
 }
+
+// -----
+// Test: a protocol effect must select an existing dependency occurrence.
+func.func @effect_dependency_out_of_range() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB protocol effect 0 dependency index 1 is out of range for 1 dependencies}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 1, 1>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: a protocol effect dependency index must be nonnegative.
+func.func @effect_negative_dependency_index() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{DFB dependency index must be nonnegative, got -1}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, -1, 1>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: a protocol transaction count must be positive.
+func.func @effect_nonpositive_tile_count() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{DFB protocol tile count must be positive, got 0}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 0>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: one protocol action cannot exceed the dependency's physical capacity.
+func.func @effect_tile_count_exceeds_capacity() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB protocol effect 0 tile count 2 exceeds dependency 0 capacity 1}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: an external call produces at most one scalar result.
+func.func @multiple_results() {
+  // expected-error @below {{'ttl.opaque_call' op result group starting at #0 requires 0 or 1 element, but found 2}}
+  %results:2 = ttl.opaque_call "foo" () {header = "h.hpp"} : () -> (i32, i64)
+  return
+}
+
+// -----
+// Test: an external call result uses a declared signless integer carrier.
+func.func @unsupported_result_type() {
+  // expected-error @below {{'ttl.opaque_call' op result #0 must be 32-bit signless integer or 64-bit signless integer, but got 'f32'}}
+  %result = ttl.opaque_call "foo" () {header = "h.hpp"} : () -> f32
+  return
+}
+
+// -----
+// Test: a dispatch condition ordinal identifies one module-local declaration.
+func.func @negative_dispatch_condition_ordinal() {
+  // expected-error @below {{dispatch condition ordinal must be nonnegative}}
+  %result = ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<-1, i64>, header = "h.hpp"} : () -> i64
+  return
+}
+
+// -----
+// Test: a dispatch condition uses one supported external scalar carrier.
+func.func @unsupported_dispatch_condition_type() {
+  // expected-error @below {{dispatch condition scalar type must be signless i32 or i64}}
+  %result = ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<0, i16>, header = "h.hpp"} : () -> i16
+  return
+}
+
+// -----
+// Test: a dispatch condition declaration requires a scalar result.
+func.func @dispatch_condition_without_result() {
+  // expected-error @below {{'ttl.opaque_call' op condition result requires one scalar result}}
+  ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: the result type is part of the dispatch condition declaration.
+func.func @dispatch_condition_result_type_mismatch() {
+  // expected-error @below {{'ttl.opaque_call' op condition result type 'i32' does not match declared scalar type 'i64'}}
+  %result = ttl.opaque_call "foo" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> i32
+  return
+}
+
+// -----
+// Test: stable condition evaluation cannot access DFB state.
+func.func @stateful_dispatch_condition() {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op condition result call cannot access DFB state}}
+  %result = ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> i64
+  return
+}
+
+// -----
+// Test: an index template argument is still a DFB operand.
+func.func @dispatch_condition_with_dfb_index() {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op condition result call cannot access DFB state}}
+  %result = ttl.opaque_call "foo" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {condition_result = #ttl.dispatch_condition<0, i64>, header = "h.hpp"} : () -> i64
+  return
+}

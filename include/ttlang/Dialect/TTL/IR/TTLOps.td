@@ -38,6 +38,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       independently of the physical slot selected by `cb_index`. Bindings in
       different kernels with the same `dfb_id` refer to the same logical
       buffer.
+    - `allocation_group`, when present, requests one compiler-verified physical
+      allocation for all logical DFBs carrying the same group identity.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
       The range is relative to the local shard on each launch node.
@@ -52,7 +54,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     IndexAttr:$cb_index,
     DefaultValuedAttr<I64Attr, "2">:$block_count,
     OptionalAttr<IndexAttr>:$dfb_id,
-    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing
+    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing,
+    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -1808,7 +1811,8 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
 //===----------------------------------------------------------------------===//
 
 def TTL_CBReserveOp : TTL_Op<"cb_reserve",
-    [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>,
+     DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface>]> {
   let summary = "Reserve tiles in a dataflow buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer
@@ -1836,7 +1840,9 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
   let hasVerifier = 1;
 }
 
-def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
+def TTL_CBPushOp : TTL_Op<"cb_push",
+    [MemoryEffects<[MemWrite]>,
+     DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface>]> {
   let summary = "Signal that tiles have been written to the dataflow buffer";
   let description = [{
     `ttl.cb_push` signals that pages have been written to the circular buffer
@@ -1863,7 +1869,8 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [DeclareOpInterfaceMethods<ViewLikeOpInterface>,
+     DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -1893,7 +1900,9 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
   let hasVerifier = 1;
 }
 
-def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
+def TTL_CBPopOp : TTL_Op<"cb_pop",
+    [MemoryEffects<[MemWrite]>,
+     DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface>]> {
   let summary = "Release pages from the circular buffer after reading";
   let description = [{
     `ttl.cb_pop` signals that pages have been consumed from the circular buffer
@@ -1922,16 +1931,27 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
 
 def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     [MemoryEffects<[MemWrite]>]> {
-  let summary = "Store a tensor to a circular buffer reserve view";
+  let summary = "Store a tensor to an acquired dataflow buffer view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
-    an output circular buffer.
+    an acquired dataflow buffer view. A reserve-backed destination writes a
+    producer-owned slot. A wait-backed destination replaces a consumer-owned
+    slot after the original value has been consumed.
 
-    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
-    (accumulate). During `convert-ttl-to-compute`, this op is transformed
-    into a `ttl.tile_store` inside the compute body.
+    Python's `o.store(result)` emits an overwrite. `o += result` emits packer
+    accumulation for a reserve-backed destination or an explicit
+    read-add-replacement sequence for a wait-backed destination.
 
-    When `accumulate` is set, the enclosing loop is annotated for L1
+    Wait-backed replacement is valid only when compiler analysis proves that
+    the one-block DFB is acquired completely, so the read and write pointers
+    address the same pages. It does not advance either pointer and the existing
+    `ttl.cb_pop` remains the release operation. The replacement must execute
+    after a read of the acquired value, and its wait must be the first access
+    to that DFB in the compute kernel. Multi-block, partial-ring, conditional,
+    repeated, and otherwise unresolved mutations are rejected.
+
+    When `accumulate` is set, the destination must be reserve-backed. The
+    enclosing loop is annotated for L1
     packer accumulation so that each iteration adds to the existing L1
     value instead of overwriting.
 
@@ -2082,7 +2102,8 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
 //===----------------------------------------------------------------------===//
 
 def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
-    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
+     DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface>]> {
   let summary = "Call an external C/C++ function by name";
   let description = [{
     `ttl.opaque_call` emits a call to an external C/C++ function whose
@@ -2100,13 +2121,29 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     preserves DFB identity until allocation is finalized without representing
     scalar metadata as SSA values.
 
-    The `arg_operands` are forwarded as function arguments to the callee. A
-    DFB operand declares that the callee may access that logical DFB from call
-    entry through call completion; storage liveness does not distinguish reads
-    from writes. Every DFB accessed by the callee or a transitive helper must
-    appear as a DFB operand, and all synchronous and asynchronous accesses must
-    complete before the call returns. This external-code contract is assumed
-    because the compiler does not inspect the C++ body.
+    The `arg_operands` are forwarded as function arguments to the callee. DFB
+    arguments and descriptor template operands are dependencies automatically.
+    `dependency_dfb_operands` adds dependencies that are not emitted as C++
+    arguments. The dependency order is each DFB function-argument occurrence,
+    each descriptor template-argument occurrence, then each dependency-only
+    operand. Occurrence positions remain stable when operand adaptation maps
+    distinct operands to the same DFB.
+
+    The ordered `dfb_effects` list describes reserve, push, wait, and pop
+    actions completed synchronously before the external call returns. Each
+    effect indexes the ordered dependency list and carries a positive static
+    tile count. Every listed effect occurs on every execution of the call.
+    Repeated effects retain list order. The summary does not emit protocol
+    calls. Effects omitted for a dependency occurrence leave its access opaque
+    for the call duration. If one DFB occupies multiple dependency occurrences,
+    every occurrence requires its own effects to avoid an opaque call-duration
+    access. The `unknown_dfb_access` unit attribute declares that the callee may
+    also access unlisted user-managed DFBs and disables physical-index reuse in
+    affected allocation scopes.
+
+    Every asynchronous DFB access must also complete before the call returns.
+    A callee with outstanding asynchronous work requires a separate explicit
+    completion contract and cannot use this operation's synchronous summary.
 
     `unsigned_arg_indices` identifies signless i32 operands that represent
     unsigned addresses at the C++ boundary. The lowering inserts explicit
@@ -2114,11 +2151,28 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     depend on an incidental signed intermediate type.
 
     A DFB descriptor entry is itself a direct DFB dependency. A DFB index entry
-    does not declare a call-level DFB access. If the callee uses that index to
-    access storage, the same DFB must also appear in `arg_operands`.
+    does not declare a call-level DFB access. If the callee consumes that index,
+    the same DFB must occur in the ordered dependency list.
 
-    Results are optional; when absent the call is treated as a void function
-    invocation.
+    The optional result is a signless i32 or i64 scalar. When absent the call
+    is treated as a void function invocation.
+
+    `condition_result` states that the scalar result evaluates one immutable
+    dispatch-stable condition. Calls using the same typed identity may be
+    evaluated independently in different logical kernels. Such a call cannot
+    access a DFB, declare DFB effects, or declare unknown DFB access because
+    condition evaluation is stable and repeat-safe rather than stateful.
+
+    `dfb_reset` declares a worker-local synchronized reset. Its participant set
+    names every logical kernel that executes the same dynamic reset instance.
+    For a targeted reset, `dependency_dfb_operands` names the DFB interfaces
+    whose read pointer, write pointer, occupancy, and initialization state are
+    canonical when the call returns. An `all_local` reset applies to every
+    worker-local DFB interface and has no dependency operands. This contract is
+    separate from `dfb_effects`: reset targets are not payload accesses and do
+    not imply reserve, push, wait, or pop. The external implementation must
+    provide the declared synchronization and state reset. The compiler does
+    not infer either property from the callee or header name.
 
     Example:
     ```mlir
@@ -2134,22 +2188,27 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     StrAttr:$header,
     Variadic<AnyType>:$arg_operands,
     Variadic<TTL_CircularBuffer>:$template_dfb_operands,
+    Variadic<TTL_CircularBuffer>:$dependency_dfb_operands,
     OptionalAttr<ArrayAttr>:$template_args,
-    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
+    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
+    OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
+    UnitAttr:$unknown_dfb_access,
+    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result,
+    OptionalAttr<TTL_SynchronizedDFBResetAttr>:$dfb_reset
   );
-  let results = (outs Variadic<AnyType>);
+  let results = (outs Optional<AnyTypeOf<[I32, I64]>>:$result);
   let assemblyFormat = [{
     $callee (`template_args` $template_args^)?
     (`template_dfbs` `(` $template_dfb_operands^ `:`
      type($template_dfb_operands) `)`)?
-    `(` $arg_operands `)` attr-dict `:`
+    (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
+     type($dependency_dfb_operands) `)`)?
+    (`dfb_effects` $dfb_effects^)?
+    (`dfb_reset` $dfb_reset^)?
+    ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
   let hasVerifier = 1;
-  let extraClassDeclaration = [{
-    ::llvm::SmallVector<::mlir::Value> getDFBDependencyOperands();
-    ::llvm::SmallVector<::mlir::Value> getDFBIndexTemplateOperands();
-  }];
 }
 
 //===----------------------------------------------------------------------===//
@@ -2173,21 +2232,22 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
 def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
      TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface]> {
-  let summary = "Store a tile into a circular buffer view";
+  let summary = "Store a tile into an acquired dataflow buffer view";
   let description = [{
-    `ttl.tile_store` packs a single tile from the DST register into a circular
-    buffer view obtained from `ttl.cb_reserve`. This is the tile-level form of
-    `ttl.store`, created by `convert-ttl-to-compute` from the tensor-level store.
+    `ttl.tile_store` packs a single tile from the DST register into a dataflow
+    buffer view obtained from `ttl.cb_reserve` or `ttl.cb_wait`. This is the
+    tile-level form of `ttl.store`.
 
-    The tile value typically comes from compute operations (e.g., tile_add,
-    tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
-    same CB.
+    A `producer` store packs into producer-reserved pages. A
+    `consumer_replacement` store packs into waited pages without changing
+    occupancy or either dataflow buffer pointer. The latter is valid only when
+    the original generation has been read, the complete one-block DFB is
+    acquired, and all replacement reads precede the matching pop. `store_kind`
+    preserves this typed ownership decision when the view is replaced or
+    sliced.
 
-    The `indices` operands are multi-dimensional CB tile coordinates derived
-    from `ttl.iter_index` ops and the output indexing map. They are populated
-    by `ttl-assign-dst` inside the `ttl.compute` body and resolved to concrete
-    loop IVs by `ttl-lower-to-loops`. At `convert-ttl-to-ttkernel` time, the
-    indices are linearized to a flat CB tile index for `pack_tile`.
+    The `indices` operands are multi-dimensional DFB tile coordinates. The
+    `dst_index` operand identifies the source tile in the DST register.
 
     Example:
     ```mlir
@@ -2207,7 +2267,9 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     AnyType:$tile,
     AnyRankedTensor:$view,
     Variadic<Index>:$indices,
-    Index:$dst_index
+    Index:$dst_index,
+    DefaultValuedAttr<TTL_DFBTileStoreKindAttr,
+      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

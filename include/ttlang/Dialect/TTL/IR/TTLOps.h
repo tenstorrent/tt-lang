@@ -21,6 +21,29 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TileExecution.h"
 
+namespace mlir::tt::ttl {
+
+/// One ordered protocol action on a DFB dependency occurrence.
+struct DFBProtocolEffect {
+  mlir::Value dfb;
+  DFBProtocolEffectKind kind = DFBProtocolEffectKind::Reserve;
+  int64_t numTiles = 0;
+  unsigned dependencyIndex = 0;
+  unsigned sequenceIndex = 0;
+};
+
+inline bool isProducerDFBProtocolEffect(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::Reserve ||
+         kind == DFBProtocolEffectKind::Push;
+}
+
+inline bool isConsumerDFBProtocolEffect(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::Wait ||
+         kind == DFBProtocolEffectKind::Pop;
+}
+
+} // namespace mlir::tt::ttl
+
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"
 
 #define GET_OP_CLASSES

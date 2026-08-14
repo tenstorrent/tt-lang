@@ -88,6 +88,20 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
+from .scalar import ScalarType
+from .condition import (
+    _BoundDispatchCondition,
+    DispatchCondition,
+    _bind_current_dispatch_condition,
+    _dispatch_condition_binding_scope,
+)
+from .dfb_reset import (
+    DFBReset,
+    _BoundDFBReset,
+    _bind_current_dfb_reset,
+    _dfb_reset_binding_scope,
+)
+from .dfb_allocation_group import _dfb_allocation_group_binding_scope
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -1648,6 +1662,8 @@ def _build_pipenet_graph(nets):
 
 def _collect_captures(
     f: Callable,
+    bound_dispatch_conditions: Optional[Mapping[str, _BoundDispatchCondition]] = None,
+    bound_dfb_resets: Optional[Mapping[str, _BoundDFBReset]] = None,
 ) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
@@ -1669,6 +1685,8 @@ def _collect_captures(
     def convert(name, val):
         from .domains import DeviceDomain
 
+        if val is None:
+            return val
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_global_semaphore(val):
@@ -1685,6 +1703,24 @@ def _collect_captures(
             return val
         elif any(_iter_pipe_nets_in_value(val, set())):
             return val
+        elif val is ScalarType or isinstance(val, ScalarType):
+            return val
+        elif isinstance(val, DispatchCondition):
+            bound_condition = (
+                bound_dispatch_conditions.get(name)
+                if bound_dispatch_conditions is not None
+                else None
+            )
+            if bound_condition is not None and bound_condition.declaration is val:
+                return bound_condition
+            return _bind_current_dispatch_condition(val)
+        elif isinstance(val, DFBReset):
+            bound_reset = (
+                bound_dfb_resets.get(name) if bound_dfb_resets is not None else None
+            )
+            if bound_reset is not None and bound_reset.declaration is val:
+                return bound_reset
+            return _bind_current_dfb_reset(val)
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 
@@ -2028,6 +2064,17 @@ def _compile(
         except (TypeError, OSError):
             source_file = "<unknown>"
 
+        bound_dispatch_conditions = {
+            name: _bind_current_dispatch_condition(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DispatchCondition)
+        }
+        bound_dfb_resets = {
+            name: _bind_current_dfb_reset(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DFBReset)
+        }
+
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             source_code = _cleanup_source_code(f)
@@ -2047,7 +2094,7 @@ def _compile(
             return _run_thread_compiler(
                 f.__name__,
                 kernel_type,
-                _collect_captures(f),
+                _collect_captures(f, bound_dispatch_conditions, bound_dfb_resets),
                 f.__globals__,
                 args,
                 kwargs,
@@ -2241,7 +2288,12 @@ def _compile_kernel(
             call_kwargs[param.name] = value
         else:
             call_args.append(value)
-    f(*call_args, **call_kwargs)
+    with (
+        _dispatch_condition_binding_scope(),
+        _dfb_allocation_group_binding_scope(),
+        _dfb_reset_binding_scope(),
+    ):
+        f(*call_args, **call_kwargs)
     threads = _get_registered_threads()
 
     if not threads:

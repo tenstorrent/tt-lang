@@ -27,9 +27,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Protocol or opaque storage effect performed by one DFB access.
-enum class DFBProtocolEffect { Reserve, Push, Wait, Pop, OpaqueAccess };
-
 /// Hardware processor that owns one DFB ring pointer.
 enum class DFBPointerProcessor { Noc0, Noc1, Pack, Unpack };
 
@@ -54,7 +51,6 @@ struct DFBPointerOwner {
 enum class DFBQuiescenceFailureReason {
   None,
   MissingProtocolEffect,
-  RepeatedProtocolEffect,
   UnsupportedControlFlow,
   MismatchedTransaction,
   IncompleteUseOrder,
@@ -72,20 +68,72 @@ struct DFBQuiescenceProof {
 /// Immutable occurrence of one logical DFB access.
 struct DFBAccessOccurrence {
   Operation *operation = nullptr;
-  DFBProtocolEffect effect = DFBProtocolEffect::OpaqueAccess;
+  std::optional<DFBProtocolEffectKind> protocolEffect;
+  int64_t numTiles = 0;
+  unsigned sequenceIndex = 0;
   LaunchNodeDomain launchDomain;
   Operation *unanalyzableDomainOperation = nullptr;
+};
+
+/// Execution count retained for one access in the debug report.
+struct DFBPerNodeAccessOccurrence {
+  unsigned occurrenceIndex = 0;
+  std::optional<std::uint64_t> exactExecutionCount;
+};
+
+/// Consecutive normalized transactions with one tile count.
+struct DFBTransactionRun {
+  std::uint64_t executionCount = 0;
+  int64_t tilesPerExecution = 0;
+
+  bool operator==(const DFBTransactionRun &rhs) const {
+    return executionCount == rhs.executionCount &&
+           tilesPerExecution == rhs.tilesPerExecution;
+  }
+};
+
+/// Advances one physical ring cursor through finite transaction runs. Fails
+/// when an acquire would cross the end of the physical allocation.
+FailureOr<std::uint64_t>
+advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
+                            std::uint64_t physicalTileCount,
+                            std::uint64_t initialOffset = 0);
+
+/// Protocol state proved for one access interval between synchronized resets.
+struct DFBLifecycleEpoch {
+  SmallVector<unsigned> accessOccurrenceIndices;
+  SmallVector<DFBTransactionRun> transactionRuns;
+  SmallVector<DFBTransactionRun> writeCursorRuns;
+  SmallVector<DFBTransactionRun> readCursorRuns;
+  std::optional<DFBPointerOwner> writePointerOwner;
+  std::optional<DFBPointerOwner> readPointerOwner;
+  std::optional<int64_t> terminalResetOrdinal;
+  bool terminalStateCanonical = false;
+  DFBQuiescenceProof quiescence;
 };
 
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
-  SmallVector<unsigned> occurrenceIndices;
-  SmallVector<Operation *> earliestOperations;
-  SmallVector<Operation *> terminalOperations;
-  std::optional<int64_t> transactionTileCount;
+  bool mayBeActive = true;
+  bool conditionalExecutionProven = false;
+  SmallVector<DFBPerNodeAccessOccurrence> reportedOccurrences;
+  SmallVector<unsigned> earliestEntryEvents;
+  SmallVector<unsigned> terminalCompletionEvents;
+  SmallVector<unsigned> earliestAccessOccurrenceIndices;
+  SmallVector<unsigned> terminalAccessOccurrenceIndices;
+  SmallVector<DFBTransactionRun> transactionRuns;
+  SmallVector<DFBTransactionRun> writeCursorRuns;
+  SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  SmallVector<DFBTransactionRun, 0> terminalTransactionRuns;
+  SmallVector<DFBTransactionRun, 0> terminalWriteCursorRuns;
+  SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
+  std::optional<DFBPointerOwner> terminalWritePointerOwner;
+  std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  bool terminalStateCanonical = false;
+  SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
   DFBQuiescenceProof quiescence;
 };
 
@@ -94,15 +142,22 @@ struct DFBLogicalLifecycle {
   int64_t logicalId = 0;
   Type type;
   TensorBackingAttr tensorBacking;
+  DFBAllocationGroupAttr allocationGroup;
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
+  SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;
   bool bounded = false;
+  bool conditionallyBounded = false;
 
   /// Returns the lifetime for `node`, or null when the DFB is inactive there.
   const DFBPerNodeLifetime *findNodeLifetime(LaunchNodeCoord node) const;
+
+  /// Returns the possible-domain lifetime for `node`, or null when absent.
+  const DFBPerNodeLifetime *
+  findPossibleNodeLifetime(LaunchNodeCoord node) const;
 };
 
 /// Builds per-node cross-kernel happens-before and DFB quiescence facts.
@@ -130,6 +185,10 @@ public:
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
 
+  /// Returns ordering proved while treating unknown domains as possible.
+  bool isConditionallyOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
+                                    LaunchNodeCoord node) const;
+
 private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
@@ -137,6 +196,7 @@ private:
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
+  SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

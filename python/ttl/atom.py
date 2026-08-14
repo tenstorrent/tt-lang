@@ -26,8 +26,10 @@ the explicit multi-kernel form.
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 import functools
+import hashlib
 import inspect
 import os
 import textwrap
@@ -38,10 +40,27 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
 
-from ._src.atom_inline import inline_atom_calls
+from ._src.atom_inline import (
+    _INLINED_OPERATION_STATEMENT,
+    _collect_local_names,
+    inline_atom_calls,
+)
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
 from .compiler_options import CompilerOptions
+from .condition import (
+    DispatchCondition,
+    _bind_dispatch_conditions,
+    _dispatch_condition_topology,
+)
+from .dfb_reset import DFBReset, _bind_dfb_resets, _dfb_reset_topology
+from .dfb_allocation_group import (
+    DFBAllocationGroup,
+    _bind_dfb_allocation_groups,
+    _dfb_allocation_group_binding_scope,
+    _dfb_allocation_group_topology,
+    make_dfb_allocation_group,
+)
 from .dataflow_buffer import (
     DataflowBuffer,
     _reset_cb_counter,
@@ -61,6 +80,7 @@ from .kernel import (
 from .operators import _set_current_grid
 from .pipe import PipeNet
 from .runtime_resources import ProgramRuntimeResources
+from .scalar import ScalarType
 from .ttl_api import (
     Program,
     _BackendKernelSlot,
@@ -87,7 +107,13 @@ _DFB_FACTORY_NAMES = {
 }
 _PIPE_FACTORY_NAMES = {"Pipe", "PipeNet"}
 _KERNEL_FACTORY_NAMES = {"Kernel"}
-_SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES | _KERNEL_FACTORY_NAMES
+_ALLOCATION_GROUP_FACTORY_NAMES = {"make_dfb_allocation_group"}
+_SETUP_FACTORY_NAMES = (
+    _DFB_FACTORY_NAMES
+    | _PIPE_FACTORY_NAMES
+    | _KERNEL_FACTORY_NAMES
+    | _ALLOCATION_GROUP_FACTORY_NAMES
+)
 
 
 def _assign_backend_kernel_slots(
@@ -194,6 +220,9 @@ class _AtomSpec:
     frozen_scope: Dict[str, Any]
     external_pipenets: Dict[str, PipeNet]
     logical_kernels: Dict[str, Kernel]
+    dispatch_conditions: Dict[str, DispatchCondition]
+    allocation_groups: Dict[str, DFBAllocationGroup]
+    dfb_resets: Dict[str, DFBReset]
 
 
 class _ReturnFinder(ast.NodeVisitor):
@@ -354,9 +383,14 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets, inlined_logical_kernels = inline_atom_calls(
-        fn_def, scope, caller_name=name
-    )
+    (
+        inlined_pipenets,
+        inlined_logical_kernels,
+        inlined_dispatch_conditions,
+        inlined_allocation_groups,
+        inlined_dfb_resets,
+    ) = inline_atom_calls(fn_def, scope, caller_name=name)
+    _hoist_inlined_resource_declarations(fn_def, scope, name)
     _validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -365,9 +399,15 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             loaded_names.add(node.id)
 
     captured_values = _captured_values(fn)
+    closure_values = inspect.getclosurevars(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
+    dispatch_conditions: Dict[str, DispatchCondition] = dict(
+        inlined_dispatch_conditions
+    )
+    allocation_groups: Dict[str, DFBAllocationGroup] = dict(inlined_allocation_groups)
+    dfb_resets: Dict[str, DFBReset] = dict(inlined_dfb_resets)
     captured_logical_kernels: Dict[str, Kernel] = {}
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
@@ -382,6 +422,27 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif isinstance(value, Kernel):
             if not any(value is kernel for kernel in logical_kernels.values()):
                 captured_logical_kernels[capture_name] = value
+        elif isinstance(value, DispatchCondition):
+            if capture_name in closure_values.globals:
+                raise ValueError(
+                    f"@ttl.operation {name!r}: DispatchCondition "
+                    f"{capture_name!r} must be created by an enclosing factory"
+                )
+            dispatch_conditions[capture_name] = value
+        elif isinstance(value, DFBAllocationGroup):
+            if capture_name in closure_values.globals:
+                raise ValueError(
+                    f"@ttl.operation {name!r}: DFBAllocationGroup "
+                    f"{capture_name!r} must be created by an enclosing factory"
+                )
+            allocation_groups[capture_name] = value
+        elif isinstance(value, DFBReset):
+            if capture_name in closure_values.globals:
+                raise ValueError(
+                    f"@ttl.operation {name!r}: DFBReset {capture_name!r} "
+                    "must be created by an enclosing factory"
+                )
+            dfb_resets[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -392,12 +453,53 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             )
 
     operation_identity = _operation_identity(fn)
+    allocation_group_topology = _dfb_allocation_group_topology(allocation_groups)
+    if allocation_group_topology:
+        encoded_group_topology = ",".join(
+            str(ordinal) for ordinal in allocation_group_topology
+        )
+        group_topology_digest = hashlib.sha256(
+            encoded_group_topology.encode("ascii")
+        ).hexdigest()[:16]
+        operation_identity = (
+            f"{operation_identity}[dfb_allocation_groups={group_topology_digest}]"
+        )
+    topology = _dispatch_condition_topology(dispatch_conditions)
+    if topology:
+        encoded_topology = ";".join(
+            f"{ordinal}:{scalar_type.name}" for ordinal, scalar_type in topology
+        )
+        topology_digest = hashlib.sha256(encoded_topology.encode("ascii")).hexdigest()[
+            :16
+        ]
+        operation_identity = (
+            f"{operation_identity}[dispatch_conditions={topology_digest}]"
+        )
+    reset_kernels = dict(logical_kernels)
+    reset_kernels.update(captured_logical_kernels)
+    reset_topology = _dfb_reset_topology(dfb_resets, reset_kernels)
+    if reset_topology:
+        encoded_reset_topology = ";".join(
+            f"{ordinal}:{scope.name}:"
+            + ",".join(
+                f"{participant_kind}:{participant_identity}"
+                for participant_kind, participant_identity in participants
+            )
+            for ordinal, scope, participants in reset_topology
+        )
+        reset_topology_digest = hashlib.sha256(
+            encoded_reset_topology.encode("utf-8")
+        ).hexdigest()[:16]
+        operation_identity = f"{operation_identity}[dfb_resets={reset_topology_digest}]"
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
 
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
     frozen_scope.update(logical_kernels)
+    frozen_scope.update(dispatch_conditions)
+    frozen_scope.update(allocation_groups)
+    frozen_scope.update(dfb_resets)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -415,6 +517,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         frozen_scope=frozen_scope,
         external_pipenets=external_pipenets,
         logical_kernels=logical_kernels,
+        dispatch_conditions=dispatch_conditions,
+        allocation_groups=allocation_groups,
+        dfb_resets=dfb_resets,
     )
 
 
@@ -426,7 +531,9 @@ def _bind_logical_kernels(
 
 
 def _is_compile_time_literal(value: Any) -> bool:
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is ScalarType:
+        return True
+    if value is None or isinstance(value, (bool, int, float, str, ScalarType)):
         return True
     if isinstance(value, (tuple, list)):
         return all(_is_compile_time_literal(element) for element in value)
@@ -472,6 +579,121 @@ def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
     if _call_name(stmt.value) in _SETUP_FACTORY_NAMES or _is_pipe_list_expr(stmt.value):
         return stmt.targets[0].id
     return None
+
+
+class _OperationResourceNameCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names = set()
+
+    def visit_Assign(self, node):
+        resource_name = _setup_assign_target(node)
+        if resource_name is not None:
+            self.names.add(resource_name)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_ClassDef(self, node):
+        return
+
+
+def _operation_resource_names(fn_def: ast.FunctionDef) -> set:
+    collector = _OperationResourceNameCollector()
+    for statement in fn_def.body:
+        collector.visit(statement)
+    return collector.names
+
+
+def _hoist_inlined_resource_declarations(
+    fn_def: ast.FunctionDef,
+    scope: Dict[str, Any],
+    operation_name: str,
+) -> None:
+    """Restore setup placement for resources introduced by composition."""
+
+    resource_names = _operation_resource_names(fn_def)
+    parameter_names = {
+        argument.arg
+        for argument in (
+            fn_def.args.posonlyargs + fn_def.args.args + fn_def.args.kwonlyargs
+        )
+    }
+    local_names = _collect_local_names(fn_def)
+    static_names = set(scope) | set(dir(builtins)) | resource_names | parameter_names
+    dynamic_local_names = local_names - resource_names - parameter_names
+
+    def rewrite_body(
+        statements: List[ast.stmt], *, operation_top_level: bool
+    ) -> Tuple[List[ast.stmt], List[ast.stmt]]:
+        rewritten = []
+        hoisted = []
+        for statement in statements:
+            if isinstance(
+                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                rewritten.append(statement)
+                continue
+
+            nested_resources = []
+            for attribute in ("body", "orelse", "finalbody"):
+                body = getattr(statement, attribute, None)
+                if not isinstance(body, list):
+                    continue
+                if not body or not isinstance(body[0], ast.stmt):
+                    continue
+                rewritten_body, body_resources = rewrite_body(
+                    body, operation_top_level=False
+                )
+                if attribute == "body" and not rewritten_body:
+                    rewritten_body = [ast.copy_location(ast.Pass(), statement)]
+                setattr(statement, attribute, rewritten_body)
+                nested_resources.extend(body_resources)
+
+            handlers = getattr(statement, "handlers", None)
+            if isinstance(handlers, list):
+                for handler in handlers:
+                    if not isinstance(handler, ast.ExceptHandler):
+                        continue
+                    handler.body, handler_resources = rewrite_body(
+                        handler.body, operation_top_level=False
+                    )
+                    if not handler.body:
+                        handler.body = [ast.copy_location(ast.Pass(), handler)]
+                    nested_resources.extend(handler_resources)
+
+            if operation_top_level:
+                rewritten.extend(nested_resources)
+            else:
+                hoisted.extend(nested_resources)
+
+            is_inlined_resource = bool(
+                getattr(statement, _INLINED_OPERATION_STATEMENT, False)
+                and _setup_assign_target(statement) is not None
+            )
+            if is_inlined_resource and not operation_top_level:
+                loaded_names = _loaded_names_in(statement)
+                dependencies = (loaded_names & dynamic_local_names) | (
+                    loaded_names - static_names - local_names
+                )
+                if dependencies:
+                    raise ValueError(
+                        f"@ttl.operation {operation_name!r}: composed resource "
+                        "declaration cannot be hoisted because it depends on "
+                        f"operation-local values {sorted(dependencies)}"
+                    )
+                hoisted.append(statement)
+                continue
+            rewritten.append(statement)
+        return rewritten, hoisted
+
+    fn_def.body, unplaced_resources = rewrite_body(
+        fn_def.body, operation_top_level=True
+    )
+    assert not unplaced_resources
 
 
 def _collect_assignment_targets(target: ast.expr, names: set) -> None:
@@ -565,6 +787,7 @@ def _lift_setup(
     ns.setdefault("make_dfb", make_dfb)
     ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
     ns.setdefault("make_tensor_backed_dfb", make_tensor_backed_dfb)
+    ns.setdefault("make_dfb_allocation_group", make_dfb_allocation_group)
     ns.setdefault("Kernel", Kernel)
     ns.setdefault("ttl", _ttl)
 
@@ -656,8 +879,14 @@ def _compile_atom(
     # The shared operation wrapper supplies values in signature order.
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
     logical_kernels = dict(spec.logical_kernels)
+    bound_dispatch_conditions = _bind_dispatch_conditions(spec.dispatch_conditions)
+    bound_allocation_groups = _bind_dfb_allocation_groups(spec.allocation_groups)
+    bound_dfb_resets = _bind_dfb_resets(spec.dfb_resets)
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(logical_kernels)
+    eval_scope.update(bound_dispatch_conditions)
+    eval_scope.update(bound_allocation_groups)
+    eval_scope.update(bound_dfb_resets)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -677,11 +906,12 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, dfbs, nets, lifted_logical_kernels = _lift_setup(
-        copy.deepcopy(spec.fn_ast),
-        eval_scope,
-        operation_identity=spec.operation_identity,
-    )
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        stripped_fn, dfbs, nets, lifted_logical_kernels = _lift_setup(
+            copy.deepcopy(spec.fn_ast),
+            eval_scope,
+            operation_identity=spec.operation_identity,
+        )
     logical_kernels.update(lifted_logical_kernels)
     selector_scope = dict(eval_scope)
     selector_scope.update(logical_kernels)
@@ -727,6 +957,8 @@ def _compile_atom(
     captures.update(dfbs)
     captures.update(nets)
     captures.update(spec.external_pipenets)
+    captures.update(bound_dispatch_conditions)
+    captures.update(bound_dfb_resets)
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.
@@ -918,6 +1150,29 @@ def operation(
 
     def _decorator(fn):
         _validate_operation_interface(fn)
+        function_definition = _parse_function_definition(fn)
+        if function_definition is not None:
+            loaded_names = {
+                node.id
+                for node in ast.walk(function_definition)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            for name in sorted(loaded_names):
+                if isinstance(fn.__globals__.get(name), DispatchCondition):
+                    raise ValueError(
+                        f"@ttl.operation {fn.__name__!r}: DispatchCondition "
+                        f"{name!r} must be created by an enclosing factory"
+                    )
+                if isinstance(fn.__globals__.get(name), DFBAllocationGroup):
+                    raise ValueError(
+                        f"@ttl.operation {fn.__name__!r}: DFBAllocationGroup "
+                        f"{name!r} must be created by an enclosing factory"
+                    )
+                if isinstance(fn.__globals__.get(name), DFBReset):
+                    raise ValueError(
+                        f"@ttl.operation {fn.__name__!r}: DFBReset "
+                        f"{name!r} must be created by an enclosing factory"
+                    )
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
             prepare_call = functools.partial(_canonical_tensor_args, fn)
