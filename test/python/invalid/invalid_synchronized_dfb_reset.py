@@ -9,6 +9,7 @@
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s raw 2>&1 | FileCheck %s --check-prefix=RAW
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s paired 2>&1 | FileCheck %s --check-prefix=PAIRED
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s effects 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s accesses 2>&1 | FileCheck %s --check-prefix=ACCESSES
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s selection 2>&1 | FileCheck %s --check-prefix=SELECTION
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s global 2>&1 | FileCheck %s --check-prefix=GLOBAL
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s scope 2>&1 | FileCheck %s --check-prefix=SCOPE
@@ -116,6 +117,24 @@ def make_invalid_operation(mode):
                 ),
             )
 
+    elif mode == "accesses":
+
+        @ttl.operation(grid=(1, 1))
+        def invalid_operation(input_tensor):
+            target = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+            ttl.call_extern_func(
+                FAKE_HEADER,
+                "reset",
+                func_args=[target],
+                dfb_accesses=[ttl.DFBAccess.inspect(target)],
+                dfb_reset=reset,
+                dfb_reset_targets=[target],
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+
     elif mode == "selection":
         selection_reset = ttl.DFBReset(participants=(ttl.KernelKind.COMPUTE,))
 
@@ -163,6 +182,7 @@ elif MODE not in {"declaration", "element", "duplicate", "scope"}:
 # PAIRED: TTLangCompileError: error: ttl.call_extern_func() targeted DFB reset requires dfb_reset_targets
 # ALL-TARGETS: TTLangCompileError: error: ttl.call_extern_func() all-local DFB reset cannot declare dfb_reset_targets
 # EFFECTS: TTLangCompileError: error: ttl.call_extern_func() synchronized DFB reset cannot return a value or declare protocol effects or unknown DFB access
+# ACCESSES: TTLangCompileError: error: ttl.call_extern_func() synchronized DFB reset cannot declare non-transactional accesses
 # SELECTION: ValueError: @ttl.operation split: external-call kernel selection contains a logical kernel outside the DFBReset participant set
 # GLOBAL: ValueError: @ttl.operation 'invalid_operation': DFBReset 'GLOBAL_RESET' must be created by an enclosing factory
 

@@ -142,6 +142,33 @@ func.func @effect_tile_count_exceeds_capacity() attributes {ttl.kernel_thread = 
 }
 
 // -----
+// Test: a non-transactional access must select an existing dependency.
+func.func @access_dependency_out_of_range() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB non-transactional access 0 dependency index 1 is out of range for 1 dependencies}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 1>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: one dependency occurrence has one non-transactional summary.
+func.func @duplicate_non_transactional_access() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB dependency 0 has more than one non-transactional access summary}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>, #ttl.dfb_non_transactional_access<inspect, 0>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: one dependency occurrence cannot mix queue and non-transactional contracts.
+func.func @protocol_and_non_transactional_access() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB dependency 0 cannot declare both protocol effects and a non-transactional access}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
 // Test: an external call produces at most one scalar result.
 func.func @multiple_results() {
   // expected-error @below {{'ttl.opaque_call' op result group starting at #0 requires 0 or 1 element, but found 2}}
