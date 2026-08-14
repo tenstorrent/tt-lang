@@ -16,8 +16,6 @@
 // CHECK: ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0, 0, 0, 0]
 // CHECK: scf.if
 // CHECK: ttkernel.cb_reserve_back(%[[RECEIVER_DFB]], %[[ONE_I32]])
-// CHECK: %[[RECEIVER_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[RECEIVER_DFB]])
-// CHECK: ttkernel.store_to_l1(%[[RECEIVER_WRITE_PTR]],
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: %[[SEND_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[SEND_DFB]])
@@ -31,9 +29,9 @@
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @record_order_loopback()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_dst attributes {
         records = #ttl.pipenet_records<net 0 name "loopback" pipes [

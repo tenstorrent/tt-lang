@@ -38,6 +38,11 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
+  m.attr("FABRIC_ROUTES_ATTR") =
+      nb::str(kFabricRoutesAttrName.data(), kFabricRoutesAttrName.size());
+  m.attr("FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR") =
+      nb::str(kFabricRuntimeArgBaseCommonIndexAttrName.data(),
+              kFabricRuntimeArgBaseCommonIndexAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =
       nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
 
@@ -120,6 +125,102 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("value", &ExternalTemplateArgAttr::getValue);
 
   //===--------------------------------------------------------------------===//
+  // Device-domain attributes
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<DeviceDomainComponentAttr>(m, "DeviceDomainComponentAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, std::string name, std::vector<int64_t> extent) {
+            MLIRContext *context = unwrap(ctx);
+            return wrap(DeviceDomainComponentAttr::get(
+                context, StringAttr::get(context, name),
+                DenseI64ArrayAttr::get(context, extent)));
+          },
+          nb::arg("context"), nb::arg("name"), nb::arg("extent"));
+
+  tt_attribute_class<DeviceDomainAttr>(m, "DeviceDomainAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, std::vector<MlirAttribute> components) {
+            SmallVector<DeviceDomainComponentAttr> componentAttrs;
+            componentAttrs.reserve(components.size());
+            for (MlirAttribute component : components) {
+              componentAttrs.push_back(
+                  mlir::cast<DeviceDomainComponentAttr>(unwrap(component)));
+            }
+            return wrap(DeviceDomainAttr::get(unwrap(ctx), componentAttrs));
+          },
+          nb::arg("context"), nb::arg("components"));
+
+  tt_attribute_class<DeviceRefAttr>(m, "DeviceRefAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, std::vector<std::vector<int64_t>> coordinates) {
+            MLIRContext *context = unwrap(ctx);
+            SmallVector<DenseI64ArrayAttr> coordinateAttrs;
+            coordinateAttrs.reserve(coordinates.size());
+            for (const std::vector<int64_t> &coordinate : coordinates) {
+              coordinateAttrs.push_back(
+                  DenseI64ArrayAttr::get(context, coordinate));
+            }
+            return wrap(DeviceRefAttr::get(context, coordinateAttrs));
+          },
+          nb::arg("context"), nb::arg("coordinates"))
+      .def_prop_ro("coordinates", [](DeviceRefAttr &self) {
+        std::vector<std::vector<int64_t>> coordinates;
+        coordinates.reserve(self.getCoordinates().size());
+        for (DenseI64ArrayAttr coordinate : self.getCoordinates()) {
+          coordinates.emplace_back(coordinate.asArrayRef().begin(),
+                                   coordinate.asArrayRef().end());
+        }
+        return coordinates;
+      });
+
+  tt_attribute_class<DeviceRangeAttr>(m, "DeviceRangeAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, MlirAttribute lo, MlirAttribute hi) {
+            return wrap(DeviceRangeAttr::get(
+                unwrap(ctx), mlir::cast<DeviceRefAttr>(unwrap(lo)),
+                mlir::cast<DeviceRefAttr>(unwrap(hi))));
+          },
+          nb::arg("context"), nb::arg("lo"), nb::arg("hi"));
+
+  tt_attribute_class<TransferEdgeAttr>(m, "TransferEdgeAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, MlirAttribute source,
+             std::optional<MlirAttribute> destination,
+             std::optional<MlirAttribute> destinationRange) {
+            DeviceRefAttr destinationAttr;
+            DeviceRangeAttr destinationRangeAttr;
+            if (destination) {
+              destinationAttr = mlir::cast<DeviceRefAttr>(unwrap(*destination));
+            }
+            if (destinationRange) {
+              destinationRangeAttr =
+                  mlir::cast<DeviceRangeAttr>(unwrap(*destinationRange));
+            }
+            return wrap(TransferEdgeAttr::get(
+                unwrap(ctx), mlir::cast<DeviceRefAttr>(unwrap(source)),
+                destinationAttr, destinationRangeAttr));
+          },
+          nb::arg("context"), nb::arg("source"),
+          nb::arg("destination") = nb::none(),
+          nb::arg("destination_range") = nb::none());
+
+  tt_attribute_class<DeviceTransferAttr>(m, "DeviceTransferAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, MlirAttribute domain, MlirAttribute edge) {
+            return wrap(DeviceTransferAttr::get(
+                unwrap(ctx), mlir::cast<DeviceDomainAttr>(unwrap(domain)),
+                mlir::cast<TransferEdgeAttr>(unwrap(edge))));
+          },
+          nb::arg("context"), nb::arg("domain"), nb::arg("edge"));
+
+  //===--------------------------------------------------------------------===//
   // SliceAttr
   //===--------------------------------------------------------------------===//
 
@@ -162,21 +263,33 @@ void populateTTLModule(nb::module_ &m) {
           "get",
           [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
              int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-             bool isCollective) {
+             bool isCollective, std::optional<MlirAttribute> deviceTransfer) {
+            DeviceTransferAttr deviceTransferAttr;
+            if (deviceTransfer) {
+              deviceTransferAttr =
+                  mlir::cast<DeviceTransferAttr>(unwrap(*deviceTransfer));
+            }
             return wrap(PipeRecordAttr::get(unwrap(ctx), srcX, srcY, dstStartX,
                                             dstStartY, dstEndX, dstEndY,
-                                            isCollective));
+                                            isCollective, deviceTransferAttr));
           },
           nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
           nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
-          nb::arg("dst_end_y"), nb::arg("is_collective") = false)
+          nb::arg("dst_end_y"), nb::arg("is_collective") = false,
+          nb::arg("device_transfer").none() = nb::none())
       .def_prop_ro("src_x", &PipeRecordAttr::getSrcX)
       .def_prop_ro("src_y", &PipeRecordAttr::getSrcY)
       .def_prop_ro("dst_start_x", &PipeRecordAttr::getDstStartX)
       .def_prop_ro("dst_start_y", &PipeRecordAttr::getDstStartY)
       .def_prop_ro("dst_end_x", &PipeRecordAttr::getDstEndX)
       .def_prop_ro("dst_end_y", &PipeRecordAttr::getDstEndY)
-      .def_prop_ro("is_collective", &PipeRecordAttr::getIsCollective);
+      .def_prop_ro("is_collective", &PipeRecordAttr::getIsCollective)
+      .def_prop_ro("device_transfer", [](PipeRecordAttr &self) -> nb::object {
+        if (DeviceTransferAttr transfer = self.getDeviceTransfer()) {
+          return nb::cast(wrap(transfer));
+        }
+        return nb::none();
+      });
 
   //===--------------------------------------------------------------------===//
   // PipeNetRecordsAttr

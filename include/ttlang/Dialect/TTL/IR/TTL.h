@@ -165,6 +165,13 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral kPipeComputedAddressDFBIndicesAttrName(
     "ttl.pipe_computed_address_dfb_indices");
 
+/// Function attributes describing compiler-managed fabric target binding.
+constexpr llvm::StringLiteral kFabricRoutesAttrName("ttl.fabric_routes");
+constexpr llvm::StringLiteral
+    kFabricDeviceDomainAttrName("ttl.fabric_device_domain");
+constexpr llvm::StringLiteral kFabricRuntimeArgBaseCommonIndexAttrName(
+    "ttl.fabric_runtime_arg_base_common_index");
+
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.
 constexpr llvm::StringLiteral

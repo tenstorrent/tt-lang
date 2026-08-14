@@ -23,6 +23,7 @@ TT-Lang Documentation
    TT-Lang Spec <specs/TTLangSpecification>
    reference/compiler-options
    reference/external-functions
+   reference/operation-runtime-resources
    reference/print-debugging
    reference/performance-tools
 

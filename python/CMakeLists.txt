@@ -126,6 +126,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
+    _fabric_target.py
     atom.py
     dataflow_buffer.py
     compiler_options.py
@@ -134,6 +135,8 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     kernel.py
     kernel_runner.py
     pipe.py
+    domains.py
+    runtime_resources.py
     ttl.py
     ttl_api.py
     ttl_math.py
