@@ -22,6 +22,7 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -75,25 +76,136 @@ public:
     successors[source].push_back(destination);
   }
 
-  /// Visits each edge once per source, which avoids cubic closure on sparse
-  /// per-node program-order graphs.
+  /// Computes exact reachability while retaining cycles as non-strict order.
   void computeReachability() {
     unsigned eventCount = successors.size();
     reachable.assign(eventCount, llvm::BitVector(eventCount));
     cyclicEvents = llvm::BitVector(eventCount);
     rejectedCyclePartners.clear();
     rejectedCyclePartners.resize(eventCount);
-    for (unsigned source = 0; source < eventCount; ++source) {
-      SmallVector<unsigned> pending = {source};
+    if (eventCount == 0) {
+      return;
+    }
+
+    struct DFSFrame {
+      unsigned event;
+      unsigned nextSuccessor;
+    };
+
+    llvm::BitVector visited(eventCount);
+    SmallVector<unsigned> finishOrder;
+    finishOrder.reserve(eventCount);
+    for (unsigned rootEvent = 0; rootEvent < eventCount; ++rootEvent) {
+      if (visited.test(rootEvent)) {
+        continue;
+      }
+      SmallVector<DFSFrame> pending = {{rootEvent, 0}};
+      visited.set(rootEvent);
       while (!pending.empty()) {
-        unsigned event = pending.pop_back_val();
-        if (reachable[source].test(event)) {
+        DFSFrame &frame = pending.back();
+        if (frame.nextSuccessor < successors[frame.event].size()) {
+          unsigned successor = successors[frame.event][frame.nextSuccessor++];
+          if (!visited.test(successor)) {
+            visited.set(successor);
+            pending.push_back({successor, 0});
+          }
           continue;
         }
-        reachable[source].set(event);
-        pending.append(successors[event].begin(), successors[event].end());
+        finishOrder.push_back(frame.event);
+        pending.pop_back();
       }
     }
+    SmallVector<SmallVector<unsigned>> predecessors(eventCount);
+    for (auto [sourceEvent, eventSuccessors] : llvm::enumerate(successors)) {
+      for (unsigned destinationEvent : eventSuccessors) {
+        predecessors[destinationEvent].push_back(sourceEvent);
+      }
+    }
+
+    constexpr unsigned unassignedComponent =
+        std::numeric_limits<unsigned>::max();
+    SmallVector<unsigned> componentForEvent(eventCount, unassignedComponent);
+    SmallVector<SmallVector<unsigned>> componentMembers;
+    for (unsigned rootEvent : llvm::reverse(finishOrder)) {
+      if (componentForEvent[rootEvent] != unassignedComponent) {
+        continue;
+      }
+      unsigned component = componentMembers.size();
+      componentMembers.emplace_back();
+      SmallVector<unsigned> pending = {rootEvent};
+      componentForEvent[rootEvent] = component;
+      while (!pending.empty()) {
+        unsigned event = pending.pop_back_val();
+        componentMembers.back().push_back(event);
+        for (unsigned predecessor : predecessors[event]) {
+          if (componentForEvent[predecessor] == unassignedComponent) {
+            componentForEvent[predecessor] = component;
+            pending.push_back(predecessor);
+          }
+        }
+      }
+    }
+
+    unsigned componentCount = componentMembers.size();
+    SmallVector<SmallVector<unsigned>> componentSuccessors(componentCount);
+    for (auto [sourceEvent, eventSuccessors] : llvm::enumerate(successors)) {
+      unsigned sourceComponent = componentForEvent[sourceEvent];
+      for (unsigned destinationEvent : eventSuccessors) {
+        unsigned destinationComponent = componentForEvent[destinationEvent];
+        if (sourceComponent != destinationComponent) {
+          componentSuccessors[sourceComponent].push_back(destinationComponent);
+        }
+      }
+    }
+    for (SmallVector<unsigned> &successorComponents : componentSuccessors) {
+      llvm::sort(successorComponents);
+      successorComponents.erase(
+          std::unique(successorComponents.begin(), successorComponents.end()),
+          successorComponents.end());
+    }
+
+    SmallVector<unsigned> incomingEdges(componentCount);
+    for (const SmallVector<unsigned> &successorComponents :
+         componentSuccessors) {
+      for (unsigned successorComponent : successorComponents) {
+        ++incomingEdges[successorComponent];
+      }
+    }
+    SmallVector<unsigned> readyComponents;
+    for (unsigned component = 0; component < componentCount; ++component) {
+      if (incomingEdges[component] == 0) {
+        readyComponents.push_back(component);
+      }
+    }
+    SmallVector<unsigned> topologicalOrder;
+    topologicalOrder.reserve(componentCount);
+    while (!readyComponents.empty()) {
+      unsigned component = readyComponents.pop_back_val();
+      topologicalOrder.push_back(component);
+      for (unsigned successorComponent : componentSuccessors[component]) {
+        if (--incomingEdges[successorComponent] == 0) {
+          readyComponents.push_back(successorComponent);
+        }
+      }
+    }
+    assert(topologicalOrder.size() == componentCount &&
+           "SCC condensation must be acyclic");
+
+    SmallVector<llvm::BitVector> componentReachability(
+        componentCount, llvm::BitVector(eventCount));
+    for (unsigned component : llvm::reverse(topologicalOrder)) {
+      llvm::BitVector &componentEvents = componentReachability[component];
+      for (unsigned event : componentMembers[component]) {
+        componentEvents.set(event);
+      }
+      for (unsigned successorComponent : componentSuccessors[component]) {
+        componentEvents |= componentReachability[successorComponent];
+      }
+    }
+    for (unsigned event = 0; event < eventCount; ++event) {
+      reachable[event] = componentReachability[componentForEvent[event]];
+    }
+
     for (unsigned source = 0; source < eventCount; ++source) {
       for (unsigned destination : successors[source]) {
         if (source != destination && reachable[destination].test(source)) {
@@ -102,6 +214,27 @@ public:
         }
       }
     }
+
+#ifndef NDEBUG
+    // Small graphs retain an independent oracle without affecting model-scale
+    // analysis cost.
+    if (eventCount <= 128) {
+      for (unsigned sourceEvent = 0; sourceEvent < eventCount; ++sourceEvent) {
+        llvm::BitVector reference(eventCount);
+        SmallVector<unsigned> pending = {sourceEvent};
+        while (!pending.empty()) {
+          unsigned event = pending.pop_back_val();
+          if (reference.test(event)) {
+            continue;
+          }
+          reference.set(event);
+          pending.append(successors[event].begin(), successors[event].end());
+        }
+        assert(reference == reachable[sourceEvent] &&
+               "SCC reachability differs from traversal reference");
+      }
+    }
+#endif
   }
 
   /// Requires asymmetric reachability because mutually reachable events do
