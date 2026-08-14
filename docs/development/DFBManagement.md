@@ -1597,6 +1597,14 @@ that DFB. A bounded external lifecycle requires balanced, ordered transactions
 with equal tile counts, known pointer owners, supported execution counts, and
 no access after the terminal pop.
 
+`dfb_accesses` describes typed synchronous accesses without queue transactions.
+`ttl.DFBAccess.inspect(dfb)` states that the callee may read the selected DFB's
+descriptor or contents but does not publish, consume, or leave that DFB changed.
+The call remains a storage access, so reuse still requires strict lifetime
+order; the summary establishes an identity queue-state transition. One
+dependency occurrence cannot declare both a protocol effect and a
+non-transactional access.
+
 `unknown_dfb_access` represents access to user-managed DFBs absent from the
 declared dependencies. For allocation, liveness analysis conservatively adds
 the call as an opaque occurrence on every user-managed logical DFB, including

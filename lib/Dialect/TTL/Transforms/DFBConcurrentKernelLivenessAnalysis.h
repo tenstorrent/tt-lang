@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 
 namespace mlir::tt::ttl {
 
@@ -71,18 +72,40 @@ struct DFBQuiescenceProof {
 /// A concrete lifecycle operation contributes one occurrence. An operation
 /// with a protocol summary contributes one occurrence per effect, preserving
 /// actions on different DFBs as distinct events. A dependency occurrence with
-/// no effect contributes an opaque call-duration access.
+/// no summary contributes an opaque call-duration access.
 struct DFBAccessOccurrence {
   /// Operation that performs the access; several occurrences may share it.
   Operation *operation = nullptr;
 
-  /// Null for an opaque call-duration storage access.
-  std::optional<DFBProtocolEffectKind> protocolEffect;
+  using Kind = std::variant<std::monostate, DFBProtocolEffectKind,
+                            DFBNonTransactionalAccessKind>;
 
-  /// Positive for protocol effects and zero for opaque accesses.
+  /// Access semantics; `std::monostate` denotes an opaque call-duration access.
+  Kind kind;
+
+  const DFBProtocolEffectKind *getProtocolEffect() const {
+    return std::get_if<DFBProtocolEffectKind>(&kind);
+  }
+
+  bool isProtocolEffect(DFBProtocolEffectKind effect) const {
+    const DFBProtocolEffectKind *protocolEffect = getProtocolEffect();
+    return protocolEffect && *protocolEffect == effect;
+  }
+
+  const DFBNonTransactionalAccessKind *getNonTransactionalAccess() const {
+    return std::get_if<DFBNonTransactionalAccessKind>(&kind);
+  }
+
+  bool isNonTransactionalAccess(DFBNonTransactionalAccessKind access) const {
+    const DFBNonTransactionalAccessKind *nonTransactionalAccess =
+        getNonTransactionalAccess();
+    return nonTransactionalAccess && *nonTransactionalAccess == access;
+  }
+
+  /// Positive for protocol effects and zero otherwise.
   int64_t numTiles = 0;
 
-  /// Execution position among all protocol effects exposed by `operation`.
+  /// Position within the operation's protocol or non-transactional summary.
   unsigned sequenceIndex = 0;
 
   /// Launched nodes where this occurrence may execute.
@@ -162,6 +185,7 @@ struct DFBLifecycleEpoch {
   std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
   std::optional<int64_t> terminalReconfigurationOrdinal;
+  bool inspectionOnly = false;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
 };
@@ -202,6 +226,7 @@ struct DFBPerNodeLifetime {
   SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  bool inspectionOnly = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> epochs;
   DFBQuiescenceProof quiescence;
