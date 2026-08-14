@@ -2521,7 +2521,7 @@ def _lower_program_to_kernel(
         verify = True
 
         # fmt: off
-        set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        set_compute_config_pass = "ttl-set-compute-kernel-config"
         config_options = []
         if fp32_dest_acc_en is not None:
             config_options.append(
@@ -2544,9 +2544,9 @@ def _lower_program_to_kernel(
         )
         if config_options:
             set_compute_config_pass = (
-                "func.func(ttl-set-compute-kernel-config{"
+                "ttl-set-compute-kernel-config{"
                 + " ".join(config_options)
-                + "})"
+                + "}"
             )
 
         # NOTE: Pipeline pass ordering mirrors
@@ -2565,6 +2565,9 @@ def _lower_program_to_kernel(
             "ttl-form-pipe-transports{" + " ".join(pipe_transport_options) + "}"
         )
         reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
+        unsafe_assume_allocation_groups_flag = int(
+            compiler_options.unsafe_assume_dfb_allocation_groups
+        )
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
         )
@@ -2588,6 +2591,8 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            "unsafe-assume-allocation-groups="
+            f"{unsafe_assume_allocation_groups_flag} "
             f"exact-coloring-search-limit={exact_coloring_search_limit}"
             "}",
             set_compute_config_pass,

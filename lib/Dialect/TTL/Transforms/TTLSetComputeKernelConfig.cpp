@@ -10,6 +10,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Transforms/ComputeKernelConfigAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 namespace mlir::tt::ttl {
 
@@ -26,35 +27,43 @@ struct TTLSetComputeKernelConfigPass
   using Base::Base;
 
   void runOnOperation() override {
-    func::FuncOp function = getOperation();
-    FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
-        KernelTargetEnvironment::get(function);
-    if (failed(target)) {
-      signalPassFailure();
-      return;
-    }
-    FailureOr<KernelConfigPolicy> policy = KernelConfigPolicy::get(
-        function, fp32DestAccEn, dstFullSyncEn, reduceFullFp32, matmulFullFp32,
-        enableFPUBinaryOps);
-    if (failed(policy)) {
-      signalPassFailure();
-      return;
+    ModuleOp module = getOperation();
+    LaunchNodeDomainState launchDomains;
+    launchDomains.initialize(module);
+
+    SmallVector<std::pair<func::FuncOp, KernelConfigPlan>> plans;
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
+          KernelTargetEnvironment::get(function);
+      if (failed(target)) {
+        signalPassFailure();
+        return;
+      }
+      FailureOr<KernelConfigPolicy> policy = KernelConfigPolicy::get(
+          function, fp32DestAccEn, dstFullSyncEn, reduceFullFp32,
+          matmulFullFp32, enableFPUBinaryOps);
+      if (failed(policy)) {
+        signalPassFailure();
+        return;
+      }
+      FailureOr<KernelRequirements> requirements =
+          collectKernelRequirements(function, launchDomains);
+      if (failed(requirements)) {
+        signalPassFailure();
+        return;
+      }
+      FailureOr<KernelConfigPlan> plan =
+          resolveKernelConfig(function, **target, *policy, *requirements);
+      if (failed(plan)) {
+        signalPassFailure();
+        return;
+      }
+      plans.emplace_back(function, std::move(*plan));
     }
 
-    FailureOr<KernelRequirements> requirements =
-        collectKernelRequirements(function);
-    if (failed(requirements)) {
-      signalPassFailure();
-      return;
+    for (auto &[function, plan] : plans) {
+      applyKernelConfigPlan(function, plan);
     }
-
-    FailureOr<KernelConfigPlan> plan =
-        resolveKernelConfig(function, **target, *policy, *requirements);
-    if (failed(plan)) {
-      signalPassFailure();
-      return;
-    }
-    applyKernelConfigPlan(function, *plan);
   }
 };
 

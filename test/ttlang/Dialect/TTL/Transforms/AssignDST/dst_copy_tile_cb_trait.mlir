@@ -1,7 +1,7 @@
 // Summary: copy_tile has TTLCBInputTileOpTrait so its input is excluded from
 // DST liveness (reads from CB, not DST). Verify no redundant copy insertion
 // and correct interval behavior when copy_tile coexists with compute ops.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder

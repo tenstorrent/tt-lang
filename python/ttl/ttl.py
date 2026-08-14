@@ -30,12 +30,18 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .condition import DispatchCondition
+from .dfb_reset import DFBReset, DFBResetScope
+from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
+from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
     make_dfb,
     make_tensor_backed_dfb,
 )
 from .operators import (
+    DFBAccess,
+    DFBEffect,
     call_extern_func,
     copy,
     dfb_descriptor,
@@ -58,16 +64,24 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "DispatchCondition",
+    "DFBReset",
+    "DFBResetScope",
+    "DFBAllocationGroup",
+    "ScalarType",
     "compute",
     "datamovement",
     "make_dataflow_buffer_like",
     "make_dfb",
     "make_tensor_backed_dfb",
+    "make_dfb_allocation_group",
     "copy",
     "node",
     "grid_size",
     "matmul",
     "call_extern_func",
+    "DFBEffect",
+    "DFBAccess",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",

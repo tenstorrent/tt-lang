@@ -749,8 +749,15 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     Value dstIndex = adaptor.getDstIndex();
 
-    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
-                            /*out_of_order=*/true);
+    if (op.getStoreKind() == DFBTileStoreKind::ConsumerReplacement) {
+      uint64_t acquiredTiles = static_cast<uint64_t>(
+          cast<ttk::CBType>((*cb).getType()).getNumElements());
+      ttk::PackWaitedTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
+                                    /*out_of_order=*/true, acquiredTiles);
+    } else {
+      ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
+                              /*out_of_order=*/true);
+    }
 
     rewriter.eraseOp(op);
     return success();
@@ -2443,7 +2450,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
            ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+           OpaqueCallLowering, GetDfbIdLowering, IsDeviceLowering,
+           CurrentDeviceIndexLowering,
            IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
            SelectedPipeDestinationDeviceIndexLowering,
            SelectedPipeSourceCoordinatesLowering,

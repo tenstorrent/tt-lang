@@ -1,6 +1,6 @@
 // Verifies that DFB finalization rejects attributes containing copied
 // provisional indices from passes that must run after finalization.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config),ttl-finalize-dfb-indices)'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-set-compute-kernel-config,ttl-finalize-dfb-indices)'
 
 // Compute configuration copies an f32 input DFB index to the kernel.
 // expected-error @below {{'func.func' op contains derived DFB-index attribute 'ttl.unpack_to_dest_fp32' before DFB index finalization}}

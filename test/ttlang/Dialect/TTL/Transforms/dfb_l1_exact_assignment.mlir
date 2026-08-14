@@ -1,5 +1,8 @@
 // Tests minimum physical-index count when first-fit exceeds the L1 budget.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
+
+// REPORT: DFB conflict {{.*}} reason=concurrent-lifetime
 
 // The DFBs conflict in A-B-C-D order but are declared A,D,B,C, so first-fit
 // uses three indices although two suffice. Each physical DFB occupies 491520

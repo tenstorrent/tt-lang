@@ -7,6 +7,49 @@
 
 include "mlir/IR/OpBase.td"
 
+def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
+  let description = [{
+    Operations that expose dataflow buffer dependencies, ordered protocol
+    actions, and typed non-transactional accesses. Dependencies identify every
+    statically known DFB storage access. Protocol effects identify synchronous
+    reserve, push, wait, and pop actions that occur on every operation
+    execution, in execution order. Non-transactional summaries describe
+    synchronous accesses that do not change queue state. Unknown access is
+    distinct from a malformed or partial summary and conservatively applies to
+    user-managed DFB storage.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return the stable, ordered DFB dependency occurrence list.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
+      /*methodName=*/"getDFBDependencyOperands",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return ordered, synchronous protocol effects.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DFBProtocolEffect>",
+      /*methodName=*/"getDFBProtocolEffects",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return typed, synchronous non-transactional accesses.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DFBNonTransactionalAccess>",
+      /*methodName=*/"getDFBNonTransactionalAccesses",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return DFBs whose physical indices are consumed by the operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
+      /*methodName=*/"getDFBIndexOperands",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return true when the operation may access unlisted user DFBs.",
+      /*retTy=*/"bool",
+      /*methodName=*/"hasUnknownDFBAccess",
+      /*args=*/(ins)>
+  ];
+}
+
 def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
   let description = [{
     Tensor-level ops whose tile-level lowerings may read one or more
