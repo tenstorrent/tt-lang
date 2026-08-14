@@ -405,17 +405,17 @@ def test_plan_runtime_resources_normalizes_canonical_kernel_records():
 
 
 def test_plan_runtime_resources_resolves_explicit_kernel_identity():
-    fabric_kernel = Kernel(KernelKind.DATA_MOVEMENT)
-    fabric_kernel._bind("fabric_kernel", "test.operation")
+    named_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    named_kernel._bind("named_kernel", "test.operation")
     resources = ProgramRuntimeResources(
-        kernel_resources=(KernelRuntimeResources(kernel=fabric_kernel),)
+        kernel_resources=(KernelRuntimeResources(kernel=named_kernel),)
     )
 
-    plan = _plan_runtime_resources(resources, [_kernel_spec(fabric_kernel)])
+    plan = _plan_runtime_resources(resources, [_kernel_spec(named_kernel)])
 
     assert plan.kernel_descriptors[0].logical_kernel == kernel_runner.LogicalKernelId(
         KernelKind.DATA_MOVEMENT,
-        "fabric_kernel",
+        "named_kernel",
         "test.operation",
         None,
     )
@@ -459,9 +459,9 @@ def test_plan_runtime_resources_targets_one_of_two_explicit_kernels():
 
 def test_plan_runtime_resources_rejects_kernel_bound_to_another_operation():
     executing_kernel = Kernel(KernelKind.DATA_MOVEMENT)
-    executing_kernel._bind("fabric", "executing.operation")
+    executing_kernel._bind("named", "executing.operation")
     foreign_kernel = Kernel(KernelKind.DATA_MOVEMENT)
-    foreign_kernel._bind("fabric", "foreign.operation")
+    foreign_kernel._bind("named", "foreign.operation")
     resources = ProgramRuntimeResources(
         kernel_resources=(KernelRuntimeResources(kernel=foreign_kernel),)
     )
@@ -470,7 +470,7 @@ def test_plan_runtime_resources_rejects_kernel_bound_to_another_operation():
         _plan_runtime_resources(resources, [_kernel_spec(executing_kernel)])
     assert str(exception_info.value) == (
         "@ttl.operation 'planned_operation': kernel resource 0 selects "
-        "data_movement kernel 'fabric', but the operation emitted no matching "
+        "data_movement kernel 'named', but the operation emitted no matching "
         "kernel descriptor"
     )
 
