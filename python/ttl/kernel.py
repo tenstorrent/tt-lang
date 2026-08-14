@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
@@ -20,7 +21,6 @@ from .condition import DispatchCondition
 from .dfb_allocation_group import DFBAllocationGroup
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
-
 
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
 _DFB_RELEASE_METHODS: Final = frozenset(("push", "pop"))
@@ -235,8 +235,49 @@ def _encode_identity_literal(value) -> Optional[bytes]:
 
 
 def _encode_identity_capture(
-    name: str, value: object, active_functions: set[int]
+    name: str, value: object, active_values: set[int]
 ) -> bytes:
+    if isinstance(value, (tuple, list, set, frozenset, MappingABC)):
+        value_id = id(value)
+        if value_id in active_values:
+            raise TypeError(
+                "operation identity cannot encode recursive nonlocal capture "
+                f"{name!r} of type {type(value).__name__}"
+            )
+        active_values.add(value_id)
+        try:
+            if isinstance(value, MappingABC):
+                encoded_elements = []
+                for key, item in value.items():
+                    encoded_key = _encode_identity_capture(name, key, active_values)
+                    encoded_item = _encode_identity_capture(name, item, active_values)
+                    encoded_elements.append(
+                        f"{len(encoded_key)}:".encode("ascii")
+                        + encoded_key
+                        + f"{len(encoded_item)}:".encode("ascii")
+                        + encoded_item
+                    )
+                encoded_elements.sort()
+                return b"mapping:" + b"".join(encoded_elements)
+
+            encoded_elements = [
+                _encode_identity_capture(name, element, active_values)
+                for element in value
+            ]
+            if isinstance(value, (set, frozenset)):
+                encoded_elements.sort()
+            kind = type(value).__name__.encode("ascii")
+            return (
+                kind
+                + b":"
+                + b"".join(
+                    f"{len(element)}:".encode("ascii") + element
+                    for element in encoded_elements
+                )
+            )
+        finally:
+            active_values.remove(value_id)
+
     encoded = _encode_identity_literal(value)
     if encoded is not None:
         return encoded
@@ -248,14 +289,13 @@ def _encode_identity_capture(
 
     semantic_identity = getattr(value, "_operation_identity_capture", None)
     if callable(semantic_identity):
-        encoded = _encode_identity_literal(semantic_identity())
-        if encoded is not None:
-            return b"semantic:" + encoded
+        encoded = _encode_identity_capture(name, semantic_identity(), active_values)
+        return b"semantic:" + encoded
 
     if inspect.ismodule(value):
         return f"module:{value.__name__}".encode("utf-8")
     if inspect.isfunction(value):
-        identity = _operation_identity_impl(value, active_functions)
+        identity = _operation_identity_impl(value, active_values)
         return f"function:{identity}".encode("utf-8")
     if inspect.isbuiltin(value) or inspect.isclass(value):
         module = getattr(value, "__module__", "")
@@ -269,24 +309,24 @@ def _encode_identity_capture(
     )
 
 
-def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
+def _operation_identity_impl(function: Callable, active_values: set[int]) -> str:
     # Local import avoids the dfb_reset -> kernel import cycle during module
     # initialization while retaining a typed resource check.
     from .dfb_reset import DFBReset
 
     function_id = id(function)
-    if function_id in active_functions:
+    if function_id in active_values:
         raise TypeError(
             "operation identity cannot encode recursive nonlocal function "
             f"{function.__qualname__!r}"
         )
-    active_functions.add(function_id)
+    active_values.add(function_id)
 
     base_identity = f"{function.__module__}.{function.__qualname__}"
     try:
         nonlocal_captures = inspect.getclosurevars(function).nonlocals
     except (TypeError, ValueError):
-        active_functions.remove(function_id)
+        active_values.remove(function_id)
         return base_identity
 
     try:
@@ -341,7 +381,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")
             else:
-                encoded = _encode_identity_capture(name, value, active_functions)
+                encoded = _encode_identity_capture(name, value, active_values)
             encoded_name = name.encode("utf-8")
             encoded_captures.append(
                 f"{len(encoded_name)}:".encode("ascii")
@@ -350,7 +390,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 + encoded
             )
     finally:
-        active_functions.remove(function_id)
+        active_values.remove(function_id)
     if not encoded_captures:
         return base_identity
 
