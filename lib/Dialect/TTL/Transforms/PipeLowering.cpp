@@ -3745,9 +3745,8 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
   }
 
   llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
-  llvm::MapVector<
-      FuncOp,
-      llvm::DenseMap<std::pair<Operation *, unsigned>, int64_t>>
+  llvm::MapVector<FuncOp,
+                  llvm::DenseMap<std::pair<Operation *, unsigned>, int64_t>>
       selectedDynamicSlotCounterIndices;
   llvm::DenseMap<PipeNetRecordsAttr, SmallVector<PipeRecordLocalIndex>>
       sourceLocalRecords;
@@ -3776,8 +3775,7 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
         sequence.getKind() != ReceiverAddressSequenceProofKind::KnownCount ||
         *sequence.executionCount > 1;
     if (canRepeat && computedAddress.repeatStride != 0) {
-      int64_t &nextCounterIndex =
-          nextDynamicSlotCounterIndexByFunc[senderFunc];
+      int64_t &nextCounterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc];
       int64_t counterIndex = nextCounterIndex;
       bool allocatedCounter = true;
       if (isSelectedTransferUnit(unit)) {
