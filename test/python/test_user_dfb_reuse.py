@@ -103,6 +103,26 @@ def _make_repeated_dfb_atom_kernel(data_format):
     return repeated_dfb_atom_kernel
 
 
+def _make_composed_control_resource_kernel(data_format):
+    @ttl.operation()
+    def copy_through_dfb(input_tensor, output_tensor):
+        transfer_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+
+        with transfer_dfb.reserve() as destination:
+            ttl.copy(input_tensor[0, 0], destination).wait()
+        with transfer_dfb.wait() as source:
+            ttl.copy(source, output_tensor[0, 0]).wait()
+
+    @ttl.operation(grid=(1, 1))
+    def composed_control_resource_kernel(input_tensor, output_tensor):
+        for iteration in range(2):
+            copy_through_dfb(input_tensor, output_tensor)
+
+    return composed_control_resource_kernel
+
+
 @ttl.operation()
 def _store_waited_block(state_dfb: ttl.DFB, output_dfb: ttl.DFB):
     with state_dfb.wait() as state_block:
@@ -870,6 +890,8 @@ def _make_selected_reset_alias_domain_kernel(data_format):
 
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
+_composed_control_bf16_kernel = _make_composed_control_resource_kernel("bf16")
+_composed_control_f32_kernel = _make_composed_control_resource_kernel("float32")
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
@@ -1579,6 +1601,39 @@ def test_repeated_dfb_declaring_atom_runtime(
             rtol=F32_REPEATED_EXP_RTOL,
             atol=F32_REPEATED_EXP_ATOL,
         )
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_composed_control_bf16_kernel, torch.bfloat16),
+        (_composed_control_f32_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+def test_composed_control_resource_runtime(
+    device, memory_config, to_device, operation, dtype
+):
+    input_host = torch.linspace(-1.0, 1.0, TILE * TILE, dtype=torch.float32).reshape(
+        TILE, TILE
+    )
+    input_host = input_host.to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor)
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, input_host.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, input_host.float(), rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(
