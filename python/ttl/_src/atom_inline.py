@@ -17,6 +17,8 @@ from ttl.dfb_reset import DFBReset
 from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
 
+_INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
+
 _NESTED_SCOPES = (
     ast.FunctionDef,
     ast.AsyncFunctionDef,
@@ -387,6 +389,7 @@ def _expand_call(
         cloned_statement = copy.deepcopy(statement)
         inlined_statement = transformer.visit(cloned_statement)
         ast.fix_missing_locations(inlined_statement)
+        setattr(inlined_statement, _INLINED_OPERATION_STATEMENT, True)
         result.append(inlined_statement)
     return result
 
