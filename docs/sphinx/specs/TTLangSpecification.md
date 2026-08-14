@@ -394,12 +394,33 @@ second_source = ttl.make_dataflow_buffer_like(
 )
 ```
 
+An external function can declare synchronous, non-consuming DFB access with
+`ttl.DFBAccess.inspect(dfb)`. The function may read the DFB descriptor or
+contents but does not publish, consume, or leave that DFB changed when it
+returns. The annotation does not synchronize threads or change the generated
+C++ call signature. An external DFB dependency without a complete typed summary
+remains conservative.
+
+#### External DFB inspection example
+
+```py
+ttl.call_extern_func(
+    INSPECT_DFB_HEADER,
+    "inspect_dfb",
+    template_args=[ttl.dfb_descriptor(format_descriptor)],
+    dfb_accesses=[
+        ttl.DFBAccess.inspect(format_descriptor),
+    ],
+)
+```
+
 | Type alias/Function | Description |
 | :---- | :---- |
 | `ttl.make_dfb_allocation_group() -> ttl.DFBAllocationGroup` | Create an immutable compile-time identity for compiler-verified physical DFB allocation sharing. |
 | `ttl.make_dfb(dtype, shape: ttl.Shape, block_count: ttl.Size = 2, tile = (32, 32), *, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a scratch dataflow buffer from an explicit element type. |
 |  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2, *, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
 | `ttl.make_tensor_backed_dfb(ttnn.Tensor: tensor, shape: ttl.Shape, *, block_count: ttl.Size = 1, byte_offset: ttl.Size = 0, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a dataflow buffer whose complete capacity uses a byte range of `tensor`'s node-local L1 allocation. |
+| `ttl.DFBAccess.inspect(dfb: ttl.DataflowBuffer) -> ttl.DFBAccess` | Declare that a synchronous external function reads a DFB without changing its contents or queue position. |
 | `ttl.DataflowBuffer.publish(self)` | Publish the complete capacity of a tensor-backed input without copying bytes. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
