@@ -3685,7 +3685,8 @@ struct ComputedAddressPlan {
 
 static ComputedAddressPlan
 buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
-                         const PipeGraph &pipeGraph) {
+                         const PipeGraph &pipeGraph,
+                         const PipeTransferIndex &transferIndex) {
   ComputedAddressPlan plan;
 
   /// One transfer whose recurrence can be materialized by its sender.
@@ -3744,6 +3745,12 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
   }
 
   llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
+  llvm::MapVector<
+      FuncOp,
+      llvm::DenseMap<std::pair<Operation *, unsigned>, int64_t>>
+      selectedDynamicSlotCounterIndices;
+  llvm::DenseMap<PipeNetRecordsAttr, SmallVector<PipeRecordLocalIndex>>
+      sourceLocalRecords;
   for (const Candidate &candidate : candidates) {
     FuncOp senderFunc = candidate.senderFunc;
     const SmallVector<int64_t> &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
@@ -3769,11 +3776,49 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
         sequence.getKind() != ReceiverAddressSequenceProofKind::KnownCount ||
         *sequence.executionCount > 1;
     if (canRepeat && computedAddress.repeatStride != 0) {
-      int64_t counterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc]++;
+      int64_t &nextCounterIndex =
+          nextDynamicSlotCounterIndexByFunc[senderFunc];
+      int64_t counterIndex = nextCounterIndex;
+      bool allocatedCounter = true;
+      if (isSelectedTransferUnit(unit)) {
+        auto sendRecord = llvm::find_if(
+            unit.selectedProtocolRecords,
+            [&](const auto &record) { return record.first == unit.sendOp; });
+        assert(sendRecord != unit.selectedProtocolRecords.end() &&
+               "selected transfer unit is missing its send record");
+        FailureOr<PipeReference> pipeReference =
+            getPipeReferenceForProtocolOp(unit.sendOp, transferIndex);
+        assert(succeeded(pipeReference) && pipeReference->isSelected() &&
+               "selected transfer send requires selected pipe records");
+        PipeNetRecordsAttr records = pipeReference->getRecords();
+        auto localRecordsIt = sourceLocalRecords.find(records);
+        if (localRecordsIt == sourceLocalRecords.end()) {
+          FailureOr<SmallVector<PipeRecordLocalIndex>> localRecords =
+              getPipeRecordLocalIndices(records, PipeRole::Source);
+          assert(succeeded(localRecords) &&
+                 "verified selected records require source-local ordinals");
+          localRecordsIt =
+              sourceLocalRecords.insert({records, std::move(*localRecords)})
+                  .first;
+        }
+        assert(sendRecord->second < localRecordsIt->second.size() &&
+               "selected send record index must be in bounds");
+        unsigned localRecordIndex =
+            localRecordsIt->second[sendRecord->second].index;
+        auto [counterIt, inserted] =
+            selectedDynamicSlotCounterIndices[senderFunc].try_emplace(
+                std::make_pair(unit.sendOp, localRecordIndex),
+                nextCounterIndex);
+        counterIndex = counterIt->second;
+        allocatedCounter = inserted;
+      }
+      if (allocatedCounter) {
+        ++nextCounterIndex;
+        plan.counterInitializations[senderFunc].push_back(
+            PipeComputedAddressCounterInitInfo{counterIndex,
+                                               computedAddress.initialSlot});
+      }
       computedAddress.dynamicSlotCounterIndex = counterIndex;
-      plan.counterInitializations[senderFunc].push_back(
-          PipeComputedAddressCounterInitInfo{counterIndex,
-                                             computedAddress.initialSlot});
     }
     plan.infoByUnitIndex[candidate.unitIndex] = computedAddress;
   }
@@ -3826,7 +3871,8 @@ LogicalResult buildPipeResourcePlan(
       assignLiveIntervalColors(units, dominanceInfo);
   ComputedAddressPlan computedAddressPlan;
   if (enableComputedAddresses) {
-    computedAddressPlan = buildComputedAddressPlan(units, pipeGraph);
+    computedAddressPlan =
+        buildComputedAddressPlan(units, pipeGraph, transferIndex);
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
