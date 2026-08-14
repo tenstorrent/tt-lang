@@ -1602,6 +1602,16 @@ lifecycle conflict. A successful group is contracted to one graph vertex. A
 failed group request is a compilation error rather than permission to allocate
 its members separately.
 
+The optional unsafe allocation-group policy changes only explicit group
+validation. It accepts missing launch-domain, quiescence, pointer-handoff, and
+lifetime-order proofs as user-supplied runtime epoch contracts. Each accepted
+group emits a warning and a `ttl.assumed_dfb_allocation_groups` audit record.
+The allocator still rejects incompatible page formats, tensor storage,
+compute-kernel configuration, mutually reachable access events, and transaction
+sequences that cross the selected ring envelope when started at an assumed
+epoch boundary. Automatic reuse and every target-capacity and L1-budget check
+remain proof-based. Strict validation is the default.
+
 #### Allocation diagnostics
 
 An assertions-enabled build can print the allocation inputs and conflict
@@ -1624,9 +1634,9 @@ logical IDs, the typed reason, an applicable launch node, and source
 operations.
 
 For each validated allocation group, the report records its member logical
-IDs, maximum byte capacity, `handoff=proven`, and every compatible descriptor
-conflict replaced by the physical envelope. Logical DFB and final-assignment
-rows also retain the typed group identity.
+IDs, maximum byte capacity, `handoff=proven` or `handoff=assumed`, and every
+compatible descriptor conflict replaced by the physical envelope. Logical DFB
+and final-assignment rows also retain the typed group identity.
 
 The report evaluates each base launch node with every unknown-domain access
 treated as possible. Exact-zero execution excludes an access. These rows use

@@ -937,6 +937,14 @@ def TTLFinalizeDFBIndices
     modes to that index. This constraint is added to the conflict graph before
     coloring.
 
+    `unsafe-assume-allocation-groups` applies only to explicit allocation
+    groups. It permits missing launch-domain, quiescence, pointer-handoff, and
+    lifetime-order proofs while preserving page-format, storage, static
+    compute-configuration, ring-envelope, target-capacity, and L1-budget
+    validation. Each group accepted this way emits a warning and is recorded
+    in `ttl.assumed_dfb_allocation_groups`. Automatic DFB reuse remains
+    proof-based. The option is disabled by default.
+
     An access whose launch domain is otherwise unknown is refined to an exact
     domain when execution-count analysis proves a count on every base launch
     node. Nodes with positive counts belong to the domain; nodes with zero
@@ -1022,6 +1030,10 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices for logical DFBs with proven "
            "non-overlapping lifetimes across concurrent kernels.">,
+    Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
+           "bool", "false",
+           "Trust explicit DFB allocation groups when runtime handoff cannot "
+           "be proven. Emits warnings and assumption metadata.">,
     Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
            "uint64_t", "1000000",
            "Maximum states examined by exact DFB allocation before reporting "

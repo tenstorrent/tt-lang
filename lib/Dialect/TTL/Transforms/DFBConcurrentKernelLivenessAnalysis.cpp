@@ -79,6 +79,7 @@ public:
   void computeReachability() {
     unsigned eventCount = successors.size();
     reachable.assign(eventCount, llvm::BitVector(eventCount));
+    cyclicEvents = llvm::BitVector(eventCount);
     for (unsigned source = 0; source < eventCount; ++source) {
       SmallVector<unsigned> pending = {source};
       while (!pending.empty()) {
@@ -88,6 +89,14 @@ public:
         }
         reachable[source].set(event);
         pending.append(successors[event].begin(), successors[event].end());
+      }
+    }
+    for (unsigned source = 0; source < eventCount; ++source) {
+      for (unsigned destination : successors[source]) {
+        if (source != destination && reachable[destination].test(source)) {
+          cyclicEvents.set(source);
+          cyclicEvents.set(destination);
+        }
       }
     }
   }
@@ -100,9 +109,21 @@ public:
            !reachable[destination].test(source);
   }
 
+  /// Returns true when two distinct events belong to one reachability cycle.
+  bool mutuallyReachable(unsigned lhs, unsigned rhs) const {
+    assert(lhs < reachable.size() && rhs < reachable.size());
+    return lhs != rhs && reachable[lhs].test(rhs) && reachable[rhs].test(lhs);
+  }
+
+  bool eventParticipatesInCycle(unsigned event) const {
+    assert(event < cyclicEvents.size());
+    return cyclicEvents.test(event);
+  }
+
 private:
   SmallVector<SmallVector<unsigned>> successors;
   SmallVector<llvm::BitVector> reachable;
+  llvm::BitVector cyclicEvents;
 };
 
 // Associates a storage access with its computed launch domain and the operation
@@ -421,6 +442,59 @@ getAccessEventSpan(const DFBAccessOccurrence &access,
   return projectedEvents ? std::optional<AccessEventSpan>(AccessEventSpan{
                                *projectedEvents, *projectedEvents})
                          : std::nullopt;
+}
+
+// Retains cycles that cross logical DFB access events. Strict ordering
+// deliberately excludes mutual reachability, but unsafe allocation-group
+// policy must distinguish a missing relation from contradictory evidence.
+static SmallVector<llvm::BitVector> collectInconsistentAccessOrder(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs, LaunchNodeCoord node,
+    const HappensBeforeGraph &graph,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
+    const AccessExecutionCounts &executionCounts, bool includeUnknownDomains) {
+  SmallVector<SmallVector<unsigned>> cyclicEventsByLogical(logicalDFBs.size());
+  for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
+    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+      if (!mayAccessLaunchNode(access, node, executionCounts,
+                               includeUnknownDomains)) {
+        continue;
+      }
+      std::optional<AccessEventSpan> span =
+          getAccessEventSpan(access, operationEvents, accessEvents);
+      if (!span) {
+        continue;
+      }
+      unsigned candidates[] = {span->first.entry, span->first.completion,
+                               span->last.entry, span->last.completion};
+      for (unsigned event : candidates) {
+        if (graph.eventParticipatesInCycle(event) &&
+            !llvm::is_contained(cyclicEventsByLogical[logicalIndex], event)) {
+          cyclicEventsByLogical[logicalIndex].push_back(event);
+        }
+      }
+    }
+  }
+
+  SmallVector<llvm::BitVector> inconsistent(
+      logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
+  for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex; rhsIndex < logicalDFBs.size();
+         ++rhsIndex) {
+      bool mutuallyReachable =
+          llvm::any_of(cyclicEventsByLogical[lhsIndex], [&](unsigned lhsEvent) {
+            return llvm::any_of(
+                cyclicEventsByLogical[rhsIndex], [&](unsigned rhsEvent) {
+                  return graph.mutuallyReachable(lhsEvent, rhsEvent);
+                });
+          });
+      if (mutuallyReachable) {
+        inconsistent[lhsIndex].set(rhsIndex);
+        inconsistent[rhsIndex].set(lhsIndex);
+      }
+    }
+  }
+  return inconsistent;
 }
 
 // Proves ordering between corresponding executions, not all-before-all
@@ -2394,6 +2468,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                      domainState.baseDomain.nodes.end());
   orderedBeforeByNode.reserve(launchNodes.size());
   conditionallyOrderedBeforeByNode.reserve(launchNodes.size());
+  inconsistentOrderByNode.reserve(launchNodes.size());
+  conditionallyInconsistentOrderByNode.reserve(launchNodes.size());
   bool collectAllocationDiagnostics = false;
   LLVM_DEBUG(collectAllocationDiagnostics = true);
   for (LaunchNodeCoord node : launchNodes) {
@@ -2457,6 +2533,9 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       }
     }
     orderedBeforeByNode.push_back(std::move(nodeOrdering));
+    inconsistentOrderByNode.push_back(collectInconsistentAccessOrder(
+        logicalDFBs, node, graph, operationEvents, accessEvents,
+        executionCounts, /*includeUnknownDomains=*/false));
 
     HappensBeforeGraph possibleGraph;
     DenseMap<Operation *, EventPair> possibleOperationEvents;
@@ -2513,6 +2592,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
     conditionallyOrderedBeforeByNode.push_back(
         std::move(conditionalNodeOrdering));
+    conditionallyInconsistentOrderByNode.push_back(
+        collectInconsistentAccessOrder(logicalDFBs, node, possibleGraph,
+                                       possibleOperationEvents,
+                                       possibleAccessEvents, executionCounts,
+                                       /*includeUnknownDomains=*/true));
   }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -2561,6 +2645,27 @@ bool DFBConcurrentKernelLivenessAnalysis::isConditionallyOrderedBefore(
          afterIndex < conditionallyOrderedBeforeByNode[nodeIndex].size());
   return conditionallyOrderedBeforeByNode[nodeIndex][beforeIndex].test(
       afterIndex);
+}
+
+bool DFBConcurrentKernelLivenessAnalysis::hasInconsistentOrder(
+    unsigned lhsIndex, unsigned rhsIndex, LaunchNodeCoord node) const {
+  auto nodeIt = llvm::find(launchNodes, node);
+  assert(nodeIt != launchNodes.end() && "node must be in the launch grid");
+  unsigned nodeIndex = nodeIt - launchNodes.begin();
+  assert(lhsIndex < inconsistentOrderByNode[nodeIndex].size() &&
+         rhsIndex < inconsistentOrderByNode[nodeIndex].size());
+  return inconsistentOrderByNode[nodeIndex][lhsIndex].test(rhsIndex);
+}
+
+bool DFBConcurrentKernelLivenessAnalysis::hasConditionallyInconsistentOrder(
+    unsigned lhsIndex, unsigned rhsIndex, LaunchNodeCoord node) const {
+  auto nodeIt = llvm::find(launchNodes, node);
+  assert(nodeIt != launchNodes.end() && "node must be in the launch grid");
+  unsigned nodeIndex = nodeIt - launchNodes.begin();
+  assert(lhsIndex < conditionallyInconsistentOrderByNode[nodeIndex].size() &&
+         rhsIndex < conditionallyInconsistentOrderByNode[nodeIndex].size());
+  return conditionallyInconsistentOrderByNode[nodeIndex][lhsIndex].test(
+      rhsIndex);
 }
 
 } // namespace mlir::tt::ttl

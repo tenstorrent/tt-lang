@@ -42,6 +42,8 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.unsafeAssumeAllocationGroups =
+        options.unsafeAssumeAllocationGroups;
     finalizeOptions.exactColoringSearchStateLimit =
         options.exactColoringSearchStateLimit;
     finalizeOptions.l1BudgetOverride = options.l1BudgetOverride;
