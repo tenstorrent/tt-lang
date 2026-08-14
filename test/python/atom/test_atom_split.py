@@ -17,6 +17,7 @@ import textwrap
 
 import pytest
 import ttl
+import ttl.atom as atom_module
 import ttl.kernel as kernel_module
 
 from ttl._src.atom_split import split_function_body
@@ -694,6 +695,146 @@ def test_composition_preserves_one_dfb_allocation_group_identity():
     assert len(dfbs) == 2
     helper_dfb, caller_dfb = dfbs.values()
     assert helper_dfb.allocation_group is caller_dfb.allocation_group
+
+
+def test_composition_hoists_resources_from_control_flow():
+    """Composed static resources remain operation-level declarations."""
+
+    def make_operation():
+        shared_allocation = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            local_allocation = ttl.make_dfb_allocation_group()
+            helper_shared = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=shared_allocation
+            )
+            helper_local_first = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=local_allocation
+            )
+            helper_local_second = ttl.make_dfb(
+                "bf16", shape=(1, 2), allocation_group=local_allocation
+            )
+
+        @ttl.operation()
+        def composed_allocation(enabled):
+            caller_shared = ttl.make_dfb(
+                "bf16", shape=(1, 2), allocation_group=shared_allocation
+            )
+            for iteration in range(2):
+                if enabled:
+                    allocation_helper()
+
+        return composed_allocation
+
+    spec = make_operation()._spec
+    resource_statements = [
+        statement
+        for statement in spec.fn_ast.body
+        if atom_module._setup_assign_target(statement) is not None
+    ]
+    assert len(resource_statements) == 5
+
+    loop = next(
+        statement for statement in spec.fn_ast.body if isinstance(statement, ast.For)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and atom_module._call_name(node) in atom_module._SETUP_FACTORY_NAMES
+        for node in ast.walk(loop)
+    )
+    assert any(isinstance(node, ast.Pass) for node in ast.walk(loop))
+    ast.parse(ast.unparse(spec.fn_ast))
+
+    eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(_bind_dfb_allocation_groups(spec.allocation_groups))
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast), eval_scope, spec.operation_identity
+        )
+
+    caller_shared = dfbs["caller_shared"]
+    helper_shared = next(
+        dfb for name, dfb in dfbs.items() if name.startswith("helper_shared__")
+    )
+    helper_local = [
+        dfb for name, dfb in dfbs.items() if name.startswith("helper_local_")
+    ]
+    assert helper_shared.allocation_group is caller_shared.allocation_group
+    assert len(helper_local) == 2
+    assert helper_local[0].allocation_group is helper_local[1].allocation_group
+    assert helper_local[0].allocation_group is not caller_shared.allocation_group
+
+
+def test_composition_rejects_hoisted_resource_with_local_dependency():
+    """A resource cannot move outside the scope of a required local value."""
+
+    @ttl.operation()
+    def allocation_helper(blocks):
+        helper_dfb = ttl.make_dfb("bf16", shape=(1, blocks))
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "composed resource declaration cannot be hoisted because it depends "
+            "on operation-local values .*iteration"
+        ),
+    ):
+
+        @ttl.operation()
+        def composed_allocation():
+            for iteration in range(2):
+                allocation_helper(iteration)
+
+
+def test_composition_rejects_hoisted_resource_with_shadowed_builtin():
+    @ttl.operation()
+    def allocation_helper(blocks):
+        helper_dfb = ttl.make_dfb("bf16", shape=(1, blocks))
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "composed resource declaration cannot be hoisted because it depends "
+            "on operation-local values .*max"
+        ),
+    ):
+
+        @ttl.operation()
+        def composed_allocation():
+            max = 2
+            for iteration in range(2):
+                allocation_helper(max)
+
+
+def test_composition_does_not_hoist_resources_from_nested_scope():
+    @ttl.operation()
+    def allocation_helper():
+        helper_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+
+    with pytest.raises(
+        ValueError,
+        match="resource declaration 'make_dfb' must be a simple top-level assignment",
+    ):
+
+        @ttl.operation()
+        def composed_allocation():
+            def callback():
+                allocation_helper()
+
+
+def test_resource_name_collection_excludes_nested_scopes():
+    function = _fn(
+        """
+        def operation():
+            operation_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+
+            def callback():
+                callback_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+        """
+    )
+
+    assert atom_module._operation_resource_names(function) == {"operation_dfb"}
 
 
 def test_dfb_allocation_group_alias_topology_changes_operation_identity():
