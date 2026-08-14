@@ -146,6 +146,17 @@ def _make_parser() -> argparse.ArgumentParser:
         "not to overlap across concurrent kernels (default: enabled).",
     )
     p.add_argument(
+        "--ttl-unsafe-assume-dfb-allocation-groups",
+        default=None,
+        dest="unsafe_assume_dfb_allocation_groups",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Trust explicit DFB allocation groups when runtime handoff cannot "
+            "be proven; emits warnings and assumption metadata "
+            "(default: disabled)."
+        ),
+    )
+    p.add_argument(
         "--ttl-dfb-exact-coloring-search-limit",
         default=None,
         dest="dfb_exact_coloring_search_limit",
@@ -224,6 +235,7 @@ class CompilerOptions:
     pipe_global_semaphores_only: bool = False
     pipe_batch_tiles: int = 0
     reuse_user_dfbs: bool = True
+    unsafe_assume_dfb_allocation_groups: bool = False
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)

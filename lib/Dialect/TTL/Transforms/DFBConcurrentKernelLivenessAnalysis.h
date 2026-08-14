@@ -183,6 +183,14 @@ public:
   bool isConditionallyOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                                     LaunchNodeCoord node) const;
 
+  /// Returns true when access events prove a reachability cycle.
+  bool hasInconsistentOrder(unsigned lhsIndex, unsigned rhsIndex,
+                            LaunchNodeCoord node) const;
+
+  /// Returns inconsistent order while treating unknown domains as possible.
+  bool hasConditionallyInconsistentOrder(unsigned lhsIndex, unsigned rhsIndex,
+                                         LaunchNodeCoord node) const;
+
 private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
@@ -191,6 +199,9 @@ private:
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
+  SmallVector<SmallVector<llvm::BitVector>> inconsistentOrderByNode;
+  SmallVector<SmallVector<llvm::BitVector>>
+      conditionallyInconsistentOrderByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };
