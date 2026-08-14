@@ -375,9 +375,52 @@ class PipeNet:
         return self.graph is not None or bool(self.mappings)
 
     def _operation_identity_capture(self) -> tuple:
+        if not self.is_graph:
+            return (
+                "pipenet",
+                tuple(pipe._operation_identity_capture() for pipe in self.pipes),
+            )
+
+        from .domains import DeviceRange
+
+        def device_identity(device) -> tuple:
+            return tuple(tuple(coordinates) for coordinates in device.coordinates)
+
+        def destination_identity(destination) -> tuple:
+            if isinstance(destination, DeviceRange):
+                return (
+                    "range",
+                    device_identity(destination.lo),
+                    device_identity(destination.hi),
+                )
+            return ("device", device_identity(destination))
+
+        def graph_identity(graph) -> tuple:
+            return (
+                graph.domain._operation_identity_capture(),
+                tuple(
+                    (
+                        device_identity(edge.source),
+                        destination_identity(edge.destination),
+                    )
+                    for edge in graph.iter_edges()
+                ),
+            )
+
+        if self._uses_grid_identity:
+            assert self.graph is not None
+            return ("graph-pipenet", "grid-identity", graph_identity(self.graph))
+
         return (
-            "pipenet",
-            tuple(pipe._operation_identity_capture() for pipe in self.pipes),
+            "graph-pipenet",
+            "mappings",
+            tuple(
+                (
+                    graph_identity(mapping.graph),
+                    tuple(pipe._operation_identity_capture() for pipe in mapping.pipes),
+                )
+                for mapping in self.mappings
+            ),
         )
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:

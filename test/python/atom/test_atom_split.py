@@ -368,6 +368,73 @@ def test_operation_identity_encodes_pipe_topology(capture_kind):
     assert identity_for((1, 0)) != identity_for((2, 0))
 
 
+def test_operation_identity_encodes_graph_pipenet_topology():
+    """Graph PipeNet identity includes its domain and transfer relation."""
+
+    def identity_for(destination):
+        domain = ttl.DeviceDomain((1, 3))
+        graph = ttl.TransferGraph.edges(
+            domain,
+            edges=[((0, 0), destination)],
+        )
+        pipe_net = ttl.PipeNet(graph=graph)
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((0, 1)) == identity_for((0, 1))
+    assert identity_for((0, 1)) != identity_for((0, 2))
+
+
+def test_operation_identity_encodes_device_domain():
+    """Device-domain components distinguish factory-created operations."""
+
+    def identity_for(domain):
+        def selected_operation():
+            return domain
+
+        return _operation_identity(selected_operation)
+
+    regular = ttl.DeviceDomain((2, 3), name="worker")
+    same_regular = ttl.DeviceDomain((2, 3), name="worker")
+    different_extent = ttl.DeviceDomain((2, 4), name="worker")
+    product = ttl.DeviceDomain.product(
+        rack=ttl.DeviceDomain((2,)),
+        worker=ttl.DeviceDomain((3,)),
+    )
+
+    assert identity_for(regular) == identity_for(same_regular)
+    assert identity_for(regular) != identity_for(different_extent)
+    assert identity_for(regular) != identity_for(product)
+
+
+def test_operation_identity_encodes_factorized_pipenet_topology():
+    """Graph and node relations distinguish factorized PipeNet identities."""
+
+    def identity_for(device_destination, node_destination):
+        domain = ttl.DeviceDomain((1, 3))
+        graph = ttl.TransferGraph.edges(
+            domain,
+            edges=[((0, 0), device_destination)],
+        )
+        mapping = ttl.PipeMapping(
+            graph=graph,
+            pipes=[ttl.Pipe(src=(0, 0), dst=node_destination)],
+        )
+        pipe_net = ttl.PipeNet(mappings=[mapping])
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((0, 1), (1, 0)) == identity_for((0, 1), (1, 0))
+    assert identity_for((0, 1), (1, 0)) != identity_for((0, 2), (1, 0))
+    assert identity_for((0, 1), (1, 0)) != identity_for((0, 1), (2, 0))
+
+
 def test_operation_identity_encodes_global_semaphore_address(monkeypatch):
     """Global semaphore addresses distinguish compiled template identities."""
 

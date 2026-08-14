@@ -278,6 +278,15 @@ class DeviceDomain:
     def component_count(self) -> int:
         return len(self.components)
 
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-domain",
+            tuple(
+                (component.name, tuple(component.extent))
+                for component in self.components
+            ),
+        )
+
     @property
     def shape(self) -> Coordinate:
         if self.component_count != 1:
