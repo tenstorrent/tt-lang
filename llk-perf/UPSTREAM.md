@@ -29,10 +29,32 @@ evidence for every one.
 
 | file | edits |
 |---|---|
-| `perf_ttlang_eltwise_binary_fpu.py` | drop `Float16`, add `Float32`; `tile_count=[16, 64]` |
-| `perf_ttlang_eltwise_unary_sfpu.py` | `PERF_SWEEP_OPS` filtered by `_TTLANG_REACHABLE_OPS`; drop `Float16` from `_FULL_FORMATS`; `iterations=[8]`; pin `fast_mode`/`stable_sort`; gate `approx_mode` to `Exp` |
-| `perf_ttlang_eltwise_binary_sfpu.py` | drop `Float16`; `iterations=[8]`; drop `SfpuElwrsub`; gate `approx_mode` to `SfpuElwpow` |
-| `perf_ttlang_math_matmul.py` | drop `Float16`; full-tile combinations rather than tiny tiles; `dst_index == 0` only |
+| `perf_ttlang_eltwise_binary_fpu.py` | drop `Float16`, add `Float32`; `tile_count=[16]`, `loop_factor=2`; `compile_time_formats`; `measure_op_init` axis |
+| `perf_ttlang_eltwise_unary_sfpu.py` | `PERF_SWEEP_OPS` filtered by `_TTLANG_REACHABLE_OPS`; drop `Float16`; add `Float32` to `_REPRESENTATIVE_FORMAT`; `iterations=[8]`; pin `fast_mode`/`stable_sort`; gate `approx_mode` to `Exp`; `measure_op_init` and `measure_datacopy_only` axes |
+| `perf_ttlang_eltwise_binary_sfpu.py` | drop `Float16`; `iterations=[8]`; drop `SfpuElwrsub`; gate `approx_mode` to `SfpuElwpow`; `measure_op_init` axis |
+| `perf_ttlang_eltwise_typecast.py`, `..._int32.py` | `loop_factor=2`, `compile_time_formats`; drop `ReluMin` (no TTKernel op) |
+| `perf_ttlang_reduce.py` | drop `Float16` and `ReducePool.Average`; `loop_factor=2`; `compile_time_formats`; `measure_op_init` axis |
+| `perf_ttlang_math_matmul.py` | drop `Float16`; full-tile combinations rather than tiny tiles; `dst_index == 0` only; skip 32-bit input with `dest_acc=No`, which cannot build |
+
+Every sweep runs at `tile_cnt=16, loop_factor=2`. A per-tile figure is averaged
+over their product, so a benchmark reporting over a different N is not comparable
+with the rest of the table.
+
+## Measurement structure the sources carry
+
+Beyond the narrowing, the copied kernel sources hold changes upstream has no
+reason to want. They are the reason several operations are measurable at all, so
+re-derive them rather than dropping them:
+
+- **Split init zones**, via a `MEASURE_OP_INIT` build variant. Both variants run
+  identical work and differ only in where the measured zone starts, which is what
+  makes an operation's own init attributable instead of lumped with the common
+  one.
+- **An elidable SFPU call**, via `MEASURE_DATACOPY_ONLY`. Subtracting the
+  datacopy-only zone from the whole one gives the SFPU operation's math cost at
+  formats where it cannot be isolated directly.
+- **Stimuli-buffer addressing** in place of `PERF_ADDRESS`, whose 4096-byte tile
+  stride is right only for Float32.
 
 ## Things upstream may fix for us
 

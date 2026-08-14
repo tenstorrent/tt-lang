@@ -15,6 +15,27 @@ and only meaningful against the tt-metal revision that produced them, which the
 generated table records. `test/ttlang/OpCost/coverage.mlir` pins what the data
 covers, so a re-sweep that changes coverage shows up as a reviewable diff.
 
+## What is covered today
+
+125 of 333 (operation, engine) slots are measured and 108 are answerable by a
+representative bf16 kernel, from 1884 rows across six benchmarks. Run
+`ttlang-opcost-report` for the live breakdown; the numbers below are the shape of
+what is left.
+
+| engine | slots | measured | reachable |
+|---|---:|---:|---:|
+| dm | 56 | 0 | 0 |
+| unpack | 43 | 10 | 8 |
+| math | 208 | 110 | 96 |
+| pack | 26 | 5 | 4 |
+
+The gap between measured and reachable is data taken in a configuration tt-lang
+does not generate. The gap between slots and measured is the list under *Known
+remaining gaps* below.
+
+Every figure here was re-measured with `TT_LLK_DISABLE_ASSERTS=1`. Anything
+quoted from an earlier sweep is inflated -- see that section.
+
 ## Nothing upstream is modified
 
 Every file here carries a tt-lang name and is an *addition* to the tt-llk

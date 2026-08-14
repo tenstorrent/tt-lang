@@ -99,6 +99,12 @@ struct KernelConfig {
   /// knows where each comes from, and a table that gains a knob then needs no
   /// change here.
   ///
+  /// `unpack_to_dest` is the one most easily mistaken for kernel-wide. It is a
+  /// per-buffer decision (`ttl.unpack_to_dest_fp32` holds a list of CB indices),
+  /// and it is not a small effect: the same `copy_tile` reads 120.78 cycles/tile
+  /// on unpack for a listed buffer against 42.20 for an unlisted one, at an
+  /// otherwise identical configuration.
+  ///
   /// A row naming a knob absent from this list cannot be matched, which is the
   /// point rather than a limitation: it is what stops a measurement taken in a
   /// configuration the caller cannot describe from answering anyway.
@@ -120,9 +126,10 @@ struct Cost {
   /// True when this came from a perf measurement, false when it is the table's
   /// invented placeholder.
   ///
-  /// Worth checking rather than assuming: most of the table is placeholder, and
-  /// they are not close -- `copy_tile` on math was guessed at 150 and measures
-  /// 19, `compute_kernel_hw_startup` on pack guessed at 140 and measures 291.
+  /// Worth checking rather than assuming. 125 of 333 slots are measured, so a
+  /// caller that ignores this is often reporting a guess, and the guesses are not
+  /// close: `copy_tile` on math was invented at 150 and measures 19,
+  /// `compute_kernel_hw_startup` on pack at 140 against 207.
   bool measured = false;
 
   /// Whether this can be charged as a flat number. False when `fixed` is
