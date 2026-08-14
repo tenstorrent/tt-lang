@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import dataclass
+
 import pytest
 from helpers.format_config import DataFormat
 from helpers.llk_params import (
@@ -17,6 +19,7 @@ from helpers.param_config import (
 from helpers.perf import PerfConfig
 from helpers.stimuli_config import StimuliConfig
 from helpers.test_variant_parameters import (
+    TemplateParameter,
     LOOP_FACTOR,
     MATH_OP,
     REDUCE_POOL_TYPE,
@@ -28,6 +31,27 @@ REDUCE_MATHOP = {
     ReduceDimension.Column: MathOperation.ReduceColumn,
     ReduceDimension.Scalar: MathOperation.ReduceScalar,
 }
+
+
+@dataclass
+class MEASURE_OP_INIT(TemplateParameter):
+    """Which half of the init block sits inside the measured INIT zone.
+
+    True brackets copy_tile_init's own call with the kernel-wide hw_configure
+    hoisted before it; False brackets the hw_configure with the op init hoisted
+    after. Both halves run either way and in the same order, so the two variants
+    execute identical work and differ only in where the measurement starts.
+
+    Two zones are all the harness supports -- ``read_perf_zone_names_from_elf``
+    hardcodes ``[INIT, TILE_LOOP]`` by position -- so splitting the init into two
+    measurements means two variants rather than two zones.
+    """
+
+    measure_op_init: bool = False
+
+    def convert_to_cpp(self) -> str:
+        value = "true" if self.measure_op_init else "false"
+        return f"constexpr bool MEASURE_OP_INIT = {value};"
 
 
 @pytest.mark.perf
@@ -48,6 +72,11 @@ REDUCE_MATHOP = {
     # as an attribute the compiler sets from that surface, so no tt-lang kernel
     # can contain a reduce_avg.
     pool_type=[ReducePool.Max, ReducePool.Sum],
+    # Which half of the init the measured zone brackets; see the source. Two
+    # variants running identical work, differing only in where the bracket sits,
+    # is what makes reduce_init attributable instead of lumped with the common
+    # init as every unsplit source leaves it.
+    measure_op_init=[False, True],
 )
 def test_perf_reduce(
     perf_report,
@@ -55,6 +84,7 @@ def test_perf_reduce(
     dest_acc,
     reduce_dim,
     pool_type,
+    measure_op_init,
 ):
 
     tile_count = 16
@@ -71,6 +101,7 @@ def test_perf_reduce(
         templates=[
             MATH_OP(mathop=REDUCE_MATHOP[reduce_dim]),
             REDUCE_POOL_TYPE(pool_type),
+            MEASURE_OP_INIT(measure_op_init),
         ],
         # 16 tiles x loop factor 2, matching every other sweep here: a per-tile
         # figure is averaged over tile_cnt * loop_factor, so a benchmark reporting

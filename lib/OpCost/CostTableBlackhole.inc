@@ -13,7 +13,7 @@
 // sweeps cover configurations no tt-lang kernel produces. Costs are not
 // transferable across architectures.
 //
-// Source data: 1284 CSV rows from 8 benchmark(s), against tt-metal
+// Source data: 3766 CSV rows from 8 benchmark(s), against tt-metal
 // ea042c4ad. The CSVs are not in the tree: they are large, regenerable from
 // llk-perf/, and only meaningful against the revision that produced them. That
 // revision is recorded here because it is the one thing about them that cannot
@@ -38,612 +38,1889 @@
 // Measured rows, grouped so each (op, lane) run is contiguous. Reached
 // only through the lane slot that slices it.
 static const MeasuredCost kMeasured[] = {
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 137.34, 0.00},  // abs_tile_int32/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 489.16, 0.00},  // acos_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 488.97, 0.00},  // acos_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.69, 0.00},  // add_binary_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.69, 0.00},  // add_binary_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.50, 0.00},  // add_binary_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 370.50, 0.00},  // add_binary_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 140.25, 0.00},  // add_int_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // add_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // add_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // add_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.66, 0.00},  // add_tiles/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // add_tiles/math, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // add_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // add_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.16, 0.00},  // add_tiles/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // add_tiles/math, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // add_tiles/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // add_tiles/math, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.16, 0.00},  // add_tiles/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // add_tiles/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.78, 0.00},  // add_tiles/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // add_tiles/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // add_tiles/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // add_tiles/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.78, 0.00},  // add_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // add_tiles/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // add_tiles/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // add_tiles/unpack, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.06, 0.00},  // add_tiles/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.06, 0.00},  // add_tiles/unpack, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // add_tiles/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // add_tiles/unpack, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.28, 0.00},  // add_tiles/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // add_tiles/unpack, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.25, 0.00},  // add_tiles/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // add_tiles/unpack, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.25, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.91, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.94, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.75, 0.00},  // add_tiles/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 465.12, 0.00},  // asin_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 464.91, 0.00},  // asin_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 337.06, 0.00},  // atan_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 337.06, 0.00},  // atan_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 338.47, 0.00},  // binary_left_shift_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 370.47, 0.00},  // binary_logical_right_shift_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 353.75, 0.00},  // binary_op_init_common/pack, n=4
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 359.00, 0.00},  // binary_op_init_common/pack, n=4
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 353.75, 0.00},  // binary_op_init_common/pack, n=4
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 300.50, 0.00},  // binary_op_init_common/pack, n=4
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 353.75, 0.00},  // binary_op_init_common/pack, n=4
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 310.50, 0.00},  // binary_op_init_common/pack, n=4
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 293.33, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 356.50, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 293.33, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 300.17, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 357.50, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 309.83, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 293.33, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 360.50, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 293.33, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 301.17, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 357.50, 0.00},  // binary_op_init_common/pack, n=6
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 309.83, 0.00},  // binary_op_init_common/pack, n=6
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 227.00, 0.00},  // binary_op_init_common/unpack, n=4
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 226.00, 0.00},  // binary_op_init_common/unpack, n=4
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 227.00, 0.00},  // binary_op_init_common/unpack, n=4
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 226.00, 0.00},  // binary_op_init_common/unpack, n=4
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 227.00, 0.00},  // binary_op_init_common/unpack, n=4
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 227.00, 0.00},  // binary_op_init_common/unpack, n=4
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 211.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 211.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 211.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 211.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 211.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 211.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 234.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 229.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 234.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 229.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 234.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 229.00, 0.00},  // binary_op_init_common/unpack, n=6
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 594.72, 0.00},  // binary_right_shift_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 137.34, 0.00},  // bitwise_not_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 122.09, 0.00},  // ceil_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 121.91, 0.00},  // ceil_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 121.12, 0.00},  // clamp_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 121.00, 0.00},  // clamp_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.25, 0.00},  // abs_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.29, 0.00},  // abs_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.26, 0.00},  // abs_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.26, 0.00},  // abs_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // abs_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // abs_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // abs_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // abs_tile_init/math, n=2
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 137.75, 0.00},  // abs_tile_int32/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 586.25, 0.00},  // acos_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 490.84, 0.00},  // acos_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 586.25, 0.00},  // acos_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 490.76, 0.00},  // acos_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 489.69, 0.00},  // acos_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 586.26, 0.00},  // acos_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 489.77, 0.00},  // acos_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 586.26, 0.00},  // acos_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // acos_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // acos_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // acos_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // acos_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // acos_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // acos_tile_init/math, n=2, spread=2.3%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // acos_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // acos_tile_init/math, n=2, spread=2.3%
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.42, 0.00},  // add_binary_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // add_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.42, 0.00},  // add_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.11, 0.00},  // add_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.47, 0.00},  // add_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.92, 0.00},  // add_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.51, 0.00},  // add_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.06, 0.00},  // add_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.52, 0.00},  // add_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.02, 0.00},  // add_binary_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.52, 0.00},  // add_binary_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.84, 0.00},  // add_binary_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // add_binary_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // add_binary_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.95, 0.00},  // add_binary_tile/math, n=2
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 370.89, 0.00},  // add_binary_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // add_binary_tile_init/math, n=1
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 140.59, 0.00},  // add_int_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // add_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // add_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // add_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // add_tiles/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // add_tiles/math, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // add_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // add_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // add_tiles/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // add_tiles/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // add_tiles/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // add_tiles/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.19, 0.00},  // add_tiles/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // add_tiles/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // add_tiles/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // add_tiles/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // add_tiles/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.19, 0.00},  // add_tiles/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.19, 0.00},  // add_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // add_tiles/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.20, 0.00},  // add_tiles/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // add_tiles/unpack, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.19, 0.00},  // add_tiles/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // add_tiles/unpack, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // add_tiles/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // add_tiles/unpack, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // add_tiles/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // add_tiles/unpack, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // add_tiles/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // add_tiles/unpack, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // add_tiles/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.06, 0.00},  // add_tiles/unpack, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.75, 0.00},  // add_tiles/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.06, 0.00},  // add_tiles/unpack, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.75, 0.00},  // add_tiles/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.06, 0.00},  // add_tiles/unpack, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.72, 0.00},  // add_tiles/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float32", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float32", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float32", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float32", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // add_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 578.32, 0.00},  // asin_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 466.78, 0.00},  // asin_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 578.32, 0.00},  // asin_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 466.68, 0.00},  // asin_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 465.66, 0.00},  // asin_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 578.32, 0.00},  // asin_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 465.47, 0.00},  // asin_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 578.32, 0.00},  // asin_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // asin_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // asin_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // asin_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // asin_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // asin_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // asin_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // asin_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // asin_tile_init/math, n=2, spread=2.3%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 426.43, 0.00},  // atan_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 338.72, 0.00},  // atan_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 426.38, 0.00},  // atan_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 338.50, 0.00},  // atan_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 337.78, 0.00},  // atan_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 426.38, 0.00},  // atan_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 337.59, 0.00},  // atan_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 426.39, 0.00},  // atan_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // atan_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // atan_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // atan_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.50, 0.00},  // atan_tile_init/math, n=2, spread=2.3%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // atan_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // atan_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // atan_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // atan_tile_init/math, n=2, spread=2.4%
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 338.94, 0.00},  // binary_left_shift_tile/math, n=2
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 370.86, 0.00},  // binary_logical_right_shift_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Bfp8_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Bfp8_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Bfp8_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Bfp8_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Bfp8_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Bfp8_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Bfp8_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Bfp8_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Bfp8_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float16_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float16_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float16_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float16_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float16_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float16_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float16_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float32", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float32", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float32", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float32", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Float32", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.67, 0.00},  // binary_op_init_common/math, n=3
+    {"Float32", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 89.00, 0.00},  // binary_op_init_common/math, n=1
+    {"Float32", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // binary_op_init_common/math, n=3
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.00, 0.00},  // binary_op_init_common/pack, n=8
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.62, 0.00},  // binary_op_init_common/pack, n=8
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.00, 0.00},  // binary_op_init_common/pack, n=8
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 207.38, 0.00},  // binary_op_init_common/pack, n=8, spread=2.1%
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.00, 0.00},  // binary_op_init_common/pack, n=8
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 202.62, 0.00},  // binary_op_init_common/pack, n=8, spread=2.7%
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 205.67, 0.00},  // binary_op_init_common/pack, n=12
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.75, 0.00},  // binary_op_init_common/pack, n=12, spread=2.8%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.00, 0.00},  // binary_op_init_common/pack, n=12
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.75, 0.00},  // binary_op_init_common/pack, n=12, spread=2.8%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.58, 0.00},  // binary_op_init_common/pack, n=12, spread=4.7%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.08, 0.00},  // binary_op_init_common/pack, n=12, spread=3.4%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 205.67, 0.00},  // binary_op_init_common/pack, n=12
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.75, 0.00},  // binary_op_init_common/pack, n=12, spread=2.8%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 205.67, 0.00},  // binary_op_init_common/pack, n=12
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.75, 0.00},  // binary_op_init_common/pack, n=12, spread=2.8%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 205.67, 0.00},  // binary_op_init_common/pack, n=12
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.08, 0.00},  // binary_op_init_common/pack, n=12, spread=3.4%
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.75, 0.00},  // binary_op_init_common/unpack, n=8
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 168.38, 0.00},  // binary_op_init_common/unpack, n=8
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.75, 0.00},  // binary_op_init_common/unpack, n=8
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 168.38, 0.00},  // binary_op_init_common/unpack, n=8
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.75, 0.00},  // binary_op_init_common/unpack, n=8
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.75, 0.00},  // binary_op_init_common/unpack, n=8
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.83, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.50, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.50, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.50, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 169.50, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 170.75, 0.00},  // binary_op_init_common/unpack, n=12
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 595.03, 0.00},  // binary_right_shift_tile/math, n=2
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // binary_shift_tile_init/math, n=3, spread=8.2%
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 137.88, 0.00},  // bitwise_not_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.91, 0.00},  // ceil_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.42, 0.00},  // ceil_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.91, 0.00},  // ceil_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.47, 0.00},  // ceil_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 122.42, 0.00},  // ceil_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.91, 0.00},  // ceil_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 122.53, 0.00},  // ceil_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.92, 0.00},  // ceil_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.33, 0.00},  // clamp_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.88, 0.00},  // clamp_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.33, 0.00},  // clamp_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.78, 0.00},  // clamp_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 121.38, 0.00},  // clamp_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.34, 0.00},  // clamp_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 121.39, 0.00},  // clamp_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.34, 0.00},  // clamp_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 54.50, 0.00},  // clamp_tile_init/math, n=2, spread=6.4%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // clamp_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 96.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
     {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // compute_kernel_hw_startup/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 351.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 345.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 351.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 286.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 351.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 302.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 291.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 343.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 291.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 286.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 351.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 305.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 289.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 343.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 343.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 289.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 285.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 286.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 351.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 297.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 304.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 185.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 186.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 185.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 185.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 185.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 185.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 208.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 208.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 212.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.64, 0.00},  // copy_tile/math, n=2
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.73, 0.00},  // copy_tile/math, n=2
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.53, 0.00},  // copy_tile/math, n=2
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.86, 0.00},  // copy_tile/math, n=2
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.64, 0.00},  // copy_tile/math, n=2
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.72, 0.00},  // copy_tile/math, n=2
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 20.73, 0.00},  // copy_tile/math, n=2
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 20.78, 0.00},  // copy_tile/math, n=2
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 20.73, 0.00},  // copy_tile/math, n=2
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 20.80, 0.00},  // copy_tile/math, n=2
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 20.66, 0.00},  // copy_tile/math, n=2
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 20.86, 0.00},  // copy_tile/math, n=2
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 22.19, 0.00},  // copy_tile/math, n=2
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 21.95, 0.00},  // copy_tile/math, n=2
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 22.19, 0.00},  // copy_tile/math, n=2
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 22.09, 0.00},  // copy_tile/math, n=2
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 22.11, 0.00},  // copy_tile/math, n=2
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 22.02, 0.00},  // copy_tile/math, n=2
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=15
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=11
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=15
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=11
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=15
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.10, 0.00},  // copy_tile/unpack, n=11
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=15
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.10, 0.00},  // copy_tile/unpack, n=11
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=49
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.12, 0.00},  // copy_tile/unpack, n=36
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.10, 0.00},  // copy_tile/unpack, n=49
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.18, 0.00},  // copy_tile/unpack, n=36
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.70, 0.00},  // copy_tile/unpack, n=9
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 126.76, 0.00},  // copy_tile/unpack, n=5
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.55, 0.00},  // copy_tile/unpack, n=8
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 126.05, 0.00},  // copy_tile/unpack, n=6
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.74, 0.00},  // copy_tile/unpack, n=43
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 126.57, 0.00},  // copy_tile/unpack, n=30
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.60, 0.00},  // copy_tile/unpack, n=8
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 126.05, 0.00},  // copy_tile/unpack, n=6
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.67, 0.00},  // copy_tile/unpack, n=43
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 126.60, 0.00},  // copy_tile/unpack, n=30
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 55.62, 0.00},  // copy_tile/unpack, n=8
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 125.98, 0.00},  // copy_tile/unpack, n=6
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 126.00, 0.00},  // copy_tile/unpack, n=5
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 88.00, 0.00},  // copy_tile_init/math, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 88.00, 0.00},  // copy_tile_init/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // copy_tile_init/math, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 82.00, 0.00},  // copy_tile_init/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 88.00, 0.00},  // copy_tile_init/math, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 84.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 89.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 91.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 93.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 95.00, 0.00},  // compute_kernel_hw_startup/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 208.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 209.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 208.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 209.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 208.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 205.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 207.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 207.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 218.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 207.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 207.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 206.50, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.00, 0.00},  // compute_kernel_hw_startup/pack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 216.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 217.00, 0.00},  // compute_kernel_hw_startup/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 145.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 145.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 145.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 145.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 145.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 147.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 152.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 143.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 144.00, 0.00},  // compute_kernel_hw_startup/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.94, 0.00},  // copy_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.70, 0.00},  // copy_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.94, 0.00},  // copy_tile/math, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.70, 0.00},  // copy_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.94, 0.00},  // copy_tile/math, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.81, 0.00},  // copy_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.05, 0.00},  // copy_tile/math, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.80, 0.00},  // copy_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.05, 0.00},  // copy_tile/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.80, 0.00},  // copy_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.05, 0.00},  // copy_tile/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.70, 0.00},  // copy_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.05, 0.00},  // copy_tile/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.80, 0.00},  // copy_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.05, 0.00},  // copy_tile/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.80, 0.00},  // copy_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.05, 0.00},  // copy_tile/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.70, 0.00},  // copy_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.54, 0.00},  // copy_tile/unpack, n=42
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.58, 0.00},  // copy_tile/unpack, n=26
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.54, 0.00},  // copy_tile/unpack, n=42
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.58, 0.00},  // copy_tile/unpack, n=26
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.53, 0.00},  // copy_tile/unpack, n=42
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.50, 0.00},  // copy_tile/unpack, n=26
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.76, 0.00},  // copy_tile/unpack, n=42
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.75, 0.00},  // copy_tile/unpack, n=26
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.77, 0.00},  // copy_tile/unpack, n=178
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.76, 0.00},  // copy_tile/unpack, n=126
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.77, 0.00},  // copy_tile/unpack, n=178
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 41.77, 0.00},  // copy_tile/unpack, n=126
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 42.31, 0.00},  // copy_tile/unpack, n=30
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.82, 0.00},  // copy_tile/unpack, n=14
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 42.16, 0.00},  // copy_tile/unpack, n=14
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.35, 0.00},  // copy_tile/unpack, n=12
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 42.33, 0.00},  // copy_tile/unpack, n=166
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.79, 0.00},  // copy_tile/unpack, n=114
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 42.16, 0.00},  // copy_tile/unpack, n=14
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.35, 0.00},  // copy_tile/unpack, n=12
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 42.33, 0.00},  // copy_tile/unpack, n=166
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.78, 0.00},  // copy_tile/unpack, n=114
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 42.20, 0.00},  // copy_tile/unpack, n=14
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.37, 0.00},  // copy_tile/unpack, n=12
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 120.34, 0.00},  // copy_tile/unpack, n=10
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
     {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
     {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 82.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 88.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 84.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 82.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 84.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 82.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 85.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 82.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 88.00, 0.00},  // copy_tile_init/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 88.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 83.00, 0.00},  // copy_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
     {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // copy_tile_init/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 112.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 112.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 112.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 112.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 112.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 112.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 150.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 129.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 150.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 129.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 127.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 150.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 130.00, 0.00},  // copy_tile_init/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 1073.75, 0.00},  // div_binary_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 1073.75, 0.00},  // div_binary_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 1073.78, 0.00},  // div_binary_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.03, 0.00},  // eqz_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.06, 0.00},  // eqz_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 385.09, 0.00},  // erf_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 385.12, 0.00},  // erf_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 649.47, 0.00},  // erfc_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 649.41, 0.00},  // erfc_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 465.31, 0.00},  // expm1_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 465.06, 0.00},  // expm1_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 120.78, 0.00},  // fill_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 122.09, 0.00},  // floor_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 121.91, 0.00},  // floor_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 106.09, 0.00},  // frac_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 106.12, 0.00},  // frac_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 90.44, 0.00},  // gez_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 90.28, 0.00},  // gez_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 74.41, 0.00},  // gtz_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 74.19, 0.00},  // gtz_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.08, 0.00},  // init_sfpu/pack, n=13, spread=2.8%
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.56, 0.00},  // init_sfpu/pack, n=9, spread=4.1%
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.31, 0.00},  // init_sfpu/pack, n=13, spread=2.9%
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 301.44, 0.00},  // init_sfpu/pack, n=9, spread=2.5%
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.31, 0.00},  // init_sfpu/pack, n=13, spread=2.9%
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 303.56, 0.00},  // init_sfpu/pack, n=9
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 301.54, 0.00},  // init_sfpu/pack, n=13, spread=3.2%
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 353.56, 0.00},  // init_sfpu/pack, n=9, spread=3.8%
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 300.36, 0.00},  // init_sfpu/pack, n=47, spread=2.8%
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 301.21, 0.00},  // init_sfpu/pack, n=34, spread=2.4%
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 356.13, 0.00},  // init_sfpu/pack, n=47, spread=3.4%
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 302.85, 0.00},  // init_sfpu/pack, n=34, spread=3.0%
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 311.50, 0.00},  // init_sfpu/pack, n=6
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 357.00, 0.00},  // init_sfpu/pack, n=6
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 298.14, 0.00},  // init_sfpu/pack, n=7, spread=4.1%
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 355.00, 0.00},  // init_sfpu/pack, n=3
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 311.50, 0.00},  // init_sfpu/pack, n=6
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 299.50, 0.00},  // init_sfpu/pack, n=6
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 300.05, 0.00},  // init_sfpu/pack, n=41, spread=4.7%
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 299.68, 0.00},  // init_sfpu/pack, n=28, spread=3.9%
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 304.83, 0.00},  // init_sfpu/pack, n=6
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 303.50, 0.00},  // init_sfpu/pack, n=6
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 357.93, 0.00},  // init_sfpu/pack, n=41, spread=3.9%
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 308.25, 0.00},  // init_sfpu/pack, n=28, spread=4.3%
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 306.00, 0.00},  // init_sfpu/pack, n=5
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.85, 0.00},  // init_sfpu/unpack, n=13
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.89, 0.00},  // init_sfpu/unpack, n=9
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.85, 0.00},  // init_sfpu/unpack, n=13
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.44, 0.00},  // init_sfpu/unpack, n=9
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.85, 0.00},  // init_sfpu/unpack, n=13
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 354.89, 0.00},  // init_sfpu/unpack, n=9
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 324.69, 0.00},  // init_sfpu/unpack, n=13
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 324.33, 0.00},  // init_sfpu/unpack, n=9
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 324.60, 0.00},  // init_sfpu/unpack, n=47
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 324.12, 0.00},  // init_sfpu/unpack, n=34
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 324.57, 0.00},  // init_sfpu/unpack, n=47
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 324.85, 0.00},  // init_sfpu/unpack, n=34
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 394.00, 0.00},  // init_sfpu/unpack, n=6
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 360.00, 0.00},  // init_sfpu/unpack, n=6
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 364.86, 0.00},  // init_sfpu/unpack, n=7
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 394.33, 0.00},  // init_sfpu/unpack, n=3
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 394.00, 0.00},  // init_sfpu/unpack, n=6
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 360.50, 0.00},  // init_sfpu/unpack, n=6
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 364.41, 0.00},  // init_sfpu/unpack, n=41
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 394.11, 0.00},  // init_sfpu/unpack, n=28
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 396.00, 0.00},  // init_sfpu/unpack, n=6
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 360.00, 0.00},  // init_sfpu/unpack, n=6
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 364.00, 0.00},  // init_sfpu/unpack, n=41
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 396.00, 0.00},  // init_sfpu/unpack, n=28
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 361.00, 0.00},  // init_sfpu/unpack, n=5
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 90.47, 0.00},  // lez_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 90.50, 0.00},  // lez_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 369.00, 0.00},  // log1p_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 368.91, 0.00},  // log1p_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 233.09, 0.00},  // logical_not_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 74.38, 0.00},  // ltz_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 74.22, 0.00},  // ltz_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.69, 0.00},  // mul_binary_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.69, 0.00},  // mul_binary_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.50, 0.00},  // mul_binary_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.66, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.66, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.66, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.66, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.66, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.66, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.62, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.16, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.06, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.94, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.94, 0.00},  // mul_tiles/math, n=1
-    {"Float16_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.16, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.88, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 85.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.72, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.59, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 85.59, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.78, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.88, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 85.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.72, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.59, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 85.31, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.88, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 85.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.69, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.62, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 85.62, 0.00},  // mul_tiles/math, n=1
-    {"Float32", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.78, 0.00},  // mul_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // mul_tiles/unpack, n=2
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.08, 0.00},  // mul_tiles/unpack, n=2
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // mul_tiles/unpack, n=2
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.06, 0.00},  // mul_tiles/unpack, n=2
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // mul_tiles/unpack, n=2
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // mul_tiles/unpack, n=2
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // mul_tiles/unpack, n=4
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.28, 0.00},  // mul_tiles/unpack, n=4
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // mul_tiles/unpack, n=4
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.26, 0.00},  // mul_tiles/unpack, n=4
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // mul_tiles/unpack, n=4
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.25, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.91, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.93, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.96, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.75, 0.00},  // mul_tiles/unpack, n=4
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.03, 0.00},  // nez_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.06, 0.00},  // nez_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 32.66, 0.00},  // pack_tile/pack, n=19
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 30.83, 0.00},  // pack_tile/pack, n=15
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 38.45, 0.00},  // pack_tile/pack, n=19
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 30.91, 0.00},  // pack_tile/pack, n=15
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 70.51, 0.00},  // pack_tile/pack, n=19
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 43.42, 0.00},  // pack_tile/pack, n=15
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 32.87, 0.00},  // pack_tile/pack, n=21
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 30.85, 0.00},  // pack_tile/pack, n=17
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 32.74, 0.00},  // pack_tile/pack, n=55
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 30.87, 0.00},  // pack_tile/pack, n=42
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 38.68, 0.00},  // pack_tile/pack, n=55
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 43.41, 0.00},  // pack_tile/pack, n=42
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 32.89, 0.00},  // pack_tile/pack, n=15
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 30.92, 0.00},  // pack_tile/pack, n=5
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 30.83, 0.00},  // pack_tile/pack, n=14
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 43.95, 0.00},  // pack_tile/pack, n=6
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 32.75, 0.00},  // pack_tile/pack, n=49
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 30.86, 0.00},  // pack_tile/pack, n=30
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 30.89, 0.00},  // pack_tile/pack, n=14
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 43.92, 0.00},  // pack_tile/pack, n=6
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 38.77, 0.00},  // pack_tile/pack, n=49
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 43.33, 0.00},  // pack_tile/pack, n=30
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 43.34, 0.00},  // pack_tile/pack, n=14
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.22, 0.00},  // pack_tile/pack, n=6
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.25, 0.00},  // pack_tile/pack, n=5
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 3217.66, 0.00},  // power_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerTile, 3217.66, 0.00},  // power_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 3217.66, 0.00},  // power_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerTile, 3217.66, 0.00},  // power_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 3217.75, 0.00},  // power_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerTile, 3217.75, 0.00},  // power_tile/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 58.12, 0.00},  // recip_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 58.41, 0.00},  // recip_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 58.31, 0.00},  // recip_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.69, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.62, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.84, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.50, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 44.81, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 133.75, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.69, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.62, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.84, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.50, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 44.81, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 133.75, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.69, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.62, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.84, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.50, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 44.81, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 133.75, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.03, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.06, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.34, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 51.69, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 44.38, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 133.72, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.19, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.06, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.34, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 51.69, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 44.38, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 133.72, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.19, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.06, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.41, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 51.72, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 44.38, 0.00},  // reduce_tile/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 133.69, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.97, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.69, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 86.19, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.47, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 45.16, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 134.38, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.97, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.84, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 86.19, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.47, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 45.16, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 134.38, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.97, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.84, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 86.12, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.47, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 45.16, 0.00},  // reduce_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 134.34, 0.00},  // reduce_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.00, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.00, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 60.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.00, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 61.75, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 61.75, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 61.75, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 61.75, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.16, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 61.78, 0.00},  // reduce_tile/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 61.78, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 61.97, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 61.97, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 61.97, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 71.59, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 71.59, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 61.97, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 61.97, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 61.97, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 71.59, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 71.59, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 61.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 61.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 61.94, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 61.53, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 71.56, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 71.56, 0.00},  // reduce_tile/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 248.91, 0.00},  // rsqrt_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 249.09, 0.00},  // rsqrt_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 248.91, 0.00},  // rsqrt_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 401.00, 0.00},  // selu_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 400.88, 0.00},  // selu_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 425.00, 0.00},  // sigmoid_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 425.03, 0.00},  // sigmoid_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 89.19, 0.00},  // sign_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 89.06, 0.00},  // sign_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 20.38, 0.00},  // signbit_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 20.38, 0.00},  // signbit_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 137.00, 0.00},  // softsign_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 137.03, 0.00},  // softsign_tile/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 216.75, 0.00},  // sqrt_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 216.88, 0.00},  // sqrt_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 216.78, 0.00},  // sqrt_tile/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.69, 0.00},  // sub_binary_tile/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.69, 0.00},  // sub_binary_tile/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.50, 0.00},  // sub_binary_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 370.50, 0.00},  // sub_binary_tile/math, n=1
-    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 140.25, 0.00},  // sub_int_tile/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // sub_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // sub_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // sub_tiles/math, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.66, 0.00},  // sub_tiles/math, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.59, 0.00},  // sub_tiles/math, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // sub_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // sub_tiles/math, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.16, 0.00},  // sub_tiles/math, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // sub_tiles/math, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // sub_tiles/math, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.97, 0.00},  // sub_tiles/math, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.16, 0.00},  // sub_tiles/math, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // sub_tiles/math, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.78, 0.00},  // sub_tiles/math, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // sub_tiles/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.72, 0.00},  // sub_tiles/math, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.75, 0.00},  // sub_tiles/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.78, 0.00},  // sub_tiles/math, n=1
-    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // sub_tiles/unpack, n=1
-    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.06, 0.00},  // sub_tiles/unpack, n=1
-    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // sub_tiles/unpack, n=1
-    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.06, 0.00},  // sub_tiles/unpack, n=1
-    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // sub_tiles/unpack, n=1
-    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.09, 0.00},  // sub_tiles/unpack, n=1
-    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // sub_tiles/unpack, n=1
-    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.28, 0.00},  // sub_tiles/unpack, n=1
-    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // sub_tiles/unpack, n=1
-    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.25, 0.00},  // sub_tiles/unpack, n=1
-    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // sub_tiles/unpack, n=1
-    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.22, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.91, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.94, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 62.00, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 61.75, 0.00},  // sub_tiles/unpack, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 480.91, 0.00},  // tan_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 480.81, 0.00},  // tan_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 361.28, 0.00},  // tanh_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 361.09, 0.00},  // tanh_tile/math, n=1
-    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 97.66, 0.00},  // trunc_tile/math, n=1
-    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 97.75, 0.00},  // trunc_tile/math, n=1
-    {"Int32", "UInt16", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 129.16, 0.00},  // typecast_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 104.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 104.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 94.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 104.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 92.00, 0.00},  // copy_tile_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 280.16, 0.00},  // cos_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 280.16, 0.00},  // cos_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 280.16, 0.00},  // cos_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 280.17, 0.00},  // cos_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // cos_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // cos_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // cos_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // cos_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1072.74, 0.00},  // div_binary_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1169.38, 0.00},  // div_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1072.74, 0.00},  // div_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1169.35, 0.00},  // div_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1072.74, 0.00},  // div_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1169.22, 0.00},  // div_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1072.72, 0.00},  // div_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1169.20, 0.00},  // div_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1072.74, 0.00},  // div_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1169.16, 0.00},  // div_binary_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1072.74, 0.00},  // div_binary_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 1169.09, 0.00},  // div_binary_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 1074.28, 0.00},  // div_binary_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 1074.28, 0.00},  // div_binary_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 1074.38, 0.00},  // div_binary_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 50.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 50.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 50.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 56.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // div_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.30, 0.00},  // eqz_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.72, 0.00},  // eqz_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.30, 0.00},  // eqz_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.68, 0.00},  // eqz_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.72, 0.00},  // eqz_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.30, 0.00},  // eqz_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.70, 0.00},  // eqz_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.31, 0.00},  // eqz_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // eqz_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // eqz_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // eqz_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.00, 0.00},  // eqz_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // eqz_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // eqz_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // eqz_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // eqz_tile_init/math, n=2, spread=2.4%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 387.28, 0.00},  // erf_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 387.89, 0.00},  // erf_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 387.29, 0.00},  // erf_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 387.68, 0.00},  // erf_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 385.69, 0.00},  // erf_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 387.29, 0.00},  // erf_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 385.52, 0.00},  // erf_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 387.29, 0.00},  // erf_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erf_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erf_tile_init/math, n=2, spread=5.2%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erf_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 57.50, 0.00},  // erf_tile_init/math, n=2, spread=2.6%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erf_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // erf_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erf_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // erf_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 650.75, 0.00},  // erfc_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 651.09, 0.00},  // erfc_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 650.75, 0.00},  // erfc_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 651.23, 0.00},  // erfc_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 650.03, 0.00},  // erfc_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 650.76, 0.00},  // erfc_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 650.06, 0.00},  // erfc_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 650.76, 0.00},  // erfc_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erfc_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // erfc_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // erfc_tile_init/math, n=2, spread=4.5%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // erfc_tile_init/math, n=2, spread=3.6%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erfc_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // erfc_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // erfc_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 52.50, 0.00},  // erfc_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.30, 0.00},  // exp2_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.30, 0.00},  // exp2_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.34, 0.00},  // exp2_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.31, 0.00},  // exp2_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // exp2_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // exp2_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // exp2_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // exp2_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 151.75, 0.00},  // exp_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 28.80, 0.00},  // exp_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 151.75, 0.00},  // exp_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 28.80, 0.00},  // exp_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 151.76, 0.00},  // exp_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 28.80, 0.00},  // exp_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 152.01, 0.00},  // exp_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 29.02, 0.00},  // exp_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 152.02, 0.00},  // exp_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 29.02, 0.00},  // exp_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 152.02, 0.00},  // exp_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 29.02, 0.00},  // exp_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 152.01, 0.00},  // exp_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 29.02, 0.00},  // exp_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 152.02, 0.00},  // exp_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 29.08, 0.00},  // exp_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 152.03, 0.00},  // exp_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 29.02, 0.00},  // exp_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 73.00, 0.00},  // exp_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 132.00, 0.00},  // exp_tile_init/math, n=2, spread=3.0%
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 73.00, 0.00},  // exp_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 132.00, 0.00},  // exp_tile_init/math, n=2, spread=3.0%
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 73.00, 0.00},  // exp_tile_init/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 132.00, 0.00},  // exp_tile_init/math, n=2, spread=3.0%
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 72.50, 0.00},  // exp_tile_init/math, n=2, spread=2.1%
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 128.50, 0.00},  // exp_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 72.50, 0.00},  // exp_tile_init/math, n=2, spread=2.1%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 128.50, 0.00},  // exp_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 72.50, 0.00},  // exp_tile_init/math, n=2, spread=2.1%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 128.50, 0.00},  // exp_tile_init/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 72.50, 0.00},  // exp_tile_init/math, n=2, spread=2.1%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 128.50, 0.00},  // exp_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 72.50, 0.00},  // exp_tile_init/math, n=2, spread=2.1%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 129.00, 0.00},  // exp_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 72.50, 0.00},  // exp_tile_init/math, n=2, spread=2.1%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 128.50, 0.00},  // exp_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.41, 0.00},  // expm1_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 466.89, 0.00},  // expm1_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.36, 0.00},  // expm1_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 466.87, 0.00},  // expm1_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 466.08, 0.00},  // expm1_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.37, 0.00},  // expm1_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 465.78, 0.00},  // expm1_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.37, 0.00},  // expm1_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // expm1_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // expm1_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // expm1_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // expm1_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // expm1_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // expm1_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // expm1_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // expm1_tile_init/math, n=2, spread=2.3%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 27.36, 0.00},  // fill_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 27.36, 0.00},  // fill_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 27.37, 0.00},  // fill_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 27.37, 0.00},  // fill_tile/math, n=1
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 121.19, 0.00},  // fill_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // fill_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // fill_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // fill_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // fill_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.91, 0.00},  // floor_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.42, 0.00},  // floor_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.91, 0.00},  // floor_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 123.47, 0.00},  // floor_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 122.42, 0.00},  // floor_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.91, 0.00},  // floor_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 122.53, 0.00},  // floor_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.92, 0.00},  // floor_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 108.28, 0.00},  // frac_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 108.86, 0.00},  // frac_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 108.29, 0.00},  // frac_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 108.79, 0.00},  // frac_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 106.50, 0.00},  // frac_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 108.29, 0.00},  // frac_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 106.44, 0.00},  // frac_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 108.29, 0.00},  // frac_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.42, 0.00},  // gelu_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.42, 0.00},  // gelu_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.43, 0.00},  // gelu_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.38, 0.00},  // gelu_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.39, 0.00},  // gelu_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.40, 0.00},  // gelu_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.38, 0.00},  // gelu_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.40, 0.00},  // gelu_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 714.40, 0.00},  // gelu_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // gelu_tile_init/math, n=2, spread=5.5%
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // gelu_tile_init/math, n=2, spread=5.5%
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // gelu_tile_init/math, n=2, spread=5.5%
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // gelu_tile_init/math, n=2, spread=4.5%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // gelu_tile_init/math, n=2, spread=4.5%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // gelu_tile_init/math, n=2, spread=4.5%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // gelu_tile_init/math, n=2, spread=4.5%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // gelu_tile_init/math, n=2, spread=4.5%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // gelu_tile_init/math, n=2, spread=4.5%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.58, 0.00},  // gez_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.98, 0.00},  // gez_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.58, 0.00},  // gez_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.92, 0.00},  // gez_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 91.14, 0.00},  // gez_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.59, 0.00},  // gez_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 91.16, 0.00},  // gez_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.59, 0.00},  // gez_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // gez_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // gez_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // gez_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.00, 0.00},  // gez_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // gez_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // gez_tile_init/math, n=2, spread=2.4%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // gez_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // gez_tile_init/math, n=2, spread=2.4%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.50, 0.00},  // gtz_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.92, 0.00},  // gtz_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.50, 0.00},  // gtz_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.89, 0.00},  // gtz_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 75.03, 0.00},  // gtz_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.51, 0.00},  // gtz_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 74.86, 0.00},  // gtz_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.51, 0.00},  // gtz_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.00, 0.00},  // gtz_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // gtz_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.00, 0.00},  // gtz_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // gtz_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.00, 0.00},  // gtz_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // gtz_tile_init/math, n=2, spread=2.4%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.00, 0.00},  // gtz_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // gtz_tile_init/math, n=2, spread=2.4%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.25, 0.00},  // hardsigmoid_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.21, 0.00},  // hardsigmoid_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.21, 0.00},  // hardsigmoid_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 122.21, 0.00},  // hardsigmoid_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.00, 0.00},  // hardsigmoid_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // hardsigmoid_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // hardsigmoid_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // hardsigmoid_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 139.94, 0.00},  // init_sfpu/math, n=17, spread=3.5%
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 136.33, 0.00},  // init_sfpu/math, n=3, spread=3.2%
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 136.18, 0.00},  // init_sfpu/math, n=11, spread=3.1%
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 139.94, 0.00},  // init_sfpu/math, n=17, spread=3.5%
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 136.67, 0.00},  // init_sfpu/math, n=3, spread=3.4%
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 136.18, 0.00},  // init_sfpu/math, n=11, spread=3.1%
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 139.29, 0.00},  // init_sfpu/math, n=17, spread=3.8%
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 136.67, 0.00},  // init_sfpu/math, n=3, spread=3.4%
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 143.00, 0.00},  // init_sfpu/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 139.82, 0.00},  // init_sfpu/math, n=17, spread=4.2%
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.67, 0.00},  // init_sfpu/math, n=3
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 136.27, 0.00},  // init_sfpu/math, n=11, spread=2.7%
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 138.05, 0.00},  // init_sfpu/math, n=85, spread=3.6%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.67, 0.00},  // init_sfpu/math, n=3
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 136.15, 0.00},  // init_sfpu/math, n=61, spread=2.8%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 138.19, 0.00},  // init_sfpu/math, n=85, spread=3.5%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.67, 0.00},  // init_sfpu/math, n=3
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 137.92, 0.00},  // init_sfpu/math, n=61, spread=4.4%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 143.00, 0.00},  // init_sfpu/math, n=1
+    {"Float16_b", "UInt16", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 168.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 135.40, 0.00},  // init_sfpu/math, n=5, spread=2.5%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 137.60, 0.00},  // init_sfpu/math, n=5
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 139.00, 0.00},  // init_sfpu/math, n=12, spread=3.6%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 136.50, 0.00},  // init_sfpu/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 135.33, 0.00},  // init_sfpu/math, n=6, spread=2.5%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 135.40, 0.00},  // init_sfpu/math, n=5, spread=2.5%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 137.60, 0.00},  // init_sfpu/math, n=5
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 137.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 137.95, 0.00},  // init_sfpu/math, n=80, spread=3.7%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 136.50, 0.00},  // init_sfpu/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 135.98, 0.00},  // init_sfpu/math, n=56, spread=3.0%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 133.40, 0.00},  // init_sfpu/math, n=5
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerCall, 131.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 143.00, 0.00},  // init_sfpu/math, n=5
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 143.00, 0.00},  // init_sfpu/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 138.03, 0.00},  // init_sfpu/math, n=80, spread=3.6%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 136.50, 0.00},  // init_sfpu/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 138.91, 0.00},  // init_sfpu/math, n=56, spread=5.7%
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 143.00, 0.00},  // init_sfpu/math, n=5
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerCall, 159.17, 0.00},  // init_sfpu/math, n=6
+    {"Int32", "UInt16", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 176.00, 0.00},  // init_sfpu/math, n=1
+    {"UInt16", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 175.00, 0.00},  // init_sfpu/math, n=1
+    {"UInt16", "UInt32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 166.00, 0.00},  // init_sfpu/math, n=1
+    {"UInt32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 177.00, 0.00},  // init_sfpu/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 202.28, 0.00},  // init_sfpu/pack, n=40, spread=3.6%
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.21, 0.00},  // init_sfpu/pack, n=24, spread=4.0%
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 202.28, 0.00},  // init_sfpu/pack, n=40, spread=3.6%
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.25, 0.00},  // init_sfpu/pack, n=24, spread=4.0%
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 202.28, 0.00},  // init_sfpu/pack, n=40, spread=3.6%
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 202.29, 0.00},  // init_sfpu/pack, n=24, spread=3.1%
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.35, 0.00},  // init_sfpu/pack, n=40, spread=3.3%
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.17, 0.00},  // init_sfpu/pack, n=24, spread=3.5%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.06, 0.00},  // init_sfpu/pack, n=176, spread=3.5%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 202.61, 0.00},  // init_sfpu/pack, n=124, spread=3.6%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.06, 0.00},  // init_sfpu/pack, n=176, spread=3.5%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.64, 0.00},  // init_sfpu/pack, n=124, spread=3.6%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.50, 0.00},  // init_sfpu/pack, n=12, spread=2.2%
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.08, 0.00},  // init_sfpu/pack, n=12, spread=2.4%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.29, 0.00},  // init_sfpu/pack, n=28, spread=3.3%
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.17, 0.00},  // init_sfpu/pack, n=12
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.50, 0.00},  // init_sfpu/pack, n=12, spread=2.2%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 204.00, 0.00},  // init_sfpu/pack, n=12, spread=2.5%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.03, 0.00},  // init_sfpu/pack, n=164, spread=3.5%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 203.10, 0.00},  // init_sfpu/pack, n=112, spread=2.9%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 201.50, 0.00},  // init_sfpu/pack, n=12
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 203.75, 0.00},  // init_sfpu/pack, n=12, spread=2.1%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 201.03, 0.00},  // init_sfpu/pack, n=164, spread=3.5%
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 202.01, 0.00},  // init_sfpu/pack, n=112
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 203.00, 0.00},  // init_sfpu/pack, n=10
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 200.05, 0.00},  // init_sfpu/unpack, n=40, spread=2.5%
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.96, 0.00},  // init_sfpu/unpack, n=24
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 200.05, 0.00},  // init_sfpu/unpack, n=40, spread=2.5%
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.96, 0.00},  // init_sfpu/unpack, n=24
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 200.05, 0.00},  // init_sfpu/unpack, n=40, spread=2.5%
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 199.83, 0.00},  // init_sfpu/unpack, n=24
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.15, 0.00},  // init_sfpu/unpack, n=40, spread=2.4%
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.04, 0.00},  // init_sfpu/unpack, n=24
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.22, 0.00},  // init_sfpu/unpack, n=176, spread=2.4%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 197.92, 0.00},  // init_sfpu/unpack, n=124, spread=2.1%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.21, 0.00},  // init_sfpu/unpack, n=176, spread=2.4%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.04, 0.00},  // init_sfpu/unpack, n=124, spread=2.5%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 205.25, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 197.75, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.18, 0.00},  // init_sfpu/unpack, n=28, spread=2.4%
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 205.50, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 205.25, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 197.75, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.22, 0.00},  // init_sfpu/unpack, n=164, spread=2.4%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 205.38, 0.00},  // init_sfpu/unpack, n=112
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 207.00, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.00, 0.00},  // init_sfpu/unpack, n=12
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerCall, 198.26, 0.00},  // init_sfpu/unpack, n=164, spread=2.4%
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 206.68, 0.00},  // init_sfpu/unpack, n=112
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerCall, 207.00, 0.00},  // init_sfpu/unpack, n=10
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.60, 0.00},  // lez_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 92.02, 0.00},  // lez_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.60, 0.00},  // lez_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.95, 0.00},  // lez_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 91.16, 0.00},  // lez_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.60, 0.00},  // lez_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 91.14, 0.00},  // lez_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 91.60, 0.00},  // lez_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // lez_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // lez_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // lez_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.50, 0.00},  // lez_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // lez_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // lez_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // lez_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // lez_tile_init/math, n=2, spread=2.4%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 274.36, 0.00},  // log1p_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 370.70, 0.00},  // log1p_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 274.36, 0.00},  // log1p_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 370.72, 0.00},  // log1p_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 369.62, 0.00},  // log1p_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 274.37, 0.00},  // log1p_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 369.70, 0.00},  // log1p_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 274.37, 0.00},  // log1p_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 67.00, 0.00},  // log1p_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // log1p_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 67.00, 0.00},  // log1p_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // log1p_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 67.00, 0.00},  // log1p_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // log1p_tile_init/math, n=2, spread=2.3%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 67.00, 0.00},  // log1p_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // log1p_tile_init/math, n=2, spread=2.3%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 154.36, 0.00},  // log_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 154.36, 0.00},  // log_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 154.37, 0.00},  // log_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 154.37, 0.00},  // log_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // log_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // log_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // log_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // log_tile_init/math, n=2
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 233.50, 0.00},  // logical_not_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.53, 0.00},  // ltz_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.95, 0.00},  // ltz_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.54, 0.00},  // ltz_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.89, 0.00},  // ltz_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 75.09, 0.00},  // ltz_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.54, 0.00},  // ltz_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 75.02, 0.00},  // ltz_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 75.54, 0.00},  // ltz_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // ltz_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // ltz_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // ltz_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.00, 0.00},  // ltz_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // ltz_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // ltz_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // ltz_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // ltz_tile_init/math, n=2, spread=2.4%
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.42, 0.00},  // mul_binary_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // mul_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.42, 0.00},  // mul_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.11, 0.00},  // mul_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.43, 0.00},  // mul_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.92, 0.00},  // mul_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.51, 0.00},  // mul_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.06, 0.00},  // mul_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.52, 0.00},  // mul_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.02, 0.00},  // mul_binary_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.61, 0.00},  // mul_binary_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.84, 0.00},  // mul_binary_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // mul_binary_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // mul_binary_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.95, 0.00},  // mul_binary_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // mul_binary_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.27, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.17, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.27, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.17, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.27, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.20, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.45, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.31, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.08, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.09, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.05, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.23, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.45, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.31, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.08, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.94, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.09, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.05, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.23, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.45, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.31, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.08, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.34, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.09, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.06, 0.00},  // mul_tiles/math, n=2
+    {"Float16_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.19, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.45, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.31, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.08, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.09, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.05, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.23, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.45, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.31, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.08, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.09, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.05, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.23, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.34, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.31, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.09, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerTile, 36.34, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerTile, 60.09, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerTile, 84.06, 0.00},  // mul_tiles/math, n=2
+    {"Float32", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.19, 0.00},  // mul_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // mul_tiles/unpack, n=4
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.19, 0.00},  // mul_tiles/unpack, n=4
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // mul_tiles/unpack, n=4
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.19, 0.00},  // mul_tiles/unpack, n=4
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // mul_tiles/unpack, n=4
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // mul_tiles/unpack, n=4
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // mul_tiles/unpack, n=8
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.10, 0.00},  // mul_tiles/unpack, n=8
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // mul_tiles/unpack, n=8
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.11, 0.00},  // mul_tiles/unpack, n=8
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // mul_tiles/unpack, n=8
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // mul_tiles/unpack, n=8
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.05, 0.00},  // mul_tiles/unpack, n=8
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.74, 0.00},  // mul_tiles/unpack, n=8
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.05, 0.00},  // mul_tiles/unpack, n=8
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.75, 0.00},  // mul_tiles/unpack, n=8
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.05, 0.00},  // mul_tiles/unpack, n=8
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.73, 0.00},  // mul_tiles/unpack, n=8
+    {"Bfp8_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", false, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", false, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", false, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", true, "HiFi2", "", 4, "unpack_to_dest=false", Unit::PerCall, 85.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", true, "HiFi3", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", true, "HiFi4", "", 4, "unpack_to_dest=false", Unit::PerCall, 86.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float32", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // mul_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.25, 0.00},  // negative_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.25, 0.00},  // negative_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.26, 0.00},  // negative_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 42.26, 0.00},  // negative_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // negative_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // negative_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // negative_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // negative_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.30, 0.00},  // nez_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.72, 0.00},  // nez_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.30, 0.00},  // nez_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.68, 0.00},  // nez_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.72, 0.00},  // nez_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.30, 0.00},  // nez_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 57.70, 0.00},  // nez_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 58.21, 0.00},  // nez_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // nez_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // nez_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // nez_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 64.00, 0.00},  // nez_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.50, 0.00},  // nez_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // nez_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 65.00, 0.00},  // nez_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 63.50, 0.00},  // nez_tile_init/math, n=2, spread=2.4%
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.90, 0.00},  // pack_tile/pack, n=50
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.13, 0.00},  // pack_tile/pack, n=34
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 38.83, 0.00},  // pack_tile/pack, n=50
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.00, 0.00},  // pack_tile/pack, n=34
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 70.92, 0.00},  // pack_tile/pack, n=50
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 43.76, 0.00},  // pack_tile/pack, n=34
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.86, 0.00},  // pack_tile/pack, n=54
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.09, 0.00},  // pack_tile/pack, n=38
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.84, 0.00},  // pack_tile/pack, n=190
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.05, 0.00},  // pack_tile/pack, n=138
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 39.10, 0.00},  // pack_tile/pack, n=190
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 43.96, 0.00},  // pack_tile/pack, n=138
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.88, 0.00},  // pack_tile/pack, n=42
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 29.25, 0.00},  // pack_tile/pack, n=14
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.02, 0.00},  // pack_tile/pack, n=26
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.52, 0.00},  // pack_tile/pack, n=12
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 29.85, 0.00},  // pack_tile/pack, n=178
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 29.09, 0.00},  // pack_tile/pack, n=114
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 28.90, 0.00},  // pack_tile/pack, n=26
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.49, 0.00},  // pack_tile/pack, n=12
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 39.11, 0.00},  // pack_tile/pack, n=178
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.02, 0.00},  // pack_tile/pack, n=114
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 43.88, 0.00},  // pack_tile/pack, n=26
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.55, 0.00},  // pack_tile/pack, n=12
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true", Unit::PerTile, 44.50, 0.00},  // pack_tile/pack, n=10
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3216.75, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 3216.77, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3217.33, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3216.75, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 3216.77, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3217.30, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3216.76, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 3216.77, 0.00},  // power_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3217.23, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3216.72, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 3216.70, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3217.17, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3216.74, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 3216.70, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3217.16, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3216.74, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerTile, 3216.70, 0.00},  // power_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 3217.31, 0.00},  // power_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 3218.08, 0.00},  // power_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerTile, 3218.08, 0.00},  // power_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 3218.08, 0.00},  // power_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerTile, 3218.08, 0.00},  // power_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 3218.44, 0.00},  // power_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerTile, 3218.38, 0.00},  // power_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 55.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=true;iterations=8", Unit::PerCall, 49.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=true;iterations=8", Unit::PerCall, 51.00, 0.00},  // power_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.11, 0.00},  // recip_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 56.95, 0.00},  // recip_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.11, 0.00},  // recip_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 56.93, 0.00},  // recip_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.11, 0.00},  // recip_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 57.03, 0.00},  // recip_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.07, 0.00},  // recip_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 56.95, 0.00},  // recip_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.08, 0.00},  // recip_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 56.91, 0.00},  // recip_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.08, 0.00},  // recip_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 56.76, 0.00},  // recip_tile/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 58.06, 0.00},  // recip_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.07, 0.00},  // recip_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 58.06, 0.00},  // recip_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.09, 0.00},  // recip_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 58.22, 0.00},  // recip_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 76.09, 0.00},  // recip_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.00, 0.00},  // recip_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 106.00, 0.00},  // recip_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.00, 0.00},  // recip_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 106.00, 0.00},  // recip_tile_init/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.00, 0.00},  // recip_tile_init/math, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 109.00, 0.00},  // recip_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 106.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 106.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 108.50, 0.00},  // recip_tile_init/math, n=2, spread=3.2%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 107.00, 0.00},  // recip_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 107.00, 0.00},  // recip_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 78.50, 0.00},  // recip_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 106.50, 0.00},  // recip_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 78.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 78.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 132.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 78.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 78.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 132.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 78.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 78.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 132.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 80.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 134.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 80.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 134.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 80.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 134.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 80.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 134.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 80.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 134.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 79.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 80.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 134.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 81.00, 0.00},  // reduce_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 62.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 60.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 60.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 63.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 60.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 61.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 61.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 61.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 61.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 61.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 61.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 56.00, 0.00},  // reduce_init/pack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 73.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 73.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 69.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 73.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerCall, 67.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerCall, 70.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerCall, 71.00, 0.00},  // reduce_init/unpack, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.41, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.11, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.58, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.17, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.88, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.94, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.41, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.11, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.58, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.17, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.88, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.94, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.41, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 86.11, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.58, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.17, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.88, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.94, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.42, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 85.91, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.47, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.03, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.92, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.98, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.20, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 85.91, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.47, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.03, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.92, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.98, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.20, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 85.91, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.47, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.03, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.92, 0.00},  // reduce_tile/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.91, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.20, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 85.80, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.47, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.03, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.92, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.98, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.20, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 85.91, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.47, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.03, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.92, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.98, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 19.20, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 85.91, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 85.47, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 52.03, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.92, 0.00},  // reduce_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 132.98, 0.00},  // reduce_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.06, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.67, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 43.67, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.06, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.67, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 43.67, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 37.00, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.06, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 43.67, 0.00},  // reduce_tile/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 43.67, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.09, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 51.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 51.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.09, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 51.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 51.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 36.98, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.09, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 51.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 51.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.72, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 71.33, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 71.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.72, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 71.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 71.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Max", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceColumn;reduce_pool_type=Sum", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Max", Unit::PerTile, 39.91, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceRow;reduce_pool_type=Sum", Unit::PerTile, 37.72, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Max", Unit::PerTile, 71.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;mathop=ReduceScalar;reduce_pool_type=Sum", Unit::PerTile, 71.31, 0.00},  // reduce_tile/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // rounding_op_tile_init/math, n=8
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 54.62, 0.00},  // rounding_op_tile_init/math, n=8, spread=6.6%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // rounding_op_tile_init/math, n=8
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // rounding_op_tile_init/math, n=8, spread=7.3%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // rounding_op_tile_init/math, n=8
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.38, 0.00},  // rounding_op_tile_init/math, n=8
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // rounding_op_tile_init/math, n=8
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // rounding_op_tile_init/math, n=8
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.22, 0.00},  // rsqrt_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 250.77, 0.00},  // rsqrt_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.22, 0.00},  // rsqrt_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 250.74, 0.00},  // rsqrt_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.22, 0.00},  // rsqrt_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 250.70, 0.00},  // rsqrt_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.30, 0.00},  // rsqrt_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 250.73, 0.00},  // rsqrt_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.32, 0.00},  // rsqrt_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 250.69, 0.00},  // rsqrt_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.32, 0.00},  // rsqrt_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 250.54, 0.00},  // rsqrt_tile/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 249.41, 0.00},  // rsqrt_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.30, 0.00},  // rsqrt_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 249.41, 0.00},  // rsqrt_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.32, 0.00},  // rsqrt_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 249.41, 0.00},  // rsqrt_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 258.32, 0.00},  // rsqrt_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.50, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.50, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // rsqrt_tile_init/math, n=2, spread=2.2%
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // rsqrt_tile_init/math, n=2, spread=2.9%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // rsqrt_tile_init/math, n=2, spread=2.9%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // rsqrt_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 67.50, 0.00},  // rsqrt_tile_init/math, n=2, spread=2.2%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 410.32, 0.00},  // selu_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 402.92, 0.00},  // selu_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 410.32, 0.00},  // selu_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 402.82, 0.00},  // selu_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 401.22, 0.00},  // selu_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 410.32, 0.00},  // selu_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 401.22, 0.00},  // selu_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 410.32, 0.00},  // selu_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // selu_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 54.50, 0.00},  // selu_tile_init/math, n=2, spread=6.4%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // selu_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // selu_tile_init/math, n=2, spread=7.3%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // selu_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // selu_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // selu_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // selu_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.27, 0.00},  // sigmoid_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 426.92, 0.00},  // sigmoid_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.27, 0.00},  // sigmoid_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 426.72, 0.00},  // sigmoid_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 425.52, 0.00},  // sigmoid_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.27, 0.00},  // sigmoid_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 425.52, 0.00},  // sigmoid_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 314.28, 0.00},  // sigmoid_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // sigmoid_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.50, 0.00},  // sigmoid_tile_init/math, n=2, spread=4.3%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // sigmoid_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 57.50, 0.00},  // sigmoid_tile_init/math, n=2, spread=2.6%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // sigmoid_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // sigmoid_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // sigmoid_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // sigmoid_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 90.32, 0.00},  // sign_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 90.92, 0.00},  // sign_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 90.32, 0.00},  // sign_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 90.82, 0.00},  // sign_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 89.28, 0.00},  // sign_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 90.32, 0.00},  // sign_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 89.16, 0.00},  // sign_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 90.32, 0.00},  // sign_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // sign_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 54.50, 0.00},  // sign_tile_init/math, n=2, spread=6.4%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // sign_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // sign_tile_init/math, n=2, spread=7.3%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // sign_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // sign_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // sign_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // sign_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 19.99, 0.00},  // signbit_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 20.22, 0.00},  // signbit_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 19.99, 0.00},  // signbit_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 20.01, 0.00},  // signbit_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 20.95, 0.00},  // signbit_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 19.99, 0.00},  // signbit_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 20.75, 0.00},  // signbit_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 19.99, 0.00},  // signbit_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.50, 0.00},  // signbit_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.50, 0.00},  // signbit_tile_init/math, n=2, spread=3.5%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.50, 0.00},  // signbit_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.50, 0.00},  // signbit_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 71.00, 0.00},  // signbit_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 70.00, 0.00},  // signbit_tile_init/math, n=2, spread=2.9%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 70.50, 0.00},  // signbit_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 70.50, 0.00},  // signbit_tile_init/math, n=2, spread=3.5%
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.21, 0.00},  // silu_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.21, 0.00},  // silu_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.21, 0.00},  // silu_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.21, 0.00},  // silu_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.22, 0.00},  // silu_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.22, 0.00},  // silu_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.21, 0.00},  // silu_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.23, 0.00},  // silu_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 347.23, 0.00},  // silu_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // silu_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 240.16, 0.00},  // sin_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 240.16, 0.00},  // sin_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 240.16, 0.00},  // sin_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 240.17, 0.00},  // sin_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sin_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sin_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sin_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sin_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 139.24, 0.00},  // softsign_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 139.89, 0.00},  // softsign_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 139.24, 0.00},  // softsign_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 139.68, 0.00},  // softsign_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 137.42, 0.00},  // softsign_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 139.24, 0.00},  // softsign_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 137.38, 0.00},  // softsign_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 139.24, 0.00},  // softsign_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // softsign_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // softsign_tile_init/math, n=2, spread=5.2%
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // softsign_tile_init/math, n=2, spread=3.4%
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 57.50, 0.00},  // softsign_tile_init/math, n=2, spread=2.6%
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // softsign_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 55.00, 0.00},  // softsign_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 58.00, 0.00},  // softsign_tile_init/math, n=2, spread=3.4%
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 55.50, 0.00},  // softsign_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.17, 0.00},  // sqrt_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.81, 0.00},  // sqrt_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.25, 0.00},  // sqrt_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.79, 0.00},  // sqrt_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.18, 0.00},  // sqrt_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.70, 0.00},  // sqrt_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.15, 0.00},  // sqrt_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.84, 0.00},  // sqrt_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.16, 0.00},  // sqrt_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.80, 0.00},  // sqrt_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.16, 0.00},  // sqrt_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 218.64, 0.00},  // sqrt_tile/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 217.41, 0.00},  // sqrt_tile/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.15, 0.00},  // sqrt_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 217.41, 0.00},  // sqrt_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.16, 0.00},  // sqrt_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 217.11, 0.00},  // sqrt_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 226.17, 0.00},  // sqrt_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // sqrt_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // sqrt_tile_init/math, n=2, spread=2.3%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 43.28, 0.00},  // square_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 43.29, 0.00},  // square_tile/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 43.29, 0.00},  // square_tile/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 43.29, 0.00},  // square_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // square_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // square_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // square_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 51.00, 0.00},  // square_tile_init/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.42, 0.00},  // sub_binary_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // sub_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.42, 0.00},  // sub_binary_tile/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.11, 0.00},  // sub_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.43, 0.00},  // sub_binary_tile/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.92, 0.00},  // sub_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.51, 0.00},  // sub_binary_tile/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.06, 0.00},  // sub_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.52, 0.00},  // sub_binary_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 181.02, 0.00},  // sub_binary_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.52, 0.00},  // sub_binary_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 180.84, 0.00},  // sub_binary_tile/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // sub_binary_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 181.14, 0.00},  // sub_binary_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 180.95, 0.00},  // sub_binary_tile/math, n=2
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 370.89, 0.00},  // sub_binary_tile/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 48.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 47.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 53.00, 0.00},  // sub_binary_tile_init/math, n=1
+    {"Int32", "Int32", false, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=32", Unit::PerTile, 140.41, 0.00},  // sub_int_tile/math, n=1
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // sub_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // sub_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // sub_tiles/math, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // sub_tiles/math, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.09, 0.00},  // sub_tiles/math, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.28, 0.00},  // sub_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // sub_tiles/math, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // sub_tiles/math, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // sub_tiles/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // sub_tiles/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // sub_tiles/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.19, 0.00},  // sub_tiles/math, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // sub_tiles/math, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // sub_tiles/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // sub_tiles/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.17, 0.00},  // sub_tiles/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 19.08, 0.00},  // sub_tiles/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 18.19, 0.00},  // sub_tiles/math, n=2
+    {"Bfp8_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // sub_tiles/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.19, 0.00},  // sub_tiles/unpack, n=2
+    {"Bfp8_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // sub_tiles/unpack, n=2
+    {"Bfp8_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.19, 0.00},  // sub_tiles/unpack, n=2
+    {"Bfp8_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // sub_tiles/unpack, n=2
+    {"Bfp8_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.17, 0.00},  // sub_tiles/unpack, n=2
+    {"Float16_b", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // sub_tiles/unpack, n=2
+    {"Float16_b", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // sub_tiles/unpack, n=2
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // sub_tiles/unpack, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.09, 0.00},  // sub_tiles/unpack, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // sub_tiles/unpack, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.12, 0.00},  // sub_tiles/unpack, n=2
+    {"Float32", "Bfp8_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.06, 0.00},  // sub_tiles/unpack, n=2
+    {"Float32", "Bfp8_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.75, 0.00},  // sub_tiles/unpack, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.06, 0.00},  // sub_tiles/unpack, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.75, 0.00},  // sub_tiles/unpack, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 40.03, 0.00},  // sub_tiles/unpack, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=false", Unit::PerTile, 37.72, 0.00},  // sub_tiles/unpack, n=2
+    {"Bfp8_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Bfp8_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Bfp8_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Bfp8_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float32", "Bfp8_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float32", "Float16_b", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float32", "Float16_b", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float32", "Float32", false, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 87.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float32", "Float32", true, "LoFi", "", 4, "unpack_to_dest=false", Unit::PerCall, 90.00, 0.00},  // sub_tiles_init/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 322.16, 0.00},  // tan_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 482.75, 0.00},  // tan_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 322.16, 0.00},  // tan_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 482.57, 0.00},  // tan_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 481.52, 0.00},  // tan_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 322.16, 0.00},  // tan_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 481.59, 0.00},  // tan_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 322.17, 0.00},  // tan_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tan_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tan_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tan_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // tan_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tan_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // tan_tile_init/math, n=2, spread=2.3%
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tan_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // tan_tile_init/math, n=2, spread=2.3%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 136.03, 0.00},  // tanh_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 362.80, 0.00},  // tanh_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 136.04, 0.00},  // tanh_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 362.76, 0.00},  // tanh_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 361.81, 0.00},  // tanh_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 136.04, 0.00},  // tanh_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 361.64, 0.00},  // tanh_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 136.04, 0.00},  // tanh_tile/math, n=1
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tanh_tile_init/math, n=2
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tanh_tile_init/math, n=2
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tanh_tile_init/math, n=2
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 68.50, 0.00},  // tanh_tile_init/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tanh_tile_init/math, n=2
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 68.00, 0.00},  // tanh_tile_init/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerCall, 69.00, 0.00},  // tanh_tile_init/math, n=2
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerCall, 66.50, 0.00},  // tanh_tile_init/math, n=2, spread=2.3%
+    {"Float16_b", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 98.82, 0.00},  // trunc_tile/math, n=1
+    {"Float16_b", "Float16_b", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 99.33, 0.00},  // trunc_tile/math, n=1
+    {"Float16_b", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 98.82, 0.00},  // trunc_tile/math, n=1
+    {"Float16_b", "Float32", true, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 99.37, 0.00},  // trunc_tile/math, n=1
+    {"Float32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 98.33, 0.00},  // trunc_tile/math, n=2
+    {"Float32", "Float16_b", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 98.82, 0.00},  // trunc_tile/math, n=1
+    {"Float32", "Float32", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 98.44, 0.00},  // trunc_tile/math, n=2
+    {"Float32", "Float32", false, "", "", 4, "unpack_to_dest=false;approx_mode=false;iterations=8", Unit::PerTile, 98.82, 0.00},  // trunc_tile/math, n=1
+    {"Int32", "UInt16", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 129.84, 0.00},  // typecast_tile/math, n=1
     {"UInt32", "Float16_b", true, "", "", 4, "unpack_to_dest=true;approx_mode=false;iterations=8", Unit::PerTile, 141.69, 0.00},  // typecast_tile/math, n=1
 };
 
@@ -653,31 +1930,31 @@ static const MeasuredCost kMeasured[] = {
 static const OpCost kCostTable[] = {
     {"TensorAccessor", EngineCost{20, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"TensorAccessorArgs", {}, {}, {}, {}},
-    {"abs_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"abs_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"abs_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 1}, {}},
-    {"acos_tile", {}, {}, EngineCost{300, Unit::PerCall, 1, 2}, {}},
-    {"acos_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"add_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 3, 4}, {}},
-    {"add_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"add_int_tile", {}, {}, EngineCost{300, Unit::PerCall, 7, 1}, {}},
+    {"abs_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 4}, {}},
+    {"abs_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 4, 4}, {}},
+    {"abs_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 8, 1}, {}},
+    {"acos_tile", {}, {}, EngineCost{300, Unit::PerCall, 9, 8}, {}},
+    {"acos_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 17, 8}, {}},
+    {"add_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 25, 16}, {}},
+    {"add_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 41, 19}, {}},
+    {"add_int_tile", {}, {}, EngineCost{300, Unit::PerCall, 60, 1}, {}},
     {"add_int_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"add_tiles", {}, EngineCost{200, Unit::PerCall, 26, 18}, EngineCost{300, Unit::PerCall, 8, 18}, {}},
-    {"add_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"add_tiles", {}, EngineCost{200, Unit::PerCall, 79, 18}, EngineCost{300, Unit::PerCall, 61, 18}, {}},
+    {"add_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 97, 18}, {}},
     {"add_unary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"add_unary_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"asin_tile", {}, {}, EngineCost{300, Unit::PerCall, 44, 2}, {}},
-    {"asin_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"asin_tile", {}, {}, EngineCost{300, Unit::PerCall, 115, 8}, {}},
+    {"asin_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 123, 8}, {}},
     {"atan2_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"atan2_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"atan_tile", {}, {}, EngineCost{300, Unit::PerCall, 46, 2}, {}},
-    {"atan_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"atan_tile", {}, {}, EngineCost{300, Unit::PerCall, 131, 8}, {}},
+    {"atan_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 139, 8}, {}},
     {"bfloat16_greater", {}, {}, {}, {}},
     {"binary_bitwise_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"binary_dest_reuse_tiles", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"binary_dest_reuse_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"binary_left_shift_tile", {}, {}, EngineCost{300, Unit::PerCall, 48, 1}, {}},
-    {"binary_logical_right_shift_tile", {}, {}, EngineCost{300, Unit::PerCall, 49, 1}, {}},
+    {"binary_left_shift_tile", {}, {}, EngineCost{300, Unit::PerCall, 147, 1}, {}},
+    {"binary_logical_right_shift_tile", {}, {}, EngineCost{300, Unit::PerCall, 148, 1}, {}},
     {"binary_max_int32_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"binary_max_int32_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"binary_max_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
@@ -686,13 +1963,13 @@ static const OpCost kCostTable[] = {
     {"binary_min_int32_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"binary_min_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"binary_min_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"binary_op_init_common", {}, EngineCost{100, Unit::PerCall, 68, 18}, EngineCost{100, Unit::PerCall, 0, 0}, EngineCost{140, Unit::PerCall, 50, 18}},
-    {"binary_right_shift_tile", {}, {}, EngineCost{300, Unit::PerCall, 86, 1}, {}},
-    {"binary_shift_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"binary_op_init_common", {}, EngineCost{100, Unit::PerCall, 227, 18}, EngineCost{100, Unit::PerCall, 149, 60}, EngineCost{140, Unit::PerCall, 209, 18}},
+    {"binary_right_shift_tile", {}, {}, EngineCost{300, Unit::PerCall, 245, 1}, {}},
+    {"binary_shift_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 246, 1}, {}},
     {"binop_with_scalar_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"bitcast", {}, {}, {}, {}},
     {"bitwise_and_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"bitwise_not_tile", {}, {}, EngineCost{300, Unit::PerCall, 87, 1}, {}},
+    {"bitwise_not_tile", {}, {}, EngineCost{300, Unit::PerCall, 247, 1}, {}},
     {"bitwise_not_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"bitwise_or_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"bitwise_xor_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
@@ -701,35 +1978,35 @@ static const OpCost kCostTable[] = {
     {"cb_push_back", EngineCost{1, Unit::PerCall, 0, 0}, {}, {}, EngineCost{1, Unit::PerCall, 0, 0}},
     {"cb_reserve_back", EngineCost{1, Unit::PerCall, 0, 0}, {}, {}, EngineCost{1, Unit::PerCall, 0, 0}},
     {"cb_wait_front", EngineCost{1, Unit::PerCall, 0, 0}, EngineCost{1, Unit::PerCall, 0, 0}, {}, {}},
-    {"ceil_tile", {}, {}, EngineCost{300, Unit::PerCall, 88, 2}, {}},
-    {"clamp_tile", {}, {}, EngineCost{300, Unit::PerCall, 90, 2}, {}},
-    {"clamp_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"ceil_tile", {}, {}, EngineCost{300, Unit::PerCall, 248, 8}, {}},
+    {"clamp_tile", {}, {}, EngineCost{300, Unit::PerCall, 256, 8}, {}},
+    {"clamp_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 264, 8}, {}},
     {"clamp_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"compute_kernel_hw_startup", {}, EngineCost{60, Unit::PerCall, 134, 21}, EngineCost{100, Unit::PerCall, 92, 21}, EngineCost{140, Unit::PerCall, 113, 21}},
+    {"compute_kernel_hw_startup", {}, EngineCost{60, Unit::PerCall, 422, 75}, EngineCost{100, Unit::PerCall, 272, 75}, EngineCost{140, Unit::PerCall, 347, 75}},
     {"copy_block_matmul_partials", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{150, Unit::PerCall, 0, 0}, {}},
     {"copy_dest_values", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"copy_dest_values_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"copy_tile", {}, EngineCost{200, Unit::PerCall, 173, 25}, EngineCost{150, Unit::PerCall, 155, 18}, {}},
-    {"copy_tile_init", {}, EngineCost{40, Unit::PerCall, 219, 21}, EngineCost{40, Unit::PerCall, 198, 21}, {}},
-    {"cos_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"cos_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"div_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 240, 3}, {}},
-    {"div_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"copy_tile", {}, EngineCost{200, Unit::PerCall, 515, 25}, EngineCost{150, Unit::PerCall, 497, 18}, {}},
+    {"copy_tile_init", {}, EngineCost{40, Unit::PerCall, 561, 21}, EngineCost{40, Unit::PerCall, 540, 21}, {}},
+    {"cos_tile", {}, {}, EngineCost{300, Unit::PerCall, 582, 4}, {}},
+    {"cos_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 586, 4}, {}},
+    {"div_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 590, 15}, {}},
+    {"div_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 605, 18}, {}},
     {"div_unary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"dprint", EngineCost{500, Unit::PerCall, 0, 0}, EngineCost{500, Unit::PerCall, 0, 0}, EngineCost{500, Unit::PerCall, 0, 0}, EngineCost{500, Unit::PerCall, 0, 0}},
     {"eq_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"eq_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"eqz_tile", {}, {}, EngineCost{300, Unit::PerCall, 243, 2}, {}},
-    {"eqz_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"eqz_tile", {}, {}, EngineCost{300, Unit::PerCall, 623, 8}, {}},
+    {"eqz_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 631, 8}, {}},
     {"eqz_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"erf_tile", {}, {}, EngineCost{300, Unit::PerCall, 245, 2}, {}},
-    {"erf_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"erfc_tile", {}, {}, EngineCost{300, Unit::PerCall, 247, 2}, {}},
-    {"erfc_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"exp2_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"exp2_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"exp_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"exp_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"erf_tile", {}, {}, EngineCost{300, Unit::PerCall, 639, 8}, {}},
+    {"erf_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 647, 8}, {}},
+    {"erfc_tile", {}, {}, EngineCost{300, Unit::PerCall, 655, 8}, {}},
+    {"erfc_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 663, 8}, {}},
+    {"exp2_tile", {}, {}, EngineCost{300, Unit::PerCall, 671, 4}, {}},
+    {"exp2_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 675, 4}, {}},
+    {"exp_tile", {}, {}, EngineCost{300, Unit::PerCall, 679, 18}, {}},
+    {"exp_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 697, 18}, {}},
     {"experimental.close_fabric_connections", EngineCost{100, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"experimental.constant_table_lookup", {}, {}, {}, {}},
     {"experimental.convert_logical_x_to_translated", {}, {}, {}, {}},
@@ -753,18 +2030,18 @@ static const OpCost kCostTable[] = {
     {"experimental.untilize_block", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{240, Unit::PerCall, 0, 0}},
     {"experimental.write_col_mask_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"experimental.write_row_mask_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"expm1_tile", {}, {}, EngineCost{300, Unit::PerCall, 249, 2}, {}},
-    {"expm1_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"fill_tile", {}, {}, EngineCost{300, Unit::PerCall, 251, 1}, {}},
-    {"fill_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"expm1_tile", {}, {}, EngineCost{300, Unit::PerCall, 715, 8}, {}},
+    {"expm1_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 723, 8}, {}},
+    {"fill_tile", {}, {}, EngineCost{300, Unit::PerCall, 731, 5}, {}},
+    {"fill_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 736, 4}, {}},
     {"fill_tile_int", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"float32_greater", {}, {}, {}, {}},
-    {"floor_tile", {}, {}, EngineCost{300, Unit::PerCall, 252, 2}, {}},
-    {"frac_tile", {}, {}, EngineCost{300, Unit::PerCall, 254, 2}, {}},
+    {"floor_tile", {}, {}, EngineCost{300, Unit::PerCall, 740, 8}, {}},
+    {"frac_tile", {}, {}, EngineCost{300, Unit::PerCall, 748, 8}, {}},
     {"ge_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"ge_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"gelu_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"gelu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"gelu_tile", {}, {}, EngineCost{300, Unit::PerCall, 756, 9}, {}},
+    {"gelu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 765, 9}, {}},
     {"get_arg_val", EngineCost{10, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"get_common_arg_val", EngineCost{10, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"get_compile_time_arg_val", {}, {}, {}, {}},
@@ -777,34 +2054,34 @@ static const OpCost kCostTable[] = {
     {"get_semaphore", {}, {}, {}, {}},
     {"get_tile_size", {}, {}, {}, {}},
     {"get_write_ptr", EngineCost{5, Unit::PerCall, 0, 0}, {}, {}, {}},
-    {"gez_tile", {}, {}, EngineCost{300, Unit::PerCall, 256, 2}, {}},
-    {"gez_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"gez_tile", {}, {}, EngineCost{300, Unit::PerCall, 774, 8}, {}},
+    {"gez_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 782, 8}, {}},
     {"gez_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"gt_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"gt_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"gtz_tile", {}, {}, EngineCost{300, Unit::PerCall, 258, 2}, {}},
-    {"gtz_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"gtz_tile", {}, {}, EngineCost{300, Unit::PerCall, 790, 8}, {}},
+    {"gtz_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 798, 8}, {}},
     {"gtz_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"hardsigmoid_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"hardsigmoid_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"init_sfpu", {}, EngineCost{100, Unit::PerCall, 285, 25}, EngineCost{140, Unit::PerCall, 0, 0}, EngineCost{140, Unit::PerCall, 260, 25}},
+    {"hardsigmoid_tile", {}, {}, EngineCost{300, Unit::PerCall, 806, 4}, {}},
+    {"hardsigmoid_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 810, 4}, {}},
+    {"init_sfpu", {}, EngineCost{100, Unit::PerCall, 890, 25}, EngineCost{140, Unit::PerCall, 814, 51}, EngineCost{140, Unit::PerCall, 865, 25}},
     {"invoke_sfpi", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"le_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"le_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"lez_tile", {}, {}, EngineCost{300, Unit::PerCall, 310, 2}, {}},
-    {"lez_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"lez_tile", {}, {}, EngineCost{300, Unit::PerCall, 915, 8}, {}},
+    {"lez_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 923, 8}, {}},
     {"lez_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"load_from_l1", EngineCost{10, Unit::PerCall, 0, 0}, {}, {}, {}},
-    {"log1p_tile", {}, {}, EngineCost{300, Unit::PerCall, 312, 2}, {}},
-    {"log1p_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"log_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"log_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"logical_not_tile", {}, {}, EngineCost{300, Unit::PerCall, 314, 1}, {}},
+    {"log1p_tile", {}, {}, EngineCost{300, Unit::PerCall, 931, 8}, {}},
+    {"log1p_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 939, 8}, {}},
+    {"log_tile", {}, {}, EngineCost{300, Unit::PerCall, 947, 4}, {}},
+    {"log_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 951, 4}, {}},
+    {"logical_not_tile", {}, {}, EngineCost{300, Unit::PerCall, 955, 1}, {}},
     {"logical_not_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"lt_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"lt_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"ltz_tile", {}, {}, EngineCost{300, Unit::PerCall, 315, 2}, {}},
-    {"ltz_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"ltz_tile", {}, {}, EngineCost{300, Unit::PerCall, 956, 8}, {}},
+    {"ltz_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 964, 8}, {}},
     {"ltz_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"matmul_block", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{400, Unit::PerCall, 0, 0}, {}},
     {"matmul_tiles", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{400, Unit::PerCall, 0, 0}, {}},
@@ -814,12 +2091,12 @@ static const OpCost kCostTable[] = {
     {"mm_block_init_short", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"mm_init", {}, EngineCost{100, Unit::PerCall, 0, 0}, EngineCost{140, Unit::PerCall, 0, 0}, EngineCost{140, Unit::PerCall, 0, 0}},
     {"mm_init_short", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"mul_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 317, 3}, {}},
-    {"mul_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"mul_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 972, 15}, {}},
+    {"mul_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 987, 18}, {}},
     {"mul_int_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"mul_int_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"mul_tiles", {}, EngineCost{200, Unit::PerCall, 380, 18}, EngineCost{300, Unit::PerCall, 320, 60}, {}},
-    {"mul_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"mul_tiles", {}, EngineCost{200, Unit::PerCall, 1065, 18}, EngineCost{300, Unit::PerCall, 1005, 60}, {}},
+    {"mul_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 1083, 60}, {}},
     {"mul_unary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"my_logical_x_", {}, {}, {}, {}},
     {"my_logical_y_", {}, {}, {}, {}},
@@ -827,11 +2104,11 @@ static const OpCost kCostTable[] = {
     {"my_y", {}, {}, {}, {}},
     {"ne_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"ne_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"negative_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"negative_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"negative_tile", {}, {}, EngineCost{300, Unit::PerCall, 1143, 4}, {}},
+    {"negative_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1147, 4}, {}},
     {"negative_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"nez_tile", {}, {}, EngineCost{300, Unit::PerCall, 398, 2}, {}},
-    {"nez_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"nez_tile", {}, {}, EngineCost{300, Unit::PerCall, 1151, 8}, {}},
+    {"nez_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1159, 8}, {}},
     {"nez_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"noc_async_atomic_barrier", EngineCost{30, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"noc_async_read", EngineCost{60, Unit::PerCall, 0, 0}, {}, {}, {}},
@@ -859,62 +2136,62 @@ static const OpCost kCostTable[] = {
     {"opaque_call", EngineCost{50, Unit::PerCall, 0, 0}, EngineCost{50, Unit::PerCall, 0, 0}, EngineCost{50, Unit::PerCall, 0, 0}, EngineCost{50, Unit::PerCall, 0, 0}},
     {"pack_reconfig_data_format", {}, {}, {}, EngineCost{200, Unit::PerCall, 0, 0}},
     {"pack_reconfig_l1_acc", {}, {}, {}, EngineCost{200, Unit::PerCall, 0, 0}},
-    {"pack_tile", {}, {}, {}, EngineCost{200, Unit::PerCall, 400, 25}},
+    {"pack_tile", {}, {}, {}, EngineCost{200, Unit::PerCall, 1167, 25}},
     {"pack_tile_block", {}, {}, {}, EngineCost{260, Unit::PerCall, 0, 0}},
     {"pack_untilize_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"pack_untilize_uninit", {}, {}, {}, EngineCost{480, Unit::PerCall, 0, 0}},
     {"power_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"power_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"power_tile", {}, {}, EngineCost{300, Unit::PerCall, 425, 6}, {}},
-    {"power_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"power_tile", {}, {}, EngineCost{300, Unit::PerCall, 1192, 24}, {}},
+    {"power_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1216, 36}, {}},
     {"rand_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"rand_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"recip_tile", {}, {}, EngineCost{300, Unit::PerCall, 431, 3}, {}},
-    {"recip_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"reduce_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{200, Unit::PerCall, 0, 0}},
-    {"reduce_tile", {}, EngineCost{200, Unit::PerCall, 488, 54}, EngineCost{300, Unit::PerCall, 434, 54}, {}},
+    {"recip_tile", {}, {}, EngineCost{300, Unit::PerCall, 1252, 18}, {}},
+    {"recip_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1270, 18}, {}},
+    {"reduce_init", {}, EngineCost{40, Unit::PerCall, 1396, 54}, EngineCost{40, Unit::PerCall, 1288, 54}, EngineCost{200, Unit::PerCall, 1342, 54}},
+    {"reduce_tile", {}, EngineCost{200, Unit::PerCall, 1504, 54}, EngineCost{300, Unit::PerCall, 1450, 54}, {}},
     {"reduce_uninit", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, EngineCost{200, Unit::PerCall, 0, 0}},
     {"reinterpret_cast", {}, {}, {}, {}},
     {"relu_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"relu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"relu_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"remote_sram_write_u32", EngineCost{20, Unit::PerCall, 0, 0}, {}, {}, {}},
-    {"rounding_op_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"rsqrt_tile", {}, {}, EngineCost{300, Unit::PerCall, 542, 3}, {}},
-    {"rsqrt_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"selu_tile", {}, {}, EngineCost{300, Unit::PerCall, 545, 2}, {}},
-    {"selu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"rounding_op_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1558, 8}, {}},
+    {"rsqrt_tile", {}, {}, EngineCost{300, Unit::PerCall, 1566, 18}, {}},
+    {"rsqrt_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1584, 18}, {}},
+    {"selu_tile", {}, {}, EngineCost{300, Unit::PerCall, 1602, 8}, {}},
+    {"selu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1610, 8}, {}},
     {"sfpu_reduce", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"sfpu_reduce_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"sigmoid_tile", {}, {}, EngineCost{300, Unit::PerCall, 547, 2}, {}},
-    {"sigmoid_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"sign_tile", {}, {}, EngineCost{300, Unit::PerCall, 549, 2}, {}},
-    {"sign_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"signbit_tile", {}, {}, EngineCost{300, Unit::PerCall, 551, 2}, {}},
-    {"signbit_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"silu_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"silu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"sin_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"sin_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"softsign_tile", {}, {}, EngineCost{300, Unit::PerCall, 553, 2}, {}},
-    {"softsign_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"sqrt_tile", {}, {}, EngineCost{300, Unit::PerCall, 555, 3}, {}},
-    {"sqrt_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"square_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"square_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"sigmoid_tile", {}, {}, EngineCost{300, Unit::PerCall, 1618, 8}, {}},
+    {"sigmoid_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1626, 8}, {}},
+    {"sign_tile", {}, {}, EngineCost{300, Unit::PerCall, 1634, 8}, {}},
+    {"sign_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1642, 8}, {}},
+    {"signbit_tile", {}, {}, EngineCost{300, Unit::PerCall, 1650, 8}, {}},
+    {"signbit_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1658, 8}, {}},
+    {"silu_tile", {}, {}, EngineCost{300, Unit::PerCall, 1666, 9}, {}},
+    {"silu_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1675, 9}, {}},
+    {"sin_tile", {}, {}, EngineCost{300, Unit::PerCall, 1684, 4}, {}},
+    {"sin_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1688, 4}, {}},
+    {"softsign_tile", {}, {}, EngineCost{300, Unit::PerCall, 1692, 8}, {}},
+    {"softsign_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1700, 8}, {}},
+    {"sqrt_tile", {}, {}, EngineCost{300, Unit::PerCall, 1708, 18}, {}},
+    {"sqrt_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1726, 18}, {}},
+    {"square_tile", {}, {}, EngineCost{300, Unit::PerCall, 1744, 4}, {}},
+    {"square_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1748, 4}, {}},
     {"store_to_l1", EngineCost{10, Unit::PerCall, 0, 0}, {}, {}, {}},
-    {"sub_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 558, 4}, {}},
-    {"sub_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"sub_int_tile", {}, {}, EngineCost{300, Unit::PerCall, 562, 1}, {}},
+    {"sub_binary_tile", {}, {}, EngineCost{300, Unit::PerCall, 1752, 16}, {}},
+    {"sub_binary_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1768, 19}, {}},
+    {"sub_int_tile", {}, {}, EngineCost{300, Unit::PerCall, 1787, 1}, {}},
     {"sub_int_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"sub_tiles", {}, EngineCost{200, Unit::PerCall, 581, 18}, EngineCost{300, Unit::PerCall, 563, 18}, {}},
-    {"sub_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"sub_tiles", {}, EngineCost{200, Unit::PerCall, 1806, 18}, EngineCost{300, Unit::PerCall, 1788, 18}, {}},
+    {"sub_tiles_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 1824, 18}, {}},
     {"sub_unary_tile", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"sub_unary_tile_int32", {}, {}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"tan_tile", {}, {}, EngineCost{300, Unit::PerCall, 599, 2}, {}},
-    {"tan_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
-    {"tanh_tile", {}, {}, EngineCost{300, Unit::PerCall, 601, 2}, {}},
-    {"tanh_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
+    {"tan_tile", {}, {}, EngineCost{300, Unit::PerCall, 1842, 8}, {}},
+    {"tan_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1850, 8}, {}},
+    {"tanh_tile", {}, {}, EngineCost{300, Unit::PerCall, 1858, 8}, {}},
+    {"tanh_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 1866, 8}, {}},
     {"tensor_accessor.get_bank_and_offset", EngineCost{5, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"tensor_accessor.get_noc_addr", EngineCost{5, Unit::PerCall, 0, 0}, {}, {}, {}},
     {"tensor_accessor.get_shard_noc_addr", EngineCost{5, Unit::PerCall, 0, 0}, {}, {}, {}},
@@ -935,8 +2212,8 @@ static const OpCost kCostTable[] = {
     {"topk_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"transpose_wh_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"transpose_wh_tile", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
-    {"trunc_tile", {}, {}, EngineCost{300, Unit::PerCall, 603, 2}, {}},
-    {"typecast_tile", {}, {}, EngineCost{300, Unit::PerCall, 605, 2}, {}},
+    {"trunc_tile", {}, {}, EngineCost{300, Unit::PerCall, 1874, 8}, {}},
+    {"typecast_tile", {}, {}, EngineCost{300, Unit::PerCall, 1882, 2}, {}},
     {"typecast_tile_init", {}, {}, EngineCost{40, Unit::PerCall, 0, 0}, {}},
     {"unary_bcast", {}, EngineCost{200, Unit::PerCall, 0, 0}, EngineCost{300, Unit::PerCall, 0, 0}, {}},
     {"unary_bcast_init", {}, EngineCost{40, Unit::PerCall, 0, 0}, EngineCost{40, Unit::PerCall, 0, 0}, {}},

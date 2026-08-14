@@ -3,7 +3,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Isolates the datacopy that tt-metal's `copy_tile` performs: unpack A into
-// SrcA (or straight into Dest) followed by an A2D datacopy on MATH.
+// SrcA (or straight into Dest) followed by a datacopy on MATH.
+//
+// Also covers `unary_bcast` and `transpose_wh_tile`, because on Blackhole all
+// three are the same pair of LLK calls with one knob moved:
+//
+//   copy_tile          BroadcastType::NONE, A2D, no transpose
+//   unary_bcast        BroadcastType::Col/Row, B2D  (bcast.h:94-125)
+//   transpose_wh_tile  the identical calls, with the unpacker configured to
+//                      transpose in the *init* (transpose.h:107-125 -- its
+//                      non-fp32 path issues exactly copy_tile's two calls)
+//
+// So one source measures three operations, and the init split below measures
+// their three inits, rather than adopting two more upstream sources that would
+// each need re-deriving on every uplift.
 //
 // This exists because no other perf source measures that pair on its own. The
 // SFPU sources run the same datacopy, but only ahead of an SFPU operation in
@@ -83,6 +96,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t TILE_CNT     = params.TILE_CNT;
     const std::uint32_t LOOP_FACTOR = params.LOOP_FACTOR;
     const auto& buffer_A            = params.buffer_A;
+
+    // Runtime rather than template parameters, matching unpack_transpose_perf.cpp.
+    // They reach only the init: transpose is a configuration of the unpacker, and
+    // the tile loop issues the same call either way -- which is why
+    // transpose_wh_tile and copy_tile share a tile-loop body.
+    const bool UNPACK_TRANSPOSE_FACES       = params.UNPACK_TRANSPOSE_FACES;
+    const bool UNPACK_TRANSPOSE_WITHIN_FACE = params.UNPACK_TRANSPOSE_WITHIN_FACE;
 #endif
     // `_llk_unpack_A_*` takes <BType, acc_to_dest, binary_reuse_dest,
     // unpack_to_dest>, all defaulted. Only the last is interesting here, and
@@ -116,9 +136,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
         // The (face_r_dim, num_faces) pair became a single TensorShape at the
         // ea042c4ad uplift; make_tensor_shape_from_legacy is what the upstream
         // sources use to bridge it.
-        _llk_unpack_A_init_<BroadcastType::NONE, acc_to_dest, reuse_dest_type, unpack_to_dest>(
-            /* transpose_of_faces */ 0,
-            /* transpose_within_face */ 0,
+        _llk_unpack_A_init_<BROADCAST_TYPE, acc_to_dest, reuse_dest_type, unpack_to_dest>(
+            UNPACK_TRANSPOSE_FACES,
+            UNPACK_TRANSPOSE_WITHIN_FACE,
             ckernel::make_tensor_shape_from_legacy(FACE_R_DIM, TILE_NUM_FACES),
             formats.unpack_A_src,
             formats.unpack_A_dst);
@@ -156,7 +176,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // dest_acc, matching eltwise_unary_sfpu_perf.cpp:73-76.
             if constexpr (!unpack_to_dest)
             {
-                _perf_unpack_loop_set_valid</* src A */ true, /* src B */ is_fp32_dest_acc_en>(TILE_CNT * TILE_NUM_FACES * LOOP_FACTOR);
+                // A broadcast leaves the tile in SrcB rather than SrcA, which is
+                // why those shapes pair with B2D (bcast.h:32-35). MATH then waits
+                // on the SrcB bank, so the fake handshake has to validate it --
+                // without this the broadcast shapes hang the device, since
+                // MATH_ISOLATE has already returned from the unpack thread.
+                constexpr bool kBroadcast = BROADCAST_TYPE != BroadcastType::NONE;
+                _perf_unpack_loop_set_valid</* src A */ true, /* src B */ is_fp32_dest_acc_en || kBroadcast>(
+                    TILE_CNT * TILE_NUM_FACES * LOOP_FACTOR);
             }
             return;
         }
@@ -166,7 +193,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
             {
                 for (std::uint32_t tile = 0; tile < TILE_CNT; tile++)
                 {
-                    _llk_unpack_A_<BroadcastType::NONE, acc_to_dest, reuse_dest_type, unpack_to_dest>(
+                    _llk_unpack_A_<BROADCAST_TYPE, acc_to_dest, reuse_dest_type, unpack_to_dest>(
                         L1_ADDRESS(buffer_A[tile]), formats.unpack_A_src, formats.unpack_A_dst);
                 }
             }
@@ -192,7 +219,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t TILE_CNT     = params.TILE_CNT;
     const std::uint32_t LOOP_FACTOR  = params.LOOP_FACTOR;
 #endif
-    // DATA_COPY_TYPE comes from the generated build.h; see perf_copy_tile.py.
+    // DATA_COPY_TYPE comes from the generated build.h; see the test module.
     constexpr DataCopyType data_copy_type = DATA_COPY_TYPE;
 
     // Same split as the unpack thread. `_llk_math_eltwise_unary_datacopy_init_`
@@ -208,7 +235,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
     };
     auto op_init = [&]()
     {
-        _llk_math_eltwise_unary_datacopy_init_<data_copy_type, is_fp32_dest_acc_en>(TILE_NUM_FACES, formats.math);
+        // BROADCAST_TYPE has to reach the init as well as the execute call. It is
+        // the third template parameter and defaults to NONE, so omitting it
+        // configures the math engine for a plain datacopy while the tile loop
+        // runs a broadcast -- the engine then waits on a SrcB bank it was never
+        // told to expect. unary_bcast passes it to both halves for this reason
+        // (bcast.h:56-61).
+        _llk_math_eltwise_unary_datacopy_init_<data_copy_type, is_fp32_dest_acc_en, BROADCAST_TYPE>(
+            TILE_NUM_FACES, formats.math);
     };
 
     if constexpr (MEASURE_OP_INIT)
@@ -246,7 +280,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
             {
                 if constexpr (unpack_to_dest)
                 {
-                    _llk_math_eltwise_unary_datacopy_<data_copy_type, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                    _llk_math_eltwise_unary_datacopy_<data_copy_type, DstSync::SyncHalf, is_fp32_dest_acc_en, BROADCAST_TYPE, unpack_to_dest>(
                         tile % MAX_TILES_DEST, formats.math, formats.math);
                 }
                 else
@@ -283,7 +317,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
                     // L1_TO_L1, where both threads run.
                     if constexpr (!unpack_to_dest)
                     {
-                        _llk_math_eltwise_unary_datacopy_<data_copy_type, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                        _llk_math_eltwise_unary_datacopy_<data_copy_type, DstSync::SyncHalf, is_fp32_dest_acc_en, BROADCAST_TYPE, unpack_to_dest>(
                             block_tile, formats.math, formats.math);
                     }
                 }
@@ -299,7 +333,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
                 _llk_math_wait_for_dest_available_<DstSync::SyncHalf>();
                 for (std::uint32_t block_tile = 0; block_tile < block_tiles; block_tile++)
                 {
-                    _llk_math_eltwise_unary_datacopy_<data_copy_type, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
+                    _llk_math_eltwise_unary_datacopy_<data_copy_type, DstSync::SyncHalf, is_fp32_dest_acc_en, BROADCAST_TYPE, unpack_to_dest>(
                         block_tile, formats.math, formats.math);
                 }
                 _llk_math_dest_section_done_<DstSync::SyncHalf, is_fp32_dest_acc_en>();

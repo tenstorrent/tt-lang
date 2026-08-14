@@ -105,12 +105,39 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t TILE_CNT    = params.TILE_CNT;
 #endif
 
+    // MEASURE_OP_INIT selects which half of the init the measured zone brackets.
+    // Both halves run in both variants and in the same order, so the hardware
+    // sees identical work either way and only the window moves. Unsplit, the
+    // zone covers the common init and the operation's own together and is
+    // attributable to neither -- which is why every `<op>_init` on math is
+    // currently a dropped lump.
+    auto common_init = [&]()
     {
-        START_PERF_MEASURE("INIT")
         _llk_math_pack_sync_init_<DstSync::SyncHalf, is_fp32_dest_acc_en>();
         _llk_math_hw_configure_<is_fp32_dest_acc_en>(formats.math, formats.math);
+    };
+    auto op_init = [&]()
+    {
         _llk_math_eltwise_binary_init_<ELTWISE_BINARY_OP, BroadcastType::NONE, MATH_FIDELITY>(DEFAULT_TENSOR_SHAPE, 0 /* acc_to_dest */);
-        PROFILER_SYNC();
+    };
+
+    if constexpr (MEASURE_OP_INIT)
+    {
+        common_init();
+        {
+            START_PERF_MEASURE("INIT")
+            op_init();
+            PROFILER_SYNC();
+        }
+    }
+    else
+    {
+        {
+            START_PERF_MEASURE("INIT")
+            common_init();
+            PROFILER_SYNC();
+        }
+        op_init();
     }
     {
         START_PERF_MEASURE("TILE_LOOP")

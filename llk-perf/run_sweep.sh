@@ -36,10 +36,19 @@ HERE="$REPO/llk-perf"
 # it.
 export RUNNER_TEMP="${RUNNER_TEMP:-/tmp/ttlang-llk-build}"
 
+# Measure the LLK tt-lang actually compiles against, not the harness's debug
+# build. LLK_ASSERT is on by default here and off in production -- tt-llk's own
+# notes say production "compile[s] the macros to ((void)0)" -- and it is not
+# free: bf16 datacopy measures 55.12 cycles/tile on unpack with asserts against
+# 41.62 without, 24.5% inflation, tracking the assert count in each function
+# (llk_unpack_AB.h has 7, llk_pack.h 8, the datacopy 2). Every row measured with
+# them describes a kernel nobody runs.
+export TT_LLK_DISABLE_ASSERTS=1
+
 # perf_ttlang_math_matmul is excluded by default: 12288 variants against ~500 for
 # everything else combined, and 12 of its kernel builds still fail.
 DEFAULT_TESTS=(
-    perf_ttlang_copy_tile
+    perf_ttlang_datacopy
     perf_ttlang_eltwise_binary_fpu
     perf_ttlang_eltwise_unary_sfpu
     perf_ttlang_eltwise_binary_sfpu

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import dataclass
+
 import pytest
 from helpers.constraints import (
     get_valid_dest_accumulation_modes,
@@ -16,11 +18,33 @@ from helpers.param_config import input_output_formats, parametrize
 from helpers.perf import PerfConfig
 from helpers.stimuli_config import StimuliConfig
 from helpers.test_variant_parameters import (
+    TemplateParameter,
     LOOP_FACTOR,
     MATH_FIDELITY,
     MATH_OP,
     TILE_COUNT,
 )
+
+
+@dataclass
+class MEASURE_OP_INIT(TemplateParameter):
+    """Which half of the init block sits inside the measured INIT zone.
+
+    True brackets copy_tile_init's own call with the kernel-wide hw_configure
+    hoisted before it; False brackets the hw_configure with the op init hoisted
+    after. Both halves run either way and in the same order, so the two variants
+    execute identical work and differ only in where the measurement starts.
+
+    Two zones are all the harness supports -- ``read_perf_zone_names_from_elf``
+    hardcodes ``[INIT, TILE_LOOP]`` by position -- so splitting the init into two
+    measurements means two variants rather than two zones.
+    """
+
+    measure_op_init: bool = False
+
+    def convert_to_cpp(self) -> str:
+        value = "true" if self.measure_op_init else "false"
+        return f"constexpr bool MEASURE_OP_INIT = {value};"
 
 
 @pytest.mark.perf
@@ -45,6 +69,11 @@ from helpers.test_variant_parameters import (
         formats, mathop, PERF_RUN=True
     ),
     dest_acc=lambda formats: get_valid_dest_accumulation_modes(formats),
+    # Which half of the init the measured zone brackets; see the source. Two
+    # variants of identical work, differing only in where the bracket sits, is
+    # what makes the operation's own init attributable instead of lumped with
+    # the common init.
+    measure_op_init=[False, True],
 )
 def test_perf_eltwise_binary_fpu(
     perf_report,
@@ -53,6 +82,7 @@ def test_perf_eltwise_binary_fpu(
     tile_count,
     math_fidelity,
     dest_acc,
+    measure_op_init,
 ):
     if mathop != MathOperation.Elwmul and math_fidelity != MathFidelity.LoFi:
         pytest.skip("Fidelity does not affect Elwadd and Elwsub operations")
@@ -67,7 +97,7 @@ def test_perf_eltwise_binary_fpu(
             PerfRunType.PACK_ISOLATE,
             PerfRunType.L1_CONGESTION,
         ],
-        templates=[MATH_FIDELITY(math_fidelity), MATH_OP(mathop=mathop)],
+        templates=[MEASURE_OP_INIT(measure_op_init), MATH_FIDELITY(math_fidelity), MATH_OP(mathop=mathop)],
         # 16, matching every other source. N = tile_cnt * loop_factor is what a
         # per-tile figure is averaged over, so a benchmark's loop_factor decides
         # how comparable its numbers are with another's. At 16x16 all six sources

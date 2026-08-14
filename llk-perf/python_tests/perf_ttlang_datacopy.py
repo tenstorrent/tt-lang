@@ -29,16 +29,86 @@ from dataclasses import dataclass
 import pytest
 from helpers.constraints import get_valid_dest_accumulation_modes
 from helpers.format_config import DataFormat
-from helpers.llk_params import DataCopyType, DestAccumulation, PerfRunType
+from helpers.llk_params import (
+    BroadcastType,
+    DataCopyType,
+    DestAccumulation,
+    PerfRunType,
+    Transpose,
+)
 from helpers.param_config import input_output_formats, parametrize
 from helpers.perf import PerfConfig
 from helpers.stimuli_config import StimuliConfig
 from helpers.test_variant_parameters import (
+    BROADCAST_TYPE,
     DATA_COPY_TYPE,
     LOOP_FACTOR,
+    UNPACK_TRANS_FACES,
+    UNPACK_TRANS_WITHIN_FACE,
     TILE_COUNT,
     TemplateParameter,
 )
+
+
+@dataclass(frozen=True)
+class OpShape:
+    """One operation, as the knob settings that select it."""
+
+    name: str
+    broadcast_type: BroadcastType
+    data_copy_type: DataCopyType
+    transpose: Transpose
+
+    def __str__(self) -> str:
+        return self.name
+
+
+_ALL_OP_SHAPES = [
+    OpShape("copy_tile", BroadcastType.None_, DataCopyType.A2D, Transpose.No),
+    OpShape("unary_bcast_col", BroadcastType.Column, DataCopyType.B2D, Transpose.No),
+    OpShape("unary_bcast_row", BroadcastType.Row, DataCopyType.B2D, Transpose.No),
+    OpShape("transpose_wh_tile", BroadcastType.None_, DataCopyType.A2D, Transpose.Yes),
+]
+
+# Only copy_tile is swept. The others are kept above because the kernel supports
+# them and they are one line from being re-enabled, but they do not run on this
+# harness yet.
+#
+# The blocker is the isolate modes rather than the shapes. MATH_ISOLATE returns
+# the unpack thread early and fakes the handshake in its place
+# (`_perf_unpack_loop_set_valid`), and that fake was written for the SrcA path a
+# plain datacopy uses. A broadcast leaves the tile in SrcB and pairs with B2D, so
+# math waits on a bank the fake never fills -- the same shape of problem as
+# copy_tile's math half under `unpack_to_dest`, unmeasurable here for the same
+# reason.
+#
+# Confirmed on device: all 42 copy_tile variants pass and the first broadcast
+# variant hangs. Three real bugs were found and fixed getting that far -- the
+# MATH_ISOLATE SrcB handshake, the 32-bit broadcast route (which must use
+# unpack-to-dest, since SrcB is 19 bits wide), and the broadcast type missing
+# from the math init -- and none was the blocker. No upstream perf source runs a
+# unary broadcast datacopy, so there is no reference for what the fake handshake
+# should do; only functional tests, which run both threads and never need one.
+_OP_SHAPES = [shape for shape in _ALL_OP_SHAPES if shape.name == "copy_tile"]
+
+
+def _resolve_route(op_shape, formats, unpack_to_dest):
+    """The copy type and unpack mode a shape actually runs with.
+
+    A broadcast leaves the tile in SrcB, which is why those shapes pair with B2D
+    -- but SrcB is only 19 bits wide, so a 32-bit broadcast cannot go that way at
+    all. tt-metal handles this by forcing unpack-to-dest and A2D for 32-bit
+    formats (bcast.h:44-62), and a kernel that ignores it hangs: the datacopy
+    waits on a SrcB bank the unpacker can never fill.
+
+    Returned rather than fixed in the table because it depends on the format,
+    exactly as it does in the compute API.
+    """
+    if op_shape.broadcast_type == BroadcastType.None_:
+        return op_shape.data_copy_type, unpack_to_dest
+    if formats.input_format.is_32_bit():
+        return DataCopyType.A2D, True
+    return op_shape.data_copy_type, unpack_to_dest
 
 
 @dataclass
@@ -100,24 +170,44 @@ def _get_unpack_to_dest_modes(formats, dest_acc):
     # kernels shaped like this one, so the fill a 16-tile block genuinely pays is
     # part of the cost, not contamination to be swept away.
     tile_count=[16],
+    # The three operations this source covers, as one axis rather than three
+    # sweeps. On Blackhole they are the same two LLK calls with one knob moved,
+    # so a single kernel measures all three and the consumer reads the shape to
+    # decide which operation a row belongs to.
+    #
+    #   copy_tile          NONE / A2D / no transpose
+    #   unary_bcast        Col or Row / B2D   (bcast.h:94-125, and B2D because a
+    #                      broadcast leaves the tile in SrcB)
+    #   transpose_wh_tile  NONE / A2D, with the unpacker configured to transpose
+    #                      in the init -- transpose.h:107-125 issues exactly
+    #                      copy_tile's two calls, so the tile loop is identical
+    #                      and only the init differs
+    op_shape=_OP_SHAPES,
     measure_op_init=[False, True],
 )
-def test_perf_copy_tile(
+def test_perf_datacopy(
     perf_report,
     formats,
     dest_acc,
     unpack_to_dest,
     tile_count,
+    op_shape,
     measure_op_init,
 ):
+    data_copy_type, unpack_to_dest = _resolve_route(op_shape, formats, unpack_to_dest)
+
     configuration = PerfConfig(
-        "sources/ttlang_copy_tile_perf.cpp",
+        "sources/ttlang_datacopy_perf.cpp",
         formats,
         # A2D is the copy copy_tile performs. Passed as a template rather than
         # hardcoded in the kernel: every other perf source supplies at least one
         # template parameter, and omitting them entirely made the generated
         # build.h carry a duplicate `constexpr std::uint32_t TILE_CNT`.
-        templates=[DATA_COPY_TYPE(DataCopyType.A2D), MEASURE_OP_INIT(measure_op_init)],
+        templates=[
+            DATA_COPY_TYPE(data_copy_type),
+            BROADCAST_TYPE(op_shape.broadcast_type),
+            MEASURE_OP_INIT(measure_op_init),
+        ],
         run_types=[
             PerfRunType.L1_TO_L1,
             PerfRunType.UNPACK_ISOLATE,
@@ -132,7 +222,12 @@ def test_perf_copy_tile(
         # per-tile figure is averaged over, so a benchmark's loop_factor decides
         # how comparable its numbers are with another's. At 16x16 all six sources
         # report over the same 256 tiles.
-        runtimes=[TILE_COUNT(tile_count), LOOP_FACTOR(2)],
+        runtimes=[
+            TILE_COUNT(tile_count),
+            LOOP_FACTOR(2),
+            UNPACK_TRANS_FACES(op_shape.transpose),
+            UNPACK_TRANS_WITHIN_FACE(op_shape.transpose),
+        ],
         variant_stimuli=StimuliConfig(
             None,
             formats.input_format,

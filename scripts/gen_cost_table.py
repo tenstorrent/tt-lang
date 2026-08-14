@@ -46,6 +46,15 @@ LANES = ("unpack", "math", "pack")
 # component, but is never attributed to a single op.
 LUMP = "lump:"
 
+# Prefix marking a measurement kept only so another can be derived from it.  It
+# is dropped like a lump rather than attributed: the SFPU sources' datacopy-only
+# zone measures a real datacopy, but on a math pipe the SFPU init has already
+# configured, which costs 1.3 cycles/tile more than the datacopy benchmark's and
+# varies by which operation was initialised (22.25 for Exp against 23.59 for
+# Exp2, asserts on).  Emitting it as `copy_tile` would put it in conflict with the
+# cleaner measurement and the disagreement check would drop both.
+SUBTRAHEND = "subtrahend:"
+
 
 # ---------------------------------------------------------------------------
 # mathop -> ttkernel op name
@@ -133,6 +142,35 @@ MATHOP_TO_OP = {
 }
 
 
+# ttkernel op -> the init op that configures it, where the two do not share a
+# name.  Most inits are `<op>_init`, but several operations share one, and
+# guessing the suffix produces names the dialect does not define -- generation
+# fails on those rather than emitting rows for an operation that cannot exist.
+OP_TO_INIT = {
+    # One init for all three shifts.
+    "binary_left_shift_tile": "binary_shift_tile_init",
+    "binary_right_shift_tile": "binary_shift_tile_init",
+    "binary_logical_right_shift_tile": "binary_shift_tile_init",
+    # The int32 absolute value shares the float one's init.
+    "abs_tile_int32": "abs_tile_init",
+    # "Init function for ceil/floor/round_tile" -- TTKernelOps.td:2244.
+    "ceil_tile": "rounding_op_tile_init",
+    "floor_tile": "rounding_op_tile_init",
+    "frac_tile": "rounding_op_tile_init",
+    "trunc_tile": "rounding_op_tile_init",
+    # One init for the three-stage topk.
+    "topk_local_sort": "topk_tile_init",
+    "topk_merge": "topk_tile_init",
+    "topk_rebuild": "topk_tile_init",
+    "reduce_tile": "reduce_init",
+}
+
+
+def _init_op(op: str) -> str:
+    """The init that configures `op`."""
+    return OP_TO_INIT.get(op, f"{op}_init")
+
+
 def _mathop(row: dict) -> Optional[str]:
     """ttkernel op for a row's `mathop`, or None when unmapped."""
     return MATHOP_TO_OP.get(row.get("mathop", "").split(".")[-1])
@@ -147,14 +185,25 @@ def _one(row: dict) -> Optional[list[str]]:
 def _sfpu_math(row: dict) -> Optional[list[str]]:
     """Owners of the MATH lane in an SFPU benchmark.
 
-    The math loop copies SrcA into DST before the SFPU operation whenever the
-    unpacker did not write DST directly, so the measured column covers two ops.
-    With `unpack_to_dest` the copy is skipped and the column is the SFPU op
-    alone.  eltwise_unary_sfpu_perf.cpp:200-218.
+    Three cases:
+
+    * ``measure_datacopy_only`` -- the SFPU call is elided, so the zone is the
+      datacopy alone.  This is the subtrahend `resolve_by_subtraction` pairs with
+      the lump below.  Under ``unpack_to_dest`` both calls are elided and the zone
+      is an empty loop measuring 1.27 cycles/tile, which is nothing and is
+      dropped.
+    * ``unpack_to_dest`` -- the datacopy is skipped, so the zone is the SFPU
+      operation alone.  Clean, but only reachable at 32-bit input with dest_acc
+      on, which is why most SFPU math rows were Float32-only.
+    * otherwise -- datacopy plus the operation, a lump.
     """
     op = _mathop(row)
     if op is None:
         return None
+    if row.get("measure_datacopy_only") == "True":
+        if row.get("unpack_to_dest") == "True":
+            return None
+        return [f"{SUBTRAHEND}copy_tile"]
     return [op] if row.get("unpack_to_dest") == "True" else ["copy_tile", op]
 
 
@@ -199,6 +248,52 @@ def _copy_tile_init(row: dict) -> list[str]:
         if row.get("measure_op_init") == "True"
         else ["compute_kernel_hw_startup"]
     )
+
+
+def _split_init(common: str, op_suffix: str = "_init"):
+    """Owner of a split init zone's MATH lane, selected by `measure_op_init`.
+
+    The sources now bracket each half separately (see MEASURE_OP_INIT in
+    llk-perf/sources/), so this returns one owner rather than a lump:
+
+      True   the operation's own init -- `<mathop>_init`
+      False  `common`, the API entry point whose calls the benchmark's kernel
+             issues for the setup half
+
+    `common` is per benchmark because the entry points overlap. `binary_op_init_common`
+    expands to hw_configure plus `llk_unpack_AB_init` on unpack, and on math and
+    pack to exactly what `compute_kernel_hw_startup` issues -- the deprecation
+    notice on it says as much (eltwise_binary.h:478-493). So the same three pack
+    calls are legitimately either operation's pack half, and which one a
+    measurement answers for depends on which the kernel called.
+
+    Unsplit, the zone covered both and was attributable to neither, which is why
+    every `<op>_init` on math was a dropped lump. `common` names the compute-API
+    wrapper the benchmark calls, kept for the operations whose init the wrapper
+    performs rather than the op itself.
+    """
+
+    def owners(row) -> Optional[list[str]]:
+        if row.get("measure_op_init") != "True":
+            return [common]
+        op = _mathop(row)
+        if op:
+            return [_init_op(op)]
+        raw = row.get("mathop", "").split(".")[-1]
+        return [f"{raw}_init"] if raw else [common]
+
+    return owners
+
+
+def _split_init_fixed(op: str):
+    """Owner of a split init zone where the operation is fixed, not per row."""
+
+    def owners(row) -> list[str]:
+        return [op] if row.get("measure_op_init") == "True" else [
+            "compute_kernel_hw_startup"
+        ]
+
+    return owners
 
 
 def _init_math(common: str):
@@ -348,9 +443,19 @@ BENCHMARKS: dict[str, Benchmark] = {
     "perf_ttlang_eltwise_binary_fpu": Benchmark(
         source="eltwise_binary_fpu_perf.cpp",
         tile_loop=_lanes(unpack=_one, math=_one, pack=["pack_tile"]),
+        # UNPACK and PACK are `binary_op_init_common`'s own halves -- it issues
+        # every call in those zones (eltwise_binary.h:485-493) -- so each is one
+        # operation, not a lump. MATH is split, separating that operation's math
+        # half from `<op>_init`.
+        #
+        # Its math and pack halves are the same calls `compute_kernel_hw_startup`
+        # issues, so the datacopy benchmark measures the same work under the other
+        # name. They agree to 1.3%, which confirms the attribution rather than
+        # corroborating the hardware -- worth stating, because the agreement looks
+        # like independent validation and is not.
         init=_lanes(
             unpack=["binary_op_init_common"],
-            math=_init_math("binary_op_init_common"),
+            math=_split_init("binary_op_init_common"),
             pack=["binary_op_init_common"],
         ),
         faces=4,
@@ -365,7 +470,7 @@ BENCHMARKS: dict[str, Benchmark] = {
     # compute_kernel_hw_startup's pack half in the same order, under either
     # measure_op_init.  That the two variants then measure the same thing and
     # agree to 0.3% (297 vs 298 cycles) is the control on the split.
-    "perf_ttlang_copy_tile": Benchmark(
+    "perf_ttlang_datacopy": Benchmark(
         source="copy_tile_perf.cpp",
         tile_loop=_lanes(
             unpack=["copy_tile"], math=_copy_tile_math, pack=["pack_tile"]
@@ -400,7 +505,10 @@ BENCHMARKS: dict[str, Benchmark] = {
     "perf_ttlang_reduce": Benchmark(
         source="ttlang_reduce_perf.cpp",
         tile_loop=_lanes(unpack=["reduce_tile"], math=["reduce_tile"], pack=None),
-        init=_lanes(*(["compute_kernel_hw_startup", "reduce_init"],) * 3),
+        # All three threads split; see the source. The pack thread only
+        # half-splits -- its op call sits between two common ones -- so the
+        # non-op variant stays a lump there and is dropped.
+        init=_lanes(*(_split_init_fixed("reduce_init"),) * 3),
         faces=4,
         keys=("unpack_to_dest", "mathop", "reduce_pool_type"),
     ),
@@ -442,7 +550,7 @@ BENCHMARKS: dict[str, Benchmark] = {
         tile_loop=_lanes(unpack=["copy_tile"], math=_sfpu_math, pack=["pack_tile"]),
         init=_lanes(
             unpack=["init_sfpu"],
-            math=_init_math("init_sfpu"),
+            math=_split_init("init_sfpu"),
             pack=["init_sfpu"],
         ),
         faces=4,
@@ -453,7 +561,7 @@ BENCHMARKS: dict[str, Benchmark] = {
         tile_loop=_lanes(unpack=["copy_tile"], math=_sfpu_math, pack=["pack_tile"]),
         init=_lanes(
             unpack=["init_sfpu"],
-            math=_init_math("init_sfpu"),
+            math=_split_init("init_sfpu"),
             pack=["init_sfpu"],
         ),
         faces=4,
@@ -464,7 +572,7 @@ BENCHMARKS: dict[str, Benchmark] = {
         tile_loop=_lanes(unpack=["copy_tile"], math=_sfpu_math, pack=["pack_tile"]),
         init=_lanes(
             unpack=["init_sfpu"],
-            math=_init_math("init_sfpu"),
+            math=_split_init("init_sfpu"),
             pack=["init_sfpu"],
         ),
         faces=4,
@@ -475,7 +583,7 @@ BENCHMARKS: dict[str, Benchmark] = {
         tile_loop=_lanes(unpack=["copy_tile"], math=_sfpu_math, pack=["pack_tile"]),
         init=_lanes(
             unpack=["init_sfpu"],
-            math=_init_math("init_sfpu"),
+            math=_split_init("init_sfpu"),
             pack=["init_sfpu"],
         ),
         faces=4,
@@ -696,6 +804,8 @@ class Diagnostics:
         self.emitted_ops = 0
         self.steady: list[str] = []
         self.conflicted: set = set()
+        self.subtracted: dict = {}
+        self.subtraction_rejected = 0
         self.dropped_conflicts = 0
 
     def report(self, out) -> None:
@@ -711,6 +821,14 @@ class Diagnostics:
             print(
                 f"unmapped mathops ({len(self.unmapped)}): "
                 + ", ".join(sorted(self.unmapped)),
+                file=out,
+            )
+        for marker, n in sorted(self.subtracted.items()):
+            print(f"subtraction: {n} {marker} keys resolved from a lump", file=out)
+        if self.subtraction_rejected:
+            print(
+                f"subtraction: {self.subtraction_rejected} rejected "
+                "(non-positive remainder)",
                 file=out,
             )
         for msg in self.steady:
@@ -846,6 +964,53 @@ def extract(diag: Diagnostics):
     return tables
 
 
+def resolve_by_subtraction(tables, diag) -> None:
+    """Turn `copy_tile + <op>` lumps into `<op>` by subtracting the datacopy.
+
+    The SFPU sources measure their math zone twice per configuration: once whole,
+    once with the SFPU call elided so only the datacopy remains
+    (MEASURE_DATACOPY_ONLY).  Both run in the same kernel, the same build and over
+    the same tiles, so the pipeline fill is identical in each and cancels --
+    which is why the subtrahend has to come from inside the benchmark rather than
+    from the datacopy sweep, whose fill is amortised over a different N.
+
+    Validated against the one configuration where the operation can be isolated
+    directly: at Float32 with dest_acc on the kernel skips the datacopy itself,
+    and that measurement agrees with this subtraction to within 1% (216.8 against
+    218.9 for sqrt).  The two operations really are additive on this engine.
+    """
+    for marker, table in tables.items():
+        pairs = 0
+        for key in list(table):
+            if not key.op.startswith(LUMP):
+                continue
+            parts = key.op[len(LUMP):].split("+")
+            if len(parts) != 2 or parts[0] != "copy_tile":
+                continue
+            base = dataclasses.replace(key, op=f"{SUBTRAHEND}copy_tile")
+            if base not in table:
+                continue
+            whole, datacopy = table[key], table[base]
+            resolved = dataclasses.replace(key, op=parts[1])
+            if resolved in table:
+                continue
+            value = whole.mean() - datacopy.mean()
+            if value <= 0:
+                # A negative or zero remainder means the two zones are not what
+                # the attribution says; emitting it would be worse than a
+                # placeholder.
+                diag.subtraction_rejected += 1
+                continue
+            s = Samples()
+            s.values = [value]
+            s.sources = whole.sources | datacopy.sources
+            s.tiles = list(whole.tiles[:1])
+            table[resolved] = s
+            pairs += 1
+        if pairs:
+            diag.subtracted[marker] = pairs
+
+
 def fit_affine(xs: list[float], ys: list[float]):
     """Least squares y = a*x + b, returning (a, b, r2)."""
     n = len(xs)
@@ -978,6 +1143,7 @@ def _lane_slot(slot, span) -> str:
 
 
 def collect_measured(tables, diag):
+    resolve_by_subtraction(tables, diag)
     """Measured rows grouped by (op, lane), lumps dropped.
 
     A lumped lane covers two operations in one number, so it belongs to neither
@@ -989,7 +1155,7 @@ def collect_measured(tables, diag):
     grouped = defaultdict(list)
     for marker, unit in (("TILE_LOOP", PER_TILE), ("INIT", PER_CALL)):
         for key in _sorted(tables[marker]):
-            if key.op.startswith(LUMP):
+            if key.op.startswith(LUMP) or key.op.startswith(SUBTRAHEND):
                 diag.dropped_lumps += 1
                 continue
             if (marker, key) in diag.conflicted:

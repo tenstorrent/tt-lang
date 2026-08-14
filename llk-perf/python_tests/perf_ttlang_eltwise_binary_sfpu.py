@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+from dataclasses import dataclass
+
 import pytest
 from helpers.chip_architecture import ChipArchitecture, get_chip_architecture
 from helpers.format_config import DataFormat
@@ -17,6 +19,7 @@ from helpers.perf import PerfConfig
 from helpers.stimuli_config import StimuliConfig
 from helpers.stimuli_generator import calculate_tile_and_face_counts
 from helpers.test_variant_parameters import (
+    TemplateParameter,
     APPROX_MODE,
     ITERATIONS,
     LOOP_FACTOR,
@@ -43,6 +46,27 @@ def _get_approx_modes(mathop):
     if mathop in _OPS_WITH_APPROX_MODE:
         return [ApproximationMode.Yes, ApproximationMode.No]
     return [ApproximationMode.No]
+
+
+@dataclass
+class MEASURE_OP_INIT(TemplateParameter):
+    """Which half of the init block sits inside the measured INIT zone.
+
+    True brackets copy_tile_init's own call with the kernel-wide hw_configure
+    hoisted before it; False brackets the hw_configure with the op init hoisted
+    after. Both halves run either way and in the same order, so the two variants
+    execute identical work and differ only in where the measurement starts.
+
+    Two zones are all the harness supports -- ``read_perf_zone_names_from_elf``
+    hardcodes ``[INIT, TILE_LOOP]`` by position -- so splitting the init into two
+    measurements means two variants rather than two zones.
+    """
+
+    measure_op_init: bool = False
+
+    def convert_to_cpp(self) -> str:
+        value = "true" if self.measure_op_init else "false"
+        return f"constexpr bool MEASURE_OP_INIT = {value};"
 
 
 @pytest.mark.perf
@@ -87,6 +111,11 @@ def _get_approx_modes(mathop):
     input_dimensions=[
         [128, 128],  # tile_cnt: 16
     ],  # Specifying different input sizes to cover different tile counts
+    # Which half of the init the measured zone brackets; see the source. Two
+    # variants of identical work, differing only in where the bracket sits, is
+    # what makes the operation's own init attributable instead of lumped with
+    # the common init.
+    measure_op_init=[False, True],
 )
 def test_perf_eltwise_binary_sfpu_float(
     perf_report,
@@ -97,6 +126,7 @@ def test_perf_eltwise_binary_sfpu_float(
     loop_factor,
     iterations,
     input_dimensions,
+    measure_op_init,
 ):
     unpack_to_dest = (
         formats.input_format.is_32_bit() and dest_acc == DestAccumulation.No
@@ -116,7 +146,7 @@ def test_perf_eltwise_binary_sfpu_float(
             PerfRunType.PACK_ISOLATE,
             PerfRunType.L1_CONGESTION,
         ],
-        templates=[
+        templates=[MEASURE_OP_INIT(measure_op_init), 
             MATH_OP(mathop=mathop),
             APPROX_MODE(approx_mode),
             ITERATIONS(iterations),
@@ -183,6 +213,11 @@ def test_perf_eltwise_binary_sfpu_float(
     input_dimensions=[
         [128, 128],  # tile_cnt: 16
     ],
+    # Which half of the init the measured zone brackets; see the source. Two
+    # variants of identical work, differing only in where the bracket sits, is
+    # what makes the operation's own init attributable instead of lumped with
+    # the common init.
+    measure_op_init=[False, True],
 )
 def test_perf_eltwise_binary_sfpu_int(
     perf_report,
@@ -193,6 +228,7 @@ def test_perf_eltwise_binary_sfpu_int(
     loop_factor,
     iterations,
     input_dimensions,
+    measure_op_init,
 ):
     unpack_to_dest = (
         formats.input_format.is_32_bit() and dest_acc == DestAccumulation.No
@@ -212,7 +248,7 @@ def test_perf_eltwise_binary_sfpu_int(
             PerfRunType.PACK_ISOLATE,
             PerfRunType.L1_CONGESTION,
         ],
-        templates=[
+        templates=[MEASURE_OP_INIT(measure_op_init), 
             MATH_OP(mathop=mathop),
             APPROX_MODE(approx_mode),
             ITERATIONS(iterations),
@@ -278,6 +314,11 @@ def test_perf_eltwise_binary_sfpu_int(
     input_dimensions=[
         [128, 128],  # tile_cnt: 16
     ],
+    # Which half of the init the measured zone brackets; see the source. Two
+    # variants of identical work, differing only in where the bracket sits, is
+    # what makes the operation's own init attributable instead of lumped with
+    # the common init.
+    measure_op_init=[False, True],
 )
 def test_perf_eltwise_binary_sfpu_add_top_row(
     perf_report,
@@ -288,6 +329,7 @@ def test_perf_eltwise_binary_sfpu_add_top_row(
     loop_factor,
     iterations,
     input_dimensions,
+    measure_op_init,
 ):
     chip_arch = get_chip_architecture()
 
@@ -318,7 +360,7 @@ def test_perf_eltwise_binary_sfpu_add_top_row(
             PerfRunType.PACK_ISOLATE,
             PerfRunType.L1_CONGESTION,
         ],
-        templates=[
+        templates=[MEASURE_OP_INIT(measure_op_init), 
             MATH_OP(mathop=mathop),
             APPROX_MODE(approx_mode),
             ITERATIONS(iterations),

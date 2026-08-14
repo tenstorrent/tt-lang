@@ -47,7 +47,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const auto& buffer_B         = params.buffer_B;
 #endif
     {
-        START_PERF_MEASURE("INIT")
+    // MEASURE_OP_INIT selects which half of the init the bracket covers. Both
+    // halves run in both variants and in the same order, so the hardware sees
+    // identical work either way and only the measurement window moves. Without
+    // this the zone covers `compute_kernel_hw_startup` and `reduce_init` together and
+    // is attributable to neither.
+    auto hw_configure = [&]()
+    {
         _llk_unpack_hw_configure_<is_fp32_dest_acc_en>(
             formats.unpack_A_src,
             formats.unpack_B_src,
@@ -57,8 +63,25 @@ void run_kernel(RUNTIME_PARAMETERS params)
             FACE_R_DIM,
             /* num_faces */ 4,
             /* num_faces */ 4);
-        _llk_unpack_AB_reduce_init_<POOL_TYPE, REDUCE_DIM>(DEFAULT_TENSOR_SHAPE);
+    };
+    auto op_init = [&]() { _llk_unpack_AB_reduce_init_<POOL_TYPE, REDUCE_DIM>(DEFAULT_TENSOR_SHAPE); };
+
+    if constexpr (MEASURE_OP_INIT)
+    {
+        hw_configure();
+        START_PERF_MEASURE("INIT")
+        op_init();
         PROFILER_SYNC();
+    }
+    else
+    {
+        {
+            START_PERF_MEASURE("INIT")
+            hw_configure();
+            PROFILER_SYNC();
+        }
+        op_init();
+    }
     }
     {
         START_PERF_MEASURE("TILE_LOOP")
@@ -114,11 +137,35 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const ckernel::TensorShape DEFAULT_TENSOR_SHAPE = {FACE_R_DIM, FACE_C_DIM, MAX_NUM_FACES_R_DIM, MAX_NUM_FACES_C_DIM};
 
     {
-        START_PERF_MEASURE("INIT")
+    // MEASURE_OP_INIT selects which half of the init the bracket covers. Both
+    // halves run in both variants and in the same order, so the hardware sees
+    // identical work either way and only the measurement window moves. Without
+    // this the zone covers `compute_kernel_hw_startup` and `reduce_init` together and
+    // is attributable to neither.
+    auto hw_configure = [&]()
+    {
         _llk_math_pack_sync_init_<DstSync::SyncHalf, is_fp32_dest_acc_en>();
         _llk_math_hw_configure_<is_fp32_dest_acc_en>(formats.math, formats.math);
-        _llk_math_reduce_init_<POOL_TYPE, REDUCE_DIM, is_fp32_dest_acc_en, MATH_FIDELITY>(DEFAULT_TENSOR_SHAPE);
+    };
+    auto op_init = [&]()
+    { _llk_math_reduce_init_<POOL_TYPE, REDUCE_DIM, is_fp32_dest_acc_en, MATH_FIDELITY>(DEFAULT_TENSOR_SHAPE); };
+
+    if constexpr (MEASURE_OP_INIT)
+    {
+        hw_configure();
+        START_PERF_MEASURE("INIT")
+        op_init();
         PROFILER_SYNC();
+    }
+    else
+    {
+        {
+            START_PERF_MEASURE("INIT")
+            hw_configure();
+            PROFILER_SYNC();
+        }
+        op_init();
+    }
     }
     {
         START_PERF_MEASURE("TILE_LOOP")
@@ -193,12 +240,49 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const auto& buffer_Res       = params.buffer_Res;
 #endif
     {
-        START_PERF_MEASURE("INIT")
+    // MEASURE_OP_INIT selects which half of the init the bracket covers. Both
+    // halves run in both variants and in the same order, so the hardware sees
+    // identical work either way and only the measurement window moves. Without
+    // this the zone covers `compute_kernel_hw_startup` and `reduce_init` together and
+    // is attributable to neither.
+    //
+    // The pack thread only half-splits, and deliberately so. Its op call sits
+    // between two common ones, and the harness has a single INIT zone, so one
+    // variant can be clean but not both: MEASURE_OP_INIT brackets the op call
+    // alone, and the other variant brackets all three and stays a lump. That
+    // costs nothing -- `compute_kernel_hw_startup`'s pack half is already
+    // measured cleanly by the datacopy benchmark, so the only thing wanted here
+    // is `reduce_init`'s own contribution. Reordering to make both clean would
+    // move a packer mask write across a format/dest configure, which is not a
+    // reordering to make on a guess.
+    auto hw_configure_before = [&]()
+    {
         _llk_pack_hw_configure_<is_fp32_dest_acc_en, ckernel::PackMode::Default>(formats.pack_src, formats.pack_dst, TILE_WIDTH * TILE_HEIGHT);
         _llk_pack_init_wrapper_<PackMode::Default, false /* zero_output */>(formats.pack_dst);
-        _llk_pack_reduce_mask_config_<REDUCE_DIM>();
-        _llk_pack_dest_init_<DstSync::SyncHalf, is_fp32_dest_acc_en>();
-        PROFILER_SYNC();
+    };
+    auto op_init      = [&]() { _llk_pack_reduce_mask_config_<REDUCE_DIM>(); };
+    auto hw_configure_after = [&]() { _llk_pack_dest_init_<DstSync::SyncHalf, is_fp32_dest_acc_en>(); };
+
+    if constexpr (MEASURE_OP_INIT)
+    {
+        hw_configure_before();
+        {
+            START_PERF_MEASURE("INIT")
+            op_init();
+            PROFILER_SYNC();
+        }
+        hw_configure_after();
+    }
+    else
+    {
+        {
+            START_PERF_MEASURE("INIT")
+            hw_configure_before();
+            op_init();
+            hw_configure_after();
+            PROFILER_SYNC();
+        }
+    }
     }
     {
         START_PERF_MEASURE("TILE_LOOP")

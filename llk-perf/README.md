@@ -39,13 +39,16 @@ concurrent gather cannot have its cache wiped.
 
 | file | |
 |---|---|
-| `sources/ttlang_copy_tile_perf.cpp` | ours; nothing upstream measures a datacopy as the entire math loop |
-| `sources/ttlang_eltwise_binary_fpu_perf.cpp` | upstream's, with the addressing fix below |
-| `sources/ttlang_eltwise_binary_sfpu_perf.cpp` | upstream's, with the addressing fix below |
+| `sources/ttlang_datacopy_perf.cpp` | ours; nothing upstream measures a datacopy as the entire math loop |
+| `sources/ttlang_reduce_perf.cpp` | upstream's, with the addressing fix and a split init zone |
+| `sources/ttlang_eltwise_unary_sfpu_perf.cpp` | upstream's, with a split init zone and an elidable SFPU call |
+| `sources/ttlang_eltwise_binary_fpu_perf.cpp` | upstream's, with the addressing fix and a split init zone |
+| `sources/ttlang_eltwise_binary_sfpu_perf.cpp` | as above |
 | `python_tests/perf_ttlang_*.py` | seven sweeps, narrowed to what tt-lang generates |
 
-The other four sweeps reference upstream sources unmodified, so only the two
-carrying a fix are copied. If that fix lands upstream, both copies go away.
+Two of the copied sources carry only the addressing fix; if that lands upstream
+they go away. The rest carry measurement structure upstream has no reason to
+want: a split init zone, and an elidable SFPU call.
 
 ## Running
 
@@ -109,6 +112,15 @@ missing:
   it: the isolate returns the unpack thread early and the datacopy then spins
   forever waiting on it. The zone is elided, and `_copy_tile_math` drops the lane
   rather than emitting the empty loop's timing as a measurement.
+- **`unary_bcast` and `transpose_wh_tile`** — the same obstacle. A broadcast
+  leaves the tile in SrcB, and the harness's fake handshake
+  (`_perf_unpack_loop_set_valid`) was written for the SrcA path a plain datacopy
+  uses, so `MATH_ISOLATE` hangs. `copy_tile` runs 42/42; the shapes are retained
+  in `_ALL_OP_SHAPES` in `perf_ttlang_datacopy.py`, one line from re-enabling.
+- **Asserts** — sweeps run with `TT_LLK_DISABLE_ASSERTS=1`, because `LLK_ASSERT`
+  is on by default here and compiled out in production. It is not free: bf16
+  datacopy measures 55.12 cycles/tile on unpack with asserts against 41.62
+  without. Anything measured without that flag describes a kernel nobody runs.
 - **`SfpuAddTopRow`** has no TTKernel op, but it owns a whole upstream test
   function rather than one list entry, so it is left in place.
 - **Data movement** — the LLK suite builds only TRISC kernels, so nothing here

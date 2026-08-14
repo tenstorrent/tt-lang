@@ -9,13 +9,13 @@
 
 #include "ckernel.h"
 #include "ckernel_defs.h"
+#include "ckernel_ops.h"
 #include "counters.h"
 #include "llk_defs.h"
 #include "params.h"
 #include "perf.h"
 #include "profiler.h"
 
-// Globals
 // Globals
 std::uint32_t unp_cfg_context                          = 0;
 std::uint32_t pack_sync_tile_dst_ptr                   = 0;
@@ -40,12 +40,12 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t num_faces   = params.num_faces;
 
     const std::uint32_t TILE_CNT = params.TILE_CNT;
-    const auto& buffer_A         = params.buffer_A;
 
     const bool UNPACK_TRANSPOSE_FACES       = params.UNPACK_TRANSPOSE_FACES;
     const bool UNPACK_TRANSPOSE_WITHIN_FACE = params.UNPACK_TRANSPOSE_WITHIN_FACE;
-#endif
 
+    const auto& buffer_A = params.buffer_A;
+#endif
     const EltwiseBinaryReuseDestType reuse_dest_type = EltwiseBinaryReuseDestType::NONE;
 
     {
@@ -54,7 +54,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
         _llk_unpack_hw_configure_<is_fp32_dest_acc_en>(
             formats.unpack_A_src, formats.unpack_B_src, formats.unpack_A_dst, formats.unpack_B_dst, FACE_R_DIM, FACE_R_DIM, num_faces, num_faces);
 
-        _llk_unpack_A_init_<BROADCAST_TYPE, false /* acc_to_dest */, reuse_dest_type, unpack_to_dest>(
+        // acc_to_dest must be false to allow unpack_to_dest (the static assert in
+        // llk_unpack_A forbids both together) — matches the functional kernel.
+        _llk_unpack_A_init_<BROADCAST_TYPE, false, reuse_dest_type, unpack_to_dest>(
             UNPACK_TRANSPOSE_FACES,
             UNPACK_TRANSPOSE_WITHIN_FACE,
             ckernel::make_tensor_shape_from_legacy(FACE_R_DIM, num_faces),
@@ -88,15 +90,10 @@ void run_kernel(RUNTIME_PARAMETERS params)
             {
                 for (std::uint32_t i = 0; i < TILE_CNT; ++i)
                 {
-                    _llk_unpack_A_<BROADCAST_TYPE, false /* acc_to_dest */, reuse_dest_type, unpack_to_dest>(
-                        // Read the operand from the runtime address (StimuliConfig
-                        // layout) rather than the fixed PERF_INPUT_A, matching
-                        // eltwise_unary_sfpu_perf.cpp. PERF_ADDRESS hardcodes a
-                        // 4096-byte tile stride (perf.h:36) while a tile is that
-                        // size only for Float32, so the two layouts walk L1
-                        // differently -- this source read 42.7 cycles/tile on
-                        // unpack against 55.1 from the unary source and
-                        // copy_tile_perf.cpp, a flat 0.776x across every format.
+                    // Accuracy-merge: read input from the runtime operand address
+                    // (StimuliConfig layout) instead of the fixed PERF_INPUT_A, so
+                    // the harness's stimuli line up with what the kernel consumes.
+                    _llk_unpack_A_<BROADCAST_TYPE, false /* acc_to_dest (see init) */, reuse_dest_type, unpack_to_dest>(
                         L1_ADDRESS(buffer_A[i]), formats.unpack_A_src, formats.unpack_A_dst);
                 }
             }
@@ -109,8 +106,8 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
 #ifdef LLK_TRISC_MATH
 #include "llk_math_common.h"
-#include "llk_math_eltwise_binary_sfpu.h"
 #include "llk_math_eltwise_unary_datacopy.h"
+#include "llk_math_eltwise_unary_sfpu.h"
 #include "sfpu_operations.h"
 
 void run_kernel(RUNTIME_PARAMETERS params)
@@ -122,10 +119,8 @@ void run_kernel(RUNTIME_PARAMETERS params)
 #ifndef SPEED_OF_LIGHT
     const std::uint32_t LOOP_FACTOR = params.LOOP_FACTOR;
     const std::uint32_t num_faces   = params.num_faces;
-
-    const std::uint32_t TILE_CNT = params.TILE_CNT;
+    const std::uint32_t TILE_CNT    = params.TILE_CNT;
 #endif
-
     const DataCopyType data_copy_type = DataCopyType::A2D;
 
     // MEASURE_OP_INIT selects which half of the init the measured zone brackets.
@@ -144,7 +139,11 @@ void run_kernel(RUNTIME_PARAMETERS params)
     };
     auto op_init = [&]()
     {
-        test_utils::call_binary_sfpu_operation_init<APPROX_MODE, is_fp32_dest_acc_en, SFPU_BINARY_OPERATION, ITERATIONS>();
+        // CLAMP_NEGATIVE must match the accuracy harness (which passes it): for
+        // approx exp it selects the clamped approx-exp branch in sfpu_operations.
+        // Omitting it defaulted to false -> a different approx path -> mismatch.
+        test_utils::
+            call_unary_sfpu_operation_init<SFPU_UNARY_OPERATION, APPROX_MODE, is_fp32_dest_acc_en, ITERATIONS, FAST_MODE, STABLE_SORT, CLAMP_NEGATIVE>();
     };
 
     if constexpr (MEASURE_OP_INIT)
@@ -201,9 +200,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
             {
                 for (std::uint32_t block_start = 0; block_start < TILE_CNT; block_start += MAX_TILES_DEST)
                 {
-                    int block_tiles = std::min(TILE_CNT - block_start, MAX_TILES_DEST);
+                    std::uint32_t block_tiles = std::min(TILE_CNT - block_start, MAX_TILES_DEST);
 
-                    for (int block_tile = 0; block_tile < block_tiles; ++block_tile)
+                    for (std::uint32_t block_tile = 0; block_tile < block_tiles; ++block_tile)
                     {
                         if constexpr (unpack_to_dest)
                         {
@@ -241,15 +240,38 @@ void run_kernel(RUNTIME_PARAMETERS params)
                         if constexpr (!unpack_to_dest)
                         {
                             LLK_ASSERT(
-                                (block_tile < get_dest_max_tiles<DstSync::SyncHalf, is_fp32_dest_acc_en, DstTileShape::Tile32x32>()),
+                                (block_tile < get_dest_max_tiles<DST_SYNC_MODE, is_fp32_dest_acc_en, DstTileShape::Tile32x32>()),
                                 "block_tile exceeds max dest tiles");
                             _llk_math_eltwise_unary_datacopy_<data_copy_type, DST_SYNC_MODE, is_fp32_dest_acc_en, BROADCAST_TYPE, unpack_to_dest>(
                                 block_tile, formats.math, formats.math);
                         }
 
-                        test_utils::
-                            call_binary_sfpu_operation<DST_SYNC_MODE, is_fp32_dest_acc_en, APPROX_MODE, SFPU_BINARY_OPERATION, ITERATIONS, formats.math>(
-                                block_tile, (block_tile + 1) % MAX_TILES_DEST, block_tile);
+                        // MEASURE_DATACOPY_ONLY drops the SFPU call so the zone
+                        // measures the datacopy alone. Subtracting that from the
+                        // unelided zone gives the SFPU operation's own math cost
+                        // at formats where isolating it directly is impossible:
+                        // that needs unpack_to_dest, which the hardware offers
+                        // only for 32-bit input with dest_acc on, so every clean
+                        // SFPU math row today is Float32.
+                        //
+                        // Measured in the same kernel, at the same N, in the same
+                        // build, so the pipeline fill cancels in the subtraction
+                        // rather than being left behind -- which is why this is
+                        // done here instead of borrowing copy_tile/math from the
+                        // datacopy benchmark.
+                        if constexpr (!MEASURE_DATACOPY_ONLY)
+                        {
+                            test_utils::call_unary_sfpu_operation<
+                                DST_SYNC_MODE,
+                                is_fp32_dest_acc_en,
+                                SFPU_UNARY_OPERATION,
+                                APPROX_MODE,
+                                is_fp32_dest_acc_en,
+                                ITERATIONS,
+                                FAST_MODE,
+                                STABLE_SORT,
+                                CLAMP_NEGATIVE>(block_tile, formats.math);
+                        }
                     }
                 }
             }
@@ -270,13 +292,21 @@ void run_kernel(RUNTIME_PARAMETERS params)
                         LLK_ASSERT(
                             (block_tile < get_dest_max_tiles<DST_SYNC_MODE, is_fp32_dest_acc_en, DstTileShape::Tile32x32>()),
                             "block_tile exceeds max dest tiles");
+
                         _llk_math_eltwise_unary_datacopy_<data_copy_type, DST_SYNC_MODE, is_fp32_dest_acc_en, BROADCAST_TYPE, unpack_to_dest>(
                             block_tile, formats.math, formats.math);
 
-                        // Start SFPU binary operation
-                        test_utils::
-                            call_binary_sfpu_operation<DST_SYNC_MODE, is_fp32_dest_acc_en, APPROX_MODE, SFPU_BINARY_OPERATION, ITERATIONS, formats.math>(
-                                block_tile, (block_tile + 1) % MAX_TILES_DEST, block_tile);
+                        // Start SFPU operation
+                        test_utils::call_unary_sfpu_operation<
+                            DST_SYNC_MODE,
+                            is_fp32_dest_acc_en,
+                            SFPU_UNARY_OPERATION,
+                            APPROX_MODE,
+                            is_fp32_dest_acc_en,
+                            ITERATIONS,
+                            FAST_MODE,
+                            STABLE_SORT,
+                            CLAMP_NEGATIVE>(block_tile, formats.math);
                     }
 
                     _llk_math_dest_section_done_<DST_SYNC_MODE, is_fp32_dest_acc_en>();
@@ -303,11 +333,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
 #ifndef SPEED_OF_LIGHT
     const std::uint32_t LOOP_FACTOR = params.LOOP_FACTOR;
     const std::uint32_t num_faces   = params.num_faces;
-
-    const std::uint32_t TILE_CNT = params.TILE_CNT;
-    const auto& buffer_Res       = params.buffer_Res;
+    const std::uint32_t TILE_CNT    = params.TILE_CNT;
+    const auto& buffer_Res          = params.buffer_Res;
 #endif
-
     {
         START_PERF_MEASURE("INIT")
 
@@ -331,12 +359,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
                 {
                     std::uint32_t block_tiles = std::min(TILE_CNT - block_start, MAX_TILES_DEST);
 
-                    for (std::uint32_t block_tile = 0; block_tile < block_tiles; block_tile++)
+                    for (std::uint32_t block_tile = 0; block_tile < block_tiles; ++block_tile)
                     {
                         LLK_ASSERT(
                             (block_tile < get_dest_max_tiles<DST_SYNC_MODE, is_fp32_dest_acc_en, DstTileShape::Tile32x32>()),
                             "block_tile exceeds max dest tiles");
-                        _llk_pack_<DST_SYNC_MODE, is_fp32_dest_acc_en>(block_tile, L1_ADDRESS(buffer_Res[block_start + block_tile]));
+                        _llk_pack_<DST_SYNC_MODE, is_fp32_dest_acc_en, ckernel::PackMode::Default>(
+                            block_tile, L1_ADDRESS(buffer_Res[block_start + block_tile]));
                     }
                 }
             }
@@ -350,12 +379,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
                     std::uint32_t block_tiles = std::min(TILE_CNT - block_start, MAX_TILES_DEST);
 
                     _llk_packer_wait_for_math_done_();
-                    for (std::uint32_t block_tile = 0; block_tile < block_tiles; block_tile++)
+                    for (std::uint32_t block_tile = 0; block_tile < block_tiles; ++block_tile)
                     {
                         LLK_ASSERT(
                             (block_tile < get_dest_max_tiles<DST_SYNC_MODE, is_fp32_dest_acc_en, DstTileShape::Tile32x32>()),
                             "block_tile exceeds max dest tiles");
-                        _llk_pack_<DST_SYNC_MODE, is_fp32_dest_acc_en>(block_tile, L1_ADDRESS(buffer_Res[block_start + block_tile]));
+                        _llk_pack_<DST_SYNC_MODE, is_fp32_dest_acc_en, ckernel::PackMode::Default>(
+                            block_tile, L1_ADDRESS(buffer_Res[block_start + block_tile]));
                     }
                     _llk_pack_dest_section_done_<DST_SYNC_MODE, is_fp32_dest_acc_en>();
                 }

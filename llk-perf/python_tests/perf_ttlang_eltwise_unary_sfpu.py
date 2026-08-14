@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+from dataclasses import dataclass
+
 import pytest
 from helpers.format_config import DataFormat
 from helpers.llk_params import (
@@ -19,6 +21,7 @@ from helpers.sfpu_domains import sfpu_unary_ops
 from helpers.stimuli_config import StimuliConfig
 from helpers.stimuli_generator import calculate_tile_and_face_counts
 from helpers.test_variant_parameters import (
+    TemplateParameter,
     APPROX_MODE,
     CLAMP_NEGATIVE,
     FAST_MODE,
@@ -233,6 +236,44 @@ def _get_formats(mathop):
     return _REPRESENTATIVE_FORMAT_PAIRS
 
 
+@dataclass
+class MEASURE_OP_INIT(TemplateParameter):
+    """Which half of the init block sits inside the measured INIT zone.
+
+    True brackets copy_tile_init's own call with the kernel-wide hw_configure
+    hoisted before it; False brackets the hw_configure with the op init hoisted
+    after. Both halves run either way and in the same order, so the two variants
+    execute identical work and differ only in where the measurement starts.
+
+    Two zones are all the harness supports -- ``read_perf_zone_names_from_elf``
+    hardcodes ``[INIT, TILE_LOOP]`` by position -- so splitting the init into two
+    measurements means two variants rather than two zones.
+    """
+
+    measure_op_init: bool = False
+
+    def convert_to_cpp(self) -> str:
+        value = "true" if self.measure_op_init else "false"
+        return f"constexpr bool MEASURE_OP_INIT = {value};"
+
+
+@dataclass
+class MEASURE_DATACOPY_ONLY(TemplateParameter):
+    """Whether the math loop drops the SFPU call and measures the datacopy alone.
+
+    The subtrahend for recovering an SFPU operation's math cost at formats where
+    it cannot be isolated directly. Both variants run the same datacopy, in the
+    same kernel and build, over the same tiles, so subtracting one zone from the
+    other cancels the pipeline fill instead of leaving it behind.
+    """
+
+    measure_datacopy_only: bool = False
+
+    def convert_to_cpp(self) -> str:
+        value = "true" if self.measure_datacopy_only else "false"
+        return f"constexpr bool MEASURE_DATACOPY_ONLY = {value};"
+
+
 @pytest.mark.perf
 @parametrize(
     formats=lambda mathop: _get_formats(mathop),
@@ -275,7 +316,17 @@ def _get_formats(mathop):
     # part of the cost, not contamination to be swept away.
     input_dimensions=[
         [128, 128],  # tile_cnt: 16
-    ]
+    ],
+    # Which half of the init the measured zone brackets; see the source. Two
+    # variants of identical work, differing only in where the bracket sits, is
+    # what makes the operation's own init attributable instead of lumped with
+    # the common init.
+    measure_op_init=[False, True],
+    # The datacopy-only variant is the subtrahend; see the class above. Swept
+    # across every format, not just the ones where the SFPU op cannot be isolated,
+    # so that where a clean measurement does exist the subtraction can be checked
+    # against it rather than trusted.
+    measure_datacopy_only=[False, True],
 )
 def test_perf_eltwise_unary_sfpu(
     perf_report,
@@ -288,6 +339,8 @@ def test_perf_eltwise_unary_sfpu(
     fast_mode,
     stable_sort,
     input_dimensions,
+    measure_op_init,
+    measure_datacopy_only,
 ):
     # Calculate tile count from input dimensions
     tile_count_A, tile_count_B, faces_to_generate = calculate_tile_and_face_counts(
@@ -302,7 +355,7 @@ def test_perf_eltwise_unary_sfpu(
     )
 
     configuration = PerfConfig(
-        "sources/eltwise_unary_sfpu_perf.cpp",
+        "sources/ttlang_eltwise_unary_sfpu_perf.cpp",
         formats,
         run_types=[
             PerfRunType.L1_TO_L1,
@@ -312,6 +365,9 @@ def test_perf_eltwise_unary_sfpu(
             PerfRunType.L1_CONGESTION,
         ],
         templates=[
+            MEASURE_OP_INIT(measure_op_init),
+            MEASURE_DATACOPY_ONLY(measure_datacopy_only),
+            
             MATH_OP(mathop=mathop),
             APPROX_MODE(approx_mode),
             ITERATIONS(iterations),
