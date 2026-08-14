@@ -16,18 +16,18 @@
 // LOCAL-DAG: %[[LOCAL_READY_INDEX:.*]] = arith.constant 2 : index
 // LOCAL: %[[LOCAL_READY:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_READY_INDEX]])
 // LOCAL: %[[LOCAL_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_READY]], {{.*}})
-// LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_READY_NOC]]
+// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_READY_NOC]]
 // LOCAL: %[[LOCAL_COMPLETION:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
 // LOCAL: %[[LOCAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION]], {{.*}})
-// LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
+// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
 // LOCAL-LABEL: func.func @fabric_sender
 // LOCAL-DAG: %[[LOCAL_FABRIC_DONE_INDEX:.*]] = arith.constant 1 : index
 // LOCAL-DAG: %[[LOCAL_FABRIC_READY_INDEX:.*]] = arith.constant 3 : index
 // LOCAL: %[[LOCAL_FABRIC_READY:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_READY_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_FABRIC_READY_PTR:.*]] = ttkernel.reinterpret_cast(%[[LOCAL_FABRIC_READY]])
-// LOCAL-NEXT: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_FABRIC_READY_PTR]]
 // LOCAL: %[[LOCAL_FABRIC_DONE:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_DONE_INDEX]])
 // LOCAL: %[[LOCAL_REMOTE_DONE:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[LOCAL_FABRIC_DONE]], {{.*}})
+// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_FABRIC_READY_PTR]]
 // LOCAL: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[LOCAL_REMOTE_DONE]], {{.*}})
 // LOCAL-NOT: ttkernel.get_semaphore
 // LOCAL-LABEL: func.func @fabric_receiver
@@ -35,9 +35,9 @@
 // LOCAL-DAG: %[[LOCAL_FABRIC_READY_TARGET_INDEX:.*]] = arith.constant 2 : index
 // LOCAL: %[[LOCAL_FABRIC_READY_TARGET:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_READY_TARGET_INDEX]])
 // LOCAL: %[[LOCAL_FABRIC_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[LOCAL_FABRIC_READY_TARGET]], {{.*}})
-// LOCAL-NEXT: ttkernel.routing_plane.atomic_inc({{.*}}, %[[LOCAL_FABRIC_READY_NOC]], {{.*}})
 // LOCAL: %[[LOCAL_FABRIC_WAIT:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_WAIT_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_FABRIC_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_FABRIC_WAIT]])
+// LOCAL: ttkernel.routing_plane.atomic_inc({{.*}}, %[[LOCAL_FABRIC_READY_NOC]], {{.*}})
 // LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_FABRIC_WAIT_PTR]]
 // LOCAL-NOT: ttkernel.get_semaphore
 
@@ -51,58 +51,62 @@
 // GLOBAL-DAG: %[[GLOBAL_READY_INDEX:.*]] = arith.constant 3 : index
 // GLOBAL: %[[GLOBAL_READY:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
 // GLOBAL: %[[GLOBAL_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_READY]], {{.*}})
-// GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_READY_NOC]]
+// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_READY_NOC]]
 // GLOBAL: %[[GLOBAL_COMPLETION:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // GLOBAL: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION]], {{.*}})
-// GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
+// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 // GLOBAL-LABEL: func.func @fabric_sender
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_DONE_INDEX:.*]] = arith.constant 2 : index
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_READY_INDEX:.*]] = arith.constant 4 : index
 // GLOBAL: %[[GLOBAL_FABRIC_READY:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_READY_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_FABRIC_READY_PTR:.*]] = ttkernel.reinterpret_cast(%[[GLOBAL_FABRIC_READY]])
-// GLOBAL-NEXT: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_FABRIC_READY_PTR]]
 // GLOBAL: %[[GLOBAL_FABRIC_DONE:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_DONE_INDEX]])
 // GLOBAL: %[[GLOBAL_REMOTE_DONE:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_FABRIC_DONE]], {{.*}})
+// GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_FABRIC_READY_PTR]]
 // GLOBAL: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[GLOBAL_REMOTE_DONE]], {{.*}})
 // GLOBAL-LABEL: func.func @fabric_receiver
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_WAIT_INDEX:.*]] = arith.constant 1 : index
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_READY_TARGET_INDEX:.*]] = arith.constant 3 : index
 // GLOBAL: %[[GLOBAL_FABRIC_READY_TARGET:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_READY_TARGET_INDEX]])
 // GLOBAL: %[[GLOBAL_FABRIC_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_FABRIC_READY_TARGET]], {{.*}})
-// GLOBAL-NEXT: ttkernel.routing_plane.atomic_inc({{.*}}, %[[GLOBAL_FABRIC_READY_NOC]], {{.*}})
 // GLOBAL: %[[GLOBAL_FABRIC_WAIT:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_WAIT_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_FABRIC_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_FABRIC_WAIT]])
+// GLOBAL: ttkernel.routing_plane.atomic_inc({{.*}}, %[[GLOBAL_FABRIC_READY_NOC]], {{.*}})
 // GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_FABRIC_WAIT_PTR]]
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @local_transfer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %reserved = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %receive = ttl.copy %pipe, %reserved
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %receive : !ttl.transfer_handle
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %reserved = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %receive : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
     func.return
   }
 
   func.func @fabric_sender()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 2, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 2, block_count = 1} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 37 {
       deviceTransfer = #ttl.device_transfer<
@@ -110,17 +114,19 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
           edge = <source = <coordinates = [0, 2]>,
                   destination = <coordinates = [0, 0]>>>
     } : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37> {
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
     func.return
   }
 
   func.func @fabric_receiver()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 3, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 3, block_count = 1} {dfb_id = 3 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 37 {
       deviceTransfer = #ttl.device_transfer<
@@ -128,15 +134,17 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
           edge = <source = <coordinates = [0, 2]>,
                   destination = <coordinates = [0, 0]>>>
     } : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>
-    %reserved = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %receive = ttl.copy %pipe, %reserved
-        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %receive : !ttl.transfer_handle
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37> {
+      %reserved = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 37>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %receive : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
     func.return
   }
 }

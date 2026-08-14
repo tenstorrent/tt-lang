@@ -616,18 +616,20 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
               pipeGraph.getPipeReceiverEndpoint(endpointId);
           const PipeReceiverDFBNode &receiverDFB =
               pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-          if (!receiverDFB.hasProvenPipeOnlyProducerStream) {
-            diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
-                << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex << ": "
-                << receiverDFB.pipeOnlyProducerStreamFailureReason;
+          if (!receiverDFB.hasProvenComputedAddressProducerPhase) {
+            Diagnostic &note =
+                diagnostic.attachNote(endpoint.receiverDFBInfo.loc);
+            note << getReceiverDFBIdentityString(endpoint.receiverDFB) << ": "
+                 << receiverDFB.computedAddressProducerPhaseFailureReason;
             attachedReason = true;
             break;
           }
           if (endpoint.addressSequence.getKind() ==
               ReceiverAddressSequenceProofKind::FullyDynamic) {
-            diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
-                << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex
-                << " has no proven receiver address sequence";
+            Diagnostic &note =
+                diagnostic.attachNote(endpoint.receiverDFBInfo.loc);
+            note << getReceiverDFBIdentityString(endpoint.receiverDFB)
+                 << " has no proven receiver address sequence";
             attachedReason = true;
             break;
           }

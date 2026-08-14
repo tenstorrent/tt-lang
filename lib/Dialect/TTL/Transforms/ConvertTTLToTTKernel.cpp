@@ -2557,7 +2557,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
   auto pipeGraphOrErr =
-      PipeGraph::build(mod, transferIndex, foreachLoweringInfo);
+      PipeGraph::build(mod, transferIndex, foreachLoweringInfo,
+                       mod->hasAttr(kDFBAllocationsAttrName)
+                           ? PipeDFBIndexMode::Finalized
+                           : PipeDFBIndexMode::DeclaredPhysical);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }

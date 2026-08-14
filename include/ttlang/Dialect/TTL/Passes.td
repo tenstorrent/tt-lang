@@ -340,8 +340,8 @@ def TTLConvertTTLToTTKernel
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
-    exact launch-node domains, and single-block event regions required by
-    protocol planning.
+    conservative endpoint-contained launch-node domains and single-block event
+    regions required by protocol planning.
   }];
 
   let options = [
@@ -909,11 +909,10 @@ def TTLVerifyPipeNetSchedule
     use their exact launch-node domain. Otherwise, the static PipeNet endpoint
     role provides a conservative domain that includes every possible event;
     execution-count analysis still removes coordinates proven not to execute.
-    Multi-block regions that contribute pipe events, events without a finite
-    static role domain, recursive calls containing pipe events, and schedules
-    with more than 4096 expanded event occurrences at one launch node are
-    rejected because the verifier cannot construct a correct bounded event
-    graph.
+    Multi-block regions that contribute pipe events, recursive calls containing
+    pipe events, and schedules with more than 4096 expanded event occurrences
+    at one launch node are rejected because the verifier cannot construct a
+    correct bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
