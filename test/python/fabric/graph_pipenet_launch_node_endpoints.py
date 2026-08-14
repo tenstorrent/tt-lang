@@ -4,8 +4,9 @@
 
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-FINAL < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """Compile a graph PipeNet whose device edges cross launch-node endpoints."""
@@ -83,5 +84,14 @@ if __name__ == "__main__":
 # CHECK-INITIAL-SAME: <srcX = 2, srcY = 0, dstStartX = 0, dstStartY = 0
 # CHECK-INITIAL-NOT: deviceTransfer
 # CHECK-INITIAL-NOT: ttl.node
+
+# Both mapped callbacks must retain their transport after PipeGraph expands
+# the factorized graph records into device-specific transfer nodes.
+# CHECK-FINAL-LABEL: func.func @send_data_movement()
+# CHECK-FINAL-SAME: ttl.fabric_routes =
+# CHECK-FINAL: call_opaque "experimental::routing_plane_fused_write_atomic_inc"
+# CHECK-FINAL-LABEL: func.func @receive_data_movement()
+# CHECK-FINAL-SAME: ttl.fabric_routes =
+# CHECK-FINAL: call_opaque "experimental::routing_plane_atomic_inc"
 
 # CHECK-CPP: Compiled kernel ready

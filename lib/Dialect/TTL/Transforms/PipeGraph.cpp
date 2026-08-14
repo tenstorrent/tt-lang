@@ -61,6 +61,12 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, PipeNetRecordLoop> pipeRecordLoops;
   llvm::DenseMap<Operation *, RecordExecutionCountAnalysisCache>
       recordExecutionCountAnalyses;
+  llvm::DenseMap<PipeNetRecordsAttr, SmallVector<PipeRecordAttr>>
+      expandedPipeRecords;
+  llvm::DenseMap<PipeNetRecordsAttr, SmallVector<PipeRecordLocalIndex>>
+      sourceRecordLocalIndices;
+  llvm::DenseMap<PipeNetRecordsAttr, SmallVector<PipeRecordLocalIndex>>
+      destinationRecordLocalIndices;
 };
 
 namespace {
@@ -1439,12 +1445,46 @@ getSelectedRecordLoop(const PipeReference &pipeRef,
   return recordLoop;
 }
 
+static ArrayRef<PipeRecordAttr>
+getExpandedPipeRecords(PipeNetRecordsAttr records,
+                       PipeGraphAnalysisState &analysisState) {
+  auto insertion = analysisState.expandedPipeRecords.try_emplace(records);
+  auto recordsIt = insertion.first;
+  if (insertion.second) {
+    forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
+      recordsIt->second.push_back(record);
+    });
+  }
+  return recordsIt->second;
+}
+
+static ArrayRef<PipeRecordLocalIndex>
+getRecordLocalIndices(PipeNetRecordsAttr records, PipeRole role,
+                      PipeGraphAnalysisState &analysisState) {
+  assert((role == PipeRole::Source || role == PipeRole::Destination) &&
+         "selected records require one endpoint role");
+  auto &cache = role == PipeRole::Source
+                    ? analysisState.sourceRecordLocalIndices
+                    : analysisState.destinationRecordLocalIndices;
+  auto insertion = cache.try_emplace(records);
+  auto indicesIt = insertion.first;
+  if (insertion.second) {
+    FailureOr<SmallVector<PipeRecordLocalIndex>> localIndices =
+        getPipeRecordLocalIndices(records, role);
+    assert(succeeded(localIndices) &&
+           "verified PipeNet records must have local indices");
+    indicesIt->second = std::move(*localIndices);
+  }
+  return indicesIt->second;
+}
+
 static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
     Operation *op, const LaunchExecutionLocation &location,
     const PipeReference &pipeRef, std::uint64_t recordIndex,
     PipeGraphAnalysisState &analysisState) {
-  assert(pipeRef.isSelected() &&
-         recordIndex < pipeRef.getRecords().getPipes().size() &&
+  ArrayRef<PipeRecordAttr> records =
+      getExpandedPipeRecords(pipeRef.getRecords(), analysisState);
+  assert(pipeRef.isSelected() && recordIndex < records.size() &&
          "selected pipe execution requires a valid record index");
   Operation *recordLoop = getSelectedRecordLoop(pipeRef, analysisState);
   auto forOp = cast<scf::ForOp>(recordLoop);
@@ -1459,9 +1499,15 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
   auto analysisIt = analysesByContext.find(context);
   if (analysisIt == analysesByContext.end()) {
     Value inductionVariable = forOp.getInductionVar();
+    PipeRole role =
+        pipeRef.isSelectedSrc() ? PipeRole::Source : PipeRole::Destination;
+    ArrayRef<PipeRecordLocalIndex> localIndices =
+        getRecordLocalIndices(pipeRef.getRecords(), role, analysisState);
+    assert(localIndices.size() == records.size() &&
+           "every expanded record must have one local index");
     llvm::APInt inductionValue(IndexType::kInternalStorageBitWidth,
-                               recordIndex);
-    PipeRecordAttr record = pipeRef.getRecords().getPipes()[recordIndex];
+                               localIndices[recordIndex].index);
+    PipeRecordAttr record = records[recordIndex];
     auto analysis = std::make_unique<ExecutionCountAnalysis>(
         *recordCache.sharedState,
         [inductionVariable, inductionValue, record, location,
@@ -1515,18 +1561,20 @@ struct PipeProtocolCandidate {
   std::optional<std::uint64_t> recordIndex;
 };
 
-static SmallVector<PipeType>
-getPipeTypesFromReference(MLIRContext *context, const PipeReference &pipeRef) {
+static SmallVector<PipeType> getPipeTypesFromReference(
+    MLIRContext *context, const PipeReference &pipeRef,
+    PipeGraphAnalysisState &analysisState) {
   if (pipeRef.isStatic()) {
     return SmallVector<PipeType>{pipeRef.getStaticPipeType()};
   }
 
   SmallVector<PipeType> pipeTypes;
-  PipeNetRecordsAttr records = pipeRef.getRecords();
-  pipeTypes.reserve(records.getPipes().size());
-  for (PipeRecordAttr record : records.getPipes()) {
+  ArrayRef<PipeRecordAttr> records =
+      getExpandedPipeRecords(pipeRef.getRecords(), analysisState);
+  pipeTypes.reserve(records.size());
+  for (PipeRecordAttr record : records) {
     pipeTypes.push_back(
-        getPipeTypeFromRecord(context, record, records.getPipeNetId()));
+        getPipeTypeFromRecord(context, record, pipeRef.getPipeNetId()));
   }
   return pipeTypes;
 }
@@ -1534,12 +1582,14 @@ getPipeTypesFromReference(MLIRContext *context, const PipeReference &pipeRef) {
 static DeviceTransferAttr
 getPipeRecordDeviceTransfer(const PipeReference &pipeRef,
                             std::size_t recordIndex,
-                            DeviceTransferAttr staticDeviceTransfer) {
+                            DeviceTransferAttr staticDeviceTransfer,
+                            PipeGraphAnalysisState &analysisState) {
   if (pipeRef.isStatic()) {
     assert(recordIndex == 0 && "static pipe has exactly one record");
     return staticDeviceTransfer;
   }
-  ArrayRef<PipeRecordAttr> records = pipeRef.getRecords().getPipes();
+  ArrayRef<PipeRecordAttr> records =
+      getExpandedPipeRecords(pipeRef.getRecords(), analysisState);
   assert(recordIndex < records.size() && "selected record index out of range");
   return records[recordIndex].getDeviceTransfer();
 }
@@ -1595,13 +1645,14 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
       LaunchNodeDomain sendDomain =
           lookupOperationLaunchDomain(sendOp.getOperation(), analysisState);
       SmallVector<PipeType> pipeTypes =
-          getPipeTypesFromReference(sendOp.getContext(), *pipeRef);
+          getPipeTypesFromReference(sendOp.getContext(), *pipeRef,
+                                    analysisState);
       for (auto [recordIndex, pipeType] : llvm::enumerate(pipeTypes)) {
         std::optional<std::uint64_t> selectedRecordIndex =
             pipeRef->isSelected() ? std::optional<std::uint64_t>(recordIndex)
                                   : std::nullopt;
         DeviceTransferAttr deviceTransfer = getPipeRecordDeviceTransfer(
-            *pipeRef, recordIndex, staticDeviceTransfer);
+            *pipeRef, recordIndex, staticDeviceTransfer, analysisState);
         PipeKey pipeKey = getPipeKey(pipeType);
         LaunchNodeCoord source{pipeKey.srcX, pipeKey.srcY};
         if (pipeRef->isStatic() && analysisState.hasLaunchGrid &&
@@ -1652,10 +1703,11 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
     SmallVector<PipeType> pipeTypes =
-        getPipeTypesFromReference(postOp.getContext(), *pipeRef);
+        getPipeTypesFromReference(postOp.getContext(), *pipeRef,
+                                  analysisState);
     for (auto [recordIndex, pipeType] : llvm::enumerate(pipeTypes)) {
       DeviceTransferAttr deviceTransfer = getPipeRecordDeviceTransfer(
-          *pipeRef, recordIndex, staticDeviceTransfer);
+          *pipeRef, recordIndex, staticDeviceTransfer, analysisState);
       std::optional<std::uint64_t> selectedRecordIndex =
           pipeRef->isSelected() ? std::optional<std::uint64_t>(recordIndex)
                                 : std::nullopt;
@@ -1827,19 +1879,27 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           };
           auto sendForOp = cast<scf::ForOp>(sendRecordLoop);
           auto postForOp = cast<scf::ForOp>(postRecordLoop);
-          PipeRecordAttr sendRecord =
-              (*sendPipeRef)
-                  .getRecords()
-                  .getPipes()[*candidates.sends[sendIndex].recordIndex];
-          PipeRecordAttr postRecord =
-              (*postPipeRef)
-                  .getRecords()
-                  .getPipes()[*postsIt->second[sendIndex].recordIndex];
+          ArrayRef<PipeRecordAttr> sendRecords = getExpandedPipeRecords(
+              (*sendPipeRef).getRecords(), analysisState);
+          ArrayRef<PipeRecordAttr> postRecords = getExpandedPipeRecords(
+              (*postPipeRef).getRecords(), analysisState);
+          std::uint64_t sendRecordIndex =
+              *candidates.sends[sendIndex].recordIndex;
+          std::uint64_t postRecordIndex =
+              *postsIt->second[sendIndex].recordIndex;
+          PipeRecordAttr sendRecord = sendRecords[sendRecordIndex];
+          PipeRecordAttr postRecord = postRecords[postRecordIndex];
+          ArrayRef<PipeRecordLocalIndex> sendLocalIndices =
+              getRecordLocalIndices((*sendPipeRef).getRecords(),
+                                    PipeRole::Source, analysisState);
+          ArrayRef<PipeRecordLocalIndex> postLocalIndices =
+              getRecordLocalIndices((*postPipeRef).getRecords(),
+                                    PipeRole::Destination, analysisState);
           auto evaluateSendContextValue = [&](Value value) {
             if (value == sendForOp.getInductionVar()) {
               return std::optional<llvm::APInt>(
                   llvm::APInt(IndexType::kInternalStorageBitWidth,
-                              *candidates.sends[sendIndex].recordIndex));
+                              sendLocalIndices[sendRecordIndex].index));
             }
             return evaluateSelectedPipeRecordValue(value, sendRecord);
           };
@@ -1847,7 +1907,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
             if (value == postForOp.getInductionVar()) {
               return std::optional<llvm::APInt>(
                   llvm::APInt(IndexType::kInternalStorageBitWidth,
-                              *postsIt->second[sendIndex].recordIndex));
+                              postLocalIndices[postRecordIndex].index));
             }
             return evaluateSelectedPipeRecordValue(value, postRecord);
           };
