@@ -1337,6 +1337,8 @@ class TTLGenericCompiler(TTCompilerBase):
         predicate point at the comparison itself rather than the enclosing
         function or block."""
         with self._loc_for_node(node):
+            if len(node.ops) != 1 or len(node.comparators) != 1:
+                self._raise_error(node, "chained comparisons are not supported")
             try:
                 return super(TTLGenericCompiler, self).visit_Compare(node)
             except (ValueError, TypeError, NotImplementedError) as e:
