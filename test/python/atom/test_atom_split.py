@@ -1076,6 +1076,17 @@ def test_composition_hoists_allocation_groups_from_control_flow():
     ]
     assert len(resource_statements) == 5
 
+    loop = next(
+        statement for statement in spec.fn_ast.body if isinstance(statement, ast.For)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and atom_rules.call_name(node) in atom_rules.SETUP_FACTORY_NAMES
+        for node in ast.walk(loop)
+    )
+    assert any(isinstance(node, ast.Pass) for node in ast.walk(loop))
+    ast.parse(ast.unparse(spec.fn_ast))
+
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(_bind_dfb_allocation_groups(spec.allocation_groups))
     with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
