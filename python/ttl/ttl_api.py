@@ -2418,6 +2418,9 @@ def _lower_program_to_kernel(
             "ttl-form-pipe-transports{" + " ".join(pipe_transport_options) + "}"
         )
         reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
+        unsafe_assume_allocation_groups_flag = int(
+            compiler_options.unsafe_assume_dfb_allocation_groups
+        )
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
         )
@@ -2439,6 +2442,8 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            "unsafe-assume-allocation-groups="
+            f"{unsafe_assume_allocation_groups_flag} "
             f"exact-coloring-search-limit={exact_coloring_search_limit}"
             f" l1-budget-override={l1_budget_override}"
             "}",

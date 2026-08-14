@@ -93,6 +93,11 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<bool> unsafeAssumeAllocationGroups{
+      *this, "unsafe-assume-allocation-groups",
+      llvm::cl::desc("Trust explicit DFB allocation groups when runtime "
+                     "handoff cannot be proven."),
+      llvm::cl::init(false)};
   Option<std::uint64_t> exactColoringSearchStateLimit{
       *this, "exact-coloring-search-limit",
       llvm::cl::desc("Maximum states examined by exact DFB allocation before "
