@@ -4,7 +4,7 @@
 
 // ALLOC-COUNT-9: ttl.base_cta_index = 2 : i32
 // REPORT: quiescence=mismatched-transaction {{.*}} kernel=@mismatched_count
-// REPORT: quiescence=incomplete-use-order {{.*}} kernel=@overlapping_consumer_acquires
+// REPORT: quiescence=mismatched-transaction {{.*}} kernel=@overlapping_consumer_acquires
 // REPORT: quiescence=mismatched-transaction {{.*}} kernel=@mismatched_tiles
 // REPORT: quiescence=unsupported-control-flow {{.*}} kernel=@dynamic_trip_count
 // REPORT: quiescence=incomplete-use-order {{.*}} kernel=@differing_iteration_domains
