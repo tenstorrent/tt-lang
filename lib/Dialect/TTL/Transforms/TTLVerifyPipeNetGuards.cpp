@@ -339,6 +339,7 @@ struct PipeNetOperationDomainInfo {
 /// Final launch-node facts for one PipeNet scope.
 struct PipeNetScopeDomainInfo {
   LaunchNodeDomain domain;
+  Operation *unanalyzableOp = nullptr;
   PipeNetScopeLaunchNodeDomains scope;
 };
 
@@ -369,9 +370,10 @@ public:
     };
     options.pipeNetScopeCallback =
         [&](PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
-            Operation * /*unanalyzableOp*/,
+            Operation *unanalyzableOp,
             const PipeNetScopeLaunchNodeDomains &scope) {
-          scopeDomains[scopeOp.getOperation()] = {domain, scope};
+          scopeDomains[scopeOp.getOperation()] = {domain, unanalyzableOp,
+                                                  scope};
         };
     solver.load<LaunchNodeDomainAnalysis>(state, options);
     valid = succeeded(solver.initializeAndRun(module)) && !state.sawError;
@@ -607,6 +609,7 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
 /// Verify that a `ttl.pipenet_scope` body only executes on nodes participating
 /// in at least one selected PipeNet role.
 void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
+                        Operation *unanalyzableOp,
                         const PipeNetScopeLaunchNodeDomains &scope,
                         ModuleState &state) {
   std::string msg;
@@ -632,8 +635,8 @@ void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
        << formatGuardExpression(scope.roles, state)
        << ": ...` so non-participating nodes skip it";
   }
-  checkKnownSubset(scopeOp, domain, scope.domain,
-                   /*unanalyzableOp=*/nullptr, msg, scope.roles, state);
+  checkKnownSubset(scopeOp, domain, scope.domain, unanalyzableOp, msg,
+                   scope.roles, state);
 }
 
 /// Dispatch the generic launch-domain callback to the checks that care about
@@ -2316,7 +2319,8 @@ struct TTLVerifyPipeNetGuardsPass
       if (auto scopeOp = mlir::dyn_cast<PipeNetScopeOp>(op)) {
         if (const PipeNetScopeDomainInfo *info =
                 launchNodeAnalysis.getScopeInfo(scopeOp)) {
-          verifyPipeNetScope(scopeOp, info->domain, info->scope, state);
+          verifyPipeNetScope(scopeOp, info->domain, info->unanalyzableOp,
+                             info->scope, state);
         }
       }
     });
