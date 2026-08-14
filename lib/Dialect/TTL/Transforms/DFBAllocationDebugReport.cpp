@@ -248,6 +248,13 @@ static void printLifecycleEpochs(llvm::raw_ostream &output,
         printPointerOwner(output, epoch.writePointerOwner);
         output << ",read_owner=";
         printPointerOwner(output, epoch.readPointerOwner);
+        if (epoch.terminalWritePointerOwner != epoch.writePointerOwner ||
+            epoch.terminalReadPointerOwner != epoch.readPointerOwner) {
+          output << ",terminal_write_owner=";
+          printPointerOwner(output, epoch.terminalWritePointerOwner);
+          output << ",terminal_read_owner=";
+          printPointerOwner(output, epoch.terminalReadPointerOwner);
+        }
         output << ",entry_reconfiguration=";
         if (epoch.entryReconfigurationOrdinal) {
           output << *epoch.entryReconfigurationOrdinal;
@@ -297,6 +304,10 @@ static bool hasEqualLifecycleEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.readCursorRuns == rhsEpoch.readCursorRuns &&
                lhsEpoch.writePointerOwner == rhsEpoch.writePointerOwner &&
                lhsEpoch.readPointerOwner == rhsEpoch.readPointerOwner &&
+               lhsEpoch.terminalWritePointerOwner ==
+                   rhsEpoch.terminalWritePointerOwner &&
+               lhsEpoch.terminalReadPointerOwner ==
+                   rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.activeConfigurationEpochs ==
                    rhsEpoch.activeConfigurationEpochs &&
                lhsEpoch.entryReconfigurationOrdinal ==
