@@ -21,6 +21,7 @@ import ttl.atom as atom_module
 import ttl.kernel as kernel_module
 
 from ttl._src.atom_split import split_function_body
+from ttl._src.atom_rules import SETUP_FACTORY_NAMES, call_name, setup_assign_target
 from ttl.atom import (
     _assign_backend_kernel_slots,
     _backend_kernel_bodies,
@@ -168,6 +169,7 @@ def test_unified_operation_propagates_runtime_resource_factory(monkeypatch):
             "fp32_dest_acc_en": None,
             "dst_full_sync_en": None,
             "math_fidelity": None,
+            "device_domain": None,
             "runtime_resource_factory": make_resources,
         },
         (),
@@ -847,7 +849,7 @@ def test_composition_hoists_resources_from_control_flow():
     resource_statements = [
         statement
         for statement in spec.fn_ast.body
-        if atom_module._setup_assign_target(statement) is not None
+        if setup_assign_target(statement) is not None
     ]
     assert len(resource_statements) == 5
 
@@ -856,7 +858,7 @@ def test_composition_hoists_resources_from_control_flow():
     )
     assert not any(
         isinstance(node, ast.Call)
-        and atom_module._call_name(node) in atom_module._SETUP_FACTORY_NAMES
+            and call_name(node) in SETUP_FACTORY_NAMES
         for node in ast.walk(loop)
     )
     assert any(isinstance(node, ast.Pass) for node in ast.walk(loop))
