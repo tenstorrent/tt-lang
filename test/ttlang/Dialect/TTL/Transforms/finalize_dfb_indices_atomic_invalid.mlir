@@ -2,7 +2,7 @@
 // indices and kernel configuration unchanged and creates no runtime metadata.
 // RUN: ttlang-opt %s --verify-diagnostics --mlir-print-ir-after=ttl-finalize-dfb-indices --mlir-print-ir-after-failure -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' 2>&1 | FileCheck %s --implicit-check-not=ttl.dfb_allocations
 
-// expected-error @below {{need 33 unspilled DFB indices but hardware supports at most 32 (1 compiler-allocated after proven reuse)}}
+// expected-error @below {{need 33 unspilled DFB indices, exceeding the conservative 32-DFB-index capacity used when target metadata is absent (1 compiler-allocated after proven reuse)}}
 module {
   func.func @all_user_indices()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

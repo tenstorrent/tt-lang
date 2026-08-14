@@ -1,4 +1,4 @@
-// Tests physical DFB allocation at the 32-index hardware boundary.
+// Tests physical DFB allocation at the conservative 32-index boundary.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s
 
 // Thirty-one unbounded DFBs interfere with every other DFB. The last three

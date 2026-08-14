@@ -152,9 +152,9 @@ uint64_t DFBAllocationFootprint::getBytes(int64_t physicalIndex) const {
   return indexIt->second;
 }
 
-llvm::SmallVector<int64_t, kMaxCircularBuffers>
+llvm::SmallVector<int64_t>
 DFBAllocationFootprint::getSortedPhysicalIndices() const {
-  llvm::SmallVector<int64_t, kMaxCircularBuffers> physicalIndices;
+  llvm::SmallVector<int64_t> physicalIndices;
   physicalIndices.reserve(maxBytesByIndex.size());
   for (int64_t physicalIndex : llvm::make_first_range(maxBytesByIndex)) {
     physicalIndices.push_back(physicalIndex);
