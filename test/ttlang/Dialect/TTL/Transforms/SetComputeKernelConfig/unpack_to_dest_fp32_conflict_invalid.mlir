@@ -1,6 +1,6 @@
 // Verify that fixed execution requirements using one f32 dataflow buffer are
 // rejected when they require incompatible unpack modes.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' --split-input-file --verify-diagnostics
 
 // SFPU operations consume f32 input through DST, while tile_bcast requires the
 // default unpack mode. Neither operation has an alternative execution strategy.

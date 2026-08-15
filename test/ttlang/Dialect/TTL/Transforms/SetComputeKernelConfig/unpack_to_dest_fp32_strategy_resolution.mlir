@@ -1,6 +1,6 @@
 // Verify that execution strategy selection and f32 unpack configuration are
 // resolved together across the complete compute kernel.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' --split-input-file | FileCheck %s
 
 // A binary operation with FPU/SFPU alternatives selects SFPU when a fixed
 // SFPU consumer requires unpack-to-DST mode for the same dataflow buffer.

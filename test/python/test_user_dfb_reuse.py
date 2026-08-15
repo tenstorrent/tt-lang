@@ -4,6 +4,9 @@
 
 """Runtime coverage for physical reuse of user-declared DFBs."""
 
+import os
+import re
+
 import pytest
 import torch
 
@@ -11,7 +14,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
 from ttl import ttl_api  # noqa: E402
-from ttlang_test_utils import to_dram, to_l1  # noqa: E402
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
@@ -25,6 +28,22 @@ CAPACITY_TEST_LOGICAL_DFBS = (1 << CAPACITY_TEST_COMPOSITION_LEVELS) + 1
 # bounds; f32 data movement and addition tests retain 1e-5 relative tolerance.
 F32_REPEATED_EXP_RTOL = 2e-3
 F32_REPEATED_EXP_ATOL = 5e-4
+SCALAR_RESULT_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "scalar_result_op.hpp"
+)
+REPEATED_TRANSACTION_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "repeated_dfb_transactions.hpp"
+)
+SYNCHRONIZED_RESET_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "synchronized_dfb_reset.hpp"
+)
+INTERFACE_PRESERVED_ACCESS_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "interface_preserved_dfb_access.hpp"
+)
+
+
+def _count_final_dfb_allocations(final_mlir_path):
+    return final_mlir_path.read_text().count("dfb_index =")
 
 
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
@@ -92,6 +111,94 @@ def _make_repeated_dfb_atom_kernel(data_format):
     return repeated_dfb_atom_kernel
 
 
+def _make_composed_control_resource_kernel(data_format):
+    @ttl.operation()
+    def copy_through_dfb(input_tensor, output_tensor):
+        transfer_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+
+        with transfer_dfb.reserve() as destination:
+            ttl.copy(input_tensor[0, 0], destination).wait()
+        with transfer_dfb.wait() as source:
+            ttl.copy(source, output_tensor[0, 0]).wait()
+
+    @ttl.operation(grid=(1, 1))
+    def composed_control_resource_kernel(input_tensor, output_tensor):
+        for iteration in range(2):
+            copy_through_dfb(input_tensor, output_tensor)
+
+    return composed_control_resource_kernel
+
+
+@ttl.operation()
+def _store_waited_block(state_dfb: ttl.DFB, output_dfb: ttl.DFB):
+    with state_dfb.wait() as state_block:
+        increment = ttl.block.fill(
+            1,
+            shape=state_block.shape,
+            dtype=state_block.dtype,
+        )
+        updated_state = ttl.add(state_block, increment)
+        state_block.store(updated_state)
+
+        with output_dfb.reserve() as output_block:
+            output_block.store(state_block)
+
+
+@ttl.operation()
+def _iadd_waited_block(state_dfb: ttl.DFB, output_dfb: ttl.DFB):
+    with state_dfb.wait() as state_block:
+        increment = ttl.block.fill(
+            1,
+            shape=state_block.shape,
+            dtype=state_block.dtype,
+        )
+        state_block += increment
+
+        with output_dfb.reserve() as output_block:
+            output_block.store(
+                ttl.add(
+                    state_block,
+                    ttl.block.fill(
+                        0,
+                        shape=state_block.shape,
+                        dtype=state_block.dtype,
+                    ),
+                )
+            )
+
+
+def _make_waited_block_store_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def waited_block_mutation_kernel(input_tensor, output_tensor):
+        state_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        with state_dfb.reserve() as state_destination:
+            ttl.copy(input_tensor[0, 0], state_destination).wait()
+        _store_waited_block(state_dfb, output_dfb)
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return waited_block_mutation_kernel
+
+
+def _make_waited_block_iadd_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def waited_block_mutation_kernel(input_tensor, output_tensor):
+        state_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        with state_dfb.reserve() as state_destination:
+            ttl.copy(input_tensor[0, 0], state_destination).wait()
+        _iadd_waited_block(state_dfb, output_dfb)
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return waited_block_mutation_kernel
+
+
 def _make_nested_copy_atom(data_format, level_count):
     @ttl.operation()
     def copy_stage(source: ttl.DFB, destination: ttl.DFB):
@@ -128,12 +235,1001 @@ def _make_capacity_test_atom_kernel(data_format):
     return capacity_test_atom_kernel
 
 
+def _make_exact_execution_domain_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(2, 1))
+    def exact_execution_domain_kernel(input_tensor, output_tensor):
+        scratch_allocation = ttl.make_dfb_allocation_group()
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_scratch_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=scratch_allocation,
+        )
+        second_scratch_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=scratch_allocation,
+        )
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, _ = ttl.node(dims=2)
+            first_runtime_predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result_from_coordinate",
+                template_args=[32],
+                func_args=[node_x],
+                result_type=ttl.ScalarType.I32,
+            )
+            second_runtime_predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result_from_coordinate",
+                template_args=[32],
+                func_args=[node_x],
+                result_type=ttl.ScalarType.I32,
+            )
+            first_node = node_x == 0
+            second_node = node_x == 1
+            first_active = (first_runtime_predicate and first_node) or first_node
+            second_active = (second_runtime_predicate and second_node) or second_node
+
+            with input_dfb.wait() as input_block:
+                if first_active:
+                    with first_scratch_dfb.reserve() as first_scratch_block:
+                        first_scratch_block.store(input_block)
+                    with first_scratch_dfb.wait() as first_scratch_block:
+                        with output_dfb.reserve() as output_block:
+                            output_block.store(first_scratch_block)
+                if second_active:
+                    with second_scratch_dfb.reserve() as second_scratch_block:
+                        second_scratch_block.store(input_block)
+                    with second_scratch_dfb.wait() as second_scratch_block:
+                        with output_dfb.reserve() as output_block:
+                            output_block.store(second_scratch_block)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _ = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, node_x], input_block).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _ = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, node_x]).wait()
+
+    return exact_execution_domain_kernel
+
+
+def _make_repeated_transaction_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def repeated_transaction_kernel(input_tensor, output_tensor):
+        first_source = ttl.make_dfb(data_format, shape=(1, 4), block_count=2)
+        completion = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_source = ttl.make_dfb(data_format, shape=(1, 4), block_count=2)
+        output = ttl.make_dfb(data_format, shape=(1, 4), block_count=2)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            for transaction in range(4):
+                with first_source.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            0:1,
+                            transaction * 4 : transaction * 4 + 4,
+                        ],
+                        destination,
+                    ).wait()
+
+            with completion.wait():
+                pass
+
+            for transaction in range(4):
+                with second_source.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            0:1,
+                            transaction * 4 : transaction * 4 + 4,
+                        ],
+                        destination,
+                    ).wait()
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "consume_repeated_dfb_and_signal",
+                template_args=[
+                    ttl.dfb_descriptor(first_source),
+                    ttl.dfb_descriptor(completion),
+                ],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.wait(first_source, tiles=4),
+                    ttl.DFBEffect.pop(first_source, tiles=4),
+                    ttl.DFBEffect.reserve(completion, tiles=1),
+                    ttl.DFBEffect.push(completion, tiles=1),
+                ],
+            )
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "copy_repeated_dfb",
+                template_args=[
+                    ttl.dfb_descriptor(second_source),
+                    ttl.dfb_descriptor(output),
+                ],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                    ttl.DFBEffect.wait(second_source, tiles=4),
+                    ttl.DFBEffect.reserve(output, tiles=4),
+                    ttl.DFBEffect.pop(second_source, tiles=4),
+                    ttl.DFBEffect.push(output, tiles=4),
+                ],
+            )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            for transaction in range(4):
+                with output.wait() as source:
+                    ttl.copy(
+                        source,
+                        output_tensor[
+                            0:1,
+                            transaction * 4 : transaction * 4 + 4,
+                        ],
+                    ).wait()
+
+    return repeated_transaction_kernel
+
+
+def _make_cumulative_queue_state_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def cumulative_queue_state_kernel(input_tensor, output_tensor):
+        first_stream = ttl.make_dfb(data_format, shape=(1, 4), block_count=3)
+        completion = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_stream = ttl.make_dfb(data_format, shape=(1, 4), block_count=3)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            pass
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "read_high_water_dfb_logical_dm",
+                template_args=[ttl.dfb_descriptor(first_stream)],
+                func_args=[input_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                ],
+            )
+            with completion.wait():
+                pass
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "read_high_water_dfb_logical_dm",
+                template_args=[ttl.dfb_descriptor(second_stream)],
+                func_args=[input_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                ],
+            )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "write_high_water_dfb_and_signal_logical_dm",
+                template_args=[
+                    ttl.dfb_descriptor(first_stream),
+                    ttl.dfb_descriptor(completion),
+                ],
+                func_args=[output_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(completion, tiles=1),
+                    ttl.DFBEffect.push(completion, tiles=1),
+                ],
+            )
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "write_high_water_dfb_logical_dm",
+                template_args=[ttl.dfb_descriptor(second_stream)],
+                func_args=[output_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                ],
+            )
+
+    return cumulative_queue_state_kernel
+
+
+def _make_conditional_lifecycle_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def conditional_lifecycle_kernel(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            runtime_predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[32],
+                result_type=ttl.ScalarType.I32,
+            )
+            with input_dfb.wait() as input_block:
+                if runtime_predicate:
+                    with first_scratch_dfb.reserve() as first_scratch_block:
+                        first_scratch_block.store(input_block)
+                    with first_scratch_dfb.wait():
+                        pass
+
+                if runtime_predicate:
+                    with second_scratch_dfb.reserve() as second_scratch_block:
+                        second_scratch_block.store(input_block)
+                    with second_scratch_dfb.wait() as second_scratch_block:
+                        with output_dfb.reserve() as output_block:
+                            output_block.store(second_scratch_block)
+
+        @ttl.datamovement()
+        def read():
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, 0], input_block).wait()
+
+        @ttl.datamovement()
+        def write():
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return conditional_lifecycle_kernel
+
+
+def _make_dispatch_condition_lifecycle_kernel(data_format):
+    active = ttl.DispatchCondition(ttl.ScalarType.I32)
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def dispatch_condition_lifecycle_kernel(input_tensor, output_tensor):
+        first_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        acknowledgment = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            first_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[32],
+                condition_result=active,
+            )
+            if first_active:
+                with first_source.reserve() as destination:
+                    ttl.copy(input_tensor[0, 0], destination).wait()
+
+            with acknowledgment.wait():
+                pass
+
+            second_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[32],
+                condition_result=active,
+            )
+            if second_active:
+                with second_source.reserve() as destination:
+                    ttl.copy(input_tensor[0, 0], destination).wait()
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            first_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[32],
+                condition_result=active,
+            )
+            if first_active:
+                with first_source.wait():
+                    pass
+
+            with acknowledgment.reserve() as acknowledgment_block:
+                acknowledgment_block.store(
+                    ttl.block.fill(
+                        0,
+                        shape=acknowledgment_block.shape,
+                        dtype=acknowledgment_block.dtype,
+                    )
+                )
+
+            second_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result",
+                template_args=[32],
+                condition_result=active,
+            )
+            if second_active:
+                with second_source.wait() as source:
+                    with output.reserve() as destination:
+                        destination.store(source)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with output.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return dispatch_condition_lifecycle_kernel
+
+
+def _make_synchronized_reset_kernel(
+    data_format, enter_semaphore, exit_semaphore, all_local
+):
+    enter_semaphore_address = int(ttnn.get_global_semaphore_address(enter_semaphore))
+    exit_semaphore_address = int(ttnn.get_global_semaphore_address(exit_semaphore))
+    second_data_movement_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            second_data_movement_kernel,
+        ),
+        scope=(ttl.DFBResetScope.ALL_LOCAL if all_local else ttl.DFBResetScope.TARGETS),
+    )
+
+    if all_local:
+
+        @ttl.operation()
+        def reset_dfb(target: ttl.DFB):
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_all_dfb_state",
+                func_args=[
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset,
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                    second_data_movement_kernel,
+                ),
+            )
+
+    else:
+
+        @ttl.operation()
+        def reset_dfb(target: ttl.DFB):
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    target,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset,
+                dfb_reset_targets=[target],
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                    second_data_movement_kernel,
+                ),
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def synchronized_reset_kernel(input_tensor, output_tensor):
+        reset_allocation = ttl.make_dfb_allocation_group()
+        stale_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=reset_allocation,
+        )
+        current_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=reset_allocation,
+        )
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+
+        with stale_dfb.reserve() as stale_destination:
+            ttl.copy(input_tensor[0, 0], stale_destination).wait()
+
+        reset_dfb(stale_dfb)
+
+        with current_dfb.reserve() as current_destination:
+            ttl.copy(input_tensor[0, 0], current_destination).wait()
+        with current_dfb.wait() as current_source:
+            with output_dfb.reserve() as output_destination:
+                output_destination.store(current_source)
+        with output_dfb.wait() as output_source:
+            ttl.copy(output_source, output_tensor[0, 0]).wait()
+
+    return synchronized_reset_kernel
+
+
+def _make_interleaved_allocation_group_epochs_kernel(
+    data_format, enter_semaphore, exit_semaphore
+):
+    enter_semaphore_address = int(ttnn.get_global_semaphore_address(enter_semaphore))
+    exit_semaphore_address = int(ttnn.get_global_semaphore_address(exit_semaphore))
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset_participants = (
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    )
+    reset_first_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.TARGETS,
+    )
+    reset_second_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.TARGETS,
+    )
+    reset_third_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.TARGETS,
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def interleaved_allocation_group_epochs_kernel(input_tensor, output_tensor):
+        shared_allocation = ttl.make_dfb_allocation_group()
+        noc_stream = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=shared_allocation,
+        )
+        pack_stream = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=shared_allocation,
+        )
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with noc_stream.reserve() as first_noc_destination:
+                ttl.copy(input_tensor[0, 0], first_noc_destination).wait()
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_first_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    pack_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_second_epoch,
+                dfb_reset_targets=[pack_stream],
+            )
+            with noc_stream.reserve() as second_noc_destination:
+                ttl.copy(input_tensor[0, 1], second_noc_destination).wait()
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_third_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            with noc_stream.wait():
+                pass
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_first_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.reserve() as first_pack_destination:
+                first_pack_destination.store(
+                    ttl.block.fill(
+                        3,
+                        shape=first_pack_destination.shape,
+                        dtype=first_pack_destination.dtype,
+                    )
+                )
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    pack_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_second_epoch,
+                dfb_reset_targets=[pack_stream],
+            )
+            with noc_stream.wait():
+                pass
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_third_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.reserve() as second_pack_destination:
+                second_pack_destination.store(
+                    ttl.block.fill(
+                        7,
+                        shape=second_pack_destination.shape,
+                        dtype=second_pack_destination.dtype,
+                    )
+                )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_first_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.wait() as first_pack_source:
+                ttl.copy(first_pack_source, output_tensor[0, 0]).wait()
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    pack_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_second_epoch,
+                dfb_reset_targets=[pack_stream],
+            )
+            ttl.call_extern_func(
+                SYNCHRONIZED_RESET_HEADER,
+                "ttl_reset_dfb_state",
+                func_args=[
+                    noc_stream,
+                    enter_semaphore_address,
+                    exit_semaphore_address,
+                ],
+                dfb_reset=reset_third_epoch,
+                dfb_reset_targets=[noc_stream],
+            )
+            with pack_stream.wait() as second_pack_source:
+                ttl.copy(second_pack_source, output_tensor[0, 1]).wait()
+
+    return interleaved_allocation_group_epochs_kernel
+
+
+def _make_nested_reset_target_access_kernel(
+    data_format, enter_semaphore, exit_semaphore
+):
+    enter_semaphore_address = int(ttnn.get_global_semaphore_address(enter_semaphore))
+    exit_semaphore_address = int(ttnn.get_global_semaphore_address(exit_semaphore))
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset_participants = (
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    )
+    reset_first_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.ALL_LOCAL,
+    )
+    reset_second_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.ALL_LOCAL,
+    )
+    reset_third_epoch = ttl.DFBReset(
+        participants=reset_participants,
+        scope=ttl.DFBResetScope.ALL_LOCAL,
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def nested_reset_target_access_kernel(input_tensor, output_tensor):
+        shared_allocation = ttl.make_dfb_allocation_group()
+        noc_stream = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=shared_allocation,
+        )
+        pack_stream = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+            allocation_group=shared_allocation,
+        )
+        dynamic_scratch = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=3,
+        )
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            for _outer_iteration in range(1):
+                with noc_stream.reserve() as first_noc_destination:
+                    ttl.copy(input_tensor[0, 0], first_noc_destination).wait()
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_first_epoch,
+                )
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_second_epoch,
+                )
+                with noc_stream.reserve() as second_noc_destination:
+                    ttl.copy(input_tensor[0, 1], second_noc_destination).wait()
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_third_epoch,
+                )
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            for _outer_iteration in range(1):
+                with noc_stream.wait():
+                    pass
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_first_epoch,
+                )
+                with pack_stream.reserve() as first_pack_destination:
+                    first_pack_destination.store(
+                        ttl.block.fill(
+                            3,
+                            shape=first_pack_destination.shape,
+                            dtype=first_pack_destination.dtype,
+                        )
+                    )
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_second_epoch,
+                )
+                dynamic_count = ttl.call_extern_func(
+                    SCALAR_RESULT_HEADER,
+                    "scalar_result",
+                    template_args=[32],
+                    result_type=ttl.ScalarType.I32,
+                )
+                for _scratch_iteration in range(dynamic_count):
+                    with dynamic_scratch.reserve() as scratch_destination:
+                        scratch_destination.store(
+                            ttl.block.fill(
+                                11,
+                                shape=scratch_destination.shape,
+                                dtype=scratch_destination.dtype,
+                            )
+                        )
+                    with dynamic_scratch.wait():
+                        pass
+                with noc_stream.wait():
+                    pass
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_third_epoch,
+                )
+                with pack_stream.reserve() as second_pack_destination:
+                    second_pack_destination.store(
+                        ttl.block.fill(
+                            7,
+                            shape=second_pack_destination.shape,
+                            dtype=second_pack_destination.dtype,
+                        )
+                    )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            for _outer_iteration in range(1):
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_first_epoch,
+                )
+                with pack_stream.wait() as first_pack_source:
+                    ttl.copy(first_pack_source, output_tensor[0, 0]).wait()
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_second_epoch,
+                )
+                ttl.call_extern_func(
+                    SYNCHRONIZED_RESET_HEADER,
+                    "ttl_reset_all_dfb_state",
+                    func_args=[
+                        enter_semaphore_address,
+                        exit_semaphore_address,
+                    ],
+                    dfb_reset=reset_third_epoch,
+                )
+                with pack_stream.wait() as second_pack_source:
+                    ttl.copy(second_pack_source, output_tensor[0, 1]).wait()
+
+    return nested_reset_target_access_kernel
+
+
+def _make_allocation_group_kernel(data_format):
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def allocation_group_kernel(input_tensor, output_tensor):
+        shared_allocation = ttl.make_dfb_allocation_group()
+        first_source = ttl.make_dfb(
+            data_format,
+            shape=(1, 2),
+            block_count=1,
+            allocation_group=shared_allocation,
+        )
+        handoff = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_source = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=4,
+            allocation_group=shared_allocation,
+        )
+        output = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with first_source.reserve() as destination:
+                ttl.copy(input_tensor[0:1, 0:2], destination).wait()
+
+            with handoff.wait():
+                pass
+
+            with second_source.reserve() as destination:
+                ttl.copy(input_tensor[0, 0], destination).wait()
+            with second_source.reserve() as destination:
+                ttl.copy(input_tensor[0, 0], destination).wait()
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            with first_source.wait():
+                pass
+
+            with handoff.reserve() as signal:
+                signal.store(ttl.block.fill(0, shape=signal.shape, dtype=signal.dtype))
+
+            with second_source.wait():
+                pass
+
+            with second_source.wait() as source:
+                with output.reserve() as destination:
+                    destination.store(source)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with output.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return allocation_group_kernel
+
+
+def _make_interface_preserved_access_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def interface_preserved_access_kernel(raw_source, output_tensor):
+        shared_allocation = ttl.make_dfb_allocation_group()
+        source_descriptor = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            allocation_group=shared_allocation,
+        )
+        later_queue = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=shared_allocation,
+        )
+        external_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            pass
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.call_extern_func(
+                INTERFACE_PRESERVED_ACCESS_HEADER,
+                "copy_raw_tile_preserving_dfb_interface",
+                template_args=[
+                    ttl.dfb_descriptor(source_descriptor),
+                    ttl.dfb_descriptor(external_result),
+                ],
+                func_args=[ttl.raw_addr(raw_source)],
+                dfb_effects=[
+                    ttl.DFBEffect.reserve(external_result, tiles=1),
+                    ttl.DFBEffect.push(external_result, tiles=1),
+                ],
+                dfb_accesses=[ttl.DFBAccess.interface_preserved(source_descriptor)],
+            )
+            with external_result.wait() as source:
+                with later_queue.reserve() as destination:
+                    destination.store(source)
+            with later_queue.wait() as source:
+                with output.reserve() as destination:
+                    destination.store(source)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with output.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return interface_preserved_access_kernel
+
+
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
+_composed_control_bf16_kernel = _make_composed_control_resource_kernel("bf16")
+_composed_control_f32_kernel = _make_composed_control_resource_kernel("float32")
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
 _capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
+_waited_mutation_bf16_store_kernel = _make_waited_block_store_kernel("bf16")
+_waited_mutation_f32_store_kernel = _make_waited_block_store_kernel("float32")
+_waited_mutation_bf16_iadd_kernel = _make_waited_block_iadd_kernel("bf16")
+_waited_mutation_f32_iadd_kernel = _make_waited_block_iadd_kernel("float32")
+_exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
+_exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
+_repeated_bf16_transaction_kernel = _make_repeated_transaction_kernel("bf16")
+_repeated_f32_transaction_kernel = _make_repeated_transaction_kernel("float32")
+_cumulative_bf16_queue_state_kernel = _make_cumulative_queue_state_kernel("bf16")
+_cumulative_f32_queue_state_kernel = _make_cumulative_queue_state_kernel("float32")
+_conditional_bf16_lifecycle_kernel = _make_conditional_lifecycle_kernel("bf16")
+_conditional_f32_lifecycle_kernel = _make_conditional_lifecycle_kernel("float32")
+_dispatch_condition_bf16_lifecycle_kernel = _make_dispatch_condition_lifecycle_kernel(
+    "bf16"
+)
+_dispatch_condition_f32_lifecycle_kernel = _make_dispatch_condition_lifecycle_kernel(
+    "float32"
+)
+_allocation_group_bf16_kernel = _make_allocation_group_kernel("bf16")
+_allocation_group_f32_kernel = _make_allocation_group_kernel("float32")
+_interface_preserved_bf16_kernel = _make_interface_preserved_access_kernel("bf16")
+_interface_preserved_f32_kernel = _make_interface_preserved_access_kernel("float32")
 
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
@@ -318,6 +1414,454 @@ def test_ordered_dfbs_with_distinct_noc_owners(
 
 
 @pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_exact_bf16_execution_domain_kernel, torch.bfloat16),
+        (_exact_f32_execution_domain_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_exact_disjoint_execution_domains_reuse_dfb(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+        TILE, 2 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "exact_execution_domain.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # Input and output hardware owners keep them distinct from the compute
+    # scratch DFBs. The scratch DFBs share because their exact node domains are
+    # disjoint, without requiring a local lifetime-order proof.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_repeated_bf16_transaction_kernel, torch.bfloat16),
+        (_repeated_f32_transaction_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_repeated_transaction_lifecycles_reuse_dfb(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * 16 * TILE, dtype=torch.float32).reshape(
+        TILE, 16 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "repeated_transactions.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # The two source DFBs have identical pointer owners and non-overlapping
+    # lifetimes. Completion and output retain distinct DFB types or owners.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_cumulative_bf16_queue_state_kernel, torch.bfloat16),
+        (_cumulative_f32_queue_state_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_cumulative_queue_state_lifecycles_reuse_dfb(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * 16 * TILE, dtype=torch.float32).reshape(
+        TILE, 16 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "cumulative_queue_state.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_conditional_bf16_lifecycle_kernel, torch.bfloat16),
+        (_conditional_f32_lifecycle_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_same_runtime_condition_reuses_sequential_dfbs(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "conditional_lifecycle.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # Input and output ownership prevent them from sharing with compute DFBs.
+    # Three allocations prove that the two guarded lifecycles share one index.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_dispatch_condition_bf16_lifecycle_kernel, torch.bfloat16),
+        (_dispatch_condition_f32_lifecycle_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "dispatch_condition_lifecycle.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # The first and second sources have equal types and pointer owners. Their
+    # separately evaluated producer and consumer conditions share one identity.
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("all_local", [False, True], ids=["targets", "all-local"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_synchronized_reset_terminates_producer_epoch(
+    device, dtype, all_local, memory_config, to_device, monkeypatch, tmp_path
+):
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    )
+    enter_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    exit_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_synchronized_reset_kernel(
+        data_format, enter_semaphore, exit_semaphore, all_local
+    )
+
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "synchronized_reset.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # The producer-only DFB becomes canonical at the reset and shares with the
+    # following source. The compute-produced output retains a distinct index.
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_allocation_group_reuses_interleaved_reset_epochs(
+    device, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    )
+    enter_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    exit_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_interleaved_allocation_group_epochs_kernel(
+        data_format, enter_semaphore, exit_semaphore
+    )
+
+    element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+        TILE, 2 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "interleaved_allocation_group_epochs.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    for _ in range(2):
+        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    assert _count_final_dfb_allocations(final_mlir_path) == 1
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = torch.cat(
+        (
+            torch.full((TILE, TILE), 3, dtype=torch.float32),
+            torch.full((TILE, TILE), 7, dtype=torch.float32),
+        ),
+        dim=1,
+    )
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_interface_preserved_bf16_kernel, torch.bfloat16),
+        (_interface_preserved_f32_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_interface_preserved_access_reuses_allocation_group(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    first_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    second_host = ((element_indices.remainder(193) - 96) / 48).to(dtype)
+    first_source = to_l1_sharded(first_host, device)
+    second_source = to_l1_sharded(second_host, device)
+    output_tensor = to_device(torch.zeros_like(first_host), device)
+
+    final_mlir_path = tmp_path / "interface_preserved_access.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(first_source, output_tensor, options="--ttl-reuse-user-dfbs")
+    operation(second_source, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = second_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_nested_unknown_reset_target_does_not_reverse_reset_order(
+    device, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    )
+    enter_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    exit_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_nested_reset_target_access_kernel(
+        data_format, enter_semaphore, exit_semaphore
+    )
+
+    element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+        TILE, 2 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "nested_reset_target_access.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    for _dispatch_iteration in range(2):
+        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    # The interleaved group uses one index. The unresolved dynamic scratch
+    # remains separate rather than creating a global reverse reset relation.
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = torch.cat(
+        (
+            torch.full((TILE, TILE), 3, dtype=torch.float32),
+            torch.full((TILE, TILE), 7, dtype=torch.float32),
+        ),
+        dim=1,
+    )
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_waited_mutation_bf16_store_kernel, torch.bfloat16),
+        (_waited_mutation_f32_store_kernel, torch.float32),
+        (_waited_mutation_bf16_iadd_kernel, torch.bfloat16),
+        (_waited_mutation_f32_iadd_kernel, torch.float32),
+    ],
+    ids=["store-bf16", "store-f32", "iadd-bf16", "iadd-f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_waited_block_replacement_preserves_updated_value(
+    device, operation, dtype, memory_config, to_device
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor)
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float() + 1
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_allocation_group_bf16_kernel, torch.bfloat16),
+        (_allocation_group_f32_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+def test_allocation_group_reuses_one_capacity_envelope(
+    device,
+    operation,
+    dtype,
+    memory_config,
+    to_device,
+    tmp_path,
+    monkeypatch,
+):
+    input_host = torch.linspace(-1, 1, TILE * TILE * 2, dtype=torch.float32).reshape(
+        TILE, TILE * 2
+    )
+    input_host = input_host.to(dtype)
+    input_tensor = to_device(input_host, device)
+    expected = input_host[:, :TILE]
+    output_tensor = to_device(torch.zeros_like(expected), device)
+    final_mlir_path = tmp_path / "allocation_group.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    operation(input_tensor, output_tensor)
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected.float(), rtol=1e-5, atol=1e-6)
+
+    final_mlir = final_mlir_path.read_text()
+    reader_mlir = final_mlir.split("func.func @read", 1)[1].split(
+        "func.func @compute", 1
+    )[0]
+    reader_dfb_indices = [
+        int(index)
+        for index in re.findall(r"ttkernel\.cb_ctarg_idx = (\d+)", reader_mlir)
+    ]
+    assert reader_dfb_indices == [0, 1, 0]
+    assert "block_count = 4 : i32, dfb_index = 0 : i32" in final_mlir
+
+
+@pytest.mark.parametrize(
     ("memory_config", "to_device"),
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
@@ -360,6 +1904,39 @@ def test_repeated_dfb_declaring_atom_runtime(
             rtol=F32_REPEATED_EXP_RTOL,
             atol=F32_REPEATED_EXP_ATOL,
         )
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_composed_control_bf16_kernel, torch.bfloat16),
+        (_composed_control_f32_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+def test_composed_control_resource_runtime(
+    device, memory_config, to_device, operation, dtype
+):
+    input_host = torch.linspace(-1.0, 1.0, TILE * TILE, dtype=torch.float32).reshape(
+        TILE, TILE
+    )
+    input_host = input_host.to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor)
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, input_host.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, input_host.float(), rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(

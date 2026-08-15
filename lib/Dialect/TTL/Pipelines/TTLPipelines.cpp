@@ -63,6 +63,8 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.unsafeAssumeAllocationGroups =
+        options.unsafeAssumeAllocationGroups;
     finalizeOptions.exactColoringSearchStateLimit =
         options.exactColoringSearchStateLimit;
     pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
@@ -72,7 +74,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     configOpts.reduceFullFp32 = options.reduceFullFp32;
     configOpts.matmulFullFp32 = options.matmulFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
+    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLAssignDST());
   if (options.maximizeDST) {

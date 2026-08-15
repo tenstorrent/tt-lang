@@ -92,6 +92,7 @@ _SPEC_EXAMPLES_PASSING = [
     "spec/dataflow_buffer/tiled_tensor_shape.py",
     "spec/dataflow_buffer/row_major_tensor_shape.py",
     "spec/dataflow_buffer/dataflow_buffer.py",
+    "spec/dataflow_buffer/waited_block_replacement.py",
     "spec/operation_function/multi_kernel_operation.py",
     # Debugging snippets wrapped in @ttl.operation; debug_printing.py also
     # asserts the text its kernel prints.
@@ -104,12 +105,18 @@ _SPEC_EXAMPLES_PASSING = [
 
 # _SPEC_EXAMPLES_EXPECT_FAILURE: exercise an interface that is not implemented
 # in the simulator yet; each is asserted to fail *at that interface* by
-# test_semaphore_examples_fail_at_unimplemented_interface. When the feature
+# test_spec_examples_fail_at_unimplemented_interface. When the feature
 # lands, that test flips red and the example should move to _SPEC_EXAMPLES_PASSING.
-_SPEC_EXAMPLES_EXPECT_FAILURE = [
-    "spec/semaphore/many_to_one_barrier.py",
-    "spec/semaphore/one_to_many_barrier.py",
-]
+_SPEC_EXAMPLES_EXPECT_FAILURE = {
+    "spec/dataflow_buffer/allocation_group.py": (
+        "has no attribute 'make_dfb_allocation_group'"
+    ),
+    "spec/dataflow_buffer/interface_preserved_external_access.py": (
+        "has no attribute 'call_extern_func'"
+    ),
+    "spec/semaphore/many_to_one_barrier.py": "has no attribute 'Semaphore'",
+    "spec/semaphore/one_to_many_barrier.py": "has no attribute 'Semaphore'",
+}
 
 
 @pytest.mark.parametrize(
@@ -313,32 +320,21 @@ def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> Non
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
-@pytest.mark.parametrize("script_name", _SPEC_EXAMPLES_EXPECT_FAILURE)
-def test_semaphore_examples_fail_at_unimplemented_interface(
-    script_name: str, scheduler: str
+@pytest.mark.parametrize(
+    ("script_name", "expected_error"), _SPEC_EXAMPLES_EXPECT_FAILURE.items()
+)
+def test_spec_examples_fail_at_unimplemented_interface(
+    script_name: str, expected_error: str, scheduler: str
 ) -> None:
-    """The ttl.Semaphore barrier API used by these spec examples is not
-    implemented in the simulator (or the compiler) yet: see
-    https://github.com/tenstorrent/tt-lang/issues/176 (simulator),
-    https://github.com/tenstorrent/tt-lang/issues/182 (compiler) and
-    https://github.com/tenstorrent/tt-lang/issues/177 (multi-chip).
-
-    Each example is wrapped so its node-dependent setup runs, but it must fail
-    *specifically* at the ttl.Semaphore() call. A success -- or a failure for
-    any other reason -- means the situation changed (most likely semaphores
-    were implemented) and the example should be promoted to a real,
-    golden-checked test rather than an expect-failure one.
-    """
+    """Require failure at the exact simulator interface not yet implemented."""
     code, out = run_script_in_process(EXAMPLES_DIR / script_name, scheduler)
     assert code != 0, (
-        f"{script_name} unexpectedly succeeded. The ttl.Semaphore barrier API "
-        f"appears to be implemented now -- promote this to a real golden test.\n"
+        f"{script_name} unexpectedly succeeded. Promote it to a real golden test.\n"
         f"Output:\n{out}"
     )
-    assert "no attribute 'Semaphore'" in out, (
-        f"{script_name} failed, but not at the unimplemented ttl.Semaphore "
-        f"interface. The failure mode changed; investigate and update the "
-        f"example/test.\nOutput:\n{out}"
+    assert expected_error in out, (
+        f"{script_name} failed at a different interface. Expected "
+        f"{expected_error!r}.\nOutput:\n{out}"
     )
 
 

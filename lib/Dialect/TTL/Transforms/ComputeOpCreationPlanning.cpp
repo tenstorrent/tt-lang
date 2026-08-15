@@ -1213,6 +1213,17 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
   plan.pushes.clear();
   for (OutputDFBTransaction &transaction : plan.transactions) {
     transaction.push.reset();
+    for (StoreOp store : transaction.stores) {
+      if (findCBAcquireOp(store.getView()) != transaction.acquire) {
+        return PlanningResult<OutputPublicationPlan>::invalidIR(
+            store, "output store acquisition changed after planning");
+      }
+    }
+    if (transaction.isWaitedMutation()) {
+      continue;
+    }
+    assert(isa<CBReserveOp>(transaction.acquire) &&
+           "output transaction requires a DFB acquisition");
     bool sawStoreWithoutPush = false;
     for (StoreOp store : transaction.stores) {
       std::optional<CBPushOp> push = findPushAfterStore(store, transaction.dfb);
@@ -1258,29 +1269,28 @@ buildOutputPublicationPlan(Operation *source) {
   assert(stores.isPlanned() && "store collection cannot report malformed IR");
 
   OutputPublicationPlan plan;
-  DenseMap<Operation *, unsigned> transactionByReserve;
-  DenseMap<Value, Operation *> firstReserveByDFB;
+  DenseMap<Operation *, unsigned> transactionByAcquire;
+  DenseMap<Value, Operation *> firstAcquireByDFB;
 
   for (StoreOp store : stores.getPlan()) {
-    CBReserveOp reserve = findCBReserveForView(store.getView());
-    if (!reserve) {
+    Operation *acquire = findCBAcquireOp(store.getView());
+    if (!acquire) {
       return PlanningResult<OutputPublicationPlan, OutputPublicationRejection>::
-          invalidIR(store,
-                    "output store view does not originate from ttl.cb_reserve");
+          invalidIR(store, "output store view does not originate from "
+                           "ttl.cb_reserve or ttl.cb_wait");
     }
 
-    Value dfb = reserve.getCb();
+    Value dfb = getDFBAcquireDFB(acquire);
     addUniqueValue(plan.dfbs, dfb);
     plan.stores.push_back(store);
 
-    auto [transactionIterator, inserted] = transactionByReserve.try_emplace(
-        reserve.getOperation(), plan.transactions.size());
+    auto [transactionIterator, inserted] =
+        transactionByAcquire.try_emplace(acquire, plan.transactions.size());
     if (inserted) {
-      plan.transactions.push_back({dfb, reserve, {}, std::nullopt});
-      auto [firstReserveIterator, insertedFirstReserve] =
-          firstReserveByDFB.try_emplace(dfb, reserve.getOperation());
-      if (!insertedFirstReserve &&
-          firstReserveIterator->second != reserve.getOperation()) {
+      plan.transactions.push_back({dfb, acquire, {}, std::nullopt});
+      auto [firstAcquireIterator, insertedFirstAcquire] =
+          firstAcquireByDFB.try_emplace(dfb, acquire);
+      if (!insertedFirstAcquire && firstAcquireIterator->second != acquire) {
         addUniqueValue(plan.multiTransactionDFBs, dfb);
       }
     }
@@ -1494,7 +1504,7 @@ collectInstrumentationBoundaries(
   }
   DenseSet<Operation *> outputReserves;
   for (const OutputDFBTransaction &transaction : outputs.transactions) {
-    outputReserves.insert(transaction.reserve);
+    outputReserves.insert(transaction.acquire);
   }
 
   auto firstMovedIterator =
@@ -1634,6 +1644,237 @@ rejectComputeOpCreation(
       rejected({source, kind, std::move(message), std::move(candidate)});
 }
 
+static bool isViewPreservingMutationUser(Operation *operation) {
+  return isa<AttachCBOp, tensor::ExtractSliceOp, tensor::ExtractOp,
+             UnrealizedConversionCastOp>(operation);
+}
+
+static LogicalResult collectWaitedMutationUsers(
+    Value acquiredView, StoreOp mutationStore, Operation *replacementSource,
+    const FusionTraceResult &replacementTrace,
+    SmallVectorImpl<Operation *> &replacementGenerationUsers,
+    std::string &failureReason) {
+  DenseSet<Value> visited;
+  SmallVector<Value> pending = {acquiredView};
+  while (!pending.empty()) {
+    Value value = pending.pop_back_val();
+    if (!visited.insert(value).second) {
+      continue;
+    }
+    for (Operation *user : value.getUsers()) {
+      if (isViewPreservingMutationUser(user)) {
+        llvm::append_range(pending, user->getResults());
+        continue;
+      }
+      if (user == mutationStore) {
+        continue;
+      }
+      bool readsOriginalGeneration = user == replacementSource ||
+                                     replacementTrace.opsInOrder.contains(user);
+      if (readsOriginalGeneration) {
+        continue;
+      }
+      if (auto followingStore = dyn_cast<StoreOp>(user);
+          followingStore && followingStore.getTensor() == value &&
+          followingStore->getBlock() == mutationStore->getBlock() &&
+          mutationStore->isBeforeInBlock(followingStore)) {
+        replacementGenerationUsers.push_back(user);
+        continue;
+      }
+      if (!isPure(user) || user->getNumRegions() != 0 ||
+          user->getNumResults() == 0 ||
+          user->getBlock() != mutationStore->getBlock() ||
+          !mutationStore->isBeforeInBlock(user)) {
+        failureReason =
+            "wait-backed replacement has an unsupported or unordered use of "
+            "the acquired generation";
+        return failure();
+      }
+      replacementGenerationUsers.push_back(user);
+    }
+  }
+  return success();
+}
+
+static bool mayAccessDFB(Operation *operation, Value dfb) {
+  auto access = dyn_cast<DFBAccessOpInterface>(operation);
+  return access && (access.hasUnknownDFBAccess() ||
+                    llvm::is_contained(access.getDFBDependencyOperands(), dfb));
+}
+
+static FailureOr<WaitedDFBMutationPlan> buildWaitedDFBMutationPlan(
+    Operation *replacementSource, const ComputeOpCreationPlan &creation,
+    const OutputDFBTransaction &transaction,
+    const DFBValueLifetimeAnalysis &lifetimes, std::string &failureReason) {
+  auto wait = dyn_cast<CBWaitOp>(transaction.acquire);
+  assert(wait && "waited mutation planning requires ttl.cb_wait");
+  if (transaction.stores.size() != 1) {
+    failureReason =
+        "wait-backed replacement requires exactly one store per acquisition";
+    return failure();
+  }
+  StoreOp store = transaction.stores.front();
+  if (store.getAccumulate()) {
+    failureReason =
+        "wait-backed replacement does not support packer accumulation";
+    return failure();
+  }
+
+  func::FuncOp kernel = store->getParentOfType<func::FuncOp>();
+  Block *entryBlock =
+      kernel && !kernel.getBody().empty() ? &kernel.getBody().front() : nullptr;
+  if (!kernel || !entryBlock || !kernel.getBody().hasOneBlock() ||
+      wait->getBlock() != entryBlock || store->getBlock() != entryBlock ||
+      replacementSource->getBlock() != entryBlock ||
+      !wait->isBeforeInBlock(store)) {
+    failureReason =
+        "wait-backed replacement requires one straight-line entry-block "
+        "execution";
+    return failure();
+  }
+
+  Value dfb = wait.getCb();
+  auto dfbType = cast<CircularBufferType>(dfb.getType());
+  int64_t transactionTiles = getDFBLifecycleTileCount(wait);
+  int64_t capacityTiles = dfbType.getTotalElements();
+  if (dfbType.getBlockCount() != 1 || transactionTiles != capacityTiles) {
+    failureReason = "wait-backed replacement requires one complete DFB block";
+    return failure();
+  }
+  if (traceUnrealizedCasts(store.getView()) != wait.getResult()) {
+    failureReason =
+        "wait-backed replacement requires the complete acquired view";
+    return failure();
+  }
+
+  WaitedDFBMutationPlan plan;
+  plan.store = store;
+  plan.wait = wait;
+  plan.dfb = dfb;
+  plan.transactionTiles = transactionTiles;
+  plan.capacityTiles = capacityTiles;
+  // A wait does not synchronize this thread's local producer pointer. Both
+  // local pointers remain at their common initialized position only when this
+  // is the compute kernel's first access to the DFB.
+  for (Operation &operation : *entryBlock) {
+    if (&operation == wait) {
+      break;
+    }
+    if (mayAccessDFB(&operation, dfb)) {
+      failureReason = "wait-backed replacement requires no earlier access to "
+                      "the same DFB in its compute kernel";
+      return failure();
+    }
+  }
+  for (Operation *operation = wait->getNextNode();
+       operation && operation != store; operation = operation->getNextNode()) {
+    if (auto reserve = dyn_cast<CBReserveOp>(operation);
+        reserve && reserve.getCb() == dfb) {
+      failureReason =
+          "wait-backed replacement cannot overlap a producer acquisition";
+      return failure();
+    }
+    if (auto pop = dyn_cast<CBPopOp>(operation); pop && pop.getCb() == dfb) {
+      failureReason =
+          "wait-backed replacement cannot execute after its consumer release";
+      return failure();
+    }
+  }
+
+  bool readsOriginalGeneration = false;
+  for (Value input : creation.inputs) {
+    if (findCBAcquireOp(input) != wait) {
+      continue;
+    }
+    if (lifetimes.getAvailability(input, store) !=
+        DFBValueAvailability::DefinitelyAvailable) {
+      failureReason =
+          "wait-backed replacement input may be released before the store";
+      return failure();
+    }
+    readsOriginalGeneration = true;
+  }
+  if (!readsOriginalGeneration) {
+    failureReason =
+        "wait-backed replacement must read the acquired value before writing";
+    return failure();
+  }
+
+  SmallVector<Operation *> replacementGenerationUsers;
+  if (failed(collectWaitedMutationUsers(
+          wait.getResult(), store, replacementSource, creation.trace,
+          replacementGenerationUsers, failureReason))) {
+    return failure();
+  }
+
+  CBPopOp release;
+  for (Operation *operation = wait->getNextNode(); operation;
+       operation = operation->getNextNode()) {
+    if (auto reserve = dyn_cast<CBReserveOp>(operation);
+        reserve && reserve.getCb() == dfb) {
+      failureReason =
+          "wait-backed replacement cannot overlap a producer acquisition";
+      return failure();
+    }
+    if (auto nextWait = dyn_cast<CBWaitOp>(operation);
+        nextWait && nextWait.getCb() == dfb) {
+      failureReason =
+          "wait-backed replacement cannot overlap another consumer acquisition";
+      return failure();
+    }
+    auto pop = dyn_cast<CBPopOp>(operation);
+    if (pop && pop.getCb() == dfb) {
+      if (!store->isBeforeInBlock(pop)) {
+        failureReason = "wait-backed replacement cannot execute after its "
+                        "consumer release";
+        return failure();
+      }
+      release = pop;
+      break;
+    }
+    if (mayAccessDFB(operation, dfb)) {
+      failureReason =
+          "wait-backed replacement cannot overlap another DFB access";
+      return failure();
+    }
+  }
+  if (!release) {
+    failureReason =
+        "wait-backed replacement requires a matching consumer release";
+    return failure();
+  }
+  if (getDFBLifecycleTileCount(release) != transactionTiles) {
+    failureReason =
+        "wait-backed replacement requires equal wait and pop tile counts";
+    return failure();
+  }
+  for (Operation *user : replacementGenerationUsers) {
+    if (!user->isBeforeInBlock(release)) {
+      failureReason = "wait-backed replacement value cannot be read after its "
+                      "consumer release";
+      return failure();
+    }
+  }
+  bool hasNestedDFBAccess = false;
+  kernel.walk([&](Operation *operation) {
+    if (operation->getBlock() == entryBlock) {
+      return WalkResult::advance();
+    }
+    if (mayAccessDFB(operation, dfb)) {
+      hasNestedDFBAccess = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (hasNestedDFBAccess) {
+    failureReason =
+        "wait-backed replacement cannot overlap a nested DFB access";
+    return failure();
+  }
+  plan.release = release;
+  return plan;
+}
+
 static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
 buildComputeOpCreationPlan(Operation *source,
                            const DFBValueLifetimeAnalysis &lifetimes,
@@ -1763,6 +2004,20 @@ buildComputeOpCreationPlan(Operation *source,
     return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
         std::optional<ComputeOpCreationPlan>(std::move(plan)));
+  }
+
+  for (const OutputDFBTransaction &transaction : plan.outputs.transactions) {
+    if (!transaction.isWaitedMutation()) {
+      continue;
+    }
+    FailureOr<WaitedDFBMutationPlan> mutation = buildWaitedDFBMutationPlan(
+        source, plan, transaction, lifetimes, failureReason);
+    if (failed(mutation)) {
+      return rejectComputeOpCreation(
+          source, ComputeOpCreationRejectionKind::UnsupportedOutputPublication,
+          std::move(failureReason));
+    }
+    plan.waitedMutations.push_back(std::move(*mutation));
   }
 
   ComputeOpMovement movement =
