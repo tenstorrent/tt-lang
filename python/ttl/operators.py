@@ -55,7 +55,9 @@ def call_extern_func(
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
-    removes the selector before AST lowering.
+    removes the selector before AST lowering. Outside a single-kernel callback,
+    a reset call may omit ``kernel`` to select every participant declared by
+    ``dfb_reset``.
 
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external

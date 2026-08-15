@@ -47,6 +47,12 @@ class _Placement(Enum):
     DEFERRED = auto()
 
 
+@dataclass(frozen=True)
+class _ResolvedResetParticipants:
+    source: ast.expr
+    participants: FrozenSet[KernelSelector]
+
+
 # ----- op registry ----------------------------------------------------------
 
 
@@ -204,16 +210,20 @@ class _KernelSelectorResolver:
         inferred_kernels: FrozenSet[KernelSelector],
     ) -> FrozenSet[KernelSelector]:
         selector = _kernel_keyword(call)
+        reset_selection = self._resolve_reset_participants(call)
         if selector is None:
             if len(inferred_kernels) == 1:
                 selected = inferred_kernels
-                self._validate_reset_participants(call, selected)
-                return selected
-            raise _split_error(
-                call,
-                "call_extern_func requires a kernel selector when its logical "
-                "kernel cannot be inferred",
-            )
+            elif not inferred_kernels and reset_selection is not None:
+                selected = reset_selection.participants
+            else:
+                raise _split_error(
+                    call,
+                    "call_extern_func requires a kernel selector when its logical "
+                    "kernel cannot be inferred",
+                )
+            self._validate_reset_selection(reset_selection, selected)
+            return selected
 
         selected = self._resolve_selection(selector, allow_tuple=True)
         if inferred_kernels and selected != inferred_kernels:
@@ -223,15 +233,15 @@ class _KernelSelectorResolver:
                 f"({_format_kernels(selected)}) conflicts with inferred "
                 f"selection ({_format_kernels(inferred_kernels)})",
             )
-        self._validate_reset_participants(call, selected)
+        self._validate_reset_selection(reset_selection, selected)
         return selected
 
-    def _validate_reset_participants(
-        self, call: ast.Call, selected: FrozenSet[KernelSelector]
-    ) -> None:
+    def _resolve_reset_participants(
+        self, call: ast.Call
+    ) -> Optional[_ResolvedResetParticipants]:
         reset_node = _keyword_value(call, _DFB_RESET_KEYWORD)
         if reset_node is None:
-            return
+            return None
         reset = self._resolve_reference(reset_node)
         if isinstance(reset, _BoundDFBReset):
             participants = reset.participants
@@ -259,13 +269,21 @@ class _KernelSelectorResolver:
                     "DFBReset participant Kernel must be declared by the "
                     "enclosing operation",
                 )
-        declared = frozenset(participants)
-        if not selected.issubset(declared):
+        return _ResolvedResetParticipants(reset_node, frozenset(participants))
+
+    def _validate_reset_selection(
+        self,
+        reset_selection: Optional[_ResolvedResetParticipants],
+        selected: FrozenSet[KernelSelector],
+    ) -> None:
+        if reset_selection is None:
+            return
+        if not selected.issubset(reset_selection.participants):
             raise _split_error(
-                reset_node,
+                reset_selection.source,
                 "external-call kernel selection contains a logical kernel "
                 "outside the DFBReset participant set "
-                f"({_format_kernels(declared)})",
+                f"({_format_kernels(reset_selection.participants)})",
             )
 
     def resolve_release(self, call: ast.Call) -> Optional[KernelSelector]:

@@ -47,41 +47,11 @@ def make_reset_operation():
             func_args=[target],
             dfb_reset=reset,
             dfb_reset_targets=[target],
-            kernel=ttl.KernelKind.COMPUTE,
-        )
-        ttl.call_extern_func(
-            FAKE_HEADER,
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=ttl.KernelKind.DATA_MOVEMENT,
-        )
-        ttl.call_extern_func(
-            FAKE_HEADER,
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=second_data_movement,
         )
         ttl.call_extern_func(
             FAKE_HEADER,
             "reset_all",
             dfb_reset=all_local_reset,
-            kernel=ttl.KernelKind.COMPUTE,
-        )
-        ttl.call_extern_func(
-            FAKE_HEADER,
-            "reset_all",
-            dfb_reset=all_local_reset,
-            kernel=ttl.KernelKind.DATA_MOVEMENT,
-        )
-        ttl.call_extern_func(
-            FAKE_HEADER,
-            "reset_all",
-            dfb_reset=all_local_reset,
-            kernel=second_data_movement,
         )
 
     @ttl.operation(grid=(1, 1))
@@ -99,16 +69,16 @@ synchronized_reset_operation = make_reset_operation()
 # participants. Participant representation is canonical despite source order.
 # INITIAL-LABEL: func.func @synchronized_reset_operation__trisc
 # INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute>
-# INITIAL: ttl.opaque_call "reset" dfb_reset <{{[0-9]+}}, all_local = false, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "second_data_movement"
-# INITIAL-NEXT: ttl.opaque_call "reset_all" dfb_reset <{{[0-9]+}}, all_local = true, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "second_data_movement"
+# INITIAL: ttl.opaque_call "reset" dfb_reset <{{[0-9]+}}, all_local = false, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "[[$SECOND:[^"]+]]"
+# INITIAL-NEXT: ttl.opaque_call "reset_all" dfb_reset <{{[0-9]+}}, all_local = true, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "[[$SECOND]]"
 # INITIAL-LABEL: func.func @synchronized_reset_operation__ncrisc
 # INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>
-# INITIAL: ttl.opaque_call "reset" dfb_reset <{{[0-9]+}}, all_local = false, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "second_data_movement"
-# INITIAL-NEXT: ttl.opaque_call "reset_all" dfb_reset <{{[0-9]+}}, all_local = true, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "second_data_movement"
+# INITIAL: ttl.opaque_call "reset" dfb_reset <{{[0-9]+}}, all_local = false, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "[[$SECOND]]"
+# INITIAL-NEXT: ttl.opaque_call "reset_all" dfb_reset <{{[0-9]+}}, all_local = true, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "[[$SECOND]]"
 # INITIAL-LABEL: func.func @synchronized_reset_operation__brisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "second_data_movement"
-# INITIAL: ttl.opaque_call "reset" dfb_reset <{{[0-9]+}}, all_local = false, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "second_data_movement"
-# INITIAL-NEXT: ttl.opaque_call "reset_all" dfb_reset <{{[0-9]+}}, all_local = true, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "second_data_movement"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "[[$SECOND]]"
+# INITIAL: ttl.opaque_call "reset" dfb_reset <{{[0-9]+}}, all_local = false, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "[[$SECOND]]"
+# INITIAL-NEXT: ttl.opaque_call "reset_all" dfb_reset <{{[0-9]+}}, all_local = true, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "[[$SECOND]]"
 
 # Reset metadata does not add generated C++ arguments beyond the explicit DFB
 # index argument.

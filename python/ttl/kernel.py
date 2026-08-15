@@ -272,7 +272,7 @@ def _encode_identity_capture(
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
     # Local import avoids the dfb_reset -> kernel import cycle during module
     # initialization while retaining a typed resource check.
-    from .dfb_reset import DFBReset
+    from .dfb_reset import DFBReset, _transitive_participant_kernels
 
     function_id = id(function)
     if function_id in active_functions:
@@ -299,6 +299,24 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
             for name, value in nonlocal_captures.items()
             if isinstance(value, Kernel)
         }
+        reset_captures = {
+            name: value
+            for name, value in nonlocal_captures.items()
+            if isinstance(value, DFBReset)
+        }
+        direct_kernels = {
+            name: value
+            for name, value in nonlocal_captures.items()
+            if isinstance(value, Kernel)
+        }
+        transitive_kernels = _transitive_participant_kernels(
+            reset_captures,
+            direct_kernels,
+            nonlocal_captures.keys(),
+        )
+        kernel_capture_names.update(
+            {id(kernel): name for name, kernel in transitive_kernels.items()}
+        )
         for name, value in sorted(nonlocal_captures.items()):
             if isinstance(value, DispatchCondition):
                 condition_identity = id(value)
@@ -331,11 +349,18 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                         continue
                     participant_name = kernel_capture_names.get(id(participant))
                     if participant_name is None:
+                        if participant._identity is not None:
+                            raise TypeError(
+                                "DFBReset participant Kernel is already bound to "
+                                f"operation {participant._operation_identity!r}"
+                            )
                         raise TypeError(
                             "DFBReset participant Kernel must be captured by "
                             "the enclosing @ttl.operation"
                         )
-                    participant_tokens.append(f"kernel:{participant_name}")
+                    participant_tokens.append(
+                        f"kernel:{participant.kind.name}:{participant_name}"
+                    )
                 encoded = (
                     f"dfb-reset:{ordinal}:{value.scope.name}:"
                     + ",".join(sorted(participant_tokens))

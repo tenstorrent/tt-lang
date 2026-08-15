@@ -56,8 +56,10 @@ An external call accepts one selector or multiple distinct selectors. The `|`
 syntax combines `KernelKind` values. A nonempty tuple supports selections that
 include operation-local `Kernel` handles. Multiple selectors emit the call once
 in every selected logical kernel. A call may omit `kernel=` when its enclosing
-callback already determines one logical kernel. Otherwise, omission is invalid
-because opaque code cannot be assigned by inspecting its implementation.
+callback already determines one logical kernel. A synchronized reset outside
+such a callback may also omit `kernel=`; its typed `DFBReset.participants` select
+the complete participant set. Other omissions are invalid because opaque code
+cannot be assigned by inspecting its implementation.
 
 `TensorBlock.push` and `TensorBlock.pop` also accept `kernel=`, but only one
 selector. An explicit selector assigns an otherwise-unused DFB transaction:

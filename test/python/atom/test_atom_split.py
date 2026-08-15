@@ -165,6 +165,72 @@ def test_captured_kernel_cannot_bind_to_two_operations():
         _build_atom_spec(second_operation)
 
 
+def test_reset_owned_kernel_cannot_bind_to_two_operations():
+    """Reset metadata cannot transfer a bound kernel to another operation."""
+    participant = Kernel(KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(participants=(participant,))
+
+    @ttl.operation()
+    def first_operation():
+        ttl.call_extern_func("reset.hpp", "reset", dfb_reset=reset)
+
+    with pytest.raises(TypeError, match="already bound to operation"):
+
+        @ttl.operation()
+        def second_operation():
+            ttl.call_extern_func("reset.hpp", "reset", dfb_reset=reset)
+
+
+def test_reset_only_kernel_kind_changes_operation_identity():
+    """Anonymous reset participants retain their kernel kind in identity."""
+
+    def make_reset_operation(participant_kind):
+        participant = Kernel(participant_kind)
+        reset = ttl.DFBReset(participants=(participant,))
+
+        @ttl.operation()
+        def reset_operation():
+            ttl.call_extern_func("reset.hpp", "reset", dfb_reset=reset)
+
+        return reset_operation
+
+    compute_operation = make_reset_operation(KernelKind.COMPUTE)
+    data_movement_operation = make_reset_operation(KernelKind.DATA_MOVEMENT)
+
+    assert (
+        compute_operation._spec.operation_identity
+        != data_movement_operation._spec.operation_identity
+    )
+
+
+def test_reset_only_kernel_names_ignore_participant_order():
+    """Reset participant tuples represent sets in operation identity."""
+
+    def make_reset_operation(reverse_participants):
+        shared_participant = Kernel(KernelKind.DATA_MOVEMENT)
+        compute_participant = Kernel(KernelKind.COMPUTE)
+        participants = (shared_participant, compute_participant)
+        if reverse_participants:
+            participants = tuple(reversed(participants))
+        first_reset = ttl.DFBReset(participants=participants)
+        second_reset = ttl.DFBReset(participants=(shared_participant,))
+
+        @ttl.operation()
+        def reset_operation():
+            ttl.call_extern_func("reset.hpp", "first_reset", dfb_reset=first_reset)
+            ttl.call_extern_func("reset.hpp", "second_reset", dfb_reset=second_reset)
+
+        return reset_operation
+
+    forward_operation = make_reset_operation(False)
+    reversed_operation = make_reset_operation(True)
+
+    assert (
+        forward_operation._spec.operation_identity
+        == reversed_operation._spec.operation_identity
+    )
+
+
 def test_captured_kernel_cannot_have_two_names():
     """Alias validation completes before the handle is bound."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
@@ -935,12 +1001,14 @@ def test_captured_and_local_dfb_allocation_groups_receive_distinct_ordinals():
 
 def test_composition_preserves_one_synchronized_dfb_reset_identity():
     """Inlining and splitting preserve one reset across all participants."""
-    second_data_movement = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     reset = ttl.DFBReset(
         participants=(
-            second_data_movement,
-            ttl.KernelKind.DATA_MOVEMENT,
-            ttl.KernelKind.COMPUTE,
+            compute_kernel,
+            reader_kernel,
+            writer_kernel,
         )
     )
 
@@ -952,11 +1020,6 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
             func_args=[target],
             dfb_reset=reset,
             dfb_reset_targets=[target],
-            kernel=(
-                ttl.KernelKind.COMPUTE,
-                ttl.KernelKind.DATA_MOVEMENT,
-                second_data_movement,
-            ),
         )
 
     @ttl.operation()
@@ -965,6 +1028,11 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
 
     spec = composed_reset._spec
     assert len(spec.dfb_resets) == 1
+    assert set(spec.logical_kernels.values()) == {
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    }
     composed_reset_identity = next(iter(spec.dfb_resets.values()))
     assert composed_reset_identity is not reset
     assert composed_reset_identity.participants == reset.participants
@@ -984,6 +1052,7 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
         assert source.count("dfb_reset=") == 1
         assert f"dfb_reset={reset_name}" in source
         assert "dfb_reset_targets=[target]" in source
+        assert "kernel=" not in source
 
 
 def test_composition_preserves_inspect_dfb_access():

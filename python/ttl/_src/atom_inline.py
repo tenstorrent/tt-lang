@@ -473,8 +473,17 @@ def _add_logical_kernel_bindings(
     logical_kernels: Dict[str, Kernel],
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
+    reset_participant_ids = {
+        id(participant)
+        for reset_name, reset in spec.dfb_resets.items()
+        if reset_name in loaded_names
+        for participant in reset.participants
+        if isinstance(participant, Kernel)
+    }
     for name, kernel in spec.logical_kernels.items():
-        if name not in loaded_names or name in bindings:
+        if name in bindings:
+            continue
+        if name not in loaded_names and id(kernel) not in reset_participant_ids:
             continue
         existing_name = next(
             (
