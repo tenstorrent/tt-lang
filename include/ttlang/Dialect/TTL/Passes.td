@@ -132,6 +132,9 @@ def TTLFormPipeTransports
     `group-size = 1` disables grouping. A larger value is an upper bound; the
     pass selects a smaller group when required by the loop trip count or L1
     capacity. Ineligible loops retain scalar transfer IR.
+
+    A module containing PipeNet protocol operations must assign `dfb_id` to
+    every user-declared DFB before physical allocation.
   }];
 
   let options = [
@@ -218,6 +221,8 @@ def TTLConvertTTLToTTKernel
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     conservative endpoint-contained launch-node domains and single-block event
     regions required by protocol planning.
+    A module containing PipeNet protocol operations must assign `dfb_id` to
+    every user-declared DFB before physical allocation.
   }];
 
   let options = [
