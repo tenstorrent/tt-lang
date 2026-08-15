@@ -51,6 +51,95 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
+// One selected reset declaration may execute once per iteration of equivalent
+// immutable sequential loops in all three participants.
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @repeated_selected_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_selected">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_selected">, <kind = data_movement, identity = "reader", operation = "repeated_selected">, <kind = data_movement, identity = "writer", operation = "repeated_selected">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+
+  func.func @repeated_selected_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_selected">,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    affine.for %iteration = 0 to 4 {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_selected">, <kind = data_movement, identity = "reader", operation = "repeated_selected">, <kind = data_movement, identity = "writer", operation = "repeated_selected">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+
+  func.func @repeated_selected_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_selected">,
+                  ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_selected">, <kind = data_movement, identity = "reader", operation = "repeated_selected">, <kind = data_movement, identity = "writer", operation = "repeated_selected">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+}
+
+// -----
+
+// Repeated all-interface resets use the same participant-loop contract.
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @repeated_all_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_all">} {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_all">, <kind = data_movement, identity = "reader", operation = "repeated_all">, <kind = data_movement, identity = "writer", operation = "repeated_all">]>
+    }
+    return
+  }
+
+  func.func @repeated_all_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_all">,
+                  ttl.noc_index = 0 : i32} {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_all">, <kind = data_movement, identity = "reader", operation = "repeated_all">, <kind = data_movement, identity = "writer", operation = "repeated_all">]>
+    }
+    return
+  }
+
+  func.func @repeated_all_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_all">,
+                  ttl.noc_index = 1 : i32} {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_all">, <kind = data_movement, identity = "reader", operation = "repeated_all">, <kind = data_movement, identity = "writer", operation = "repeated_all">]>
+    }
+    return
+  }
+}
+
+// -----
+
 // A selected reset partitions tensor-backed interface state. Payload bytes
 // remain allocated, but reset occupancy makes pre-reset payload unavailable.
 // CHECK: DFB logical_id=0 bounded=0
