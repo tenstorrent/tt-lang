@@ -15,7 +15,9 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Iterable, List, Optional, Set, Tuple, Union
+
+from ttl._pipenets import iter_instances_in_metadata
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -337,3 +339,8 @@ class PipeNet:
             "PipeNet.is_active() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."
         )
+
+
+def _iter_pipe_nets_in_value(value: Any, visited: Set[int]) -> Iterable[PipeNet]:
+    """Yield PipeNets reachable through Python metadata containers."""
+    yield from iter_instances_in_metadata(value, PipeNet, visited)
