@@ -74,6 +74,95 @@ def test_make_tensor_backed_dfb_records_complete_capacity(monkeypatch):
     assert dfb.byte_size == 16384
 
 
+@pytest.mark.parametrize(
+    "memory_layout",
+    ["HEIGHT_SHARDED", "WIDTH_SHARDED", "BLOCK_SHARDED"],
+    ids=["height", "width", "block"],
+)
+def test_make_tensor_backed_dfb_accepts_supported_sharded_layouts(
+    monkeypatch, memory_layout
+):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    dfb = dataflow_buffer.make_tensor_backed_dfb(
+        _FakeTensor(memory_layout=memory_layout), shape=(1, 4)
+    )
+
+    assert dfb.shape == (1, 4)
+
+
+@pytest.mark.parametrize(
+    "memory_layout_name",
+    ["HEIGHT_SHARDED", "WIDTH_SHARDED", "BLOCK_SHARDED"],
+    ids=["height", "width", "block"],
+)
+def test_make_tensor_backed_dfb_accepts_ttnn_memory_layout_enums(
+    monkeypatch, memory_layout_name
+):
+    ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+    memory_layout = getattr(ttnn.TensorMemoryLayout, memory_layout_name)
+
+    dfb = dataflow_buffer.make_tensor_backed_dfb(
+        _FakeTensor(memory_layout=memory_layout), shape=(1, 4)
+    )
+
+    assert dfb.shape == (1, 4)
+
+
+@pytest.mark.parametrize(
+    "memory_layout",
+    ["INTERLEAVED", "ND_SHARDED", "height_sharded", "NOT_HEIGHT_SHARDED"],
+    ids=[
+        "interleaved",
+        "nd-sharded",
+        "non-enum-spelling",
+        "substring-collision",
+    ],
+)
+def test_make_tensor_backed_dfb_rejects_unsupported_memory_layouts(
+    monkeypatch, memory_layout
+):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"must be height-, width-, or block-sharded, got {memory_layout}$",
+    ):
+        dataflow_buffer.make_tensor_backed_dfb(
+            _FakeTensor(memory_layout=memory_layout), shape=(1, 4)
+        )
+
+
+@pytest.mark.parametrize(
+    "memory_layout_name",
+    ["INTERLEAVED", "ND_SHARDED"],
+    ids=["interleaved", "nd-sharded"],
+)
+def test_make_tensor_backed_dfb_rejects_unsupported_ttnn_memory_layout_enums(
+    monkeypatch, memory_layout_name
+):
+    ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+    memory_layout = getattr(ttnn.TensorMemoryLayout, memory_layout_name)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"must be height-, width-, or block-sharded, got {memory_layout}$",
+    ):
+        dataflow_buffer.make_tensor_backed_dfb(
+            _FakeTensor(memory_layout=memory_layout), shape=(1, 4)
+        )
+
+
 def test_make_tensor_backed_dfb_accepts_range_ending_at_shard_boundary(monkeypatch):
     monkeypatch.setattr(
         "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
@@ -168,14 +257,10 @@ def test_make_tensor_backed_dfb_requires_ttnn_tensor(monkeypatch):
     ("tensor", "message"),
     [
         (_FakeTensor(buffer_type="DRAM"), "must use L1 storage"),
-        (
-            _FakeTensor(memory_layout="WIDTH_SHARDED"),
-            "must be height-sharded",
-        ),
         (_FakeTensor(layout="ROW_MAJOR"), "must use TILE layout"),
         (_FakeTensor(dtype="int32"), "supports BF16 and FP32"),
     ],
-    ids=["dram", "width_sharded", "row_major", "int32"],
+    ids=["dram", "row_major", "int32"],
 )
 def test_make_tensor_backed_dfb_rejects_unvalidated_tensor_contract(
     monkeypatch, tensor, message
