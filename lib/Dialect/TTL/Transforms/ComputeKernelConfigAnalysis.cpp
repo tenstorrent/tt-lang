@@ -211,7 +211,7 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
                               *elementType});
     }
     if (route == TileOperandRoute::Dst) {
-      destinationUses.push_back({operation, info.primitive, *elementType});
+      destinationUses.push_back({operation, info.primitive, *elementType, 1});
     }
   }
 
@@ -229,8 +229,9 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (!tileType) {
       continue;
     }
-    destinationUses.push_back(
-        {operation, info.primitive, tileType.getElementType()});
+    destinationUses.push_back({operation, info.primitive,
+                               tileType.getElementType(),
+                               info.requiredDstSlots});
   }
   return success();
 }
@@ -349,27 +350,38 @@ struct UnsupportedDestinationConfiguration {
   DestinationUse use;
 };
 
+struct DestinationCapacityConflict {
+  DestinationUse use;
+  std::uint32_t availableDstSlots;
+};
+
 using ConfigConstraintConflict =
     std::variant<DestinationWidthConflict, ExplicitUnpackConflict,
                  DFBUnpackConflict, UnsupportedDFBConfiguration,
-                 UnsupportedDestinationConfiguration>;
+                 UnsupportedDestinationConfiguration,
+                 DestinationCapacityConflict>;
 
 struct ConfigurationCandidate {
-  explicit ConfigurationCandidate(DestinationElementWidth width)
-      : destinationElementWidth(width) {}
+  ConfigurationCandidate(DestinationElementWidth width, DstSyncMode syncMode)
+      : destinationElementWidth(width), dstSyncMode(syncMode) {}
 
   DestinationElementWidth destinationElementWidth;
+  DstSyncMode dstSyncMode;
   llvm::MapVector<int64_t, llvm::SmallSet<DFBUnpackMode, 2>> unpackModes;
   llvm::DenseMap<int64_t, DFBInputUse> firstUnpackUses;
 };
 
 struct ConfigConstraintState {
   ConfigConstraintState() {
-    candidates.emplace_back(DestinationElementWidth::Bits16);
-    candidates.emplace_back(DestinationElementWidth::Bits32);
+    candidates.emplace_back(DestinationElementWidth::Bits16,
+                            DstSyncMode::DoubleBuffered);
+    candidates.emplace_back(DestinationElementWidth::Bits16, DstSyncMode::Full);
+    candidates.emplace_back(DestinationElementWidth::Bits32,
+                            DstSyncMode::DoubleBuffered);
+    candidates.emplace_back(DestinationElementWidth::Bits32, DstSyncMode::Full);
   }
 
-  llvm::SmallVector<ConfigurationCandidate, 2> candidates;
+  llvm::SmallVector<ConfigurationCandidate, 4> candidates;
   DestinationWidthEvidence requires32Bits{nullptr, std::nullopt};
   DestinationWidthEvidence requires16Bits{nullptr, std::nullopt};
 };
@@ -413,6 +425,25 @@ ConfigConstraintResult applyConfigConstraints(
     if (state.candidates.empty()) {
       return ConfigConstraintConflict(
           DestinationWidthConflict{state.requires32Bits, state.requires16Bits});
+    }
+
+    std::uint32_t maximumAvailable = 0;
+    for (const ConfigurationCandidate &candidate : state.candidates) {
+      std::uint32_t capacity = getDstCapacity(
+          candidate.destinationElementWidth == DestinationElementWidth::Bits32,
+          candidate.dstSyncMode == DstSyncMode::Full);
+      maximumAvailable = std::max(maximumAvailable, capacity);
+    }
+    llvm::erase_if(
+        state.candidates, [&](const ConfigurationCandidate &candidate) {
+          return getDstCapacity(candidate.destinationElementWidth ==
+                                    DestinationElementWidth::Bits32,
+                                candidate.dstSyncMode == DstSyncMode::Full) <
+                 use.requiredDstSlots;
+        });
+    if (state.candidates.empty()) {
+      return ConfigConstraintConflict(
+          DestinationCapacityConflict{use, maximumAvailable});
     }
   }
 
@@ -530,10 +561,18 @@ void emitConfigConstraintConflict(func::FuncOp function,
               << "dataflow buffer " << typedConflict.use.dfbIndex
               << " has no target-supported destination-width and unpack-route "
                  "configuration";
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ConflictType,
+                                 UnsupportedDestinationConfiguration>) {
           typedConflict.use.operation->emitOpError()
               << "has no target-supported destination element width for "
               << typedConflict.use.elementType << " elements";
+        } else {
+          typedConflict.use.operation->emitOpError()
+              << "requires " << typedConflict.use.requiredDstSlots
+              << " simultaneous DST slots, but at most "
+              << typedConflict.availableDstSlots
+              << " are available under the kernel configuration";
         }
       },
       conflict);
@@ -907,6 +946,17 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
                    });
     initialState.requires16Bits = {function.getOperation(), std::nullopt};
   }
+  if (policy.dstSynchronization == ConfigSelection::Enabled) {
+    llvm::erase_if(initialState.candidates,
+                   [](const ConfigurationCandidate &candidate) {
+                     return candidate.dstSyncMode != DstSyncMode::Full;
+                   });
+  } else if (policy.dstSynchronization == ConfigSelection::Disabled) {
+    llvm::erase_if(
+        initialState.candidates, [](const ConfigurationCandidate &candidate) {
+          return candidate.dstSyncMode != DstSyncMode::DoubleBuffered;
+        });
+  }
   ConfigConstraintResult fixedResult = applyConfigConstraints(
       initialState, target, policy, requirements.dfbInputUses,
       requirements.destinationUses);
@@ -984,17 +1034,23 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
              "kernel configuration; using non-full-fp32 lowering";
     }
   }
-  auto selectedCandidate = llvm::find_if(
-      resolvedState.constraints.candidates,
-      [&](const ConfigurationCandidate &candidate) {
-        return candidate.destinationElementWidth == destinationElementWidth;
-      });
-  assert(selectedCandidate != resolvedState.constraints.candidates.end() &&
-         "resolved destination width must have a candidate");
-
-  DstSyncMode syncMode = policy.dstSynchronization == ConfigSelection::Enabled
-                             ? DstSyncMode::Full
-                             : DstSyncMode::DoubleBuffered;
+  auto findCandidate = [&](DstSyncMode syncMode) {
+    return llvm::find_if(resolvedState.constraints.candidates,
+                         [&](const ConfigurationCandidate &candidate) {
+                           return candidate.destinationElementWidth ==
+                                      destinationElementWidth &&
+                                  candidate.dstSyncMode == syncMode;
+                         });
+  };
+  DstSyncMode syncMode = DstSyncMode::DoubleBuffered;
+  auto selectedCandidate = findCandidate(syncMode);
+  if (selectedCandidate == resolvedState.constraints.candidates.end()) {
+    syncMode = DstSyncMode::Full;
+    selectedCandidate = findCandidate(syncMode);
+  }
+  assert(
+      selectedCandidate != resolvedState.constraints.candidates.end() &&
+      "resolved destination width and synchronization must have a candidate");
 
   if (policy.unpackToDestFp32) {
     return KernelConfigPlan(destinationElementWidth, syncMode,
