@@ -661,6 +661,27 @@ def test_chained_copy_wait_routes_to_data_movement():
     assert "ttl.copy" in _kind_src(result, KernelKind.DATA_MOVEMENT)
 
 
+def test_read_index_routes_to_data_movement():
+    """Tensor-provided indices remain with their dataflow buffer acquire."""
+    fn = _fn(
+        """
+        def k(weights, output):
+            index_block = index_dfb.wait()
+            slot = ttl.read_index(index_block, 0, 0)
+            ttl.copy(weights[slot], output)
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
 def test_compute_and_data_movement_route_to_separate_logical_kernels():
     """Copies and compute operations receive distinct logical kernels."""
     fn = _fn(
