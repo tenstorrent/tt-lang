@@ -37,6 +37,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <tuple>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -49,12 +50,24 @@ namespace {
 struct EventPair {
   unsigned entry = 0;
   unsigned completion = 0;
+
+  bool operator==(const EventPair &rhs) const {
+    return std::tie(entry, completion) == std::tie(rhs.entry, rhs.completion);
+  }
+
+  bool operator!=(const EventPair &rhs) const { return !(*this == rhs); }
 };
 
 // First and last dynamic executions represented by one static access.
 struct AccessEventSpan {
   EventPair first;
   EventPair last;
+
+  bool operator==(const AccessEventSpan &rhs) const {
+    return std::tie(first, last) == std::tie(rhs.first, rhs.last);
+  }
+
+  bool operator!=(const AccessEventSpan &rhs) const { return !(*this == rhs); }
 };
 
 // Represents only ordering proved for one launch node. Cyclic reachability is
@@ -270,6 +283,15 @@ public:
            !rejectedCyclePartners[event].empty();
   }
 
+  bool operator==(const HappensBeforeGraph &rhs) const {
+    return std::tie(successors, reachable, cyclicEvents,
+                    rejectedCyclePartners) ==
+           std::tie(rhs.successors, rhs.reachable, rhs.cyclicEvents,
+                    rhs.rejectedCyclePartners);
+  }
+
+  unsigned getEventCount() const { return successors.size(); }
+
   /// Atomically adds acyclic edges to a graph whose transitive closure is
   /// current. Only predecessors of each source gain reachability, and they
   /// gain exactly the existing successor set of its destination.
@@ -348,6 +370,13 @@ struct ValidatedSynchronizedReset {
   SmallVector<Operation *> participantOperations;
   SmallVector<unsigned> targetLogicalIndices;
   bool conditionalExecution = false;
+
+  bool operator==(const ValidatedSynchronizedReset &rhs) const {
+    return std::tie(reset, participantOperations, targetLogicalIndices,
+                    conditionalExecution) ==
+           std::tie(rhs.reset, rhs.participantOperations,
+                    rhs.targetLogicalIndices, rhs.conditionalExecution);
+  }
 };
 
 using ResetBoundaryEvents = DenseMap<SynchronizedDFBResetAttr, EventPair>;
@@ -371,6 +400,13 @@ struct AccessRun {
   std::uint64_t executionCount = 0;
   StaticIterationDomain iterationDomain;
   bool conditionalExecution = false;
+
+  bool operator==(const AccessRun &rhs) const {
+    return std::tie(access, executionCount, iterationDomain,
+                    conditionalExecution) ==
+           std::tie(rhs.access, rhs.executionCount, rhs.iterationDomain,
+                    rhs.conditionalExecution);
+  }
 };
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
@@ -1221,6 +1257,89 @@ collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
   return runs;
 }
 
+struct ProgramOrderTopologyAccess {
+  const DFBAccessOccurrence *access = nullptr;
+  AccessRun run;
+  bool resetTarget = false;
+
+  bool operator==(const ProgramOrderTopologyAccess &rhs) const {
+    return std::tie(access, run, resetTarget) ==
+           std::tie(rhs.access, rhs.run, rhs.resetTarget);
+  }
+};
+
+// Inputs that determine event identity and source-order topology. Reset-to-
+// access and protocol synchronization edges depend on domain selection and are
+// added independently after any topology reuse.
+struct ProgramOrderTopologyInputs {
+  DenseSet<Operation *> modeledOperations;
+  SmallVector<ProgramOrderTopologyAccess> accesses;
+  SmallVector<ValidatedSynchronizedReset> synchronizedResets;
+
+  bool operator==(const ProgramOrderTopologyInputs &rhs) const {
+    if (modeledOperations.size() != rhs.modeledOperations.size() ||
+        !llvm::all_of(modeledOperations, [&](Operation *operation) {
+          return rhs.modeledOperations.contains(operation);
+        })) {
+      return false;
+    }
+    return std::tie(accesses, synchronizedResets) ==
+           std::tie(rhs.accesses, rhs.synchronizedResets);
+  }
+};
+
+static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
+    LaunchNodeCoord node, const AccessExecutionCounts &executionCounts,
+    const AccessRuns &accessRuns, bool includeUnknownDomains) {
+  ProgramOrderTopologyInputs inputs;
+  DenseSet<const DFBAccessOccurrence *> resetTargetAccesses;
+  for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
+    for (unsigned logicalIndex : reset.targetLogicalIndices) {
+      for (const DFBAccessOccurrence &access :
+           logicalDFBs[logicalIndex].accesses) {
+        resetTargetAccesses.insert(&access);
+      }
+    }
+    for (Operation *operation : reset.participantOperations) {
+      if (Operation *projected = getTopLevelKernelOperation(operation)) {
+        inputs.modeledOperations.insert(projected);
+      }
+    }
+  }
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+      if (!mayAccessLaunchNode(access, node, executionCounts,
+                               includeUnknownDomains)) {
+        continue;
+      }
+      Operation *projected = getTopLevelKernelOperation(access.operation);
+      if (!projected) {
+        continue;
+      }
+      inputs.modeledOperations.insert(projected);
+      auto runIt = accessRuns.find(&access);
+      if (runIt == accessRuns.end()) {
+        continue;
+      }
+      bool resetTarget = resetTargetAccesses.contains(&access);
+      bool directProtocolEvent = access.protocolEffect &&
+                                 projected == access.operation &&
+                                 runIt->second.executionCount == 1;
+      bool repeatedAccessEvents = runIt->second.executionCount > 1;
+      bool nestedResetEvent = resetTarget && projected != access.operation &&
+                              runIt->second.executionCount == 1;
+      if (directProtocolEvent || repeatedAccessEvents || nestedResetEvent) {
+        inputs.accesses.push_back({&access, runIt->second, resetTarget});
+      }
+    }
+  }
+  inputs.synchronizedResets.append(synchronizedResets.begin(),
+                                   synchronizedResets.end());
+  return inputs;
+}
+
 static LogicalResult validateSynchronizedResetDeclarations(
     ArrayRef<SynchronizedResetOccurrence> occurrences,
     DFBAnalysisFailure &analysisFailure) {
@@ -1392,62 +1511,58 @@ static LogicalResult validateSynchronizedResetsAtNode(
   return success();
 }
 
-// Builds source-order events only for accesses active on `node`. Direct
-// protocol effects receive separate events in their declared sequence;
-// operations in different kernels remain concurrent unless protocol edges
-// order them.
-static void buildProgramOrderGraph(
-    ModuleOp module, ArrayRef<DFBLogicalLifecycle> logicalDFBs,
-    ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
-    LaunchNodeCoord node, HappensBeforeGraph &graph,
+struct ProgramOrderGraphState {
+  HappensBeforeGraph graph;
+  DenseMap<Operation *, EventPair> operationEvents;
+  DenseMap<const DFBAccessOccurrence *, AccessEventSpan> accessEvents;
+  ResetBoundaryEvents resetBoundaryEvents;
+
+  bool operator==(const ProgramOrderGraphState &rhs) const {
+    return std::tie(graph, operationEvents, accessEvents,
+                    resetBoundaryEvents) ==
+           std::tie(rhs.graph, rhs.operationEvents, rhs.accessEvents,
+                    rhs.resetBoundaryEvents);
+  }
+};
+
+// Builds source-order events only for active accesses. Direct protocol effects
+// receive separate events in their declared sequence; operations in different
+// kernels remain concurrent unless protocol edges order them.
+static void buildProgramOrderTopology(
+    ModuleOp module, const ProgramOrderTopologyInputs &inputs,
+    HappensBeforeGraph &graph,
     DenseMap<Operation *, EventPair> &operationEvents,
     DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
-    ResetBoundaryEvents &resetBoundaryEvents,
-    const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
-    bool includeUnknownDomains) {
-  llvm::DenseSet<Operation *> modeledOperations;
+    ResetBoundaryEvents &resetBoundaryEvents) {
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
       directProtocolAccesses;
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
       projectedAccesses;
+  DenseMap<const DFBAccessOccurrence *, const AccessRun *> accessRuns;
   DenseSet<const DFBAccessOccurrence *> resetTargetAccesses;
-  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-      if (!mayAccessLaunchNode(access, node, executionCounts,
-                               includeUnknownDomains)) {
-        continue;
-      }
-      if (Operation *projected = getTopLevelKernelOperation(access.operation)) {
-        modeledOperations.insert(projected);
-        projectedAccesses[projected].push_back(&access);
-        auto runIt = accessRuns.find(&access);
-        if (access.protocolEffect && projected == access.operation &&
-            runIt != accessRuns.end() && runIt->second.executionCount == 1) {
-          directProtocolAccesses[projected].push_back(&access);
-        }
+  for (const ProgramOrderTopologyAccess &input : inputs.accesses) {
+    const DFBAccessOccurrence *access = input.access;
+    accessRuns.try_emplace(access, &input.run);
+    if (input.resetTarget) {
+      resetTargetAccesses.insert(access);
+    }
+    if (Operation *projected = getTopLevelKernelOperation(access->operation)) {
+      projectedAccesses[projected].push_back(access);
+      if (access->protocolEffect && projected == access->operation &&
+          input.run.executionCount == 1) {
+        directProtocolAccesses[projected].push_back(access);
       }
     }
   }
-  for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
-    for (unsigned logicalIndex : reset.targetLogicalIndices) {
-      for (const DFBAccessOccurrence &access :
-           logicalDFBs[logicalIndex].accesses) {
-        resetTargetAccesses.insert(&access);
-      }
-    }
-    for (Operation *operation : reset.participantOperations) {
-      if (Operation *projected = getTopLevelKernelOperation(operation)) {
-        modeledOperations.insert(projected);
-      }
-    }
-  }
+  ArrayRef<ValidatedSynchronizedReset> synchronizedResets =
+      inputs.synchronizedResets;
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
     if (function.getBody().empty() || !function.getBody().hasOneBlock()) {
       continue;
     }
     std::optional<EventPair> previousEvents;
     for (Operation &operation : function.getBody().front()) {
-      if (!modeledOperations.contains(&operation)) {
+      if (!inputs.modeledOperations.contains(&operation)) {
         continue;
       }
       EventPair events = graph.addOperation();
@@ -1477,7 +1592,7 @@ static void buildProgramOrderGraph(
     EventPair projectedEvents = operationEvents.lookup(projected);
     for (const DFBAccessOccurrence *access : accesses) {
       auto runIt = accessRuns.find(access);
-      if (runIt == accessRuns.end() || runIt->second.executionCount <= 1) {
+      if (runIt == accessRuns.end() || runIt->second->executionCount <= 1) {
         continue;
       }
       EventPair firstEvents = graph.addOperation();
@@ -1491,7 +1606,7 @@ static void buildProgramOrderGraph(
       auto beforeRunIt = accessRuns.find(beforeAccess);
       auto beforeEventsIt = accessEvents.find(beforeAccess);
       if (beforeRunIt == accessRuns.end() ||
-          beforeRunIt->second.executionCount <= 1 ||
+          beforeRunIt->second->executionCount <= 1 ||
           beforeEventsIt == accessEvents.end()) {
         continue;
       }
@@ -1499,10 +1614,10 @@ static void buildProgramOrderGraph(
         auto afterRunIt = accessRuns.find(afterAccess);
         auto afterEventsIt = accessEvents.find(afterAccess);
         if (afterRunIt == accessRuns.end() ||
-            afterRunIt->second.executionCount <= 1 ||
+            afterRunIt->second->executionCount <= 1 ||
             afterEventsIt == accessEvents.end() ||
-            !runPrecedesWithinEachIteration(beforeRunIt->second,
-                                            afterRunIt->second)) {
+            !runPrecedesWithinEachIteration(*beforeRunIt->second,
+                                            *afterRunIt->second)) {
           continue;
         }
         graph.addEdge(beforeEventsIt->second.first.completion,
@@ -1522,7 +1637,7 @@ static void buildProgramOrderGraph(
       auto runIt = accessRuns.find(access);
       if (!resetTargetAccesses.contains(access) ||
           access->operation == projected || runIt == accessRuns.end() ||
-          runIt->second.executionCount != 1) {
+          runIt->second->executionCount != 1) {
         continue;
       }
       EventPair events = graph.addOperation();
@@ -1571,6 +1686,39 @@ static void buildProgramOrderGraph(
     }
   }
 
+  for (const ValidatedSynchronizedReset &before : synchronizedResets) {
+    for (const ValidatedSynchronizedReset &after : synchronizedResets) {
+      if (before.reset == after.reset ||
+          before.reset.getParticipants() != after.reset.getParticipants()) {
+        continue;
+      }
+      bool everyParticipantOrdered = llvm::all_of(
+          llvm::zip_equal(before.participantOperations,
+                          after.participantOperations),
+          [](auto pair) {
+            return structurallyPrecedes(std::get<0>(pair), std::get<1>(pair));
+          });
+      if (everyParticipantOrdered) {
+        auto beforeEvents = resetBoundaryEvents.find(before.reset);
+        auto afterEvents = resetBoundaryEvents.find(after.reset);
+        if (beforeEvents != resetBoundaryEvents.end() &&
+            afterEvents != resetBoundaryEvents.end()) {
+          graph.addEdge(beforeEvents->second.completion,
+                        afterEvents->second.entry);
+        }
+      }
+    }
+  }
+}
+
+static void addSynchronizedResetAccessEdges(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
+    LaunchNodeCoord node, HappensBeforeGraph &graph,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
+    const ResetBoundaryEvents &resetBoundaryEvents,
+    const AccessExecutionCounts &executionCounts, bool includeUnknownDomains) {
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
     auto boundaryIt = resetBoundaryEvents.find(reset.reset);
     if (boundaryIt == resetBoundaryEvents.end()) {
@@ -1609,30 +1757,15 @@ static void buildProgramOrderGraph(
       }
     }
   }
+}
 
-  for (const ValidatedSynchronizedReset &before : synchronizedResets) {
-    for (const ValidatedSynchronizedReset &after : synchronizedResets) {
-      if (before.reset == after.reset ||
-          before.reset.getParticipants() != after.reset.getParticipants()) {
-        continue;
-      }
-      bool everyParticipantOrdered = llvm::all_of(
-          llvm::zip_equal(before.participantOperations,
-                          after.participantOperations),
-          [](auto pair) {
-            return structurallyPrecedes(std::get<0>(pair), std::get<1>(pair));
-          });
-      if (everyParticipantOrdered) {
-        auto beforeEvents = resetBoundaryEvents.find(before.reset);
-        auto afterEvents = resetBoundaryEvents.find(after.reset);
-        if (beforeEvents != resetBoundaryEvents.end() &&
-            afterEvents != resetBoundaryEvents.end()) {
-          graph.addEdge(beforeEvents->second.completion,
-                        afterEvents->second.entry);
-        }
-      }
-    }
-  }
+static ProgramOrderGraphState
+buildProgramOrderTopologyState(ModuleOp module,
+                               const ProgramOrderTopologyInputs &inputs) {
+  ProgramOrderGraphState state;
+  buildProgramOrderTopology(module, inputs, state.graph, state.operationEvents,
+                            state.accessEvents, state.resetBoundaryEvents);
+  return state;
 }
 
 // Conditional runs match only under equivalent structured conditions.
@@ -3488,14 +3621,22 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     AccessRuns accessRuns =
         collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
                           /*includeUnknownDomains=*/false);
-    HappensBeforeGraph graph;
-    DenseMap<Operation *, EventPair> operationEvents;
-    DenseMap<const DFBAccessOccurrence *, AccessEventSpan> accessEvents;
-    ResetBoundaryEvents resetBoundaryEvents;
-    buildProgramOrderGraph(module, logicalDFBs, validatedResets, node, graph,
-                           operationEvents, accessEvents, resetBoundaryEvents,
-                           executionCounts, accessRuns,
-                           /*includeUnknownDomains=*/false);
+    ProgramOrderTopologyInputs graphTopologyInputs =
+        collectProgramOrderTopologyInputs(logicalDFBs, validatedResets, node,
+                                          executionCounts, accessRuns,
+                                          /*includeUnknownDomains=*/false);
+    ProgramOrderGraphState graphState =
+        buildProgramOrderTopologyState(module, graphTopologyInputs);
+    HappensBeforeGraph &graph = graphState.graph;
+    DenseMap<Operation *, EventPair> &operationEvents =
+        graphState.operationEvents;
+    DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents =
+        graphState.accessEvents;
+    ResetBoundaryEvents &resetBoundaryEvents = graphState.resetBoundaryEvents;
+    addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
+                                    operationEvents, accessEvents,
+                                    resetBoundaryEvents, executionCounts,
+                                    /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(
         logicalDFBs, graph, operationEvents, accessEvents, executionCounts,
         accessRuns, node, domainState, /*includeUnknownDomains=*/false);
@@ -3553,18 +3694,41 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       continue;
     }
 
-    HappensBeforeGraph possibleGraph;
-    DenseMap<Operation *, EventPair> possibleOperationEvents;
-    DenseMap<const DFBAccessOccurrence *, AccessEventSpan> possibleAccessEvents;
-    ResetBoundaryEvents possibleResetBoundaryEvents;
     AccessRuns possibleAccessRuns =
         collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
                           /*includeUnknownDomains=*/true);
-    buildProgramOrderGraph(module, logicalDFBs, validatedResets, node,
-                           possibleGraph, possibleOperationEvents,
-                           possibleAccessEvents, possibleResetBoundaryEvents,
-                           executionCounts, possibleAccessRuns,
-                           /*includeUnknownDomains=*/true);
+    ProgramOrderTopologyInputs possibleGraphTopologyInputs =
+        collectProgramOrderTopologyInputs(logicalDFBs, validatedResets, node,
+                                          executionCounts, possibleAccessRuns,
+                                          /*includeUnknownDomains=*/true);
+    bool graphTopologiesMatch =
+        graphTopologyInputs == possibleGraphTopologyInputs;
+    ProgramOrderGraphState possibleGraphState =
+        graphTopologiesMatch ? graphState
+                             : buildProgramOrderTopologyState(
+                                   module, possibleGraphTopologyInputs);
+#ifndef NDEBUG
+    // Small graphs retain an independent reconstruction oracle without
+    // repeating model-scale graph construction in assertion-enabled builds.
+    if (graphTopologiesMatch && graphState.graph.getEventCount() <= 128) {
+      ProgramOrderGraphState reconstructedPossibleGraphState =
+          buildProgramOrderTopologyState(module, possibleGraphTopologyInputs);
+      assert(reconstructedPossibleGraphState == possibleGraphState &&
+             "equal program-order inputs must produce equal graph topology");
+    }
+#endif
+    HappensBeforeGraph &possibleGraph = possibleGraphState.graph;
+    DenseMap<Operation *, EventPair> &possibleOperationEvents =
+        possibleGraphState.operationEvents;
+    DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
+        &possibleAccessEvents = possibleGraphState.accessEvents;
+    ResetBoundaryEvents &possibleResetBoundaryEvents =
+        possibleGraphState.resetBoundaryEvents;
+    addSynchronizedResetAccessEdges(
+        logicalDFBs, validatedResets, node, possibleGraph,
+        possibleOperationEvents, possibleAccessEvents,
+        possibleResetBoundaryEvents, executionCounts,
+        /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
         possibleAccessEvents, executionCounts, possibleAccessRuns, node,
