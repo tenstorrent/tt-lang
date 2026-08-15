@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// This test driver prints the launch-node lattice immediately before every
-// operation with a test.label attribute.
+// This test driver validates domain algebra and prints the launch-node lattice
+// immediately before every operation with a test.label attribute.
 
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
@@ -22,11 +22,50 @@ namespace {
 
 constexpr llvm::StringLiteral kLabelAttrName = "test.label";
 
+bool verifyLaunchNodeDomainAlgebra() {
+  using mlir::tt::ttl::getFullLaunchNodeDomain;
+  using mlir::tt::ttl::getSingleLaunchNodeDomain;
+  using mlir::tt::ttl::LaunchNodeDomain;
+  using mlir::tt::ttl::launchNodeDomainsOverlap;
+
+  LaunchNodeDomain leftColumn = getSingleLaunchNodeDomain({0, 0}).unionWith(
+      getSingleLaunchNodeDomain({0, 1}));
+  LaunchNodeDomain rightColumn = getSingleLaunchNodeDomain({1, 0}).unionWith(
+      getSingleLaunchNodeDomain({1, 1}));
+  LaunchNodeDomain fullDomain = getFullLaunchNodeDomain(2, 2);
+  LaunchNodeDomain boundedLeft = LaunchNodeDomain::unknownWithin(leftColumn);
+  LaunchNodeDomain boundedRight = LaunchNodeDomain::unknownWithin(rightColumn);
+  LaunchNodeDomain unbounded = LaunchNodeDomain::unknown();
+
+  bool valid = !boundedLeft.known &&
+               boundedLeft.isUpperBoundSubsetOf(fullDomain) &&
+               !boundedLeft.isUpperBoundSubsetOf(rightColumn) &&
+               boundedLeft.unionWith(boundedRight) ==
+                   LaunchNodeDomain::unknownWithin(fullDomain) &&
+               boundedLeft.intersectWith(rightColumn) == LaunchNodeDomain{} &&
+               boundedLeft.unionWith(boundedRight).subtract(rightColumn) ==
+                   LaunchNodeDomain::unknownWithin(leftColumn) &&
+               unbounded.intersectWith(leftColumn) == boundedLeft &&
+               unbounded.unionWith(leftColumn) == unbounded &&
+               unbounded.subtract(leftColumn) == unbounded &&
+               leftColumn.subtract(unbounded) == boundedLeft &&
+               launchNodeDomainsOverlap(boundedLeft, leftColumn) &&
+               !launchNodeDomainsOverlap(boundedLeft, rightColumn) &&
+               launchNodeDomainsOverlap(unbounded, rightColumn);
+  if (!valid) {
+    llvm::errs() << "launch-node domain algebra validation failed\n";
+  }
+  return valid;
+}
+
 } // namespace
 
 int main(int argumentCount, char **argumentValues) {
   if (argumentCount != 2) {
     llvm::errs() << "usage: ttlang-launch-node-domain-test <input.mlir>\n";
+    return 1;
+  }
+  if (!verifyLaunchNodeDomainAlgebra()) {
     return 1;
   }
 
