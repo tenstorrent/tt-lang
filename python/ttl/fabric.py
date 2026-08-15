@@ -74,7 +74,11 @@ class FabricManagerClaim:
         return self.name
 
     def _bind(self, operation_identity: str) -> None:
-        if self.kernel._operation_identity != operation_identity:
+        kernel_belongs_to_operation = (
+            self.kernel._operation_identity == operation_identity
+        )
+        kernel_is_compiler_owned = self.kernel._implicit_role is not None
+        if not kernel_belongs_to_operation and not kernel_is_compiler_owned:
             raise ValueError(
                 f"FabricManagerClaim {self.name!r} selects a Kernel owned by "
                 "another operation"

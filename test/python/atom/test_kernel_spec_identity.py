@@ -114,3 +114,36 @@ def test_external_fabric_manager_effects_reach_the_selected_kernel(monkeypatch):
     interval = selected_spec.fabric_manager_intervals[0]
     assert interval.kind is FabricManagerIntervalKind.EXTERNAL
     assert interval.claim == manager.identity
+
+
+def test_external_fabric_manager_can_select_pipe_source_kernel(monkeypatch):
+    """An external manager may share the compiler-owned PipeNet source."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    manager = ttl.FabricManagerClaim("external", kernel=ttl.PIPE_SOURCE_KERNEL)
+
+    @ttl.operation(grid=(1, 1))
+    def external_pipe_source_manager(inp):
+        ttl.call_extern_func(
+            HEADER,
+            "open_and_close",
+            kernel=ttl.PIPE_SOURCE_KERNEL,
+            fabric_manager_effects=(manager.scoped(),),
+        )
+
+    external_pipe_source_manager(
+        ttnn.from_torch(
+            torch.zeros((32, 32), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+    )
+
+    selected_spec = next(
+        spec
+        for spec in _kernel_specs(_compiled_kernel(external_pipe_source_manager))
+        if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
+    )
+    assert len(selected_spec.fabric_manager_intervals) == 1
+    interval = selected_spec.fabric_manager_intervals[0]
+    assert interval.kind is FabricManagerIntervalKind.EXTERNAL
+    assert interval.claim == manager.identity
