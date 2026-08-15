@@ -14,6 +14,7 @@
 
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -28,6 +29,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 
@@ -367,35 +369,61 @@ struct SynchronizedResetOccurrence {
   LaunchNodeDomain launchDomain = LaunchNodeDomain::unknown();
 };
 
-// One proved dynamic reset instance on one launch node.
-struct ValidatedSynchronizedReset {
-  SynchronizedDFBResetAttr reset;
-  SmallVector<Operation *> participantOperations;
-  SmallVector<unsigned> targetLogicalIndices;
-  bool conditionalExecution = false;
+// Structured loops whose Cartesian iteration space executes one operation once.
+// Local access ordering uses loop identity; cross-kernel reset matching uses
+// the constant trip-count sequence.
+struct StaticIterationDomain {
+  SmallVector<Operation *> loops;
+  SmallVector<std::uint64_t> tripCounts;
 
-  bool operator==(const ValidatedSynchronizedReset &rhs) const {
-    return std::tie(reset, participantOperations, targetLogicalIndices,
-                    conditionalExecution) ==
-           std::tie(rhs.reset, rhs.participantOperations,
-                    rhs.targetLogicalIndices, rhs.conditionalExecution);
+  bool operator==(const StaticIterationDomain &rhs) const {
+    return loops == rhs.loops && tripCounts == rhs.tripCounts;
   }
 };
 
-using ResetBoundaryEvents = DenseMap<SynchronizedDFBResetAttr, EventPair>;
+// One proved reset instance or uniform reset run on one launch node.
+struct ValidatedSynchronizedReset {
+  SynchronizedDFBResetAttr reset;
+  SmallVector<Operation *> participantOperations;
+  SmallVector<StaticIterationDomain, 0> participantIterationDomains;
+  SmallVector<unsigned> targetLogicalIndices;
+  std::uint64_t executionCount = 1;
+  bool conditionalExecution = false;
+
+  bool operator==(const ValidatedSynchronizedReset &rhs) const {
+    return std::tie(reset, participantOperations, participantIterationDomains,
+                    targetLogicalIndices, executionCount,
+                    conditionalExecution) ==
+           std::tie(rhs.reset, rhs.participantOperations,
+                    rhs.participantIterationDomains, rhs.targetLogicalIndices,
+                    rhs.executionCount, rhs.conditionalExecution);
+  }
+
+  // Dispatch-wide partitioning is valid only for a single reset instance.
+  bool isModeledLifetimeBoundary() const { return executionCount == 1; }
+};
+
+// First and last collective instances of one reset declaration. Equal events
+// represent a single reset instance.
+using ResetBoundaryEvents = DenseMap<SynchronizedDFBResetAttr, AccessEventSpan>;
 
 using AccessExecutionCounts =
     DenseMap<const DFBAccessOccurrence *, std::optional<std::uint64_t>>;
 
-// Structured loops whose Cartesian iteration space executes one access once.
-// Loop operation identity, rather than a numeric count, distinguishes domains.
-struct StaticIterationDomain {
-  SmallVector<Operation *> loops;
+// Compares dynamic iteration positions across different logical kernels. Equal
+// constant trip counts at each nesting depth define the same ordinal iteration
+// sequence without depending on unrelated loop operation identity.
+static bool hasEquivalentIterationSequence(const StaticIterationDomain &lhs,
+                                           const StaticIterationDomain &rhs) {
+  return lhs.tripCounts == rhs.tripCounts;
+}
 
-  bool operator==(const StaticIterationDomain &rhs) const {
-    return loops == rhs.loops;
-  }
-};
+static bool
+hasSequentialIterationOrder(const StaticIterationDomain &iterationDomain) {
+  return llvm::all_of(iterationDomain.loops, [](Operation *loop) {
+    return isa<affine::AffineForOp, scf::ForOp>(loop);
+  });
+}
 
 // One statically counted run of an access occurrence.
 struct AccessRun {
@@ -454,7 +482,7 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
   }
 
   StaticIterationDomain domain;
-  std::uint64_t domainExecutionCount = 1;
+  std::uint64_t nestedExecutionCount = executionCount;
   Operation *nestedOperation = operation;
   while (nestedOperation->getParentRegion() != &function.getBody()) {
     Region *region = nestedOperation->getParentRegion();
@@ -467,7 +495,8 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     if (!loop) {
       std::optional<std::uint64_t> parentExecutionCount =
           getExactExecutionCountAtLaunchNode(parent, node, domainState);
-      if (!parentExecutionCount || *parentExecutionCount != 1) {
+      if (!parentExecutionCount ||
+          *parentExecutionCount != nestedExecutionCount) {
         return std::nullopt;
       }
       nestedOperation = parent;
@@ -481,21 +510,29 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     if (!tripCount || *tripCount == 0) {
       return std::nullopt;
     }
-    std::optional<std::uint64_t> product =
-        llvm::checkedMulUnsigned(domainExecutionCount, *tripCount);
-    if (!product) {
+    std::optional<std::uint64_t> parentExecutionCount =
+        getExactExecutionCountAtLaunchNode(parent, node, domainState);
+    if (!parentExecutionCount) {
       return std::nullopt;
     }
-    domainExecutionCount = *product;
+    std::optional<std::uint64_t> loopBodyExecutionCount =
+        llvm::checkedMulUnsigned(*parentExecutionCount, *tripCount);
+    if (!loopBodyExecutionCount ||
+        *loopBodyExecutionCount != nestedExecutionCount) {
+      return std::nullopt;
+    }
     domain.loops.push_back(parent);
+    domain.tripCounts.push_back(*tripCount);
+    nestedExecutionCount = *parentExecutionCount;
     nestedOperation = parent;
   }
 
   if (nestedOperation->getBlock() != &function.getBody().front() ||
-      domainExecutionCount != executionCount) {
+      nestedExecutionCount != 1) {
     return std::nullopt;
   }
   std::reverse(domain.loops.begin(), domain.loops.end());
+  std::reverse(domain.tripCounts.begin(), domain.tripCounts.end());
   return domain;
 }
 
@@ -848,6 +885,17 @@ static bool runPrecedesWithinEachIteration(const AccessRun &before,
   return before.access->operation->getBlock() ==
              after.access->operation->getBlock() &&
          before.access->operation->isBeforeInBlock(after.access->operation);
+}
+
+// Orders first and last representatives of two equal sequential runs. The
+// middle edge establishes that the next execution of `before` follows the
+// current execution of `after` without creating one event per iteration.
+static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
+                                     const AccessEventSpan &before,
+                                     const AccessEventSpan &after) {
+  graph.addEdge(before.first.completion, after.first.entry);
+  graph.addEdge(after.first.completion, before.last.entry);
+  graph.addEdge(before.last.completion, after.last.entry);
 }
 
 // Requires a release to follow every use owned by its acquisition; textual
@@ -1501,6 +1549,8 @@ static LogicalResult validateSynchronizedResetsAtNode(
     bool allParticipantsExact = true;
     bool allParticipantsConditional = true;
     Operation *referenceConditionalOperation = nullptr;
+    std::optional<std::uint64_t> referenceExecutionCount;
+    std::optional<StaticIterationDomain> referenceIterationDomain;
     for (LogicalKernelAttr participant : reset.getParticipants()) {
       SmallVector<const SynchronizedResetOccurrence *> activeOccurrences;
       bool participantMayBeActive = false;
@@ -1517,19 +1567,13 @@ static LogicalResult validateSynchronizedResetsAtNode(
           continue;
         }
         participantMayBeActive = true;
-        if (executionCount && *executionCount != 1) {
-          analysisFailure.set(
-              occurrence->operation,
-              "synchronized DFB reset declaration must execute at most once "
-              "per dispatch and launch node");
-          return failure();
-        }
         if (!executionCount &&
             !structurallyExecutesAtMostOnce(occurrence->operation)) {
           analysisFailure.set(
               occurrence->operation,
-              "synchronized DFB reset requires an exact zero-or-one dynamic "
-              "instance count");
+              "synchronized DFB reset must execute at most once per dispatch "
+              "and launch node or once per iteration of an immutable "
+              "sequential structured loop nest");
           return failure();
         }
         activeOccurrences.push_back(occurrence);
@@ -1546,6 +1590,7 @@ static LogicalResult validateSynchronizedResetsAtNode(
       }
       if (activeOccurrences.empty()) {
         validated.participantOperations.push_back(nullptr);
+        validated.participantIterationDomains.emplace_back();
         continue;
       }
       const SynchronizedResetOccurrence &occurrence =
@@ -1560,11 +1605,41 @@ static LogicalResult validateSynchronizedResetsAtNode(
             "target sets");
         return failure();
       }
-      validated.participantOperations.push_back(occurrence.operation);
       std::optional<std::uint64_t> executionCount =
           getExactExecutionCountAtLaunchNode(occurrence.operation, node,
                                              domainState);
-      if (!executionCount) {
+      StaticIterationDomain iterationDomain;
+      if (executionCount) {
+        if (*executionCount > 1) {
+          std::optional<StaticIterationDomain> uniformDomain =
+              getUniformStaticIterationDomain(
+                  occurrence.operation, *executionCount, node, domainState);
+          if (!uniformDomain || uniformDomain->loops.empty() ||
+              !hasSequentialIterationOrder(*uniformDomain)) {
+            analysisFailure.set(
+                occurrence.operation,
+                ("repeated synchronized DFB reset with exact count " +
+                 llvm::Twine(*executionCount) +
+                 " must execute once in every iteration of an immutable "
+                 "sequential structured loop nest")
+                    .str());
+            return failure();
+          }
+          iterationDomain = std::move(*uniformDomain);
+        }
+        if (!referenceExecutionCount) {
+          referenceExecutionCount = executionCount;
+          referenceIterationDomain = iterationDomain;
+        } else if (*referenceExecutionCount != *executionCount ||
+                   !hasEquivalentIterationSequence(*referenceIterationDomain,
+                                                   iterationDomain)) {
+          analysisFailure.set(
+              occurrence.operation,
+              "synchronized DFB reset participants must execute in the same "
+              "structured iteration sequence");
+          return failure();
+        }
+      } else {
         if (referenceConditionalOperation &&
             !proveEquivalentConditionalExecutionAtLaunchNodes(
                 referenceConditionalOperation, node, occurrence.operation, node,
@@ -1577,6 +1652,9 @@ static LogicalResult validateSynchronizedResetsAtNode(
         }
         referenceConditionalOperation = occurrence.operation;
       }
+      validated.participantOperations.push_back(occurrence.operation);
+      validated.participantIterationDomains.push_back(
+          std::move(iterationDomain));
     }
     if (!anyParticipantActive) {
       continue;
@@ -1602,6 +1680,7 @@ static LogicalResult validateSynchronizedResetsAtNode(
       return failure();
     }
     validated.conditionalExecution = allParticipantsConditional;
+    validated.executionCount = referenceExecutionCount.value_or(1);
     validatedResets.push_back(std::move(validated));
   }
   return success();
@@ -1776,11 +1855,17 @@ static void buildProgramOrderTopology(
     if (participantEvents.size() != reset.participantOperations.size()) {
       continue;
     }
-    EventPair boundaryEvents = graph.addOperation();
-    resetBoundaryEvents.try_emplace(reset.reset, boundaryEvents);
+    EventPair firstEvents = graph.addOperation();
+    EventPair lastEvents = firstEvents;
+    if (reset.executionCount > 1) {
+      lastEvents = graph.addOperation();
+      graph.addEdge(firstEvents.completion, lastEvents.entry);
+    }
+    resetBoundaryEvents.try_emplace(reset.reset,
+                                    AccessEventSpan{firstEvents, lastEvents});
     for (const EventPair &participant : participantEvents) {
-      graph.addEdge(participant.entry, boundaryEvents.entry);
-      graph.addEdge(boundaryEvents.completion, participant.completion);
+      graph.addEdge(participant.entry, firstEvents.entry);
+      graph.addEdge(lastEvents.completion, participant.completion);
     }
   }
 
@@ -1802,8 +1887,18 @@ static void buildProgramOrderTopology(
         auto afterEvents = resetBoundaryEvents.find(after.reset);
         if (beforeEvents != resetBoundaryEvents.end() &&
             afterEvents != resetBoundaryEvents.end()) {
-          graph.addEdge(beforeEvents->second.completion,
-                        afterEvents->second.entry);
+          bool matchingRepeatedSequence =
+              before.executionCount > 1 &&
+              before.executionCount == after.executionCount &&
+              llvm::equal(before.participantIterationDomains,
+                          after.participantIterationDomains);
+          if (matchingRepeatedSequence) {
+            addPerIterationSpanOrder(graph, beforeEvents->second,
+                                     afterEvents->second);
+          } else if (before.executionCount == 1 && after.executionCount == 1) {
+            graph.addEdge(beforeEvents->second.last.completion,
+                          afterEvents->second.first.entry);
+          }
         }
       }
     }
@@ -1817,7 +1912,7 @@ static void addSynchronizedResetAccessEdges(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const ResetBoundaryEvents &resetBoundaryEvents,
-    const AccessExecutionCounts &executionCounts,
+    const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
     const StructuralOperationOrder &structuralOrder,
     bool includeUnknownDomains) {
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
@@ -1825,7 +1920,7 @@ static void addSynchronizedResetAccessEdges(
     if (boundaryIt == resetBoundaryEvents.end()) {
       continue;
     }
-    EventPair boundaryEvents = boundaryIt->second;
+    AccessEventSpan boundaryEvents = boundaryIt->second;
     for (unsigned logicalIndex : reset.targetLogicalIndices) {
       for (const DFBAccessOccurrence &access :
            logicalDFBs[logicalIndex].accesses) {
@@ -1841,25 +1936,46 @@ static void addSynchronizedResetAccessEdges(
         Operation *accessFunction =
             structuralOrder.getFunction(access.operation);
         Operation *localReset = nullptr;
-        for (Operation *participant : reset.participantOperations) {
+        const StaticIterationDomain *localResetDomain = nullptr;
+        for (auto [participantIndex, participant] :
+             llvm::enumerate(reset.participantOperations)) {
           if (structuralOrder.getFunction(participant) == accessFunction) {
             localReset = participant;
+            localResetDomain =
+                &reset.participantIterationDomains[participantIndex];
             break;
           }
         }
         if (!localReset) {
           continue;
         }
-        if (!accessEvents.contains(&access) &&
+        bool sameProjectedOperation =
             structuralOrder.getTopLevelOperation(access.operation) ==
-                structuralOrder.getTopLevelOperation(localReset)) {
+            structuralOrder.getTopLevelOperation(localReset);
+        if (!accessEvents.contains(&access) && sameProjectedOperation) {
           // The enclosing event spans both operations and cannot order them.
           continue;
         }
+        auto runIt = accessRuns.find(&access);
+        bool matchingRepeatedDomain =
+            reset.executionCount > 1 && runIt != accessRuns.end() &&
+            runIt->second.executionCount == reset.executionCount &&
+            runIt->second.iterationDomain == *localResetDomain;
+        if (matchingRepeatedDomain) {
+          if (structuralOrder.precedes(access.operation, localReset)) {
+            addPerIterationSpanOrder(graph, *events, boundaryEvents);
+          } else if (structuralOrder.precedes(localReset, access.operation)) {
+            addPerIterationSpanOrder(graph, boundaryEvents, *events);
+          }
+          continue;
+        }
+        if (reset.executionCount > 1 && sameProjectedOperation) {
+          continue;
+        }
         if (structuralOrder.precedes(access.operation, localReset)) {
-          graph.addEdge(events->last.completion, boundaryEvents.entry);
+          graph.addEdge(events->last.completion, boundaryEvents.first.entry);
         } else if (structuralOrder.precedes(localReset, access.operation)) {
-          graph.addEdge(boundaryEvents.completion, events->first.entry);
+          graph.addEdge(boundaryEvents.last.completion, events->first.entry);
         }
       }
     }
@@ -3216,6 +3332,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
     bool includeUnknownDomains = false) {
   SmallVector<OrderedResetBoundary> boundaries;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
+    if (!reset.isModeledLifetimeBoundary()) {
+      continue;
+    }
     if (!llvm::is_contained(reset.targetLogicalIndices, logicalIndex)) {
       continue;
     }
@@ -3226,7 +3345,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
               reset.participantOperations.front()};
     }
-    boundaries.push_back({&reset, eventsIt->second});
+    assert(eventsIt->second.first.entry == eventsIt->second.last.entry &&
+           "single reset instance must use one boundary event");
+    boundaries.push_back({&reset, eventsIt->second.first});
   }
   if (boundaries.empty()) {
     return computeProtocolLifetime(
@@ -3914,10 +4035,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         &possibleAccessEvents = possibleGraphState.accessEvents;
     ResetBoundaryEvents &possibleResetBoundaryEvents =
         possibleGraphState.resetBoundaryEvents;
-    addSynchronizedResetAccessEdges(
-        logicalDFBs, validatedResets, node, graph, operationEvents,
-        accessEvents, resetBoundaryEvents, executionCounts, structuralOrder,
-        /*includeUnknownDomains=*/false);
+    addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
+                                    operationEvents, accessEvents,
+                                    resetBoundaryEvents, executionCounts,
+                                    accessRuns, structuralOrder,
+                                    /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(
         logicalDFBs, graph, operationEvents, accessEvents, executionCounts,
         accessRuns, node, domainState, /*includeUnknownDomains=*/false);
@@ -3971,7 +4093,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addSynchronizedResetAccessEdges(
         logicalDFBs, validatedResets, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
-        possibleResetBoundaryEvents, executionCounts, structuralOrder,
+        possibleResetBoundaryEvents, executionCounts, possibleAccessRuns,
+        structuralOrder,
         /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
