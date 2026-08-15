@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping, Optional
+from typing import Iterable, Mapping, Optional
 
 from .kernel import Kernel
 
@@ -73,9 +73,15 @@ class FabricManagerClaim:
     def identity(self) -> str:
         return self.name
 
-    def _bind(self, operation_identity: str) -> None:
+    def _bind(
+        self,
+        operation_identity: str,
+        logical_kernels: Optional[Iterable[Kernel]] = None,
+    ) -> None:
         kernel_belongs_to_operation = (
             self.kernel._operation_identity == operation_identity
+            if logical_kernels is None
+            else any(self.kernel is kernel for kernel in logical_kernels)
         )
         kernel_is_compiler_owned = self.kernel._implicit_role is not None
         if not kernel_belongs_to_operation and not kernel_is_compiler_owned:
@@ -107,8 +113,8 @@ class FabricManagerClaim:
         return hash((self.name, self.operation_identity))
 
 
-def _bind_fabric_manager_claims(
-    claims: Mapping[str, FabricManagerClaim], operation_identity: str
+def _validate_fabric_manager_claims(
+    claims: Mapping[str, FabricManagerClaim],
 ) -> None:
     source_names = {}
     claim_names = {}
@@ -128,8 +134,15 @@ def _bind_fabric_manager_claims(
             )
         claim_names[claim.name] = source_name
 
+
+def _bind_fabric_manager_claims(
+    claims: Mapping[str, FabricManagerClaim],
+    operation_identity: str,
+    logical_kernels: Mapping[str, Kernel],
+) -> None:
+    _validate_fabric_manager_claims(claims)
     for claim in claims.values():
-        claim._bind(operation_identity)
+        claim._bind(operation_identity, logical_kernels.values())
 
 
 __all__ = [

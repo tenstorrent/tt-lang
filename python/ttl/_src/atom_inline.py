@@ -15,6 +15,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from ttl.condition import DispatchCondition
 from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
+from ttl.fabric import FabricManagerClaim
 from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
 
@@ -133,6 +134,7 @@ def inline_atom_calls(
 ) -> Tuple[
     Dict[str, object],
     Dict[str, Kernel],
+    Dict[str, FabricManagerClaim],
     Dict[str, DispatchCondition],
     Dict[str, DFBAllocationGroup],
     Dict[str, DFBReset],
@@ -140,6 +142,11 @@ def inline_atom_calls(
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
     logical_kernels = {}
+    fabric_manager_claims = {
+        name: fn_globals[name]
+        for name in sorted(_loaded_names(fn_def.body))
+        if name in fn_globals and isinstance(fn_globals[name], FabricManagerClaim)
+    }
     dispatch_conditions = {}
     allocation_groups = {}
     dfb_resets = {}
@@ -151,6 +158,7 @@ def inline_atom_calls(
         reserved_names,
         external_pipenets,
         logical_kernels,
+        fabric_manager_claims,
         dispatch_conditions,
         allocation_groups,
         dfb_resets,
@@ -159,6 +167,7 @@ def inline_atom_calls(
     return (
         external_pipenets,
         logical_kernels,
+        fabric_manager_claims,
         dispatch_conditions,
         allocation_groups,
         dfb_resets,
@@ -172,6 +181,7 @@ def _inline_statements(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     dispatch_conditions: Dict[str, DispatchCondition],
     allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
@@ -186,6 +196,7 @@ def _inline_statements(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            fabric_manager_claims,
             dispatch_conditions,
             allocation_groups,
             dfb_resets,
@@ -206,6 +217,7 @@ def _inline_statements(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                fabric_manager_claims,
                 dispatch_conditions,
                 allocation_groups,
                 dfb_resets,
@@ -222,6 +234,7 @@ def _inline_compound_bodies(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     dispatch_conditions: Dict[str, DispatchCondition],
     allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
@@ -240,6 +253,7 @@ def _inline_compound_bodies(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            fabric_manager_claims,
             dispatch_conditions,
             allocation_groups,
             dfb_resets,
@@ -259,6 +273,7 @@ def _inline_compound_bodies(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                fabric_manager_claims,
                 dispatch_conditions,
                 allocation_groups,
                 dfb_resets,
@@ -337,6 +352,7 @@ def _expand_call(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     dispatch_conditions: Dict[str, DispatchCondition],
     allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
@@ -366,6 +382,13 @@ def _expand_call(
         scope,
         reserved_names,
         logical_kernels,
+    )
+    _add_fabric_manager_claim_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        fabric_manager_claims,
     )
     _add_dispatch_condition_bindings(
         spec,
@@ -488,6 +511,32 @@ def _add_logical_kernel_bindings(
             existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
             scope[existing_name] = kernel
             logical_kernels[existing_name] = kernel
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+
+
+def _add_fabric_manager_claim_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, claim in spec.fabric_manager_claims.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in fabric_manager_claims.items()
+                if candidate is claim
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = claim
+            fabric_manager_claims[existing_name] = claim
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 

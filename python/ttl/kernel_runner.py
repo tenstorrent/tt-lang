@@ -906,7 +906,7 @@ def plan_program_runtime_resources(
                         f"external fabric manager interval {interval.identity!r} "
                         "has no claim identity"
                     )
-                claim_key = (logical_kernel.operation, interval.claim)
+                claim_key = interval.claim
                 existing_kernel = external_claim_kernels.setdefault(
                     claim_key, logical_kernel
                 )
@@ -938,7 +938,7 @@ def plan_program_runtime_resources(
                 f"binding {binding_index} claim must be FabricManagerClaim, "
                 f"got {type(binding.claim).__name__}"
             )
-        claim_key = (binding.claim.operation_identity, binding.claim.identity)
+        claim_key = binding.claim.identity
         if claim_key in seen_fabric_bindings:
             raise ValueError(
                 f"@ttl.operation {operation_name!r}: fabric manager claim "
@@ -1108,7 +1108,7 @@ def plan_program_runtime_resources(
 
     missing_claims = set(external_claim_kernels) - seen_fabric_bindings
     if missing_claims:
-        missing_names = tuple(sorted(claim for _, claim in missing_claims))
+        missing_names = tuple(sorted(missing_claims))
         raise ValueError(
             f"@ttl.operation {operation_name!r}: missing fabric connection "
             f"bindings for claims {missing_names}"

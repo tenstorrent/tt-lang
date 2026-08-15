@@ -628,9 +628,7 @@ def test_plan_runtime_resources_resolves_explicit_kernel_identity():
 
 def test_plan_runtime_resources_resolves_pipe_source_kernel():
     resources = ProgramRuntimeResources(
-        kernel_resources=(
-            KernelRuntimeResources(kernel=PIPE_SOURCE_KERNEL),
-        )
+        kernel_resources=(KernelRuntimeResources(kernel=PIPE_SOURCE_KERNEL),)
     )
 
     plan = _plan_runtime_resources(
@@ -1508,6 +1506,46 @@ def test_fabric_resource_plan_canonicalizes_worker_node_order():
         (2, 0),
     )
     assert forward_plan.structural_fingerprint == reverse_plan.structural_fingerprint
+
+
+def test_fabric_resource_plan_accepts_pipe_source_claim():
+    claim = FabricManagerClaim("external", PIPE_SOURCE_KERNEL)
+    claim._bind("test.operation")
+    interval = _fabric_manager_interval(
+        "external.external",
+        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+        claim=claim.identity,
+        route_indices=(),
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/external.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        logical_kernel=claim.kernel,
+        fabric_manager_intervals=(interval,),
+    )
+    binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(fabric_connections=(binding,)),
+        [kernel_spec],
+        core_ranges=_FakeCoreRanges((((1, 0), (1, 0)),)),
+        device_domain=DeviceDomain((1, 2)),
+    )
+
+    assert plan.fabric_connections == (binding,)
 
 
 def test_fabric_resource_plan_rejects_duplicate_worker_nodes():
