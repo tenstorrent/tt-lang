@@ -123,6 +123,19 @@ def test_axis_neighbor_edges_are_materialized_from_compact_relation():
     ]
 
 
+# An extent-two wrapped relation has no distinct boundary edge; it is the
+# bidirectional ordinary-neighbor pair.
+def test_axis_neighbor_extent_two_reuses_ordinary_neighbor():
+    domain = DeviceDomain((2,))
+
+    graph = TransferGraph.axis_neighbor(domain, wrap=True)
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0,)), DeviceRef((1,))),
+        TransferEdge(DeviceRef((1,)), DeviceRef((0,))),
+    ]
+
+
 def test_stencil_edges_include_multiple_axes_and_directions():
     domain = DeviceDomain((2, 2))
 

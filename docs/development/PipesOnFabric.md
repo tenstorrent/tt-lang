@@ -638,10 +638,11 @@ requests mesh routing so arbitrary physical turns remain one packet route.
 Dedicated route tests request mesh, torus-X, torus-Y, and torus-XY modes. The
 torus cases send across each configured boundary and require every tested
 extent to exceed two, because a two-device extent cannot distinguish a wrap
-link from its ordinary neighbor link. A dedicated Galaxy CI fabric phase
-exposes the complete discovered mesh so these cases exercise the system
-topology. Target selection occurs when opening the runtime mesh, not in TTL
-domain or transfer attributes.
+link from its ordinary neighbor link. The bidirectional exchange test covers
+that extent-two relation separately. A dedicated Galaxy CI fabric phase exposes
+the complete discovered mesh so these cases exercise the system topology.
+Target selection occurs when opening the runtime mesh, not in TTL domain or
+transfer attributes.
 
 Validation also includes the complete existing `test/python/pipe` suite and
 the affected MLIR tests. A source-level C++ match or a smaller-system hardware

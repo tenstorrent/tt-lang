@@ -252,6 +252,13 @@ def _flatten_device_index(coordinates, mesh_shape: tuple[int, ...]) -> int:
     return device_index
 
 
+def _select_longest_nontrivial_axis(mesh_shape: tuple[int, ...]) -> int:
+    return max(
+        (axis for axis, extent in enumerate(mesh_shape) if extent > 1),
+        key=lambda axis: mesh_shape[axis],
+    )
+
+
 def _make_fabric_operations(
     mesh_shape: tuple[int, ...],
 ) -> FabricOperations:
@@ -273,7 +280,7 @@ def _make_fabric_operations(
         for source_index in range(device_count)
     )
     receive_block_count = max(2, device_count - 1)
-    ring_axis = next(axis for axis, extent in enumerate(mesh_shape) if extent > 1)
+    neighbor_axis = _select_longest_nontrivial_axis(mesh_shape)
     stencil_offsets = []
     for axis, extent in enumerate(mesh_shape):
         if extent == 1:
@@ -300,10 +307,12 @@ def _make_fabric_operations(
         )
     )
     axis_neighbor_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.axis_neighbor(device_domain, axis=ring_axis)
+        graph=ttl.TransferGraph.axis_neighbor(device_domain, axis=neighbor_axis)
     )
     axis_neighbor_wrap_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.axis_neighbor(device_domain, axis=ring_axis, wrap=True)
+        graph=ttl.TransferGraph.axis_neighbor(
+            device_domain, axis=neighbor_axis, wrap=True
+        )
     )
     axis_neighbor = _make_axis_neighbor_operation(device_domain, axis_neighbor_net)
     axis_neighbor_wrap = _make_axis_neighbor_operation(
@@ -1209,9 +1218,7 @@ def test_axis_neighbor(
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
-    ring_axis = next(
-        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
-    )
+    neighbor_axis = _select_longest_nontrivial_axis(fabric_mesh_shape)
 
     with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
@@ -1223,10 +1230,10 @@ def test_axis_neighbor(
 
     shard_shape = (*fabric_mesh_shape, TILE_SIZE, TILE_SIZE)
     expected_shards = torch.roll(
-        inp_torch.reshape(shard_shape), shifts=1, dims=ring_axis
+        inp_torch.reshape(shard_shape), shifts=1, dims=neighbor_axis
     )
     boundary = [slice(None)] * len(shard_shape)
-    boundary[ring_axis] = 0
+    boundary[neighbor_axis] = 0
     expected_shards[tuple(boundary)] = 0
     expected = expected_shards.reshape(logical_shape)
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
@@ -1234,7 +1241,6 @@ def test_axis_neighbor(
 
 # Verify that a wrapped axis-neighbor relation crosses the logical boundary
 # when the selected fabric configuration enables torus routing.
-@requires_two_device_forwarding_link_indices
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_axis_neighbor_wrap(
     fabric_mesh_shape,
@@ -1246,14 +1252,14 @@ def test_axis_neighbor_wrap(
 ):
     if len(fabric_mesh_shape) != 2:
         pytest.skip("requires a 2D fabric mesh")
+    neighbor_axis = _select_longest_nontrivial_axis(fabric_mesh_shape)
+    if fabric_mesh_shape[neighbor_axis] < 3:
+        pytest.skip("requires a torus axis with at least three devices")
 
     device_count = prod(fabric_mesh_shape)
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
-    ring_axis = next(
-        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
-    )
 
     with _open_route_mesh(
         fabric_mesh_shape, ttnn.FabricConfig.FABRIC_2D_TORUS_XY
@@ -1267,7 +1273,7 @@ def test_axis_neighbor_wrap(
 
     shard_shape = (*fabric_mesh_shape, TILE_SIZE, TILE_SIZE)
     expected = torch.roll(
-        inp_torch.reshape(shard_shape), shifts=1, dims=ring_axis
+        inp_torch.reshape(shard_shape), shifts=1, dims=neighbor_axis
     ).reshape(logical_shape)
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
