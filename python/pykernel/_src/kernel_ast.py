@@ -1130,12 +1130,19 @@ class TTCompilerBase(PyKernelAstBase):
                 )
 
     def visit_Compare(self, node):
-        assert len(node.ops) == 1, "Only single operators supported"
-        assert len(node.comparators) == 1, "Only single comparators supported"
+        if len(node.ops) != 1:
+            raise NotImplementedError("chained comparisons are not supported")
+        if len(node.comparators) != 1:
+            raise NotImplementedError("comparisons require exactly two operands")
         lhs = self.visit(node.left)
         rhs = self.visit(node.comparators[0])
         if not lhs or not rhs:
             raise ValueError("Compare operands not found")
+        if not hasattr(lhs, "type") or not hasattr(rhs, "type"):
+            raise TypeError(
+                "comparison operands must be compiler values, got "
+                f"{type(lhs).__name__} and {type(rhs).__name__}"
+            )
 
         if isinstance(lhs.type, memref.MemRefType):
             lhs = memref.LoadOp(

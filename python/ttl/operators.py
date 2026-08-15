@@ -37,6 +37,7 @@ def call_extern_func(
     func_args=None,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
+    fabric_manager_effects=(),
 ) -> None:
     """Call external C++ in selected logical kernels.
 
@@ -44,7 +45,8 @@ def call_extern_func(
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
-    removes the selector before AST lowering.
+    removes the selector before AST lowering. ``fabric_manager_effects``
+    declares external fabric-manager ownership at call entry and completion.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 

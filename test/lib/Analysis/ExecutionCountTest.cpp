@@ -11,9 +11,11 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,18 +24,30 @@ namespace {
 
 constexpr llvm::StringLiteral kAnalysisRootAttrName = "test.analysis_root";
 constexpr llvm::StringLiteral kExpectedCountAttrName = "test.expected_count";
+constexpr llvm::StringLiteral kExpectedCountsAttrName = "test.expected_counts";
+constexpr llvm::StringLiteral kExpectedRetainedQueriesAttrName =
+    "test.expected_retained_queries";
 constexpr llvm::StringLiteral kLabelAttrName = "test.label";
 constexpr llvm::StringLiteral kMaxIterationsAttrName =
     "test.max_enumerated_iterations";
 constexpr llvm::StringLiteral kRegionInvocationCountAttrName =
     "test.region_invocation_count";
+constexpr llvm::StringLiteral kContextValuesAttrName = "test.context_values";
 constexpr llvm::StringLiteral kValueAttrName = "test.value";
 
 std::optional<llvm::APInt> evaluateFunctionArgument(mlir::func::FuncOp function,
-                                                    mlir::Value value) {
+                                                    mlir::Value value,
+                                                    mlir::Attribute context) {
   auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
   if (!argument || argument.getOwner() != &function.getBody().front()) {
     return std::nullopt;
+  }
+  if (context) {
+    if (argument.getArgNumber() != 0) {
+      return std::nullopt;
+    }
+    auto integer = mlir::dyn_cast<mlir::IntegerAttr>(context);
+    return integer ? std::optional(integer.getValue()) : std::nullopt;
   }
   auto maybeValueAttr = function.getArgAttrOfType<mlir::IntegerAttr>(
       argument.getArgNumber(), kValueAttrName);
@@ -42,13 +56,12 @@ std::optional<llvm::APInt> evaluateFunctionArgument(mlir::func::FuncOp function,
 }
 
 bool verifyExpectedCount(mlir::Operation *operation,
-                         std::optional<std::uint64_t> maybeActualCount) {
-  mlir::Attribute expectedAttr = operation->getAttr(kExpectedCountAttrName);
+                         std::optional<std::uint64_t> maybeActualCount,
+                         mlir::Attribute expectedAttr,
+                         llvm::StringRef outputLabel) {
   auto labelAttr = operation->getAttrOfType<mlir::StringAttr>(kLabelAttrName);
   if (!expectedAttr || !labelAttr) {
-    operation->emitError() << "test targets require both "
-                           << kExpectedCountAttrName << " and "
-                           << kLabelAttrName;
+    operation->emitError("test target has incomplete expected-count metadata");
     return false;
   }
 
@@ -56,12 +69,12 @@ bool verifyExpectedCount(mlir::Operation *operation,
   auto expectedString = mlir::dyn_cast<mlir::StringAttr>(expectedAttr);
   if ((!expectedInteger && !expectedString) ||
       (expectedString && expectedString.getValue() != "unknown")) {
-    operation->emitError() << kExpectedCountAttrName
-                           << " must be an integer or the string \"unknown\"";
+    operation->emitError(
+        "expected count must be an integer or the string \"unknown\"");
     return false;
   }
 
-  llvm::outs() << labelAttr.getValue() << " = ";
+  llvm::outs() << outputLabel << " = ";
   if (maybeActualCount) {
     llvm::outs() << *maybeActualCount << "\n";
   } else {
@@ -108,21 +121,83 @@ bool verifyTargets(mlir::func::FuncOp function, mlir::Operation *targetScope) {
     options.maxEnumeratedIterations = maybeLimit.getValue().getZExtValue();
   }
 
-  mlir::tt::ExecutionCountAnalysis analysis(
-      function.getBody(),
-      [&](mlir::Value value) {
-        return evaluateFunctionArgument(function, value);
-      },
-      evaluateRegionInvocationCount, options);
-
+  mlir::tt::ExecutionCountAnalysisSharedState sharedState(function.getBody());
+  mlir::tt::ExecutionCountAnalysisQueryCache<std::size_t> analyses;
   bool succeeded = true;
-  targetScope->walk([&](mlir::Operation *operation) {
-    if (!operation->hasAttr(kExpectedCountAttrName)) {
-      return;
+  auto verifyContext = [&](mlir::Attribute context,
+                           std::optional<std::size_t> contextIndex) {
+    mlir::tt::ExecutionCountAnalysis &analysis =
+        analyses.getOrCreate(contextIndex.value_or(0), [&, context] {
+          return std::make_unique<mlir::tt::ExecutionCountAnalysis>(
+              sharedState,
+              [function, context](mlir::Value value) {
+                return evaluateFunctionArgument(function, value, context);
+              },
+              evaluateRegionInvocationCount, options);
+        });
+    targetScope->walk([&](mlir::Operation *operation) {
+      mlir::Attribute expectedAttr = operation->getAttr(kExpectedCountAttrName);
+      std::string outputLabel;
+      if (contextIndex) {
+        auto expectedCounts =
+            operation->getAttrOfType<mlir::ArrayAttr>(kExpectedCountsAttrName);
+        if (!expectedCounts || *contextIndex >= expectedCounts.size()) {
+          if (operation->hasAttr(kExpectedCountsAttrName)) {
+            operation->emitError(
+                "expected-count context list has the wrong length");
+            succeeded = false;
+          }
+          return;
+        }
+        expectedAttr = expectedCounts[*contextIndex];
+        auto labelAttr =
+            operation->getAttrOfType<mlir::StringAttr>(kLabelAttrName);
+        if (!labelAttr) {
+          operation->emitError("test target has no label");
+          succeeded = false;
+          return;
+        }
+        llvm::StringRef label = labelAttr.getValue();
+        outputLabel =
+            (llvm::Twine(label) + "[" + llvm::Twine(*contextIndex) + "]").str();
+      } else if (!expectedAttr) {
+        return;
+      } else {
+        auto labelAttr =
+            operation->getAttrOfType<mlir::StringAttr>(kLabelAttrName);
+        if (!labelAttr) {
+          operation->emitError("test target has no label");
+          succeeded = false;
+          return;
+        }
+        outputLabel = labelAttr.getValue().str();
+      }
+      succeeded &=
+          verifyExpectedCount(operation, analysis.getExecutionCount(operation),
+                              expectedAttr, outputLabel);
+    });
+  };
+
+  auto contextValues =
+      function->getAttrOfType<mlir::ArrayAttr>(kContextValuesAttrName);
+  if (!contextValues) {
+    verifyContext(mlir::Attribute(), std::nullopt);
+    return succeeded;
+  }
+  for (auto [contextIndex, context] : llvm::enumerate(contextValues)) {
+    verifyContext(context, contextIndex);
+  }
+  if (auto expectedRetainedQueries = function->getAttrOfType<mlir::IntegerAttr>(
+          kExpectedRetainedQueriesAttrName)) {
+    llvm::outs() << "retained_execution_count_queries = " << analyses.size()
+                 << "\n";
+    if (expectedRetainedQueries.getInt() !=
+        static_cast<std::int64_t>(analyses.size())) {
+      function.emitError("retained execution-count query count does not match "
+                         "test expectation");
+      succeeded = false;
     }
-    succeeded &=
-        verifyExpectedCount(operation, analysis.getExecutionCount(operation));
-  });
+  }
   return succeeded;
 }
 

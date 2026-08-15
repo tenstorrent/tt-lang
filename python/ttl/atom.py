@@ -62,11 +62,14 @@ from .kernel import (
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
+    _referenced_operation_values,
     _selector_implicit_role,
     _selector_kind,
 )
+from .fabric import FabricManagerClaim, _bind_fabric_manager_claims
 from .operators import _set_current_grid
 from .pipe import PipeNet
+from .runtime_resources import ProgramRuntimeResources
 from .ttl_api import (
     Program,
     _BackendKernelSlot,
@@ -74,6 +77,7 @@ from .ttl_api import (
     _backend_kernel_slots,
     _build_pipenet_graph,
     _canonical_tensor_args,
+    _default_mesh_program_placements_with_domain,
     _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
@@ -188,6 +192,7 @@ class _AtomSpec:
     frozen_scope: Dict[str, Any]
     external_pipenets: Dict[str, PipeNet]
     logical_kernels: Dict[str, Kernel]
+    fabric_manager_claims: Dict[str, FabricManagerClaim]
 
 
 def _has_explicit_kernels(fn: Callable) -> bool:
@@ -195,13 +200,6 @@ def _has_explicit_kernels(fn: Callable) -> bool:
     if function_definition is None:
         return True
     return defines_kernels_by_spelling(function_definition)
-
-
-def _captured_values(fn: Callable) -> Dict[str, Any]:
-    closure = inspect.getclosurevars(fn)
-    captures = dict(closure.globals)
-    captures.update(closure.nonlocals)
-    return captures
 
 
 def _classify_params(fn: Callable) -> List[_ParamInfo]:
@@ -267,11 +265,12 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
 
-    captured_values = _captured_values(fn)
+    captured_values = _referenced_operation_values(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
     captured_logical_kernels: Dict[str, Kernel] = {}
+    fabric_manager_claims: Dict[str, FabricManagerClaim] = {}
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
@@ -285,6 +284,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif isinstance(value, Kernel):
             if not any(value is kernel for kernel in logical_kernels.values()):
                 captured_logical_kernels[capture_name] = value
+        elif isinstance(value, FabricManagerClaim):
+            fabric_manager_claims[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -297,10 +298,12 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     operation_identity = _operation_identity(fn)
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
+    _bind_fabric_manager_claims(fabric_manager_claims, operation_identity)
 
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
     frozen_scope.update(logical_kernels)
+    frozen_scope.update(fabric_manager_claims)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -318,6 +321,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         frozen_scope=frozen_scope,
         external_pipenets=external_pipenets,
         logical_kernels=logical_kernels,
+        fabric_manager_claims=fabric_manager_claims,
     )
 
 
@@ -405,12 +409,13 @@ def _synthesize_thread_module(fn_name: str, body: List[ast.stmt]) -> ast.Module:
     return ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
 
 
-def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
+def _make_thread_callable(spec, kernel_type, logical_kernel, fn_name, body, captures):
     def _compile_thread(*args, **kwargs):
         kwargs = dict(kwargs)
         kwargs["_source_file"] = spec.source_file
         kwargs["_source_lines"] = spec.source.splitlines()
         kwargs["_line_offset"] = spec.line_offset
+        kwargs["_logical_kernel"] = logical_kernel
         return _run_thread_compiler(
             fn_name,
             kernel_type,
@@ -441,6 +446,8 @@ def _compile_atom(
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
     l1_budget_override: int,
+    device_domain=None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -485,6 +492,7 @@ def _compile_atom(
     for net in nets.values():
         all_nets[id(net)] = net
     pipe_graph = _build_pipenet_graph(all_nets.values())
+    device_domain = pipe_graph.resolve_device_domain(device_domain)
 
     split = split_function_body(
         fn_def=stripped_fn,
@@ -516,6 +524,7 @@ def _compile_atom(
     captures.update(dfbs)
     captures.update(nets)
     captures.update(spec.external_pipenets)
+    captures.update(spec.fabric_manager_claims)
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.
@@ -526,7 +535,9 @@ def _compile_atom(
         any_real_work = any_real_work or _has_real_work(body)
         fn_name = f"{spec.name}__{slot.source_name}"
         threads.append(
-            _make_thread_callable(spec, slot.kernel_type, fn_name, body, captures)
+            _make_thread_callable(
+                spec, slot.kernel_type, logical_kernel, fn_name, body, captures
+            )
         )
         thread_logical_kernels.append(logical_kernel)
 
@@ -543,6 +554,9 @@ def _compile_atom(
         "debug_locations": True,
     }
     program = Program(*threads, args=args, kwargs=injected_program_kwargs)
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
 
     return _lower_program_to_kernel(
         program=program,
@@ -559,7 +573,11 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
         logical_kernels=thread_logical_kernels,
+        operation_name=spec.name,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -588,7 +606,9 @@ def _compile_unified_operation(
         math_fidelity=decorator_options["math_fidelity"],
         target_arch=target_arch,
         compiler_options=compiler_options,
+        device_domain=decorator_options["device_domain"],
         l1_budget_override=l1_budget_override,
+        runtime_resource_factory=decorator_options["runtime_resource_factory"],
     )
 
 
@@ -648,6 +668,8 @@ def _unified_operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    device_domain=None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -670,6 +692,8 @@ def _unified_operation(
                 "dst_full_sync_en": dst_full_sync_en,
                 "math_fidelity": math_fidelity,
                 "options": options,
+                "device_domain": device_domain,
+                "runtime_resource_factory": runtime_resource_factory,
             },
         )
 
@@ -687,6 +711,8 @@ def operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    device_domain=None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -706,7 +732,9 @@ def operation(
                 dst_full_sync_en=dst_full_sync_en,
                 math_fidelity=math_fidelity,
                 options=options,
+                runtime_resource_factory=runtime_resource_factory,
                 _prepare_call=prepare_call,
+                device_domain=device_domain,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
             return wrapped
@@ -720,6 +748,8 @@ def operation(
             dst_full_sync_en=dst_full_sync_en,
             math_fidelity=math_fidelity,
             options=options,
+            device_domain=device_domain,
+            runtime_resource_factory=runtime_resource_factory,
         )(fn)
 
     return _decorator
