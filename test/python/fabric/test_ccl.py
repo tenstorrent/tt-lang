@@ -165,7 +165,7 @@ def _make_bidirectional_exchange_operation(mesh_shape):
         )
     )
 
-    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    @ttl.operation(grid=(2, 1), device_domain=device_domain)
     def bidirectional_exchange(inp, out):
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -176,23 +176,29 @@ def _make_bidirectional_exchange_operation(mesh_shape):
 
         @ttl.datamovement()
         def sender_node():
+            node_x, _node_y = ttl.node(dims=2)
+
             def send(pipe):
                 with send_dfb.reserve() as send_block:
                     ttl.copy(inp[0, 0], send_block).wait()
                 with send_dfb.wait() as send_block:
                     ttl.copy(send_block, pipe).wait()
 
-            exchange_net.if_src(send)
+            if node_x == 1:
+                exchange_net.if_src(send)
 
         @ttl.datamovement()
         def receiver_node():
+            node_x, _node_y = ttl.node(dims=2)
+
             def receive(pipe):
                 with receive_dfb.reserve() as receive_block:
                     ttl.copy(pipe, receive_block).wait()
                 with receive_dfb.wait() as receive_block:
                     ttl.copy(receive_block, out[0, 0]).wait()
 
-            exchange_net.if_dst(receive)
+            if node_x == 1:
+                exchange_net.if_dst(receive)
 
     return bidirectional_exchange
 
@@ -904,8 +910,8 @@ def test_point_to_point_packet_boundary(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
-# Separate sender and receiver kernels require distinct forwarding links when
-# their connections execute concurrently in the same direction.
+# Receiver and sender managers serialize on one forwarding link while
+# preserving the expected result and program-cache identity.
 @requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_bidirectional_exchange(
@@ -932,15 +938,20 @@ def test_bidirectional_exchange(
     with _open_collective_mesh(fabric_mesh_shape) as parent_mesh:
         mesh = parent_mesh.create_submesh(ttnn.MeshShape(participant_mesh_shape))
         try:
+            mesh.enable_program_cache()
             inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
             out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-            bidirectional_exchange(inp, out)
+            program_cache_entry_counts = []
+            for _submission in range(20):
+                bidirectional_exchange(inp, out)
+                program_cache_entry_counts.append(mesh.num_program_cache_entries())
 
             result = _compose(mesh, out)
         finally:
             ttnn.close_mesh_device(mesh)
 
+    assert len(set(program_cache_entry_counts)) == 1
     expected = torch.zeros_like(inp_torch)
     expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
     expected[-TILE_SIZE:, :] = inp_torch[:TILE_SIZE, :]

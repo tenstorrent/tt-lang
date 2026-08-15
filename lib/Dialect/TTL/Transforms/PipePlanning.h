@@ -52,7 +52,7 @@ struct PipePlanningOptions {
       PipeCounterAllocationPolicy::LocalThenGlobal;
 
   /// Select routing-plane fabric synchronization for routed transfers.
-  const FabricRoutePlan *fabricRoutePlan = nullptr;
+  FabricRoutePlan *fabricRoutePlan = nullptr;
 };
 
 /// Protocol selection used while allocating readiness resources.

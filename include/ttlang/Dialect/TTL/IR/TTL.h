@@ -160,6 +160,8 @@ constexpr llvm::StringLiteral
     kFabricDeviceDomainAttrName("ttl.fabric_device_domain");
 constexpr llvm::StringLiteral kFabricRuntimeArgBaseCommonIndexAttrName(
     "ttl.fabric_runtime_arg_base_common_index");
+constexpr llvm::StringLiteral
+    kFabricManagerIntervalsAttrName("ttl.fabric_manager_intervals");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.

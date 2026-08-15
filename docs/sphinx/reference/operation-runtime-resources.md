@@ -25,10 +25,13 @@ All resource records are frozen, and all collection fields are tuples.
 
 | Record | Purpose |
 | --- | --- |
-| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, and retained owners. |
+| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, external fabric bindings, and retained owners. |
 | `KernelRuntimeResources` | Selects one logical kernel and supplies per-core runtime arguments and JIT definitions. |
 | `CoreRuntimeArgs` | Associates one ordered integer vector with one worker coordinate. |
 | `KernelDefine` | Associates one definition name with its string value. |
+| `FabricManagerClaim` | Identifies one external fabric manager and its logical kernel. |
+| `FabricConnectionBinding` | Associates one captured manager claim with its connection requirements and ABI identity. |
+| `FabricConnectionRequirement` | Reserves one fixed forwarding link for specified logical devices and worker nodes. |
 
 The following example creates one caller semaphore and configures an
 operation-owned data-movement kernel:
@@ -82,6 +85,59 @@ multiple kernels of one kind. The operation and its resource factory must
 capture the same `Kernel` object. The [external functions
 reference](external-functions.md) describes logical-kernel selection.
 
+## External Fabric Managers
+
+An opaque external kernel may own routing-plane connections that must not
+overlap compiler-generated managers. A captured `FabricManagerClaim` records
+that ownership without exposing the external kernel's runtime-argument ABI:
+
+```python
+external_sender = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+external_manager = ttl.FabricManagerClaim("external", kernel=external_sender)
+
+def sender(input_tensor, output_tensor):
+    ttl.call_extern_func(
+        HEADER,
+        "open_connections",
+        func_args=[],
+        kernel=external_sender,
+        fabric_manager_effects=(external_manager.acquire(),),
+    )
+    ttl.call_extern_func(
+        HEADER,
+        "use_connections",
+        func_args=[input_tensor, output_tensor],
+        kernel=external_sender,
+        fabric_manager_effects=(external_manager.use(),),
+    )
+    ttl.call_extern_func(
+        HEADER,
+        "close_connections",
+        func_args=[],
+        kernel=external_sender,
+        fabric_manager_effects=(external_manager.release(),),
+    )
+```
+
+Ownership begins at entry to the acquire call because that opaque call may open
+connections. It ends after the release call returns. Every `use()` must occur
+strictly between one acquire and release. `scoped()` declares one opaque call
+that acquires, uses, and releases the manager. Effects must occur in the
+selected logical kernel's straight-line entry block.
+
+The runtime resource factory supplies one `FabricConnectionBinding` for every
+captured claim. Its requirements must cover every active logical-device and
+worker-node instance of the selected kernel. `fixed_link_index` is an external
+ABI constraint, not a preference; target binding rejects it when the active
+control plane does not expose that link for the destination. The compiler
+places external and generated manager intervals in one interference graph,
+validates every link assignment before descriptor mutation, and reserves the
+external link without interpreting or modifying external runtime arguments.
+
+The claim identity, `abi_identity`, logical endpoints, worker nodes, and fixed
+links participate in program-cache identity. Objects in the binding's
+`lifetimes` tuple remain referenced through execution.
+
 ## Validation and Specialization
 
 Runtime resource planning validates the complete factory result before TTNN
@@ -104,9 +160,9 @@ descriptor.
 
 Resource structure participates in program-cache identity. The identity
 includes logical kernels, descriptor coordinates, definitions, runtime-vector
-lengths, and caller semaphore properties. Runtime values, tensor addresses,
-and lifetime object identities are excluded, so cached programs accept new
-invocation values.
+lengths, caller semaphore properties, and external fabric binding structure.
+Runtime values, tensor addresses, and lifetime object identities are excluded,
+so cached programs accept new invocation values.
 
 Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
 execution. A successful invocation replaces the retained owner tuple. A failed

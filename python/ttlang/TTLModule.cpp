@@ -43,6 +43,9 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR") =
       nb::str(kFabricRuntimeArgBaseCommonIndexAttrName.data(),
               kFabricRuntimeArgBaseCommonIndexAttrName.size());
+  m.attr("FABRIC_MANAGER_INTERVALS_ATTR") =
+      nb::str(kFabricManagerIntervalsAttrName.data(),
+              kFabricManagerIntervalsAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =
       nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
 
@@ -123,6 +126,65 @@ void populateTTLModule(nb::module_ &m) {
           nb::arg("context"), nb::arg("kind"), nb::arg("value"))
       .def_prop_ro("kind", &ExternalTemplateArgAttr::getKind)
       .def_prop_ro("value", &ExternalTemplateArgAttr::getValue);
+
+  nb::enum_<FabricManagerEffectKind>(m, "FabricManagerEffectKind")
+      .value("Acquire", FabricManagerEffectKind::Acquire)
+      .value("Use", FabricManagerEffectKind::Use)
+      .value("Release", FabricManagerEffectKind::Release)
+      .value("Scoped", FabricManagerEffectKind::Scoped);
+
+  tt_attribute_class<FabricManagerEffectAttr>(m, "FabricManagerEffectAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, std::string claim,
+             FabricManagerEffectKind kind) {
+            MLIRContext *cppContext = unwrap(context);
+            return wrap(FabricManagerEffectAttr::get(
+                cppContext, StringAttr::get(cppContext, claim), kind));
+          },
+          nb::arg("context"), nb::arg("claim"), nb::arg("kind"))
+      .def_prop_ro("claim",
+                   [](FabricManagerEffectAttr attribute) {
+                     return attribute.getClaim().getValue().str();
+                   })
+      .def_prop_ro("kind", &FabricManagerEffectAttr::getKind);
+
+  nb::enum_<FabricManagerIntervalKind>(m, "FabricManagerIntervalKind")
+      .value("GeneratedReceiver", FabricManagerIntervalKind::GeneratedReceiver)
+      .value("GeneratedSender", FabricManagerIntervalKind::GeneratedSender)
+      .value("GeneratedMixed", FabricManagerIntervalKind::GeneratedMixed)
+      .value("External", FabricManagerIntervalKind::External);
+
+  tt_attribute_class<FabricManagerIntervalAttr>(m, "FabricManagerIntervalAttr")
+      .def_prop_ro("identity",
+                   [](FabricManagerIntervalAttr attribute) {
+                     return attribute.getIdentity().getValue().str();
+                   })
+      .def_prop_ro("kind", &FabricManagerIntervalAttr::getKind)
+      .def_prop_ro("claim",
+                   [](FabricManagerIntervalAttr attribute)
+                       -> std::optional<std::string> {
+                     if (StringAttr claim = attribute.getClaim()) {
+                       return claim.getValue().str();
+                     }
+                     return std::nullopt;
+                   })
+      .def_prop_ro("route_indices",
+                   [](FabricManagerIntervalAttr attribute) {
+                     ArrayRef<int64_t> routeIndices =
+                         attribute.getRouteIndices().asArrayRef();
+                     return std::vector<int64_t>(routeIndices.begin(),
+                                                 routeIndices.end());
+                   })
+      .def_prop_ro(
+          "interfering_intervals", [](FabricManagerIntervalAttr attribute) {
+            std::vector<std::string> identities;
+            identities.reserve(attribute.getInterferingIntervals().size());
+            for (StringAttr identity : attribute.getInterferingIntervals()) {
+              identities.push_back(identity.getValue().str());
+            }
+            return identities;
+          });
 
   //===--------------------------------------------------------------------===//
   // Device-domain attributes

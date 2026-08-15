@@ -20,6 +20,24 @@ class FabricRouteSpec:
     route_index: int
 
 
+class FabricManagerIntervalKind(Enum):
+    GENERATED_RECEIVER = "generated_receiver"
+    GENERATED_SENDER = "generated_sender"
+    GENERATED_MIXED = "generated_mixed"
+    EXTERNAL = "external"
+
+
+@dataclass(frozen=True)
+class FabricManagerIntervalSpec:
+    """One compiler-proven fabric manager ownership interval."""
+
+    identity: str
+    kind: FabricManagerIntervalKind
+    claim: Optional[str]
+    route_indices: Tuple[int, ...]
+    interfering_intervals: Tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class _ResolvedFabricRoute:
     device_chain: Tuple[Tuple[int, ...], ...]
@@ -124,6 +142,8 @@ class _FabricConnectionRequest:
     connection_node_id: Any
     direction: int
     eligible_links: Optional[Tuple[int, ...]]
+    interval_ids: Tuple[str, ...]
+    fixed_link_index: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +152,7 @@ class _FabricManagerRequest:
     node_coordinates: Tuple[int, int]
     fabric_runtime_metadata: Tuple[int, ...]
     connections: Tuple[_FabricConnectionRequest, ...]
+    apply_binding: bool = True
 
 
 @dataclass(frozen=True)
@@ -158,6 +179,9 @@ class FabricTargetBindingPlan:
     runtime_arg_base_common_indices: Tuple[Optional[int], ...]
     runtime_arg_bases: Tuple[Optional[int], ...]
     managers: Tuple[_FabricManagerBinding, ...]
+
+
+_WORKER_SEMAPHORE_CAPACITY = 16
 
 
 def _read_runtime_arg_row(
@@ -339,8 +363,9 @@ def _intersect_forwarding_links(
     )
 
 
-def _assign_distinct_links(
+def _assign_fabric_links(
     manager_requests: List[_FabricManagerRequest],
+    interference_by_interval: Dict[str, frozenset[str]],
 ) -> Dict[Tuple[int, int], Optional[int]]:
     connections_by_direction = {}
     for manager_index, manager_request in enumerate(manager_requests):
@@ -349,9 +374,40 @@ def _assign_distinct_links(
                 (manager_index, connection_index)
             )
 
+    def connections_interfere(lhs_key, rhs_key):
+        lhs_manager_index, lhs_connection_index = lhs_key
+        rhs_manager_index, rhs_connection_index = rhs_key
+        lhs = manager_requests[lhs_manager_index].connections[lhs_connection_index]
+        rhs = manager_requests[rhs_manager_index].connections[rhs_connection_index]
+        if not lhs.interval_ids or not rhs.interval_ids:
+            return True
+        for lhs_interval in lhs.interval_ids:
+            for rhs_interval in rhs.interval_ids:
+                if lhs_interval == rhs_interval:
+                    return True
+                if rhs_interval in interference_by_interval.get(
+                    lhs_interval, frozenset()
+                ):
+                    return True
+        return False
+
     selected_links = {}
     for direction, connection_keys in connections_by_direction.items():
-        if len(connection_keys) == 1:
+        adjacency = {connection_key: set() for connection_key in connection_keys}
+        for connection_position, lhs_key in enumerate(connection_keys):
+            for rhs_key in connection_keys[connection_position + 1 :]:
+                if connections_interfere(lhs_key, rhs_key):
+                    adjacency[lhs_key].add(rhs_key)
+                    adjacency[rhs_key].add(lhs_key)
+
+        has_fixed_link = any(
+            manager_requests[manager_index]
+            .connections[connection_index]
+            .fixed_link_index
+            is not None
+            for manager_index, connection_index in connection_keys
+        )
+        if len(connection_keys) == 1 and not has_fixed_link:
             connection_key = connection_keys[0]
             manager_index, connection_index = connection_key
             connection = manager_requests[manager_index].connections[connection_index]
@@ -361,6 +417,22 @@ def _assign_distinct_links(
                 selected_links[connection_key] = None
                 continue
 
+        needs_explicit_links = (
+            has_fixed_link
+            or any(adjacency.values())
+            or any(
+                manager_requests[manager_index]
+                .connections[connection_index]
+                .eligible_links
+                is not None
+                for manager_index, connection_index in connection_keys
+            )
+        )
+        if not needs_explicit_links:
+            for connection_key in connection_keys:
+                selected_links[connection_key] = None
+            continue
+
         if any(
             manager_requests[manager_index].connections[connection_index].eligible_links
             is None
@@ -368,49 +440,145 @@ def _assign_distinct_links(
         ):
             raise RuntimeError(
                 "TTNN must expose get_forwarding_link_indices() to assign "
-                "concurrent fabric connections"
+                "interfering fabric connections"
             )
 
-        link_owner = {}
+        ordered_keys = sorted(
+            connection_keys,
+            key=lambda connection_key: (
+                manager_requests[connection_key[0]]
+                .connections[connection_key[1]]
+                .fixed_link_index
+                is None,
+                len(
+                    manager_requests[connection_key[0]]
+                    .connections[connection_key[1]]
+                    .eligible_links
+                ),
+                -len(adjacency[connection_key]),
+                manager_requests[connection_key[0]]
+                .connections[connection_key[1]]
+                .interval_ids,
+                connection_key,
+            ),
+        )
 
-        def assign_connection(connection_key, visited_links):
+        def assign_connection(position):
+            if position == len(ordered_keys):
+                return True
+            connection_key = ordered_keys[position]
             manager_index, connection_index = connection_key
             connection = manager_requests[manager_index].connections[connection_index]
             assert connection.eligible_links is not None
-
-            # Preserve the control plane's preference unless a later request
-            # cannot be satisfied without reassignment.
-            for link_index in connection.eligible_links:
-                if link_index in visited_links or link_index in link_owner:
+            candidate_links = (
+                (connection.fixed_link_index,)
+                if connection.fixed_link_index is not None
+                else connection.eligible_links
+            )
+            for link_index in candidate_links:
+                if link_index not in connection.eligible_links:
                     continue
-                visited_links.add(link_index)
-                link_owner[link_index] = connection_key
+                if any(
+                    selected_links.get(neighbor) == link_index
+                    for neighbor in adjacency[connection_key]
+                ):
+                    continue
                 selected_links[connection_key] = link_index
-                return True
-
-            for link_index in connection.eligible_links:
-                if link_index in visited_links:
-                    continue
-                visited_links.add(link_index)
-                current_owner = link_owner.get(link_index)
-                if current_owner is None:
-                    continue
-                if not assign_connection(current_owner, visited_links):
-                    continue
-                link_owner[link_index] = connection_key
-                selected_links[connection_key] = link_index
-                return True
+                if assign_connection(position + 1):
+                    return True
+                del selected_links[connection_key]
             return False
 
-        for connection_key in connection_keys:
-            if assign_connection(connection_key, set()):
-                continue
+        if not assign_connection(0):
+            participants = []
+            for connection_key in ordered_keys:
+                manager_index, connection_index = connection_key
+                manager = manager_requests[manager_index]
+                connection = manager.connections[connection_index]
+                identities = connection.interval_ids or ("<unknown>",)
+                participants.append(
+                    f"{identities} at kernel {manager.kernel_index}, node "
+                    f"{manager.node_coordinates}, fixed link "
+                    f"{connection.fixed_link_index}, eligible links "
+                    f"{connection.eligible_links}"
+                )
+            interference = tuple(
+                (
+                    manager_requests[lhs_key[0]].connections[lhs_key[1]].interval_ids,
+                    manager_requests[rhs_key[0]].connections[rhs_key[1]].interval_ids,
+                )
+                for lhs_key in ordered_keys
+                for rhs_key in sorted(adjacency[lhs_key])
+                if lhs_key < rhs_key
+            )
             raise ValueError(
                 "fabric connection plan cannot assign distinct forwarding "
-                f"links to {len(connection_keys)} concurrent connections in "
-                f"direction {direction}"
+                f"links to interfering managers in direction {direction}; "
+                f"participants: {'; '.join(participants)}; "
+                f"interference: {interference}"
             )
     return selected_links
+
+
+def _build_interval_interference(
+    kernel_intervals: List[Tuple[FabricManagerIntervalSpec, ...]],
+) -> Dict[str, frozenset[str]]:
+    intervals_by_identity = {}
+    for intervals in kernel_intervals:
+        for interval in intervals:
+            existing = intervals_by_identity.setdefault(interval.identity, interval)
+            if existing != interval:
+                raise ValueError(
+                    f"fabric manager interval {interval.identity!r} has "
+                    "inconsistent specialized records"
+                )
+    known_identities = frozenset(intervals_by_identity)
+    interference = {}
+    for identity, interval in intervals_by_identity.items():
+        unknown = frozenset(interval.interfering_intervals) - known_identities
+        if unknown:
+            raise ValueError(
+                f"fabric manager interval {identity!r} references unknown "
+                f"interfering intervals {tuple(sorted(unknown))}"
+            )
+        interference[identity] = frozenset(interval.interfering_intervals)
+    for identity, interfering_identities in interference.items():
+        for interfering_identity in interfering_identities:
+            if identity not in interference[interfering_identity]:
+                raise ValueError(
+                    f"fabric manager interference between {identity!r} and "
+                    f"{interfering_identity!r} is not symmetric"
+                )
+    return interference
+
+
+def _validate_manager_semaphore_capacity(
+    ttnn_api: Any,
+    program_descriptor: Any,
+    manager_requests: List[_FabricManagerRequest],
+) -> None:
+    required_by_node: Dict[Tuple[int, int], int] = {}
+    for manager in manager_requests:
+        if manager.apply_binding:
+            required_by_node[manager.node_coordinates] = required_by_node.get(
+                manager.node_coordinates, 0
+            ) + 2 * len(manager.connections)
+
+    for node_coordinates, required_count in required_by_node.items():
+        worker_node = ttnn_api.CoreCoord(*node_coordinates)
+        used_ids = {
+            int(semaphore.id)
+            for semaphore in program_descriptor.semaphores
+            if getattr(semaphore.core_type, "name", semaphore.core_type) == "WORKER"
+            and semaphore.core_ranges.contains(worker_node)
+        }
+        available_count = _WORKER_SEMAPHORE_CAPACITY - len(used_ids)
+        if required_count > available_count:
+            raise ValueError(
+                f"fabric managers at node {node_coordinates} require "
+                f"{required_count} worker semaphore IDs, but only "
+                f"{available_count} of {_WORKER_SEMAPHORE_CAPACITY} remain"
+            )
 
 
 def build_fabric_target_binding_plan(
@@ -422,6 +590,10 @@ def build_fabric_target_binding_plan(
     device_coordinates: Tuple[int, ...],
     grid_cols: int,
     grid_rows: int,
+    kernel_fabric_manager_intervals: Optional[
+        List[Tuple[FabricManagerIntervalSpec, ...]]
+    ] = None,
+    external_fabric_connections: Tuple[Any, ...] = (),
     route_cache: Optional[FabricRouteCache] = None,
 ) -> FabricTargetBindingPlan:
     """Resolve and validate all fabric managers before descriptor mutation."""
@@ -429,6 +601,15 @@ def build_fabric_target_binding_plan(
         raise ValueError(
             "kernel_fabric_routes must have one entry per kernel descriptor"
         )
+    manager_intervals = kernel_fabric_manager_intervals or [
+        () for _ in program_descriptor.kernels
+    ]
+    if len(manager_intervals) != len(program_descriptor.kernels):
+        raise ValueError(
+            "kernel_fabric_manager_intervals must have one entry per kernel "
+            "descriptor"
+        )
+    interference_by_interval = _build_interval_interference(manager_intervals)
     runtime_arg_bases = _plan_runtime_arg_bases(
         ttnn_api,
         program_descriptor,
@@ -578,6 +759,15 @@ def build_fabric_target_binding_plan(
                     *destination_mesh_ids,
                     *destination_hop_counts,
                 )
+                generated_interval_ids = tuple(
+                    interval.identity
+                    for interval in manager_intervals[kernel_index]
+                    if interval.kind != FabricManagerIntervalKind.EXTERNAL
+                    and any(
+                        route_index in active_route_indices
+                        for route_index in interval.route_indices
+                    )
+                )
                 connection_requests = []
                 for connection_index, connection_node_id in enumerate(
                     connection_node_ids
@@ -602,6 +792,7 @@ def build_fabric_target_binding_plan(
                             connection_node_id=connection_node_id,
                             direction=connection_directions[connection_index],
                             eligible_links=eligible_links,
+                            interval_ids=generated_interval_ids,
                         )
                     )
                 manager_requests.append(
@@ -613,7 +804,170 @@ def build_fabric_target_binding_plan(
                     )
                 )
 
-    selected_links = _assign_distinct_links(manager_requests)
+    external_request_groups = {}
+    expected_external_nodes = {}
+    provided_external_nodes = {}
+    for binding in external_fabric_connections:
+        interval_matches = [
+            (kernel_index, interval)
+            for kernel_index, intervals in enumerate(manager_intervals)
+            for interval in intervals
+            if interval.kind == FabricManagerIntervalKind.EXTERNAL
+            and interval.claim == binding.claim.identity
+        ]
+        interval_identities = {interval.identity for _, interval in interval_matches}
+        if len(interval_identities) != 1:
+            raise ValueError(
+                f"external fabric claim {binding.claim.identity!r} must map "
+                "to one manager interval"
+            )
+        interval_identity = next(iter(interval_identities))
+        expected_external_nodes.setdefault(interval_identity, set()).update(
+            (node_x, node_y)
+            for kernel_index, _ in interval_matches
+            for node_y in range(grid_rows)
+            for node_x in range(grid_cols)
+            if program_descriptor.kernels[kernel_index].core_ranges.contains(
+                ttnn_api.CoreCoord(node_x, node_y)
+            )
+        )
+        for requirement in binding.connections:
+            local_device = tuple(
+                value
+                for coordinate in requirement.local_device.coordinates
+                for value in coordinate
+            )
+            if local_device != device_coordinates:
+                continue
+            remote_device = tuple(
+                value
+                for coordinate in requirement.remote_device.coordinates
+                for value in coordinate
+            )
+            resolved_route = _resolve_fabric_route(
+                routing_mode, device_coordinates, remote_device
+            )
+            route_node_ids = [
+                mesh_device.get_fabric_node_id(
+                    _build_mesh_coordinate(ttnn_api, coordinates)
+                )
+                for coordinates in resolved_route.device_chain
+            ]
+            hop_directions = [
+                active_route_cache.resolve_direction(
+                    ttnn_api,
+                    mesh_device,
+                    fabric_config,
+                    route_node_ids[hop_index],
+                    route_node_ids[hop_index + 1],
+                )
+                for hop_index in range(len(route_node_ids) - 1)
+            ]
+            if any(direction != hop_directions[0] for direction in hop_directions[1:]):
+                raise ValueError("FABRIC_1D routes require one forwarding direction")
+            direction = hop_directions[0]
+            connection_node_id = mesh_device.get_fabric_node_id(
+                _build_mesh_coordinate(ttnn_api, resolved_route.connection_device)
+            )
+            eligible_links = active_route_cache.get_forwarding_links(
+                ttnn_api,
+                mesh_device,
+                fabric_config,
+                source_node_id,
+                connection_node_id,
+            )
+            if requirement.fixed_link_index not in eligible_links:
+                raise ValueError(
+                    f"external fabric claim {binding.claim.identity!r} fixed "
+                    f"link {requirement.fixed_link_index} is not eligible for "
+                    f"direction {direction}; eligible links are {eligible_links}"
+                )
+            for node_coordinates in requirement.worker_nodes:
+                worker_node = ttnn_api.CoreCoord(*node_coordinates)
+                matching_kernel_indices = [
+                    kernel_index
+                    for kernel_index, _ in interval_matches
+                    if program_descriptor.kernels[kernel_index].core_ranges.contains(
+                        worker_node
+                    )
+                ]
+                if len(matching_kernel_indices) != 1:
+                    raise ValueError(
+                        f"external fabric claim {binding.claim.identity!r} "
+                        f"node {node_coordinates} must map to one kernel "
+                        "descriptor"
+                    )
+                group_key = (
+                    matching_kernel_indices[0],
+                    node_coordinates,
+                    direction,
+                    interval_identity,
+                )
+                provided_external_nodes.setdefault(interval_identity, set()).add(
+                    node_coordinates
+                )
+                group = external_request_groups.setdefault(
+                    group_key,
+                    {
+                        "connection_node_id": connection_node_id,
+                        "eligible_links": eligible_links,
+                        "fixed_link_index": requirement.fixed_link_index,
+                    },
+                )
+                if group["fixed_link_index"] != requirement.fixed_link_index:
+                    raise ValueError(
+                        f"external fabric claim {binding.claim.identity!r} "
+                        f"node {node_coordinates} assigns multiple fixed links "
+                        f"in direction {direction}"
+                    )
+                group["eligible_links"] = tuple(
+                    link_index
+                    for link_index in group["eligible_links"]
+                    if link_index in eligible_links
+                )
+
+    for interval_identity, expected_nodes in expected_external_nodes.items():
+        provided_nodes = provided_external_nodes.get(interval_identity, set())
+        if provided_nodes != expected_nodes:
+            missing_nodes = tuple(sorted(expected_nodes - provided_nodes))
+            extra_nodes = tuple(sorted(provided_nodes - expected_nodes))
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} does not "
+                f"cover its kernel range; missing nodes {missing_nodes}, "
+                f"extra nodes {extra_nodes}"
+            )
+
+    for (
+        kernel_index,
+        node_coordinates,
+        direction,
+        interval_identity,
+    ), group in external_request_groups.items():
+        if not group["eligible_links"]:
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} destinations "
+                "have no common forwarding link"
+            )
+        manager_requests.append(
+            _FabricManagerRequest(
+                kernel_index=kernel_index,
+                node_coordinates=node_coordinates,
+                fabric_runtime_metadata=(),
+                connections=(
+                    _FabricConnectionRequest(
+                        connection_node_id=group["connection_node_id"],
+                        direction=direction,
+                        eligible_links=group["eligible_links"],
+                        interval_ids=(interval_identity,),
+                        fixed_link_index=group["fixed_link_index"],
+                    ),
+                ),
+                apply_binding=False,
+            )
+        )
+
+    _validate_manager_semaphore_capacity(ttnn_api, program_descriptor, manager_requests)
+    selected_links = _assign_fabric_links(manager_requests, interference_by_interval)
     manager_bindings = []
     for manager_index, manager_request in enumerate(manager_requests):
         connection_bindings = tuple(
@@ -623,6 +977,8 @@ def build_fabric_target_binding_plan(
             )
             for connection_index, connection in enumerate(manager_request.connections)
         )
+        if not manager_request.apply_binding:
+            continue
         manager_bindings.append(
             _FabricManagerBinding(
                 kernel_index=manager_request.kernel_index,
@@ -729,9 +1085,13 @@ def configure_routing_plane_runtime_args(
     grid_cols: int,
     grid_rows: int,
     route_cache: Optional[FabricRouteCache] = None,
+    kernel_fabric_manager_intervals: Optional[
+        List[Tuple[FabricManagerIntervalSpec, ...]]
+    ] = None,
+    external_fabric_connections: Tuple[Any, ...] = (),
 ) -> None:
     """Plan and apply routing-plane target bindings for one logical device."""
-    if not any(kernel_fabric_routes):
+    if not any(kernel_fabric_routes) and not external_fabric_connections:
         if len(kernel_fabric_routes) != len(program_descriptor.kernels):
             raise ValueError(
                 "kernel_fabric_routes must have one entry per kernel descriptor"
@@ -758,6 +1118,8 @@ def configure_routing_plane_runtime_args(
         kernel_fabric_runtime_arg_base_common_indices=(
             kernel_fabric_runtime_arg_base_common_indices
         ),
+        kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        external_fabric_connections=external_fabric_connections,
         mesh_device=mesh_device,
         device_coordinates=device_coordinates,
         grid_cols=grid_cols,
@@ -773,6 +1135,8 @@ def configure_routing_plane_runtime_args(
 
 
 __all__ = [
+    "FabricManagerIntervalKind",
+    "FabricManagerIntervalSpec",
     "FabricRouteCache",
     "FabricRouteSpec",
     "FabricTargetBindingPlan",

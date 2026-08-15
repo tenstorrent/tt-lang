@@ -101,6 +101,8 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     _FabricRouteCache,
+    FabricManagerIntervalKind,
+    FabricManagerIntervalSpec,
     FabricRouteSpec,
     KernelSpec,
     MeshProgramPlacement,
@@ -117,9 +119,11 @@ from .kernel import (
     _bind_kernel_declarations,
     _format_kernel_capacity_error,
     _operation_identity,
+    _referenced_operation_values,
     _selector_implicit_role,
     _selector_kind,
 )
+from .fabric import FabricManagerClaim, _bind_fabric_manager_claims
 from .runtime_resources import ProgramRuntimeResources
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
@@ -240,13 +244,20 @@ def _validate_explicit_logical_kernel_uses(
 
 def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
     """Return logical kernels referenced by an explicit operation."""
-    closure = inspect.getclosurevars(function)
-    captures = dict(closure.globals)
-    captures.update(closure.nonlocals)
     return {
         name: value
-        for name, value in sorted(captures.items())
+        for name, value in _referenced_operation_values(function).items()
         if isinstance(value, Kernel)
+    }
+
+
+def _captured_fabric_manager_claims(
+    function: Callable,
+) -> Dict[str, FabricManagerClaim]:
+    return {
+        name: value
+        for name, value in _referenced_operation_values(function).items()
+        if isinstance(value, FabricManagerClaim)
     }
 
 
@@ -792,6 +803,7 @@ class CompiledTTNNKernel:
         kernel_pipe_computed_address_dfb_indices=None,
         kernel_fabric_routes=None,
         kernel_fabric_runtime_arg_base_common_indices=None,
+        kernel_fabric_manager_intervals=None,
         mesh_program_placements=None,
         device_domain=None,
         kernel_logical_selectors=None,
@@ -831,6 +843,8 @@ class CompiledTTNNKernel:
             kernel_fabric_routes: Per-kernel routing-plane connection metadata.
             kernel_fabric_runtime_arg_base_common_indices: Per-kernel common
                 argument indices containing fabric unique-argument bases.
+            kernel_fabric_manager_intervals: Per-kernel fabric manager
+                ownership intervals.
             mesh_program_placements: Optional mesh device ranges. When present,
                 execution uses ttnn.MeshProgramDescriptor.
             device_domain: Logical device domain used for per-device dispatch.
@@ -862,6 +876,9 @@ class CompiledTTNNKernel:
             kernel_fabric_runtime_arg_base_common_indices
             or [None for _ in kernel_paths]
         )
+        self.kernel_fabric_manager_intervals = kernel_fabric_manager_intervals or [
+            () for _ in kernel_paths
+        ]
         self.mesh_program_placements = mesh_program_placements
         self.device_domain = device_domain
         self.kernel_logical_selectors = (
@@ -930,6 +947,9 @@ class CompiledTTNNKernel:
                     self.kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
                 ),
                 logical_kernel=self.kernel_logical_selectors[kernel_idx],
+                fabric_manager_intervals=self.kernel_fabric_manager_intervals[
+                    kernel_idx
+                ],
             )
             kernel_specs.append(spec)
 
@@ -1233,6 +1253,46 @@ def _get_kernel_fabric_runtime_arg_base_common_index(module, kernel_name: str):
     return None if attr is None else int(IntegerAttr(attr).value)
 
 
+def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(_ttl_ir.FABRIC_MANAGER_INTERVALS_ATTR, None)
+    if attr is None:
+        return ()
+
+    kind_map = {
+        _ttl_ir.FabricManagerIntervalKind.GeneratedReceiver: (
+            FabricManagerIntervalKind.GENERATED_RECEIVER
+        ),
+        _ttl_ir.FabricManagerIntervalKind.GeneratedSender: (
+            FabricManagerIntervalKind.GENERATED_SENDER
+        ),
+        _ttl_ir.FabricManagerIntervalKind.GeneratedMixed: (
+            FabricManagerIntervalKind.GENERATED_MIXED
+        ),
+        _ttl_ir.FabricManagerIntervalKind.External: (
+            FabricManagerIntervalKind.EXTERNAL
+        ),
+    }
+    intervals = []
+    for interval_attr in ArrayAttr(attr):
+        interval = ttl_dialect.FabricManagerIntervalAttr.maybe_downcast(interval_attr)
+        if interval is None:
+            raise ValueError(
+                "Expected FabricManagerIntervalAttr entries in "
+                f"ttl.fabric_manager_intervals on kernel {kernel_name!r}"
+            )
+        intervals.append(
+            FabricManagerIntervalSpec(
+                identity=interval.identity,
+                kind=kind_map[interval.kind],
+                claim=interval.claim,
+                route_indices=tuple(interval.route_indices),
+                interfering_intervals=tuple(interval.interfering_intervals),
+            )
+        )
+    return tuple(intervals)
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -1408,6 +1468,7 @@ def _compile_ttnn_kernel(
     specialized_tensor_indices = []
     kernel_fabric_routes = []
     kernel_fabric_runtime_arg_base_common_indices = []
+    kernel_fabric_manager_intervals = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -1434,6 +1495,9 @@ def _compile_ttnn_kernel(
             )
         )
         kernel_fabric_routes.append(_get_kernel_fabric_routes(module, name))
+        kernel_fabric_manager_intervals.append(
+            _get_kernel_fabric_manager_intervals(module, name)
+        )
         kernel_fabric_runtime_arg_base_common_indices.append(
             _get_kernel_fabric_runtime_arg_base_common_index(module, name)
         )
@@ -1530,6 +1594,7 @@ def _compile_ttnn_kernel(
         kernel_fabric_runtime_arg_base_common_indices=(
             kernel_fabric_runtime_arg_base_common_indices
         ),
+        kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
@@ -1560,6 +1625,7 @@ def _compile_ttnn_kernel(
                     kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
                 ),
                 logical_kernel=kernel_logical_selectors[kernel_idx],
+                fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -1679,6 +1745,8 @@ def _collect_captures(
         elif isinstance(val, PipeNet):
             return val
         elif isinstance(val, DeviceDomain):
+            return val
+        elif isinstance(val, FabricManagerClaim):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -2037,6 +2105,7 @@ def _compile(
             kwargs["_source_lines"] = source_lines
             kwargs["_line_offset"] = _get_source_line_offset(f)
             kwargs["debug_locations"] = True
+            kwargs["_logical_kernel"] = selected_kernel
 
             m = ast.parse(source_code)
             return _run_thread_compiler(
@@ -2915,8 +2984,10 @@ def pykernel_gen(
         iterator_types = []
 
     def _decorator(f):
-        _bind_kernel_declarations(
-            _captured_kernel_declarations(f), _operation_identity(f)
+        operation_identity = _operation_identity(f)
+        _bind_kernel_declarations(_captured_kernel_declarations(f), operation_identity)
+        _bind_fabric_manager_claims(
+            _captured_fabric_manager_claims(f), operation_identity
         )
 
         def _compile_explicit(

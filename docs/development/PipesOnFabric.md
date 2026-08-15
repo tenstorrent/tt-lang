@@ -273,8 +273,9 @@ that the active TT-Metal control plane can route. The current implementation:
   source-destination pair;
 - reuses one injection connection for destinations with the same direction
   and a common forwarding link;
-- assigns distinct forwarding links to concurrent connections in the same
-  direction;
+- assigns links by manager lifetime, allowing a proven receiver/sender
+  ownership pair to reuse a link while requiring all other managers to use
+  distinct links;
 - supplies final destination identifiers for 2D routing or a validated hop
   count for 1D routing.
 
@@ -555,7 +556,7 @@ TENSIX node, it determines the active logical routes, resolves remote devices
 with
 `mesh_device.get_fabric_node_id()`, queries forwarding directions and eligible
 links, and groups destinations by direction. It validates a distinct-link
-assignment for all concurrent managers before calling
+assignment for all interfering managers before calling
 `ttnn.setup_routing_plane_connection(...)` with explicit link indices.
 
 The compiler-managed runtime prefix is:
@@ -603,10 +604,31 @@ source and destination `FabricNodeId`. The cache is cleared when the mesh
 object or active fabric configuration changes. The binder first collects every
 connection required by one source device. Within a manager, destinations with
 the same direction reuse one connection only when their eligible-link sets
-intersect. Across managers, deterministic bipartite matching assigns distinct
-links to concurrent connections in the same direction. The complete plan is
-validated before program descriptors, semaphores, or runtime arguments are
-modified.
+intersect. Across managers, the compiler records ownership intervals and an
+interference graph. Deterministic graph coloring permits a proven
+receiver/sender ownership pair to reuse a forwarding link and assigns distinct
+links to all other managers. An external manager may reserve a fixed link
+through operation runtime resources; tt-lang validates the reservation but does
+not interpret or modify the external manager's runtime arguments. The complete
+plan is validated before program descriptors, semaphores, or runtime arguments
+are modified.
+
+The compiler serializes a generated receiver and sender manager only when each
+participating function contains one fabric manager interval, each interval
+contains one protocol operation, executes at most once with matching execution
+conditions at the same device and TENSIX node, and uses the same route. One
+compiler-allocated local semaphore transfers ownership between the proven
+one-to-one pair. The receiver opens its manager, publishes readiness, closes
+the manager before
+waiting for payload completion, and publishes the sender generation. The
+sender then opens its manager, sends the payload, and closes the manager. This
+ordering avoids holding the manager while waiting for an operation that
+requires the same forwarding link. Different transfer pairs, repeated
+transfers, and unproven executions remain interfering and receive distinct
+links. Program submission reinitializes compiler-managed semaphores, including
+when a cached program descriptor is reused. Global-semaphore-only compilation
+does not allocate this local ownership semaphore, so every manager remains
+interfering in that mode.
 
 Connection setup still runs for each constructed program descriptor because
 its semaphores and runtime arguments are invocation resources. Both the cached
@@ -658,9 +680,8 @@ still requires:
 
 - explicit target binding from each logical `DeviceRef` to a
   `MeshCoordinate`;
-- a program-wide fabric resource schedule covering connection lifetimes,
-  intentional router reuse, conflicts, barriers, close obligations, and
-  worker-to-forwarder aggregation;
+- target-level router aggregation and connection reuse beyond the compiler's
+  per-node manager intervals, including any transport-specific barriers;
 - multicast lowering for graph transfers with device-range destinations;
 - a receiver-address publication protocol for schedules that cannot prove
   computed receiver addresses.

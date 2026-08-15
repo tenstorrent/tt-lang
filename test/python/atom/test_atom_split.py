@@ -144,6 +144,117 @@ def test_captured_kernel_is_bound_for_final_operation():
     assert result.kernels == (reader,)
 
 
+def test_captured_fabric_manager_claim_binds_to_selected_kernel():
+    """A claim and its selected logical kernel share operation ownership."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+
+    def operation():
+        ttl.call_extern_func(
+            "reader.hpp",
+            "open",
+            kernel=reader,
+            fabric_manager_effects=(manager.acquire(),),
+        )
+
+    spec = _build_atom_spec(operation)
+
+    assert spec.logical_kernels["reader"] is reader
+    assert spec.fabric_manager_claims["manager"] is manager
+    assert manager.operation_identity == spec.operation_identity
+    assert manager.kernel is reader
+
+
+def test_captured_fabric_manager_claim_cannot_have_two_names():
+    """One claim identity has one source name in its operation."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+    manager_alias = manager
+
+    def operation():
+        ttl.call_extern_func(
+            "reader.hpp",
+            "open",
+            kernel=reader,
+            fabric_manager_effects=(manager.acquire(), manager_alias.use()),
+        )
+
+    with pytest.raises(ValueError, match="multiple names"):
+        _build_atom_spec(operation)
+    with pytest.raises(ValueError, match="has no operation identity"):
+        manager.operation_identity
+
+
+def test_external_fabric_manager_effect_must_select_claim_kernel():
+    """A manager effect and its external call select the same kernel."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    writer = _logical_kernel(KernelKind.DATA_MOVEMENT, "writer")
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+    function = _fn(
+        """
+        def operation():
+            ttl.call_extern_func(
+                "writer.hpp",
+                "open",
+                kernel=writer,
+                fabric_manager_effects=(manager.acquire(),),
+            )
+        """
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "fabric manager claim 'external' selects data_movement kernel "
+            "'reader', but the external call selects data_movement kernel "
+            "'writer'"
+        ),
+    ):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader, "writer": writer},
+            selector_scope={
+                "reader": reader,
+                "writer": writer,
+                "manager": manager,
+            },
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+
+
+def test_inferred_external_fabric_effect_must_select_claim_kernel():
+    """Inferred external-call placement also validates manager ownership."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+    function = _fn(
+        """
+        def operation():
+            def receive(pipe):
+                ttl.call_extern_func(
+                    "receiver.hpp",
+                    "open",
+                    fabric_manager_effects=(manager.acquire(),),
+                )
+            exchange_net.if_dst(receive)
+        """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "fabric manager claim 'external' selects data_movement kernel "
+            "'reader', but the external call selects data_movement"
+        ),
+    ):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader},
+            selector_scope={"reader": reader, "manager": manager},
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+
+
 def test_unified_operation_propagates_runtime_resource_factory(monkeypatch):
     observed = {}
 

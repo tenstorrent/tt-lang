@@ -23,7 +23,8 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
-from ..kernel import _DFB_RELEASE_METHODS
+from ..kernel import _DFB_RELEASE_METHODS, _format_selector
+from ..fabric import FabricManagerClaim, FabricManagerEffectKind
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -247,6 +248,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Function globals for resolving module-level constants
         self.fn_globals = kwargs.get("_globals", {})
+        self.logical_kernel = kwargs.get("_logical_kernel")
 
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
@@ -1466,6 +1468,8 @@ class TTLGenericCompiler(TTCompilerBase):
                     self._pipe_net_names.setdefault(id(val), name)
                 elif isinstance(val, DeviceDomain):
                     self._set_var(name, val)
+                elif isinstance(val, FabricManagerClaim):
+                    self._set_var(name, val)
                 elif is_ttnn_global_semaphore(val):
                     sem_addr = get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
@@ -2178,7 +2182,12 @@ class TTLGenericCompiler(TTCompilerBase):
             for kw in keywords:
                 kw_map[kw.arg] = kw.value
 
-        _valid_kwargs = {"template_args", "func_args", "include_paths"}
+        _valid_kwargs = {
+            "template_args",
+            "func_args",
+            "include_paths",
+            "fabric_manager_effects",
+        }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
             self._raise_error(
@@ -2230,6 +2239,68 @@ class TTLGenericCompiler(TTCompilerBase):
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
+        fabric_manager_effect_attrs = []
+        if "fabric_manager_effects" in kw_map:
+            effects_node = kw_map["fabric_manager_effects"]
+            if not isinstance(effects_node, (ast.Tuple, ast.List)):
+                self._raise_error(
+                    effects_node,
+                    "ttl.call_extern_func() fabric_manager_effects must be a tuple",
+                )
+            effect_kind_map = {
+                "acquire": ttl.ir.FabricManagerEffectKind.Acquire,
+                "use": ttl.ir.FabricManagerEffectKind.Use,
+                "release": ttl.ir.FabricManagerEffectKind.Release,
+                "scoped": ttl.ir.FabricManagerEffectKind.Scoped,
+            }
+            for effect_node in effects_node.elts:
+                if (
+                    not isinstance(effect_node, ast.Call)
+                    or effect_node.args
+                    or effect_node.keywords
+                    or not isinstance(effect_node.func, ast.Attribute)
+                    or not isinstance(effect_node.func.value, ast.Name)
+                ):
+                    self._raise_error(
+                        effect_node,
+                        "fabric manager effects must be claim.acquire(), "
+                        "claim.use(), claim.release(), or claim.scoped()",
+                    )
+                claim_name = effect_node.func.value.id
+                claim = self.captures.get(claim_name, self.fn_globals.get(claim_name))
+                if not isinstance(claim, FabricManagerClaim):
+                    self._raise_error(
+                        effect_node.func.value,
+                        f"{claim_name!r} is not a captured FabricManagerClaim",
+                    )
+                if (
+                    self.logical_kernel is not None
+                    and claim.kernel != self.logical_kernel
+                ):
+                    self._raise_error(
+                        effect_node,
+                        f"fabric manager claim {claim.identity!r} selects "
+                        f"{_format_selector(claim.kernel)}, but the external "
+                        "call is compiled for "
+                        f"{_format_selector(self.logical_kernel)}",
+                    )
+                method_name = effect_node.func.attr
+                if method_name not in effect_kind_map:
+                    self._raise_error(
+                        effect_node,
+                        f"unknown fabric manager effect {method_name!r}",
+                    )
+                expected_kind = FabricManagerEffectKind(method_name)
+                actual_effect = getattr(claim, method_name)()
+                assert actual_effect.kind == expected_kind
+                fabric_manager_effect_attrs.append(
+                    ttl.ir.FabricManagerEffectAttr.get(
+                        self.ctx,
+                        claim.identity,
+                        effect_kind_map[method_name],
+                    )
+                )
+
         template_dfb_operands = []
         template_arg_attrs = []
         dfb_kinds = {
@@ -2252,6 +2323,11 @@ class TTLGenericCompiler(TTCompilerBase):
             if unsigned_arg_indices
             else None
         )
+        fabric_manager_effects_attr = (
+            ArrayAttr.get(fabric_manager_effect_attrs)
+            if fabric_manager_effect_attrs
+            else None
+        )
 
         ttl.opaque_call(
             [],
@@ -2261,6 +2337,7 @@ class TTLGenericCompiler(TTCompilerBase):
             template_dfb_operands,
             template_args=template_args_attr,
             unsigned_arg_indices=unsigned_arg_indices_attr,
+            fabric_manager_effects=fabric_manager_effects_attr,
         )
 
     def visit_With(self, node):

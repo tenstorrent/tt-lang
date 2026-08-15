@@ -2014,6 +2014,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     Results are optional; when absent the call is treated as a void function
     invocation.
 
+    `fabric_manager_effects` declares ownership effects for external fabric
+    connection managers. The enclosing operation binds each claim to one
+    logical kernel. Nonlocal verification requires balanced ownership and
+    rejects uses outside an acquired interval.
+
     Example:
     ```mlir
     ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
@@ -2029,7 +2034,9 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     Variadic<AnyType>:$arg_operands,
     Variadic<TTL_CircularBuffer>:$template_dfb_operands,
     OptionalAttr<ArrayAttr>:$template_args,
-    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
+    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
+    OptionalAttr<TypedArrayAttrBase<TTL_FabricManagerEffectAttr,
+                                    "fabric manager effects">>:$fabric_manager_effects
   );
   let results = (outs Variadic<AnyType>);
   let assemblyFormat = [{

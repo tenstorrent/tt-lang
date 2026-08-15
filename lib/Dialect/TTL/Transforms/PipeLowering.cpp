@@ -5,6 +5,7 @@
 #include "PipeLowering.h"
 
 #include "CommonRuntimeArgLayout.h"
+#include "FabricManagerLifetimeAnalysis.h"
 #include "PipePlanning.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -34,6 +35,7 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -193,10 +195,297 @@ static std::size_t getFabricRouteCount(ArrayRef<FabricRoute> routes) {
   return routeCount;
 }
 
-LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
-                                   const PipeGraph &pipeGraph,
-                                   const PipeForeachLoweringInfo &foreachInfo,
-                                   FabricRoutePlan &plan) {
+static FabricManagerIntervalKind
+getGeneratedFabricManagerKind(ArrayRef<Operation *> operations) {
+  bool hasSend = llvm::any_of(operations, llvm::IsaPred<PipeTransferSendOp>);
+  bool hasPost = llvm::any_of(operations, llvm::IsaPred<PipeTransferPostOp>);
+  assert((hasSend || hasPost) &&
+         "fabric runtime interval has no protocol operation");
+  if (hasSend && hasPost) {
+    return FabricManagerIntervalKind::GeneratedMixed;
+  }
+  return hasSend ? FabricManagerIntervalKind::GeneratedSender
+                 : FabricManagerIntervalKind::GeneratedReceiver;
+}
+
+static SmallVector<std::size_t>
+getIntervalRouteIndices(ArrayRef<Operation *> operations,
+                        const FabricRoutePlan &plan) {
+  llvm::SmallSetVector<std::size_t, 4> routeIndices;
+  for (Operation *operation : operations) {
+    routeIndices.insert_range(plan.lookupRouteIndices(operation));
+  }
+  return SmallVector<std::size_t>(routeIndices.begin(), routeIndices.end());
+}
+
+static SmallVector<PipeTransferNodeId>
+getIntervalTransferNodes(ArrayRef<Operation *> operations,
+                         const PipeGraph &pipeGraph) {
+  llvm::SmallSetVector<PipeTransferNodeId, 4> transferNodes;
+  for (Operation *operation : operations) {
+    transferNodes.insert_range(
+        pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation));
+  }
+  SmallVector<PipeTransferNodeId> sortedTransferNodes(transferNodes.begin(),
+                                                      transferNodes.end());
+  llvm::sort(sortedTransferNodes);
+  return sortedTransferNodes;
+}
+
+static bool sourceNodesEqual(ArrayRef<LaunchNodeCoord> lhs,
+                             ArrayRef<LaunchNodeCoord> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::all_of(lhs, [&](LaunchNodeCoord lhsNode) {
+           return llvm::is_contained(rhs, lhsNode);
+         });
+}
+
+static bool fabricRoutesEqual(const FabricRoute &lhs, const FabricRoute &rhs) {
+  return lhs.localDevice == rhs.localDevice &&
+         lhs.remoteDevice == rhs.remoteDevice &&
+         sourceNodesEqual(lhs.sourceNodes, rhs.sourceNodes);
+}
+
+struct FabricManagerExecutionLocation {
+  DeviceRefAttr device;
+  LaunchNodeCoord node;
+
+  bool operator==(const FabricManagerExecutionLocation &other) const {
+    return device == other.device && node == other.node;
+  }
+};
+
+static SmallVector<FabricManagerExecutionLocation>
+getIntervalExecutionLocations(const FabricManagerIntervalPlan &interval,
+                              const PipeGraph &pipeGraph) {
+  SmallVector<FabricManagerExecutionLocation> locations;
+  for (PipeTransferNodeId transferNodeId : interval.transferNodes) {
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(transferNodeId);
+    assert(transferNode.deviceTransfer &&
+           "fabric manager transfer must cross devices");
+    if (interval.kind == FabricManagerIntervalKind::GeneratedSender) {
+      if (llvm::is_contained(interval.protocolOperations,
+                             transferNode.sendOp)) {
+        locations.push_back({transferNode.deviceTransfer.getEdge().getSource(),
+                             {transferNode.pipe.srcX, transferNode.pipe.srcY}});
+      }
+      continue;
+    }
+    assert(interval.kind == FabricManagerIntervalKind::GeneratedReceiver &&
+           "only pure generated intervals can be serialized");
+    for (PipeReceiverEndpointId endpointId : transferNode.receiverEndpoints) {
+      const PipeReceiverEndpoint &endpoint =
+          pipeGraph.getPipeReceiverEndpoint(endpointId);
+      if (llvm::is_contained(interval.protocolOperations, endpoint.postOp)) {
+        locations.push_back(
+            {transferNode.deviceTransfer.getEdge().getDestination(),
+             {endpoint.receiver.x, endpoint.receiver.y}});
+      }
+    }
+  }
+  return locations;
+}
+
+static bool
+locationsAreUnique(ArrayRef<FabricManagerExecutionLocation> locations) {
+  return llvm::all_of(llvm::enumerate(locations), [&](auto indexedLocation) {
+    return !llvm::is_contained(locations.take_front(indexedLocation.index()),
+                               indexedLocation.value());
+  });
+}
+
+static bool
+executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
+                        ArrayRef<FabricManagerExecutionLocation> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::all_of(lhs, [&](FabricManagerExecutionLocation lhsLocation) {
+           return llvm::is_contained(rhs, lhsLocation);
+         });
+}
+
+static bool intervalHasSingleInvocationContext(
+    const FabricRuntimeIntervalPlan &interval,
+    const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
+  if (interval.protocolOperations.size() != 1) {
+    return false;
+  }
+  for (Operation *parent = interval.protocolOperations.front()->getParentOp();
+       parent && !isa<FuncOp>(parent); parent = parent->getParentOp()) {
+    if (generatedControlOps.contains(parent) || isa<scf::IfOp>(parent)) {
+      continue;
+    }
+    if (parent->getNumRegions() != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static SmallVector<const FabricRoute *>
+getIntervalRoutes(const FabricManagerIntervalPlan &interval,
+                  const FunctionFabricRoutePlan &functionPlan) {
+  SmallVector<const FabricRoute *> routes;
+  for (const FabricRoute &route : functionPlan.routes) {
+    if (llvm::is_contained(interval.routeIndices, route.routeIndex)) {
+      routes.push_back(&route);
+    }
+  }
+  return routes;
+}
+
+static bool intervalRoutesEqual(const FabricManagerIntervalPlan &lhs,
+                                const FabricManagerIntervalPlan &rhs,
+                                const FabricRoutePlan &plan) {
+  auto lhsPlan = plan.routesByFunction.find(lhs.function);
+  auto rhsPlan = plan.routesByFunction.find(rhs.function);
+  assert(lhsPlan != plan.routesByFunction.end() &&
+         rhsPlan != plan.routesByFunction.end() &&
+         "generated manager interval is missing its route plan");
+  SmallVector<const FabricRoute *> lhsRoutes =
+      getIntervalRoutes(lhs, lhsPlan->second);
+  SmallVector<const FabricRoute *> rhsRoutes =
+      getIntervalRoutes(rhs, rhsPlan->second);
+  return lhsRoutes.size() == rhsRoutes.size() &&
+         llvm::all_of(lhsRoutes, [&](const FabricRoute *lhsRoute) {
+           return llvm::any_of(rhsRoutes, [&](const FabricRoute *rhsRoute) {
+             return fabricRoutesEqual(*lhsRoute, *rhsRoute);
+           });
+         });
+}
+
+static void planGeneratedFabricManagerOwnership(
+    FabricRoutePlan &plan, const PipeGraph &pipeGraph,
+    const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps,
+    bool enableLocalOwnership) {
+  llvm::MapVector<FuncOp, SmallVector<std::size_t>> intervalsByFunction;
+  for (auto [runtimeIntervalIndex, runtimeInterval] :
+       llvm::enumerate(plan.runtimeIntervals)) {
+    const FabricManagerIntervalPlan &managerInterval =
+        plan.managerIntervals[runtimeInterval.managerIntervalIndex];
+    intervalsByFunction[managerInterval.function].push_back(
+        runtimeIntervalIndex);
+  }
+
+  SmallVector<std::optional<std::size_t>> ownershipGroupByManager(
+      plan.managerIntervals.size());
+  llvm::SmallPtrSet<Operation *, 4> pairedSenderFunctions;
+  if (enableLocalOwnership) {
+    for (const auto &[receiverFunction, receiverRuntimeIntervals] :
+         intervalsByFunction) {
+      if (receiverRuntimeIntervals.size() != 1 ||
+          llvm::any_of(receiverRuntimeIntervals,
+                       [&](std::size_t runtimeIntervalIndex) {
+                         return plan.managerIntervals
+                                    [plan.runtimeIntervals[runtimeIntervalIndex]
+                                         .managerIntervalIndex]
+                                        .kind !=
+                                FabricManagerIntervalKind::GeneratedReceiver;
+                       })) {
+        continue;
+      }
+
+      SmallVector<FuncOp> candidateSenderFunctions;
+      for (const auto &[senderFunction, senderRuntimeIntervals] :
+           intervalsByFunction) {
+        if (pairedSenderFunctions.contains(senderFunction) ||
+            receiverFunction == senderFunction ||
+            senderRuntimeIntervals.size() != 1) {
+          continue;
+        }
+        bool matches = true;
+        for (auto [receiverRuntimeIndex, senderRuntimeIndex] : llvm::zip_equal(
+                 receiverRuntimeIntervals, senderRuntimeIntervals)) {
+          const FabricRuntimeIntervalPlan &receiverRuntime =
+              plan.runtimeIntervals[receiverRuntimeIndex];
+          const FabricRuntimeIntervalPlan &senderRuntime =
+              plan.runtimeIntervals[senderRuntimeIndex];
+          const FabricManagerIntervalPlan &receiverInterval =
+              plan.managerIntervals[receiverRuntime.managerIntervalIndex];
+          const FabricManagerIntervalPlan &senderInterval =
+              plan.managerIntervals[senderRuntime.managerIntervalIndex];
+          SmallVector<FabricManagerExecutionLocation> receiverLocations =
+              getIntervalExecutionLocations(receiverInterval, pipeGraph);
+          SmallVector<FabricManagerExecutionLocation> senderLocations =
+              getIntervalExecutionLocations(senderInterval, pipeGraph);
+          if (senderInterval.kind !=
+                  FabricManagerIntervalKind::GeneratedSender ||
+              !intervalHasSingleInvocationContext(receiverRuntime,
+                                                  generatedControlOps) ||
+              !intervalHasSingleInvocationContext(senderRuntime,
+                                                  generatedControlOps) ||
+              receiverInterval.transferNodes != senderInterval.transferNodes ||
+              !locationsAreUnique(receiverLocations) ||
+              !locationsAreUnique(senderLocations) ||
+              !executionLocationsEqual(receiverLocations, senderLocations) ||
+              !intervalRoutesEqual(receiverInterval, senderInterval, plan)) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) {
+          candidateSenderFunctions.push_back(senderFunction);
+        }
+      }
+      if (candidateSenderFunctions.size() != 1) {
+        continue;
+      }
+
+      FuncOp senderFunction = candidateSenderFunctions.front();
+      pairedSenderFunctions.insert(senderFunction);
+      ArrayRef<std::size_t> senderRuntimeIntervals =
+          intervalsByFunction.find(senderFunction)->second;
+      for (auto [receiverRuntimeIndex, senderRuntimeIndex] :
+           llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals)) {
+        std::size_t semaphoreIndex = plan.ownershipSemaphoreCount++;
+        FabricRuntimeIntervalPlan &receiverRuntime =
+            plan.runtimeIntervals[receiverRuntimeIndex];
+        FabricRuntimeIntervalPlan &senderRuntime =
+            plan.runtimeIntervals[senderRuntimeIndex];
+        receiverRuntime.scope = receiverRuntime.protocolOperations.front();
+        senderRuntime.scope = senderRuntime.protocolOperations.front();
+        FabricManagerIntervalPlan &receiverManager =
+            plan.managerIntervals[receiverRuntime.managerIntervalIndex];
+        FabricManagerIntervalPlan &senderManager =
+            plan.managerIntervals[senderRuntime.managerIntervalIndex];
+        receiverManager.acquireBoundary = receiverRuntime.scope;
+        receiverManager.releaseBoundary = receiverRuntime.scope;
+        senderManager.acquireBoundary = senderRuntime.scope;
+        senderManager.releaseBoundary = senderRuntime.scope;
+        receiverRuntime.ownershipSemaphoreIndex = semaphoreIndex;
+        receiverRuntime.acquireGeneration = 0;
+        receiverRuntime.releaseGeneration = 1;
+        senderRuntime.ownershipSemaphoreIndex = semaphoreIndex;
+        senderRuntime.acquireGeneration = 1;
+        senderRuntime.releaseGeneration = 2;
+        ownershipGroupByManager[receiverRuntime.managerIntervalIndex] =
+            semaphoreIndex;
+        ownershipGroupByManager[senderRuntime.managerIntervalIndex] =
+            semaphoreIndex;
+      }
+    }
+  }
+
+  for (std::size_t lhsIndex = 0; lhsIndex < plan.managerIntervals.size();
+       ++lhsIndex) {
+    for (std::size_t rhsIndex = lhsIndex + 1;
+         rhsIndex < plan.managerIntervals.size(); ++rhsIndex) {
+      if (ownershipGroupByManager[lhsIndex] &&
+          ownershipGroupByManager[lhsIndex] ==
+              ownershipGroupByManager[rhsIndex]) {
+        continue;
+      }
+      plan.managerIntervals[lhsIndex].interferingIntervals.push_back(rhsIndex);
+      plan.managerIntervals[rhsIndex].interferingIntervals.push_back(lhsIndex);
+    }
+  }
+}
+
+LogicalResult buildFabricRoutePlan(
+    ModuleOp module, const PipeTransferIndex &transferIndex,
+    const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
+    ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
+    bool enableLocalManagerOwnership, FabricRoutePlan &plan) {
   LogicalResult result = success();
   RecordAlignedTableBuilder<std::size_t> routeIndices;
 
@@ -306,9 +595,49 @@ LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
     operationsByInterval[scope].push_back(operation);
   }
   for (auto &[scope, operations] : operationsByInterval) {
+    FuncOp function = scope->getParentOfType<FuncOp>();
+    assert(function && "fabric interval must be inside a function");
+    std::size_t managerIntervalIndex = plan.managerIntervals.size();
+    FabricManagerIntervalKind kind = getGeneratedFabricManagerKind(operations);
+    StringAttr identity = StringAttr::get(
+        module.getContext(),
+        (Twine("generated.") + Twine(managerIntervalIndex)).str());
+    plan.managerIntervals.push_back(FabricManagerIntervalPlan{
+        identity,
+        kind,
+        function,
+        std::nullopt,
+        operations,
+        getIntervalRouteIndices(operations, plan),
+        getIntervalTransferNodes(operations, pipeGraph),
+        scope,
+        scope,
+        {}});
     plan.runtimeIntervals.push_back(
-        FabricRuntimeIntervalPlan{scope, std::move(operations)});
+        FabricRuntimeIntervalPlan{managerIntervalIndex, scope,
+                                  std::move(operations), std::nullopt, 0, 0});
   }
+
+  for (const ExternalFabricManagerInterval &externalInterval :
+       externalManagerIntervals) {
+    StringAttr identity = StringAttr::get(
+        module.getContext(),
+        (Twine("external.") + externalInterval.claim.getValue()).str());
+    plan.managerIntervals.push_back(
+        FabricManagerIntervalPlan{identity,
+                                  FabricManagerIntervalKind::External,
+                                  externalInterval.function,
+                                  externalInterval.claim,
+                                  {},
+                                  {},
+                                  {},
+                                  externalInterval.acquire,
+                                  externalInterval.release,
+                                  {}});
+  }
+
+  planGeneratedFabricManagerOwnership(plan, pipeGraph, generatedControlOps,
+                                      enableLocalManagerOwnership);
   return result;
 }
 
@@ -341,6 +670,29 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
         builder.getI64IntegerAttr(
             CommonRuntimeArgLayout(func).getFabricRuntimeArgBaseIndex()));
   }
+
+  llvm::MapVector<FuncOp, SmallVector<Attribute>> intervalsByFunction;
+  for (const FabricManagerIntervalPlan &interval : plan.managerIntervals) {
+    SmallVector<StringAttr> interferingIntervals;
+    interferingIntervals.reserve(interval.interferingIntervals.size());
+    for (std::size_t interferingIndex : interval.interferingIntervals) {
+      assert(interferingIndex < plan.managerIntervals.size() &&
+             "fabric interference index out of range");
+      interferingIntervals.push_back(
+          plan.managerIntervals[interferingIndex].identity);
+    }
+    SmallVector<int64_t> routeIndices(interval.routeIndices.begin(),
+                                      interval.routeIndices.end());
+    intervalsByFunction[interval.function].push_back(
+        FabricManagerIntervalAttr::get(
+            mod.getContext(), interval.identity, interval.kind,
+            interval.claim.value_or(StringAttr()),
+            builder.getDenseI64ArrayAttr(routeIndices), interferingIntervals));
+  }
+  for (auto &[function, intervals] : intervalsByFunction) {
+    function->setAttr(kFabricManagerIntervalsAttrName,
+                      builder.getArrayAttr(intervals));
+  }
 }
 
 void initializeFabricRuntime(const FabricRoutePlan &plan,
@@ -355,6 +707,20 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
     std::size_t routeCount = getFabricRouteCount(routes);
     OpBuilder builder(interval.scope);
     Location loc = interval.scope->getLoc();
+    Value ownershipSemaphorePtr;
+    if (interval.ownershipSemaphoreIndex) {
+      Value semaphoreIndex = arith::ConstantIndexOp::create(
+          builder, loc, *interval.ownershipSemaphoreIndex);
+      Value ownershipSemaphore =
+          ttk::GetSemaphoreOp::create(builder, loc, semaphoreIndex);
+      auto l1PtrType = ttk::L1AddrPtrType::get(builder.getContext(), 32);
+      ownershipSemaphorePtr = ttk::CastToL1PtrOp::create(
+          builder, loc, l1PtrType, ownershipSemaphore);
+      Value acquireGeneration = arith::ConstantIntOp::create(
+          builder, loc, interval.acquireGeneration, 32);
+      ttk::SemaphoreWaitMinOp::create(builder, loc, ownershipSemaphorePtr,
+                                      acquireGeneration);
+    }
     Value runtimeArgBaseCommonIndex = arith::ConstantIndexOp::create(
         builder, loc,
         CommonRuntimeArgLayout(func).getFabricRuntimeArgBaseIndex());
@@ -384,8 +750,16 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
     }
 
     builder.setInsertionPointAfter(interval.scope);
-    ttk::CloseRoutingPlaneConnectionsOp::create(builder, loc, manager,
-                                                connectionCount);
+    ttk::CloseRoutingPlaneConnectionsOp close =
+        ttk::CloseRoutingPlaneConnectionsOp::create(builder, loc, manager,
+                                                    connectionCount);
+    if (ownershipSemaphorePtr) {
+      builder.setInsertionPointAfter(close);
+      Value releaseGeneration = arith::ConstantIntOp::create(
+          builder, loc, interval.releaseGeneration, 32);
+      ttk::NocSemaphoreSetOp::create(builder, loc, ownershipSemaphorePtr,
+                                     releaseGeneration);
+    }
   }
 }
 

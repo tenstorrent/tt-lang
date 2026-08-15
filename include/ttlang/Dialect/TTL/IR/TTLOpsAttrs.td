@@ -205,6 +205,41 @@ def TTL_ExternalTemplateArgAttr
   let genVerifyDecl = 1;
 }
 
+def TTL_FabricManagerEffectAttr
+    : TTL_Attr<"FabricManagerEffect", "fabric_manager_effect"> {
+  let summary = "External fabric manager lifetime effect";
+  let description = [{
+    Associates one external call with an operation-local fabric manager claim.
+    Acquire ownership begins at call entry and remains live after a successful
+    return. Release ownership ends when the call returns. A scoped effect owns
+    the manager for the complete call.
+  }];
+  let parameters = (ins
+    "StringAttr":$claim,
+    "FabricManagerEffectKind":$kind
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def TTL_FabricManagerIntervalAttr
+    : TTL_Attr<"FabricManagerInterval", "fabric_manager_interval"> {
+  let summary = "Fabric connection-manager ownership interval";
+  let description = [{
+    Identifies one generated or external manager ownership interval in a
+    logical kernel. Generated intervals reference the function's fabric route
+    indices. External intervals reference an operation-local claim. The
+    interference list contains interval identities whose lifetimes may overlap.
+  }];
+  let parameters = (ins
+    "StringAttr":$identity,
+    "FabricManagerIntervalKind":$kind,
+    OptionalParameter<"StringAttr">:$claim,
+    "DenseI64ArrayAttr":$routeIndices,
+    ArrayRefParameter<"StringAttr">:$interferingIntervals
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";
   let description = [{

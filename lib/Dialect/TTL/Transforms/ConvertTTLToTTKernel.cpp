@@ -6,6 +6,7 @@
 
 #include "CommonRuntimeArgLayout.h"
 #include "DFBAllocationLimits.h"
+#include "FabricManagerLifetimeAnalysis.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "PipePlanning.h"
@@ -2214,6 +2215,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
+  FailureOr<SmallVector<ExternalFabricManagerInterval>>
+      externalManagerIntervals = analyzeExternalFabricManagerLifetimes(mod);
+  if (failed(externalManagerIntervals)) {
+    return failure();
+  }
+
   PipeNetIndex pipeNetIndex;
   if (failed(buildPipeNetIndex(mod, pipeNetIndex))) {
     return failure();
@@ -2260,8 +2267,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
 
   FabricRoutePlan fabricRoutePlan;
-  if (failed(buildFabricRoutePlan(transferIndex, *pipeGraphOrErr,
-                                  foreachLoweringInfo, fabricRoutePlan))) {
+  if (failed(
+          buildFabricRoutePlan(mod, transferIndex, *pipeGraphOrErr,
+                               foreachLoweringInfo, *externalManagerIntervals,
+                               !pipeGlobalSemaphoresOnly, fabricRoutePlan))) {
     return failure();
   }
 

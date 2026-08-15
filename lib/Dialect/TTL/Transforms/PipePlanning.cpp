@@ -393,7 +393,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
   PipeSynchronizationSelection synchronizationSelection;
   plan.pipeNetIndex = pipeNetIndex;
 
-  const FabricRoutePlan *fabricRoutePlan = options.fabricRoutePlan;
+  FabricRoutePlan *fabricRoutePlan = options.fabricRoutePlan;
   if (fabricRoutePlan) {
     for (const auto &[operation, routeIndices] :
          fabricRoutePlan->routeIndices) {
@@ -474,6 +474,27 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
       options.enableCapacitySynchronization ? &plan.capacityPlan : nullptr;
   plan.resourceRequirements =
       getPipeResourceRequirements(plan.resourcePlan, maybeCapacityPlan);
+  if (fabricRoutePlan && fabricRoutePlan->ownershipSemaphoreCount > 0) {
+    int64_t ownershipSemaphoreBase =
+        plan.resourceRequirements.syncSemaphoreCount;
+    if (fabricRoutePlan->ownershipSemaphoreCount >
+        kMaxHardwareSemaphoreIds - ownershipSemaphoreBase) {
+      module.emitError("fabric manager ownership requires ")
+          << fabricRoutePlan->ownershipSemaphoreCount
+          << " additional local semaphores, but only "
+          << kMaxHardwareSemaphoreIds - ownershipSemaphoreBase
+          << " hardware semaphore ids remain";
+      return failure();
+    }
+    for (FabricRuntimeIntervalPlan &interval :
+         fabricRoutePlan->runtimeIntervals) {
+      if (interval.ownershipSemaphoreIndex) {
+        *interval.ownershipSemaphoreIndex += ownershipSemaphoreBase;
+      }
+    }
+    plan.resourceRequirements.syncSemaphoreCount +=
+        fabricRoutePlan->ownershipSemaphoreCount;
+  }
 
   module.walk([&](WaitOp waitOp) {
     if (analysis.getOrigins(waitOp.getXf()).allMatch([](Value origin) {

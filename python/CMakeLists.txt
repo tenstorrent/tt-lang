@@ -142,6 +142,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     ttl_math.py
     ttl_utils.py
     dtype_utils.py
+    fabric.py
     layouts.py
     operators.py
     version.py

@@ -5,6 +5,7 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 
+#include "FabricManagerLifetimeAnalysis.h"
 #include "PipeCounter.h"
 #include "PipeGraph.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -44,10 +45,28 @@ struct FunctionFabricRoutePlan {
   SmallVector<FabricRoute> routes;
 };
 
-/// One non-overlapping interval that owns routing-plane connections.
+/// One generated interval that owns routing-plane connections.
 struct FabricRuntimeIntervalPlan {
+  std::size_t managerIntervalIndex = 0;
   Operation *scope;
   SmallVector<Operation *> protocolOperations;
+  std::optional<int64_t> ownershipSemaphoreIndex;
+  int64_t acquireGeneration = 0;
+  int64_t releaseGeneration = 0;
+};
+
+/// Target-independent ownership facts for one fabric manager interval.
+struct FabricManagerIntervalPlan {
+  StringAttr identity;
+  FabricManagerIntervalKind kind;
+  func::FuncOp function;
+  std::optional<StringAttr> claim;
+  SmallVector<Operation *> protocolOperations;
+  SmallVector<std::size_t> routeIndices;
+  SmallVector<PipeTransferNodeId> transferNodes;
+  Operation *acquireBoundary;
+  Operation *releaseBoundary;
+  SmallVector<std::size_t> interferingIntervals;
 };
 
 /// Fabric routes and transfer associations derived before PipeNet lowering.
@@ -59,6 +78,10 @@ struct FabricRoutePlan {
   llvm::MapVector<Operation *, SmallVector<std::size_t>> routeIndices;
   /// Non-overlapping connection ownership intervals.
   SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;
+  /// Generated and external manager intervals used by target binding.
+  SmallVector<FabricManagerIntervalPlan, 0> managerIntervals;
+  /// Number of local semaphores required by generated ownership sequences.
+  int64_t ownershipSemaphoreCount = 0;
 
   ArrayRef<std::size_t> lookupRouteIndices(Operation *operation) const {
     auto routeIt = routeIndices.find(operation);
@@ -271,10 +294,11 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
 /// Build per-kernel routing-plane records from transfers validated by
 /// PipeGraph.
-LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
-                                   const PipeGraph &pipeGraph,
-                                   const PipeForeachLoweringInfo &foreachInfo,
-                                   FabricRoutePlan &plan);
+LogicalResult buildFabricRoutePlan(
+    ModuleOp module, const PipeTransferIndex &transferIndex,
+    const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
+    ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
+    bool enableLocalManagerOwnership, FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.
 void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);

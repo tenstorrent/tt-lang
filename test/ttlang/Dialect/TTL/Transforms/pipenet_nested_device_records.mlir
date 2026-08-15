@@ -13,11 +13,16 @@
 // CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-LABEL: func.func @receivers
 // CHECK: ttkernel.cb_reserve_back
-// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
+// CHECK-NEXT: %[[MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[MANAGER]],
+// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[MANAGER]], %[[CONNECTION_COUNT]],
+// CHECK: ttkernel.routing_plane.close_connections(%[[MANAGER]],
+// CHECK-NEXT: ttkernel.noc_semaphore_set
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back
 // CHECK-NOT: ttkernel.cb_reserve_back
-// CHECK: ttkernel.routing_plane.close_connections
-// CHECK-NEXT: return
+// CHECK: return
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
 #records = #ttl.pipenet_records<net 0 name "nested_graph" pipes [
