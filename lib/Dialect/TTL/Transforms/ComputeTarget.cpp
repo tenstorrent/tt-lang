@@ -106,7 +106,7 @@ bool supportsShortHeightTiles(ComputePrimitive primitive) {
   }
 }
 
-class WormholeBlackholeComputeTargetEnvironment final
+class WormholeBlackholeComputeTargetEnvironment
     : public ComputeTargetEnvironment {
 public:
   LogicalResult validateKernelTileType(ttcore::TileType tileType,
@@ -329,6 +329,30 @@ public:
     }
     return success();
   }
+
+  ComputeScheduleCapabilityLimits
+  getScheduleCapabilityLimits(ComputeScheduleCapability,
+                              ttcore::TileType) const override {
+    return {};
+  }
+};
+
+class WormholeComputeTargetEnvironment final
+    : public WormholeBlackholeComputeTargetEnvironment {};
+
+class BlackholeComputeTargetEnvironment final
+    : public WormholeBlackholeComputeTargetEnvironment {
+public:
+  ComputeScheduleCapabilityLimits
+  getScheduleCapabilityLimits(ComputeScheduleCapability capability,
+                              ttcore::TileType tileType) const override {
+    switch (capability) {
+    case ComputeScheduleCapability::RowNormalization:
+      return {true, tileType.getDataType() == ttcore::DataType::BFloat16
+                        ? std::optional<std::uint32_t>(8)
+                        : std::nullopt};
+    }
+  }
 };
 
 class IntersectionComputeTargetEnvironment final
@@ -427,6 +451,23 @@ public:
     return success();
   }
 
+  ComputeScheduleCapabilityLimits
+  getScheduleCapabilityLimits(ComputeScheduleCapability capability,
+                              ttcore::TileType tileType) const final {
+    std::optional<std::uint32_t> maxTiles;
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      ComputeScheduleCapabilityLimits limits =
+          environment->getScheduleCapabilityLimits(capability, tileType);
+      if (!limits.targetSupported || !limits.maxTiles) {
+        return {limits.targetSupported, std::nullopt};
+      }
+      maxTiles =
+          maxTiles ? std::min(*maxTiles, *limits.maxTiles) : limits.maxTiles;
+    }
+    return {true, maxTiles};
+  }
+
 private:
   SmallVector<std::unique_ptr<ComputeTargetEnvironment>, 2> environments;
 };
@@ -438,14 +479,17 @@ struct ComputeTargetRegistration {
   ComputeTargetFactory create;
 };
 
-std::unique_ptr<ComputeTargetEnvironment>
-createWormholeBlackholeTargetEnvironment() {
-  return std::make_unique<WormholeBlackholeComputeTargetEnvironment>();
+std::unique_ptr<ComputeTargetEnvironment> createWormholeTargetEnvironment() {
+  return std::make_unique<WormholeComputeTargetEnvironment>();
+}
+
+std::unique_ptr<ComputeTargetEnvironment> createBlackholeTargetEnvironment() {
+  return std::make_unique<BlackholeComputeTargetEnvironment>();
 }
 
 constexpr std::array<ComputeTargetRegistration, 2> computeTargetRegistrations =
-    {{{ttcore::Arch::WormholeB0, &createWormholeBlackholeTargetEnvironment},
-      {ttcore::Arch::Blackhole, &createWormholeBlackholeTargetEnvironment}}};
+    {{{ttcore::Arch::WormholeB0, &createWormholeTargetEnvironment},
+      {ttcore::Arch::Blackhole, &createBlackholeTargetEnvironment}}};
 
 FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
 createTargetEnvironment(ttcore::Arch arch, std::string &failureReason) {
@@ -668,6 +712,32 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
     return validateMatmul(matmul.getLhs().getType(), matmul.getRhs().getType(),
                           matmul.getResult().getType(),
                           matmul.getTransposeRhs());
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
+    FailureOr<ttcore::TileType> tileType =
+        getTileType(normalization.getInput().getType());
+    if (failed(tileType)) {
+      failureReason = "row-normalization input must contain a tile type";
+      return failure();
+    }
+    ComputeScheduleCapabilityLimits limits = getScheduleCapabilityLimits(
+        ComputeScheduleCapability::RowNormalization, *tileType);
+    if (!limits.maxTiles) {
+      failureReason = limits.targetSupported
+                          ? "row-normalization schedule does not support this "
+                            "tile type"
+                          : "target does not provide the row-normalization "
+                            "schedule";
+      return failure();
+    }
+    if (normalization.getNumTiles() > *limits.maxTiles) {
+      failureReason =
+          (Twine("row-normalization schedule requires ") +
+           Twine(normalization.getNumTiles()) +
+           " tiles, but the target supports at most " + Twine(*limits.maxTiles))
+              .str();
+      return failure();
+    }
   }
   return success();
 }
