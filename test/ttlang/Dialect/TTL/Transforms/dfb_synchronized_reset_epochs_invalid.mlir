@@ -43,10 +43,11 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
-// A reset may execute at most once for one dispatch and launch node.
+// A reset under a runtime condition does not execute uniformly across its
+// enclosing repeated sequence.
 
 module attributes {ttl.launch_grid = [1, 1]} {
-  func.func @repeated_reset()
+  func.func @nonuniform_repeated_reset()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
                   ttl.noc_index = 0 : i32} {
@@ -54,9 +55,107 @@ module attributes {ttl.launch_grid = [1, 1]} {
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
+    %zero = arith.constant 0 : i64
     scf.for %iteration = %lower to %upper step %step {
-      // expected-error @below {{'ttl.opaque_call' op synchronized DFB reset declaration must execute at most once per dispatch and launch node}}
+      %value = ttl.opaque_call "active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+      %active = arith.cmpi ne, %value, %zero : i64
+      scf.if %active {
+        // expected-error @below {{'ttl.opaque_call' op synchronized DFB reset requires an exact zero-or-one dynamic instance count}}
+        ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A parallel loop does not define the common sequential ordinal required to
+// match reset instances across logical kernels.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @parallel_repeated_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.parallel (%iteration) = (%lower) to (%upper) step (%step) {
+      // expected-error @below {{'ttl.opaque_call' op synchronized DFB reset requires an exact zero-or-one dynamic instance count}}
       ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// Participants must execute the same number of reset instances.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @count_mismatch_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+
+  func.func @count_mismatch_data_movement()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 3 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      // expected-error @below {{'ttl.opaque_call' op synchronized DFB reset participants must execute in the same structured iteration sequence}}
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// Equal total counts do not match when participant loop nests define different
+// ordinal iteration sequences.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @sequence_mismatch_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+
+  func.func @sequence_mismatch_data_movement()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %outer = %lower to %upper step %step {
+      scf.for %inner = %lower to %upper step %step {
+        // expected-error @below {{'ttl.opaque_call' op synchronized DFB reset participants must execute in the same structured iteration sequence}}
+        ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+      }
     }
     return
   }

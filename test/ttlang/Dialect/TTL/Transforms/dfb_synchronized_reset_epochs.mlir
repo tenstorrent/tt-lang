@@ -539,3 +539,43 @@ module attributes {ttl.launch_grid = [1, 1]} {
     return
   }
 }
+
+// -----
+
+// A targeted reset declaration may denote one synchronized reset instance per
+// immutable sequential loop iteration.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_targeted_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// An all-local reset declaration has the same repeated-instance semantics.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_all_local_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    }
+    return
+  }
+}
