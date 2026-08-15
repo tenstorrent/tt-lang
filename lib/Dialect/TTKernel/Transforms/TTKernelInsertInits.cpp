@@ -129,6 +129,17 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
       }};
 
+  // Destination reuse supplies one binary operand from DST, so the init needs
+  // the dataflow buffer operand and the exact elementwise/reuse modes.
+  map[mlir::TypeID::get<ttk::BinaryDestReuseTilesOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto binaryDestReuseOp = cast<ttk::BinaryDestReuseTilesOp>(computeOp);
+        ttk::BinaryDestReuseTilesInitOp::create(
+            b, l, binaryDestReuseOp.getInCb(),
+            binaryDestReuseOp.getEltwiseBinaryTypeAttr(),
+            binaryDestReuseOp.getReuseTypeAttr());
+      }};
+
   map[mlir::TypeID::get<ttk::CopyDestValuesOp>()] = {
       [](OpBuilder &b, Location l, Operation *) {
         ttk::CopyDestValuesInitOp::create(b, l);
@@ -232,6 +243,15 @@ static InitKey computeInitKey(Operation *op) {
 
   if (isa<ttk::CopyTileOp>(op)) {
     return {typeId, {op->getOperand(0)}};
+  }
+
+  if (auto binaryDestReuseOp = dyn_cast<ttk::BinaryDestReuseTilesOp>(op)) {
+    // The destination operand is not a dataflow buffer and cannot distinguish
+    // the LLK init. The binary type and reuse mode select the kernel variant.
+    int64_t discriminator =
+        (static_cast<int64_t>(binaryDestReuseOp.getEltwiseBinaryType()) << 8) |
+        static_cast<int64_t>(binaryDestReuseOp.getReuseType());
+    return {typeId, {binaryDestReuseOp.getInCb()}, discriminator};
   }
 
   if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
@@ -342,6 +362,16 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         if (!in0CB) {
           in0CB = inner->getOperand(0);
           in1CB = inner->getOperand(1);
+        }
+      } else if (auto binaryDestReuseOp =
+                     dyn_cast<ttk::BinaryDestReuseTilesOp>(inner)) {
+        // binary_dest_reuse_tiles uses the FPU binary unpack path for its DFB
+        // operand even though the accumulator operand is already in DST, so
+        // binary_op_init_common must be selected for the sync region.
+        result.hasFPUBinary = true;
+        if (!in0CB) {
+          in0CB = binaryDestReuseOp.getInCb();
+          in1CB = binaryDestReuseOp.getInCb();
         }
       } else if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(inner)) {
         result.hasMatmul = true;
