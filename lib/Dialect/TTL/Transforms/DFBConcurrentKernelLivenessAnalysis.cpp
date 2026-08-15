@@ -598,38 +598,8 @@ getPointerOwner(Operation *operation, LaunchNodeCoord node,
   return DFBPointerOwner{node, processor, direction};
 }
 
-// Projects nested accesses to their containing top-level operation because the
-// graph models only source order that is unconditional at that level.
-static Operation *getTopLevelKernelOperation(Operation *operation) {
-  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
-  if (!function || function.getBody().empty() ||
-      !function.getBody().hasOneBlock()) {
-    return nullptr;
-  }
-  Block &functionBody = function.getBody().front();
-  return operation->getBlock() == &functionBody
-             ? operation
-             : functionBody.findAncestorOpInBlock(*operation);
-}
-
-// Missing projected events remain unknown because nested source order alone
-// cannot establish cross-region execution order.
-static std::optional<EventPair>
-getProjectedEvents(Operation *operation,
-                   const DenseMap<Operation *, EventPair> &operationEvents) {
-  Operation *projected = getTopLevelKernelOperation(operation);
-  if (!projected) {
-    return std::nullopt;
-  }
-  auto eventIt = operationEvents.find(projected);
-  return eventIt == operationEvents.end()
-             ? std::nullopt
-             : std::optional<EventPair>(eventIt->second);
-}
-
-// Proves that one operation completes before another begins from structured
-// source order in their common enclosing block.
-static bool structurallyPrecedes(Operation *before, Operation *after) {
+#ifndef NDEBUG
+static bool structurallyPrecedesReference(Operation *before, Operation *after) {
   if (before == after || before->getParentOfType<func::FuncOp>() !=
                              after->getParentOfType<func::FuncOp>()) {
     return false;
@@ -651,6 +621,129 @@ static bool structurallyPrecedes(Operation *before, Operation *after) {
     commonBlock = parent ? parent->getBlock() : nullptr;
   }
   return false;
+}
+#endif
+
+static Operation *getTopLevelKernelOperation(Operation *operation) {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  if (!function || function.getBody().empty() ||
+      !function.getBody().hasOneBlock()) {
+    return nullptr;
+  }
+  Block &functionBody = function.getBody().front();
+  return operation->getBlock() == &functionBody
+             ? operation
+             : functionBody.findAncestorOpInBlock(*operation);
+}
+
+// Caches structural order while liveness analyzes immutable IR.
+class StructuralOperationOrder {
+public:
+  explicit StructuralOperationOrder(ModuleOp module) {
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      SmallVector<BlockPosition> enclosingPositions;
+      indexRegion(function.getBody(), function, enclosingPositions);
+    }
+  }
+
+  Operation *getFunction(Operation *operation) const {
+    auto locationIt = locations.find(operation);
+    return locationIt == locations.end() ? nullptr
+                                         : locationIt->second.function;
+  }
+
+  Operation *getTopLevelOperation(Operation *operation) const {
+    auto locationIt = locations.find(operation);
+    return locationIt == locations.end() ? nullptr
+                                         : locationIt->second.topLevelOperation;
+  }
+
+  bool precedes(Operation *before, Operation *after) const {
+    std::pair<Operation *, Operation *> operations = {before, after};
+    auto cachedIt = precedence.find(operations);
+    if (cachedIt != precedence.end()) {
+      return cachedIt->second;
+    }
+    bool result = false;
+    auto beforeIt = locations.find(before);
+    auto afterIt = locations.find(after);
+    if (before != after && beforeIt != locations.end() &&
+        afterIt != locations.end() &&
+        beforeIt->second.function == afterIt->second.function) {
+      ArrayRef<BlockPosition> beforePositions = beforeIt->second.positions;
+      ArrayRef<BlockPosition> afterPositions = afterIt->second.positions;
+      for (auto [beforePosition, afterPosition] :
+           llvm::zip(beforePositions, afterPositions)) {
+        if (beforePosition.block != afterPosition.block) {
+          break;
+        }
+        if (beforePosition.ordinal != afterPosition.ordinal) {
+          result = beforePosition.ordinal < afterPosition.ordinal;
+          break;
+        }
+      }
+    }
+#ifndef NDEBUG
+    if (locations.size() <= 128) {
+      assert(result == structurallyPrecedesReference(before, after) &&
+             "indexed structural operation order must match the reference");
+    }
+#endif
+    precedence.try_emplace(operations, result);
+    return result;
+  }
+
+private:
+  struct BlockPosition {
+    Block *block;
+    unsigned ordinal;
+    Operation *operation;
+  };
+
+  struct OperationLocation {
+    Operation *function;
+    Operation *topLevelOperation;
+    SmallVector<BlockPosition> positions;
+  };
+
+  void indexRegion(Region &region, func::FuncOp function,
+                   SmallVectorImpl<BlockPosition> &enclosingPositions) {
+    for (Block &block : region) {
+      for (auto [ordinal, operation] : llvm::enumerate(block)) {
+        enclosingPositions.push_back(
+            {&block, static_cast<unsigned>(ordinal), &operation});
+        Operation *topLevelOperation =
+            function.getBody().hasOneBlock()
+                ? enclosingPositions.front().operation
+                : nullptr;
+        locations.try_emplace(&operation,
+                              OperationLocation{function, topLevelOperation,
+                                                SmallVector<BlockPosition>(
+                                                    enclosingPositions.begin(),
+                                                    enclosingPositions.end())});
+        for (Region &nestedRegion : operation.getRegions()) {
+          indexRegion(nestedRegion, function, enclosingPositions);
+        }
+        enclosingPositions.pop_back();
+      }
+    }
+  }
+
+  DenseMap<Operation *, OperationLocation> locations;
+  mutable DenseMap<std::pair<Operation *, Operation *>, bool> precedence;
+};
+
+static std::optional<EventPair>
+getProjectedEvents(Operation *operation,
+                   const DenseMap<Operation *, EventPair> &operationEvents) {
+  Operation *projected = getTopLevelKernelOperation(operation);
+  if (!projected) {
+    return std::nullopt;
+  }
+  auto eventIt = operationEvents.find(projected);
+  return eventIt == operationEvents.end()
+             ? std::nullopt
+             : std::optional<EventPair>(eventIt->second);
 }
 
 // Effect summaries receive occurrence-specific event spans; concrete and
@@ -1235,7 +1328,9 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
     LaunchNodeCoord node, const AccessExecutionCounts &executionCounts,
-    const AccessRuns &accessRuns, bool includeUnknownDomains) {
+    const AccessRuns &accessRuns,
+    const StructuralOperationOrder &structuralOrder,
+    bool includeUnknownDomains) {
   ProgramOrderTopologyInputs inputs;
   DenseSet<const DFBAccessOccurrence *> resetTargetAccesses;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
@@ -1246,7 +1341,8 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
       }
     }
     for (Operation *operation : reset.participantOperations) {
-      if (Operation *projected = getTopLevelKernelOperation(operation)) {
+      if (Operation *projected =
+              structuralOrder.getTopLevelOperation(operation)) {
         inputs.modeledOperations.insert(projected);
       }
     }
@@ -1257,7 +1353,8 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
                                includeUnknownDomains)) {
         continue;
       }
-      Operation *projected = getTopLevelKernelOperation(access.operation);
+      Operation *projected =
+          structuralOrder.getTopLevelOperation(access.operation);
       if (!projected) {
         continue;
       }
@@ -1473,7 +1570,7 @@ struct ProgramOrderGraphState {
 // kernels remain concurrent unless protocol edges order them.
 static void buildProgramOrderTopology(
     ModuleOp module, const ProgramOrderTopologyInputs &inputs,
-    HappensBeforeGraph &graph,
+    const StructuralOperationOrder &structuralOrder, HappensBeforeGraph &graph,
     DenseMap<Operation *, EventPair> &operationEvents,
     DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     ResetBoundaryEvents &resetBoundaryEvents) {
@@ -1489,7 +1586,8 @@ static void buildProgramOrderTopology(
     if (input.resetTarget) {
       resetTargetAccesses.insert(access);
     }
-    if (Operation *projected = getTopLevelKernelOperation(access->operation)) {
+    if (Operation *projected =
+            structuralOrder.getTopLevelOperation(access->operation)) {
       projectedAccesses[projected].push_back(access);
       if (access->protocolEffect && projected == access->operation &&
           input.run.executionCount == 1) {
@@ -1531,6 +1629,7 @@ static void buildProgramOrderTopology(
     }
   }
 
+  // Enclosing events provide every valid relation between projections.
   for (auto &[projected, accesses] : projectedAccesses) {
     EventPair projectedEvents = operationEvents.lookup(projected);
     for (const DFBAccessOccurrence *access : accesses) {
@@ -1573,9 +1672,9 @@ static void buildProgramOrderTopology(
     }
   }
 
-  SmallVector<const DFBAccessOccurrence *> nestedSingleAccesses;
   for (auto &[projected, accesses] : projectedAccesses) {
     EventPair projectedEvents = operationEvents.lookup(projected);
+    SmallVector<const DFBAccessOccurrence *> nestedSingleAccesses;
     for (const DFBAccessOccurrence *access : accesses) {
       auto runIt = accessRuns.find(access);
       if (!resetTargetAccesses.contains(access) ||
@@ -1589,20 +1688,20 @@ static void buildProgramOrderTopology(
       graph.addEdge(events.completion, projectedEvents.completion);
       nestedSingleAccesses.push_back(access);
     }
-  }
-  for (const DFBAccessOccurrence *before : nestedSingleAccesses) {
-    for (const DFBAccessOccurrence *after : nestedSingleAccesses) {
-      if (before == after) {
-        continue;
-      }
-      bool ordered =
-          before->operation == after->operation
-              ? before->protocolEffect && after->protocolEffect &&
-                    before->sequenceIndex < after->sequenceIndex
-              : structurallyPrecedes(before->operation, after->operation);
-      if (ordered) {
-        graph.addEdge(accessEvents.at(before).last.completion,
-                      accessEvents.at(after).first.entry);
+    for (const DFBAccessOccurrence *before : nestedSingleAccesses) {
+      for (const DFBAccessOccurrence *after : nestedSingleAccesses) {
+        if (before == after) {
+          continue;
+        }
+        bool ordered =
+            before->operation == after->operation
+                ? before->protocolEffect && after->protocolEffect &&
+                      before->sequenceIndex < after->sequenceIndex
+                : structuralOrder.precedes(before->operation, after->operation);
+        if (ordered) {
+          graph.addEdge(accessEvents.at(before).last.completion,
+                        accessEvents.at(after).first.entry);
+        }
       }
     }
   }
@@ -1635,12 +1734,13 @@ static void buildProgramOrderTopology(
           before.reset.getParticipants() != after.reset.getParticipants()) {
         continue;
       }
-      bool everyParticipantOrdered = llvm::all_of(
-          llvm::zip_equal(before.participantOperations,
-                          after.participantOperations),
-          [](auto pair) {
-            return structurallyPrecedes(std::get<0>(pair), std::get<1>(pair));
-          });
+      bool everyParticipantOrdered =
+          llvm::all_of(llvm::zip_equal(before.participantOperations,
+                                       after.participantOperations),
+                       [&](auto pair) {
+                         return structuralOrder.precedes(std::get<0>(pair),
+                                                         std::get<1>(pair));
+                       });
       if (everyParticipantOrdered) {
         auto beforeEvents = resetBoundaryEvents.find(before.reset);
         auto afterEvents = resetBoundaryEvents.find(after.reset);
@@ -1661,7 +1761,9 @@ static void addSynchronizedResetAccessEdges(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const ResetBoundaryEvents &resetBoundaryEvents,
-    const AccessExecutionCounts &executionCounts, bool includeUnknownDomains) {
+    const AccessExecutionCounts &executionCounts,
+    const StructuralOperationOrder &structuralOrder,
+    bool includeUnknownDomains) {
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
     auto boundaryIt = resetBoundaryEvents.find(reset.reset);
     if (boundaryIt == resetBoundaryEvents.end()) {
@@ -1680,11 +1782,11 @@ static void addSynchronizedResetAccessEdges(
         if (!events) {
           continue;
         }
-        func::FuncOp accessFunction =
-            access.operation->getParentOfType<func::FuncOp>();
+        Operation *accessFunction =
+            structuralOrder.getFunction(access.operation);
         Operation *localReset = nullptr;
         for (Operation *participant : reset.participantOperations) {
-          if (participant->getParentOfType<func::FuncOp>() == accessFunction) {
+          if (structuralOrder.getFunction(participant) == accessFunction) {
             localReset = participant;
             break;
           }
@@ -1692,9 +1794,9 @@ static void addSynchronizedResetAccessEdges(
         if (!localReset) {
           continue;
         }
-        if (structurallyPrecedes(access.operation, localReset)) {
+        if (structuralOrder.precedes(access.operation, localReset)) {
           graph.addEdge(events->last.completion, boundaryEvents.entry);
-        } else if (structurallyPrecedes(localReset, access.operation)) {
+        } else if (structuralOrder.precedes(localReset, access.operation)) {
           graph.addEdge(boundaryEvents.completion, events->first.entry);
         }
       }
@@ -1702,12 +1804,13 @@ static void addSynchronizedResetAccessEdges(
   }
 }
 
-static ProgramOrderGraphState
-buildProgramOrderTopologyState(ModuleOp module,
-                               const ProgramOrderTopologyInputs &inputs) {
+static ProgramOrderGraphState buildProgramOrderTopologyState(
+    ModuleOp module, const ProgramOrderTopologyInputs &inputs,
+    const StructuralOperationOrder &structuralOrder) {
   ProgramOrderGraphState state;
-  buildProgramOrderTopology(module, inputs, state.graph, state.operationEvents,
-                            state.accessEvents, state.resetBoundaryEvents);
+  buildProgramOrderTopology(module, inputs, structuralOrder, state.graph,
+                            state.operationEvents, state.accessEvents,
+                            state.resetBoundaryEvents);
   return state;
 }
 
@@ -3303,6 +3406,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
   }
 
+  StructuralOperationOrder structuralOrder(module);
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
   orderedBeforeByNode.reserve(launchNodes.size());
@@ -3331,25 +3435,29 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     ProgramOrderTopologyInputs graphTopologyInputs =
         collectProgramOrderTopologyInputs(logicalDFBs, validatedResets, node,
                                           executionCounts, accessRuns,
+                                          structuralOrder,
                                           /*includeUnknownDomains=*/false);
     ProgramOrderTopologyInputs possibleGraphTopologyInputs =
         collectProgramOrderTopologyInputs(logicalDFBs, validatedResets, node,
                                           executionCounts, possibleAccessRuns,
+                                          structuralOrder,
                                           /*includeUnknownDomains=*/true);
-    ProgramOrderGraphState graphState =
-        buildProgramOrderTopologyState(module, graphTopologyInputs);
+    ProgramOrderGraphState graphState = buildProgramOrderTopologyState(
+        module, graphTopologyInputs, structuralOrder);
     bool graphTopologiesMatch =
         graphTopologyInputs == possibleGraphTopologyInputs;
     ProgramOrderGraphState possibleGraphState =
-        graphTopologiesMatch ? graphState
-                             : buildProgramOrderTopologyState(
-                                   module, possibleGraphTopologyInputs);
+        graphTopologiesMatch
+            ? graphState
+            : buildProgramOrderTopologyState(
+                  module, possibleGraphTopologyInputs, structuralOrder);
 #ifndef NDEBUG
     // Small graphs retain an independent reconstruction oracle without
     // repeating model-scale graph construction in assertion-enabled builds.
     if (graphTopologiesMatch && graphState.graph.getEventCount() <= 128) {
       ProgramOrderGraphState reconstructedPossibleGraphState =
-          buildProgramOrderTopologyState(module, possibleGraphTopologyInputs);
+          buildProgramOrderTopologyState(module, possibleGraphTopologyInputs,
+                                         structuralOrder);
       assert(reconstructedPossibleGraphState == possibleGraphState &&
              "equal program-order inputs must produce equal graph topology");
     }
@@ -3367,10 +3475,10 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         &possibleAccessEvents = possibleGraphState.accessEvents;
     ResetBoundaryEvents &possibleResetBoundaryEvents =
         possibleGraphState.resetBoundaryEvents;
-    addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
-                                    operationEvents, accessEvents,
-                                    resetBoundaryEvents, executionCounts,
-                                    /*includeUnknownDomains=*/false);
+    addSynchronizedResetAccessEdges(
+        logicalDFBs, validatedResets, node, graph, operationEvents,
+        accessEvents, resetBoundaryEvents, executionCounts, structuralOrder,
+        /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(
         logicalDFBs, graph, operationEvents, accessEvents, executionCounts,
         accessRuns, node, domainState, /*includeUnknownDomains=*/false);
@@ -3417,7 +3525,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addSynchronizedResetAccessEdges(
         logicalDFBs, validatedResets, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
-        possibleResetBoundaryEvents, executionCounts,
+        possibleResetBoundaryEvents, executionCounts, structuralOrder,
         /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
