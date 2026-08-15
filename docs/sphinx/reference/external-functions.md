@@ -25,7 +25,9 @@ no value, and the compiler does not validate the C++ signature.
 A unified `@ttl.operation` assigns an external call to one or more logical
 kernels with `kernel=`. `KernelKind.COMPUTE` and
 `KernelKind.DATA_MOVEMENT` select the compiler-owned canonical kernel of that
-kind.
+kind. `PIPE_SOURCE_KERNEL` selects the compiler-owned data-movement kernel
+that executes PipeNet source callbacks. External transport work and its typed
+runtime resources use this selector when they must share that kernel.
 
 ```python
 @ttl.operation(grid=(1, 1))
@@ -36,6 +38,14 @@ def compute_external(inp):
         func_args=[ttl.raw_addr(inp)],
         kernel=ttl.KernelKind.COMPUTE,
     )
+```
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "transport_entry",
+    kernel=ttl.PIPE_SOURCE_KERNEL,
+)
 ```
 
 Combine canonical kernel kinds with `|` when one call executes in both:
