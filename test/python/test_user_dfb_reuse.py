@@ -832,6 +832,67 @@ def _make_synchronized_reset_kernel(
     return synchronized_reset_kernel
 
 
+def _make_repeated_synchronized_reset_kernel(data_format, reset_all):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def repeated_synchronized_reset_kernel(input_tensor, output_tensor):
+        reset_allocation = ttl.make_dfb_allocation_group()
+        stale_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            allocation_group=reset_allocation,
+        )
+        current_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            allocation_group=reset_allocation,
+        )
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            for _reset_iteration in range(4):
+                if reset_all:
+                    ttl.reset_all_dfbs(reset)
+                else:
+                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+            with current_dfb.wait() as current_source:
+                with output_dfb.reserve() as output_destination:
+                    output_destination.store(current_source)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            for _reset_iteration in range(4):
+                with stale_dfb.reserve() as stale_destination:
+                    ttl.copy(input_tensor[0, 0], stale_destination).wait()
+                if reset_all:
+                    ttl.reset_all_dfbs(reset)
+                else:
+                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+            with current_dfb.reserve() as current_destination:
+                ttl.copy(input_tensor[0, 1], current_destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            for _reset_iteration in range(4):
+                if reset_all:
+                    ttl.reset_all_dfbs(reset)
+                else:
+                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+            with output_dfb.wait() as output_source:
+                ttl.copy(output_source, output_tensor[0, 0]).wait()
+
+    return repeated_synchronized_reset_kernel
+
+
 def _make_compute_interface_reset_kernel(data_format, tile):
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -1819,6 +1880,58 @@ def test_synchronized_reset_terminates_producer_epoch(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("reset_all", [False, True], ids=["selected", "all"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_repeated_synchronized_reset_run(
+    device,
+    dtype,
+    reset_all,
+    memory_config,
+    to_device,
+    monkeypatch,
+    tmp_path,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reset support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_repeated_synchronized_reset_kernel(data_format, reset_all)
+    final_mlir_path = tmp_path / "repeated_synchronized_reset.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    for invocation_index in range(2):
+        element_indices = torch.arange(
+            2 * TILE * TILE, dtype=torch.float32
+        ).reshape(TILE, 2 * TILE)
+        input_host = (
+            (element_indices.remainder(257) - 128) / 64 + invocation_index
+        ).to(dtype)
+        input_tensor = to_device(input_host, device)
+        output_tensor = to_device(torch.zeros(TILE, TILE, dtype=dtype), device)
+        operation(
+            input_tensor,
+            output_tensor,
+            options=(
+                "--ttl-reuse-user-dfbs "
+                "--ttl-unsafe-assume-dfb-allocation-groups"
+            ),
+        )
+
+        actual = ttnn.to_torch(output_tensor).float()
+        expected = input_host[:, TILE:].float()
+        if dtype == torch.bfloat16:
+            assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+        else:
+            assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
 
 
 def test_synchronized_reset_executes_above_physical_index_31(
