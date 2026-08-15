@@ -183,6 +183,31 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// An unresolved coordinate-dependent predicate reports the expression that
+// prevents proving a PipeNet scope's source-role containment.
+
+module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
+  func.func @unanalyzable_scope(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(2, 1) dst(1, 1) to(1, 1) net 0
+        : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>
+    %core_x = ttl.core_x : index
+    %sum = arith.addi %core_x, %runtime : index
+    %c2 = arith.constant 2 : index
+    // expected-note @below {{this expression is not statically analyzable}}
+    %condition = arith.cmpi eq, %sum, %c2 : index
+    scf.if %condition {
+      // expected-error @below {{could not statically analyze the PipeNet guard around this op}}
+      ttl.pipenet_scope attributes {ttl.pipe_net_ids = [0 : i64], ttl.pipe_net_roles = [0 : i64]} {
+        ttl.if_src %pipe : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0> {
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Soundness: a uniform-unknown predicate (a runtime flag, not coord-dependent)
 // must not let the else-branch's domain collapse to empty. Without conservative
 // branch handling the verifier would silently accept the pipe op below.
