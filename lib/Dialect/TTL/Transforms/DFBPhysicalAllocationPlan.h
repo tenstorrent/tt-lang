@@ -31,6 +31,7 @@ struct DFBPhysicalIndexAssignment {
   int32_t physicalIndex = 0;
   Type type;
   TensorBackingAttr tensorBacking;
+  DFBAllocationGroupAttr allocationGroup;
   LaunchNodeDomain launchDomain;
   SmallVector<BindCBOp> declarations;
   bool bounded = false;
@@ -58,6 +59,14 @@ struct DFBKernelBaseIndexAssignment {
   int32_t baseIndex = 0;
 };
 
+/// Static kernel-configuration evidence that forbids one logical DFB alias.
+struct DFBStaticConfigurationConflict {
+  int64_t lhsLogicalId = 0;
+  int64_t rhsLogicalId = 0;
+  Operation *lhsOperation = nullptr;
+  Operation *rhsOperation = nullptr;
+};
+
 /// Semantic reason that two logical DFBs cannot share one physical index.
 enum class DFBConflictReason {
   DescriptorMismatch,
@@ -67,6 +76,41 @@ enum class DFBConflictReason {
   TransactionMismatch,
   PointerOwnerMismatch,
   ConcurrentLifetime,
+  StaticConfigurationMismatch,
+};
+
+/// Returns the stable diagnostic spelling for one conflict reason.
+StringRef getDFBConflictReasonName(DFBConflictReason reason);
+
+/// Runtime handoff property accepted without compiler proof for one explicit
+/// allocation group.
+enum class DFBAllocationGroupAssumptionReason {
+  UnknownLaunchNodeDomain,
+  UnprovenQuiescence,
+  PointerOwnerMismatch,
+  ConcurrentLifetime,
+  UnprovenCursorOrder,
+  EpochReset,
+};
+
+/// Returns the stable diagnostic spelling for an assumed group property.
+StringRef getDFBAllocationGroupAssumptionReasonName(
+    DFBAllocationGroupAssumptionReason reason);
+
+/// One allocation-group property accepted without compiler proof.
+struct DFBAllocationGroupAssumption {
+  DFBAllocationGroupAssumptionReason reason =
+      DFBAllocationGroupAssumptionReason::ConcurrentLifetime;
+  int64_t lhsLogicalId = 0;
+  std::optional<int64_t> rhsLogicalId;
+};
+
+/// Audit record for one allocation group accepted by unsafe policy.
+struct DFBAssumedAllocationGroup {
+  DFBAllocationGroupAttr allocationGroup;
+  SmallVector<int64_t> logicalIds;
+  SmallVector<DFBAllocationGroupAssumption> assumptions;
+  Operation *operation = nullptr;
 };
 
 /// Source evidence that explains why one logical DFB pair cannot share.
@@ -126,12 +170,19 @@ public:
     return conflictModel;
   }
 
+  /// Returns allocation groups whose runtime handoff was accepted without
+  /// compiler proof.
+  ArrayRef<DFBAssumedAllocationGroup> getAssumedAllocationGroups() const {
+    return assumedAllocationGroups;
+  }
+
 private:
   friend class DFBPhysicalAllocationPlanner;
 
   SmallVector<DFBPhysicalIndexAssignment> assignments;
   SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
   SmallVector<DFBKernelBaseIndexAssignment> kernelBaseIndices;
+  SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
   DFBPhysicalConflictModel conflictModel;
   int32_t physicalDFBCount = 0;
 };
@@ -146,9 +197,12 @@ public:
   /// sharing, dense indices, runtime descriptors, and hardware capacity.
   /// Unknown lifetime facts add conflicts and can cause rejection, but cannot
   /// permit unsafe sharing.
-  DFBPhysicalAllocationPlanner(Operation *operation, bool reuseUserDFBs,
-                               std::uint64_t exactColoringSearchStateLimit,
-                               AnalysisManager analysisManager);
+  DFBPhysicalAllocationPlanner(
+      Operation *operation, bool reuseUserDFBs,
+      bool unsafeAssumeAllocationGroups,
+      std::uint64_t exactColoringSearchStateLimit,
+      ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
+      AnalysisManager analysisManager);
 
   /// Returns true when the complete allocation plan is valid.
   bool succeeded() const { return errorMessage.empty(); }

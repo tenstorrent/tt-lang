@@ -20,6 +20,7 @@ import ttl
 import ttl.atom as atom_module
 import ttl.kernel as kernel_module
 
+from ttl._src import atom_rules
 from ttl._src.atom_split import split_function_body
 from ttl.atom import (
     _assign_backend_kernel_slots,
@@ -29,6 +30,10 @@ from ttl.atom import (
     _lift_setup,
 )
 from ttl.compiler_options import CompilerOptions
+from ttl.dfb_allocation_group import (
+    _bind_dfb_allocation_groups,
+    _dfb_allocation_group_binding_scope,
+)
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 
@@ -639,6 +644,1399 @@ def test_split_analysis_does_not_mutate_input_ast():
     )
 
 
+def test_composed_scalar_result_is_replicated_with_selected_logical_kernels():
+    """Composition retains a typed result in each selected logical kernel."""
+    result_type = ttl.ScalarType.I64
+    writer = Kernel(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation()
+    def selected_predicate():
+        active = ttl.call_extern_func(
+            "role.hpp",
+            "active",
+            result_type=result_type,
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )
+        if active:
+            ttl.call_extern_func("work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE)
+            ttl.call_extern_func(
+                "work.hpp",
+                "data_movement",
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+    @ttl.operation()
+    def composed_predicate():
+        selected_predicate()
+        ttl.call_extern_func("work.hpp", "writer", kernel=writer)
+
+    spec = composed_predicate._spec
+    result_type_names = [
+        keyword.value.id
+        for node in ast.walk(spec.fn_ast)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "result_type" and isinstance(keyword.value, ast.Name)
+    ]
+    assert result_type_names
+    assert all(
+        spec.frozen_scope[name] is ttl.ScalarType.I64 for name in result_type_names
+    )
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    for source in (compute, data_movement):
+        predicate_assignment = next(
+            line for line in source.splitlines() if "'role.hpp', 'active'" in line
+        )
+        predicate_name = predicate_assignment.split(" = ", maxsplit=1)[0]
+        assert " = ttl.call_extern_func" in predicate_assignment
+        assert "result_type=" in source
+        assert f"if {predicate_name}:" in source
+        assert "kernel=" not in source
+    assert "'compute'" in compute
+    assert "'data_movement'" not in compute
+    assert "'data_movement'" in data_movement
+    assert "'compute'" not in data_movement
+
+    writer_source = _kernel_src(result, writer)
+    assert "'role.hpp', 'active'" not in writer_source
+    assert "'writer'" in writer_source
+
+
+def test_scalar_type_capture_changes_operation_identity():
+    """Factory-selected scalar widths distinguish compiled operations."""
+
+    def make_operation(result_type):
+        @ttl.operation()
+        def scalar_result():
+            ttl.call_extern_func(
+                "result.hpp",
+                "result",
+                result_type=result_type,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+        return scalar_result
+
+    i32_operation = make_operation(ttl.ScalarType.I32)
+    i64_operation = make_operation(ttl.ScalarType.I64)
+
+    assert (
+        i32_operation._spec.operation_identity != i64_operation._spec.operation_identity
+    )
+
+
+def test_composition_preserves_one_dispatch_condition_identity():
+    """Inlining preserves one captured condition across logical kernels."""
+    condition = ttl.DispatchCondition(ttl.ScalarType.I64)
+
+    @ttl.operation()
+    def conditional_helper():
+        active = ttl.call_extern_func(
+            "condition.hpp",
+            "active",
+            condition_result=condition,
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )
+        if active:
+            ttl.call_extern_func("work.hpp", "work", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def composed_condition():
+        conditional_helper()
+        ttl.call_extern_func("work.hpp", "read", kernel=ttl.KernelKind.DATA_MOVEMENT)
+
+    spec = composed_condition._spec
+    assert tuple(spec.dispatch_conditions.values()) == (condition,)
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT),
+    ):
+        assert "condition_result=" in source
+        condition_name = next(iter(spec.dispatch_conditions))
+        assert f"condition_result={condition_name}" in source
+
+
+def test_composition_does_not_invent_missing_dispatch_condition_identity():
+    """A partially annotated composition retains its untyped evaluation."""
+    condition = ttl.DispatchCondition(ttl.ScalarType.I64)
+
+    @ttl.operation()
+    def typed_evaluation():
+        ttl.call_extern_func(
+            "condition.hpp",
+            "typed",
+            condition_result=condition,
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+
+    @ttl.operation()
+    def untyped_evaluation():
+        ttl.call_extern_func(
+            "condition.hpp",
+            "untyped",
+            result_type=ttl.ScalarType.I64,
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+
+    @ttl.operation()
+    def partial_condition():
+        typed_evaluation()
+        untyped_evaluation()
+
+    spec = partial_condition._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    source = _kind_src(result, KernelKind.COMPUTE)
+    assert source.count("condition_result=") == 1
+    assert source.count("result_type=") == 1
+
+
+def test_dispatch_condition_alias_topology_changes_operation_identity():
+    """The cache identity distinguishes shared and independent declarations."""
+
+    def make_operation(shared_identity):
+        first_condition = ttl.DispatchCondition(ttl.ScalarType.I32)
+        second_condition = (
+            first_condition
+            if shared_identity
+            else ttl.DispatchCondition(ttl.ScalarType.I32)
+        )
+
+        @ttl.operation()
+        def conditional_operation():
+            ttl.call_extern_func(
+                "condition.hpp",
+                "first",
+                condition_result=first_condition,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            ttl.call_extern_func(
+                "condition.hpp",
+                "second",
+                condition_result=second_condition,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+        return conditional_operation
+
+    shared = make_operation(shared_identity=True)
+    independent = make_operation(shared_identity=False)
+
+    assert shared._spec.operation_identity != independent._spec.operation_identity
+
+
+def test_composition_hoists_resources_from_control_flow():
+    """Composed static resources remain operation-level declarations."""
+
+    @ttl.operation()
+    def resource_helper():
+        first_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+        second_dfb = ttl.make_dfb("bf16", shape=(1, 2))
+
+    @ttl.operation()
+    def composed_operation(enabled):
+        for iteration in range(2):
+            if enabled:
+                resource_helper()
+
+    spec = composed_operation._spec
+    resource_statements = [
+        statement
+        for statement in spec.fn_ast.body
+        if atom_rules.setup_assign_target(statement) is not None
+    ]
+    assert len(resource_statements) == 2
+
+    loop = next(
+        statement for statement in spec.fn_ast.body if isinstance(statement, ast.For)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and atom_rules.call_name(node) in atom_rules.SETUP_FACTORY_NAMES
+        for node in ast.walk(loop)
+    )
+    assert any(isinstance(node, ast.Pass) for node in ast.walk(loop))
+    ast.parse(ast.unparse(spec.fn_ast))
+
+    _, dfbs, _, _ = _lift_setup(
+        copy.deepcopy(spec.fn_ast),
+        dict(spec.frozen_scope),
+        spec.operation_identity,
+    )
+    assert len(dfbs) == 2
+
+
+def test_composition_rejects_hoisted_resource_with_local_dependency():
+    """A resource cannot move outside the scope of a required local value."""
+
+    @ttl.operation()
+    def resource_helper(blocks):
+        helper_dfb = ttl.make_dfb("bf16", shape=(1, blocks))
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "composed resource declaration cannot be hoisted because it depends "
+            "on operation-local values .*iteration"
+        ),
+    ):
+
+        @ttl.operation()
+        def composed_operation():
+            for iteration in range(2):
+                resource_helper(iteration)
+
+
+def test_composition_rejects_hoisted_resource_with_shadowed_builtin():
+    @ttl.operation()
+    def resource_helper(blocks):
+        helper_dfb = ttl.make_dfb("bf16", shape=(1, blocks))
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "composed resource declaration cannot be hoisted because it depends "
+            "on operation-local values .*max"
+        ),
+    ):
+
+        @ttl.operation()
+        def composed_operation():
+            max = 2
+            for iteration in range(2):
+                resource_helper(max)
+
+
+def test_composition_does_not_hoist_resources_from_nested_scope():
+    @ttl.operation()
+    def resource_helper():
+        helper_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+
+    with pytest.raises(
+        ValueError,
+        match="resource declaration 'make_dfb' must be a simple top-level assignment",
+    ):
+
+        @ttl.operation()
+        def composed_operation():
+            def callback():
+                resource_helper()
+
+
+def test_resource_name_collection_excludes_nested_scopes():
+    function = _fn(
+        """
+        def operation():
+            operation_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+
+            def callback():
+                callback_dfb = ttl.make_dfb("bf16", shape=(1, 1))
+        """
+    )
+
+    assert atom_module._operation_resource_names(function) == {"operation_dfb"}
+
+
+def test_composition_preserves_one_dfb_allocation_group_identity():
+    """Inlining preserves one captured allocation identity across declarations."""
+
+    def make_operation():
+        shared_allocation = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            helper_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                block_count=2,
+                allocation_group=shared_allocation,
+            )
+
+        @ttl.operation()
+        def composed_allocation():
+            allocation_helper()
+            caller_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                block_count=4,
+                allocation_group=shared_allocation,
+            )
+
+        return composed_allocation, shared_allocation
+
+    composed_allocation, shared_allocation = make_operation()
+    spec = composed_allocation._spec
+
+    captured_groups = tuple(spec.allocation_groups.values())
+    assert len(captured_groups) == 2
+    assert all(group is shared_allocation for group in captured_groups)
+    with _dfb_allocation_group_binding_scope():
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast),
+            dict(spec.frozen_scope),
+            spec.operation_identity,
+        )
+    assert len(dfbs) == 2
+    helper_dfb, caller_dfb = dfbs.values()
+    assert helper_dfb.allocation_group is caller_dfb.allocation_group
+
+
+def test_composition_hoists_allocation_groups_from_control_flow():
+    """Generated group tokens and members remain operation-level resources."""
+
+    def make_operation():
+        shared_allocation = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            local_allocation = ttl.make_dfb_allocation_group()
+            helper_shared = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=shared_allocation
+            )
+            helper_local_first = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=local_allocation
+            )
+            helper_local_second = ttl.make_dfb(
+                "bf16", shape=(1, 2), allocation_group=local_allocation
+            )
+
+        @ttl.operation()
+        def composed_allocation(enabled):
+            caller_shared = ttl.make_dfb(
+                "bf16", shape=(1, 2), allocation_group=shared_allocation
+            )
+            for iteration in range(2):
+                if enabled:
+                    allocation_helper()
+
+        return composed_allocation
+
+    spec = make_operation()._spec
+    resource_statements = [
+        statement
+        for statement in spec.fn_ast.body
+        if atom_rules.setup_assign_target(statement) is not None
+    ]
+    assert len(resource_statements) == 5
+
+    eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(_bind_dfb_allocation_groups(spec.allocation_groups))
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast), eval_scope, spec.operation_identity
+        )
+
+    caller_shared = dfbs["caller_shared"]
+    helper_shared = next(
+        dfb for name, dfb in dfbs.items() if name.startswith("helper_shared__")
+    )
+    helper_local = [
+        dfb for name, dfb in dfbs.items() if name.startswith("helper_local_")
+    ]
+    assert helper_shared.allocation_group is caller_shared.allocation_group
+    assert len(helper_local) == 2
+    assert helper_local[0].allocation_group is helper_local[1].allocation_group
+    assert helper_local[0].allocation_group is not caller_shared.allocation_group
+
+
+def test_dfb_allocation_group_alias_topology_changes_operation_identity():
+    """The cache identity distinguishes shared and independent groups."""
+
+    def make_operation(shared_identity):
+        first_group = ttl.make_dfb_allocation_group()
+        second_group = (
+            first_group if shared_identity else ttl.make_dfb_allocation_group()
+        )
+
+        @ttl.operation()
+        def grouped_operation():
+            first_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                allocation_group=first_group,
+            )
+            second_dfb = ttl.make_dfb(
+                "bf16",
+                shape=(1, 1),
+                allocation_group=second_group,
+            )
+
+        return grouped_operation
+
+    shared = make_operation(shared_identity=True)
+    independent = make_operation(shared_identity=False)
+
+    assert shared._spec.operation_identity != independent._spec.operation_identity
+
+
+def test_captured_and_local_dfb_allocation_groups_receive_distinct_ordinals():
+    """One binding context covers inlined captures and caller declarations."""
+
+    def make_operation():
+        captured_group = ttl.make_dfb_allocation_group()
+
+        @ttl.operation()
+        def allocation_helper():
+            helper_dfb = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=captured_group
+            )
+
+        @ttl.operation()
+        def composed_allocation():
+            allocation_helper()
+            local_group = ttl.make_dfb_allocation_group()
+            caller_dfb = ttl.make_dfb(
+                "bf16", shape=(1, 1), allocation_group=local_group
+            )
+
+        return composed_allocation
+
+    spec = make_operation()._spec
+    eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(_bind_dfb_allocation_groups(spec.allocation_groups))
+    with _dfb_allocation_group_binding_scope(spec.allocation_groups.values()):
+        _, dfbs, _, _ = _lift_setup(
+            copy.deepcopy(spec.fn_ast), eval_scope, spec.operation_identity
+        )
+
+    helper_dfb, caller_dfb = dfbs.values()
+    assert helper_dfb.allocation_group.ordinal == 0
+    assert caller_dfb.allocation_group.ordinal == 1
+
+
+def test_composition_preserves_one_synchronized_dfb_reset_identity():
+    """Inlining and splitting preserve one reset across all participants."""
+    second_data_movement = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(
+            second_data_movement,
+            ttl.KernelKind.DATA_MOVEMENT,
+            ttl.KernelKind.COMPUTE,
+        )
+    )
+
+    @ttl.operation()
+    def reset_helper(target: ttl.DFB):
+        ttl.call_extern_func(
+            "reset.hpp",
+            "reset",
+            func_args=[target],
+            dfb_reset=reset,
+            dfb_reset_targets=[target],
+            kernel=(
+                ttl.KernelKind.COMPUTE,
+                ttl.KernelKind.DATA_MOVEMENT,
+                second_data_movement,
+            ),
+        )
+
+    @ttl.operation()
+    def composed_reset(target: ttl.DFB):
+        reset_helper(target)
+
+    spec = composed_reset._spec
+    assert len(spec.dfb_resets) == 1
+    composed_reset_identity = next(iter(spec.dfb_resets.values()))
+    assert composed_reset_identity is not reset
+    assert composed_reset_identity.participants == reset.participants
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"target"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    reset_name = next(iter(spec.dfb_resets))
+    participant_sources = [
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT, 0),
+        _kind_src(result, KernelKind.DATA_MOVEMENT, 1),
+    ]
+    for source in participant_sources:
+        assert source.count("dfb_reset=") == 1
+        assert f"dfb_reset={reset_name}" in source
+        assert "dfb_reset_targets=[target]" in source
+
+
+def test_composition_preserves_inspect_dfb_access():
+    """Inlining and logical-kernel replication retain the typed access."""
+
+    @ttl.operation()
+    def descriptor_helper(descriptor: ttl.DFB):
+        ttl.call_extern_func(
+            "descriptor.hpp",
+            "inspect",
+            template_args=[ttl.dfb_descriptor(descriptor)],
+            dfb_accesses=[ttl.DFBAccess.inspect(descriptor)],
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )
+
+    @ttl.operation()
+    def composed_descriptor_access(descriptor: ttl.DFB):
+        descriptor_helper(descriptor)
+
+    spec = composed_descriptor_access._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"descriptor"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT),
+    ):
+        assert source.count("ttl.DFBAccess.inspect(descriptor)") == 1
+        assert source.count("dfb_accesses=") == 1
+
+
+def test_composition_instantiates_reset_identity_per_call_site():
+    """Repeated helper calls denote distinct dynamic reset instances."""
+    reset = ttl.DFBReset(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+        )
+    )
+
+    @ttl.operation()
+    def reset_helper(target: ttl.DFB):
+        ttl.call_extern_func(
+            "reset.hpp",
+            "reset",
+            func_args=[target],
+            dfb_reset=reset,
+            dfb_reset_targets=[target],
+            kernel=(
+                ttl.KernelKind.COMPUTE,
+                ttl.KernelKind.DATA_MOVEMENT,
+            ),
+        )
+
+    @ttl.operation()
+    def repeated_reset(first: ttl.DFB, second: ttl.DFB):
+        reset_helper(first)
+        reset_helper(second)
+
+    spec = repeated_reset._spec
+    reset_identities = tuple(spec.dfb_resets.values())
+    assert len(reset_identities) == 2
+    assert reset_identities[0] is not reset_identities[1]
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"first", "second"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    for reset_name in spec.dfb_resets:
+        assert f"dfb_reset={reset_name}" in compute_source
+
+
+def test_synchronized_dfb_reset_alias_topology_changes_operation_identity():
+    """The cache identity distinguishes shared and independent reset instances."""
+
+    def make_operation(shared_identity):
+        participants = (
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+        )
+        first_reset = ttl.DFBReset(participants=participants)
+        second_reset = (
+            first_reset if shared_identity else ttl.DFBReset(participants=participants)
+        )
+
+        @ttl.operation()
+        def reset_operation(first: ttl.DFB, second: ttl.DFB):
+            ttl.call_extern_func(
+                "reset.hpp",
+                "first",
+                func_args=[first],
+                dfb_reset=first_reset,
+                dfb_reset_targets=[first],
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+            ttl.call_extern_func(
+                "reset.hpp",
+                "second",
+                func_args=[second],
+                dfb_reset=second_reset,
+                dfb_reset_targets=[second],
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+
+        return reset_operation
+
+    shared = make_operation(shared_identity=True)
+    independent = make_operation(shared_identity=False)
+
+    assert shared._spec.operation_identity != independent._spec.operation_identity
+
+
+def test_synchronized_dfb_reset_preserves_separate_participant_calls():
+    """One reset identity may be evaluated separately by each participant."""
+    reset = ttl.DFBReset(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+        )
+    )
+
+    @ttl.operation()
+    def separate_reset_participants(target: ttl.DFB):
+        ttl.call_extern_func(
+            "reset.hpp",
+            "reset",
+            func_args=[target],
+            dfb_reset=reset,
+            dfb_reset_targets=[target],
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+        ttl.call_extern_func(
+            "reset.hpp",
+            "reset",
+            func_args=[target],
+            dfb_reset=reset,
+            dfb_reset_targets=[target],
+            kernel=ttl.KernelKind.DATA_MOVEMENT,
+        )
+
+    spec = separate_reset_participants._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"target"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    assert _kind_src(result, KernelKind.COMPUTE).count("dfb_reset=") == 1
+    assert _kind_src(result, KernelKind.DATA_MOVEMENT).count("dfb_reset=") == 1
+
+
+def test_synchronized_dfb_reset_rejects_undeclared_participant_selection():
+    """Every selected logical kernel must occur in the participant set."""
+    reset = ttl.DFBReset(participants=(ttl.KernelKind.COMPUTE,))
+
+    @ttl.operation()
+    def undeclared_reset_participant(target: ttl.DFB):
+        ttl.call_extern_func(
+            "reset.hpp",
+            "reset",
+            func_args=[target],
+            dfb_reset=reset,
+            dfb_reset_targets=[target],
+            kernel=ttl.KernelKind.DATA_MOVEMENT,
+        )
+
+    spec = undeclared_reset_participant._spec
+    with pytest.raises(
+        ValueError,
+        match="outside the DFBReset participant set",
+    ):
+        split_function_body(
+            spec.fn_ast,
+            dfb_param_names={"target"},
+            logical_kernels=spec.logical_kernels,
+            selector_scope=spec.frozen_scope,
+        )
+
+
+def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
+    """Control selection includes logical-kernel anchors in the condition."""
+    writer = Kernel(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation()
+    def selected_control_header():
+        if ttl.call_extern_func(
+            "role.hpp",
+            "writer_active",
+            result_type=ttl.ScalarType.I32,
+            kernel=writer,
+        ):
+            scalar_value = 1
+        ttl.call_extern_func("work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE)
+
+    spec = selected_control_header._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+
+    writer_source = _kernel_src(result, writer)
+    assert "'writer_active'" in writer_source
+    assert "scalar_value = 1" in writer_source
+    assert "'compute'" not in writer_source
+
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    assert "'writer_active'" not in compute_source
+    assert "scalar_value = 1" not in compute_source
+    assert "'compute'" in compute_source
+
+
+def test_selected_scalar_producer_covers_consumer_kernels():
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    writer = _logical_kernel(KernelKind.DATA_MOVEMENT, "writer")
+
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=(reader, writer),
+            )
+            ttl.call_extern_func(
+                "role.hpp", "consume", func_args=[active], kernel=writer,
+            )
+        """
+    )
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        logical_kernels={"reader": reader, "writer": writer},
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+
+    assert "'active'" in _kernel_src(result, reader)
+    writer_source = _kernel_src(result, writer)
+    assert "'active'" in writer_source
+    assert "'consume'" in writer_source
+
+
+def test_definite_branch_assignments_end_an_earlier_selected_value_lifetime():
+    function = _fn(
+        """
+        def k():
+            value = ttl.call_extern_func(
+                "role.hpp", "compute_only", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            if selector:
+                value = 1
+            else:
+                value = 2
+            ttl.call_extern_func(
+                "role.hpp", "consume", func_args=[value],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+
+    data_movement = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "'compute_only'" not in data_movement
+    assert "value = 1" in data_movement
+    assert "value = 2" in data_movement
+    assert "'consume'" in data_movement
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        """
+        active = ttl.call_extern_func(
+            "role.hpp", "active", result_type=RESULT_TYPE, kernel=reader,
+        )
+        ttl.call_extern_func(
+            "role.hpp", "consume", func_args=[active], kernel=writer,
+        )
+        """,
+        """
+        active = ttl.call_extern_func(
+            "role.hpp", "active", result_type=RESULT_TYPE, kernel=reader,
+        )
+        if active:
+            ttl.call_extern_func("role.hpp", "consume", kernel=writer)
+        """,
+        """
+        active = ttl.call_extern_func(
+            "role.hpp", "active", result_type=RESULT_TYPE,
+            kernel=(reader, writer),
+        )
+        ttl.call_extern_func(
+            "role.hpp", "consume", func_args=[active],
+            kernel=(writer, ttl.KernelKind.COMPUTE),
+        )
+        """,
+    ],
+    ids=["direct", "condition", "partial-overlap"],
+)
+def test_selected_scalar_producer_rejects_excluded_consumers(body):
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    writer = _logical_kernel(KernelKind.DATA_MOVEMENT, "writer")
+    function = _fn("def k():\n" + textwrap.indent(textwrap.dedent(body), "    "))
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader, "writer": writer},
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_type_only_annotation_does_not_kill_scalar_liveness():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            active: int
+            ttl.call_extern_func(
+                "role.hpp", "consume", func_args=[active],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        """ttl.call_extern_func(
+            "outer.hpp", "outer",
+            func_args=[ttl.call_extern_func(
+                "inner.hpp", "inner", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )],
+            kernel=ttl.KernelKind.COMPUTE,
+        )""",
+        """ttl.call_extern_func(
+            "outer.hpp", "outer",
+            func_args=[ttl.call_extern_func(
+                "inner.hpp", "inner", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )],
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )""",
+        """if ttl.call_extern_func(
+            "outer.hpp", "outer", result_type=RESULT_TYPE,
+            func_args=[ttl.call_extern_func(
+                "inner.hpp", "inner", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )],
+            kernel=ttl.KernelKind.COMPUTE,
+        ):\n    pass""",
+    ],
+    ids=["disjoint", "partial-overlap", "control-header"],
+)
+def test_indivisible_expression_rejects_different_kernel_selections(statement):
+    function = _fn("def k():\n" + textwrap.indent(statement, "    "))
+    with pytest.raises(ValueError, match="indivisible expression select different"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_indivisible_expression_accepts_identical_kernel_selections():
+    function = _fn(
+        """
+        def k():
+            ttl.call_extern_func(
+                "outer.hpp", "outer",
+                func_args=[ttl.call_extern_func(
+                    "inner.hpp", "inner", result_type=RESULT_TYPE,
+                    kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+                )],
+                kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+            )
+        """
+    )
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+
+    for kernel in (KernelKind.COMPUTE, KernelKind.DATA_MOVEMENT):
+        source = _kernel_src(result, kernel)
+        assert "'outer'" in source
+        assert "'inner'" in source
+        assert "kernel=" not in source
+
+
+def test_selected_control_expression_rejects_excluded_body_kernel():
+    function = _fn(
+        """
+        def k():
+            if ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            ):
+                ttl.call_extern_func(
+                    "work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE,
+                )
+        """
+    )
+
+    with pytest.raises(ValueError, match="control expression excludes"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_selected_control_expression_rejects_excluded_live_out_consumer():
+    function = _fn(
+        """
+        def k():
+            if ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            ):
+                value = 1
+            ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[value],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="consume values defined by its body"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_nested_function_free_scalar_requires_its_consumer_kernel():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            def writer_callback():
+                ttl.call_extern_func(
+                    "work.hpp", "writer", func_args=[active],
+                    kernel=ttl.KernelKind.DATA_MOVEMENT,
+                )
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_nested_function_local_scalar_does_not_escape_its_scope():
+    function = _fn(
+        """
+        def k():
+            value = ttl.call_extern_func(
+                "role.hpp", "compute_value", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            def writer_callback():
+                value = 1
+                ttl.call_extern_func(
+                    "work.hpp", "writer", func_args=[value],
+                    kernel=ttl.KernelKind.DATA_MOVEMENT,
+                )
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+    assert "'compute_value'" not in _kernel_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_nested_function_default_requires_its_definition_kernels():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            def writer_callback(enabled=active):
+                ttl.call_extern_func(
+                    "work.hpp", "writer", func_args=[enabled],
+                )
+            net.if_dst(writer_callback)
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_lambda_free_scalar_requires_its_callback_kernel():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            net.if_dst(lambda pipe: ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[active],
+            ))
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_lambda_parameter_does_not_resolve_to_an_outer_scalar():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "compute_value", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            net.if_dst(lambda active: ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[active],
+            ))
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+    assert "'compute_value'" not in _kernel_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_lambda_default_requires_its_evaluation_kernel():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            net.if_dst(lambda pipe, enabled=active: ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[enabled],
+            ))
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_selected_control_preserves_unrelated_live_values():
+    function = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp", "active", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            if ttl.call_extern_func(
+                "role.hpp", "compute_condition", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            ):
+                pass
+            ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[active],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_loop_backedge_rejects_cross_kernel_scalar_value():
+    function = _fn(
+        """
+        def k():
+            value = 0
+            for index in range(4):
+                ttl.call_extern_func(
+                    "work.hpp", "writer", func_args=[value],
+                    kernel=ttl.KernelKind.DATA_MOVEMENT,
+                )
+                value = ttl.call_extern_func(
+                    "work.hpp", "compute_value", result_type=RESULT_TYPE,
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_loop_else_rejects_cross_kernel_scalar_value():
+    function = _fn(
+        """
+        def k():
+            value = 0
+            for index in range(4):
+                value = ttl.call_extern_func(
+                    "work.hpp", "compute_value", result_type=RESULT_TYPE,
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+            else:
+                ttl.call_extern_func(
+                    "work.hpp", "writer", func_args=[value],
+                    kernel=ttl.KernelKind.DATA_MOVEMENT,
+                )
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_while_backedge_rejects_cross_kernel_condition_value():
+    function = _fn(
+        """
+        def k():
+            active = 1
+            while active:
+                ttl.call_extern_func(
+                    "work.hpp", "writer", kernel=ttl.KernelKind.DATA_MOVEMENT,
+                )
+                active = ttl.call_extern_func(
+                    "work.hpp", "compute_value", result_type=RESULT_TYPE,
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+        """
+    )
+
+    with pytest.raises(ValueError, match="produced for.*consumed by excluded"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_with_body_assignment_kills_previous_value():
+    function = _fn(
+        """
+        def k():
+            value = ttl.call_extern_func(
+                "work.hpp", "compute_value", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            with ttl.signpost("scope"):
+                value = 1
+            ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[value],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+    data_movement = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "'compute_value'" not in data_movement
+    assert "value = 1" in data_movement
+    assert "'writer'" in data_movement
+
+
+def test_unselected_with_preserves_selected_body_kernels():
+    function = _fn(
+        """
+        def k():
+            with ttl.signpost("scope"):
+                value = 1
+                ttl.call_extern_func(
+                    "work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE,
+                )
+            ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[value],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    result = split_function_body(function, dfb_param_names=set())
+    compute = _kernel_src(result, KernelKind.COMPUTE)
+    data_movement = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "with ttl.signpost('scope'):" in compute
+    assert "'compute'" in compute
+    assert "value = 1" in data_movement
+    assert "'writer'" in data_movement
+
+
+def test_selected_control_rejects_nested_generic_with_body_kernel():
+    function = _fn(
+        """
+        def k():
+            if ttl.call_extern_func(
+                "work.hpp", "predicate", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            ):
+                with ttl.signpost("scope"):
+                    ttl.call_extern_func(
+                        "work.hpp", "writer",
+                        kernel=ttl.KernelKind.DATA_MOVEMENT,
+                    )
+        """
+    )
+
+    with pytest.raises(ValueError, match="control expression excludes"):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+        )
+
+
+def test_with_bindings_kill_values_before_later_context_expressions():
+    function = _fn(
+        """
+        def k():
+            value = ttl.call_extern_func(
+                "work.hpp", "compute_value", result_type=RESULT_TYPE,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+            with first() as value, second(value):
+                pass
+            ttl.call_extern_func(
+                "work.hpp", "writer", kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        selector_scope={"RESULT_TYPE": ttl.ScalarType.I64},
+    )
+    data_movement = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "'compute_value'" not in data_movement
+    assert "second(value)" in data_movement
+
+
+def test_unanchored_scalar_in_control_survives_in_consumer_kernel():
+    function = _fn(
+        """
+        def k():
+            accumulator = 0
+            for index in range(4):
+                accumulator = accumulator + 1
+                ttl.call_extern_func(
+                    "work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE,
+                )
+            ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[accumulator],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+    result = split_function_body(function, dfb_param_names=set())
+
+    data_movement = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "accumulator = accumulator + 1" in data_movement
+    assert "'compute'" not in data_movement
+
+
+def test_nested_branch_scalar_live_out_survives_in_consumer_kernel():
+    function = _fn(
+        """
+        def k():
+            value = 0
+            for index in range(4):
+                if index:
+                    value = index + 1
+                    ttl.call_extern_func(
+                        "work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE,
+                    )
+                else:
+                    value = index + 2
+            ttl.call_extern_func(
+                "work.hpp", "writer", func_args=[value],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+        """
+    )
+    result = split_function_body(function, dfb_param_names=set())
+
+    data_movement = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "if index:" in data_movement
+    assert "value = index + 1" in data_movement
+    assert "value = index + 2" in data_movement
+    assert "'compute'" not in data_movement
+
+
 def test_unknown_ttl_op_is_rejected():
     fn = _fn(
         """
@@ -743,7 +2141,7 @@ def test_statement_mixing_compute_and_data_movement_is_rejected():
         """
     )
 
-    with pytest.raises(ValueError, match="statement is assigned to multiple logical"):
+    with pytest.raises(ValueError, match="indivisible expression select different"):
         split_function_body(
             fn,
             dfb_param_names=set(),

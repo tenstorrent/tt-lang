@@ -1,5 +1,11 @@
 // Tests launch-node-local DFB lifetimes and hardware pointer ownership.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
+
+// REPORT-DAG: DFB conflict {{.*}} reason=descriptor-mismatch
+// REPORT-DAG: DFB conflict {{.*}} reason=unproven-quiescence
+// REPORT-DAG: DFB conflict {{.*}} reason=transaction-mismatch
+// REPORT-DAG: DFB conflict {{.*}} reason=pointer-owner-mismatch
 
 // DFBs used on disjoint launch nodes may share without a global lifetime order.
 
