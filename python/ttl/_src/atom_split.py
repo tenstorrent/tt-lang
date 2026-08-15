@@ -259,6 +259,7 @@ class _KernelSelectorResolver:
                     f"{_format_kernels(claim_selection)}, but the external "
                     f"call selects {_format_kernels(selected)}",
                 )
+
     def _validate_reset_participants(
         self, call: ast.Call, selected: FrozenSet[KernelSelector]
     ) -> None:
