@@ -290,7 +290,9 @@ class TensorToBlockHandler:
     """Handler for TTNN.Tensor -> Block transfers using tile-level indexing."""
 
     def validate(self, src: Tensor, dst: Block) -> None:
-        _validate_tensor_to_block_shapes(src.layout, src.shape, dst.layout, dst.shape)
+        _validate_tensor_to_block_shapes(
+            src.layout, src.padded_shape, dst.layout, dst.shape
+        )
 
     def transfer(self, src: Tensor, dst: Block) -> None:
         """Transfer tensor data into Block."""
@@ -307,7 +309,9 @@ class BlockToTensorHandler:
     """Handler for Block -> TTNN.Tensor transfers using tile-level indexing."""
 
     def validate(self, src: Block, dst: Tensor) -> None:
-        _validate_block_to_tensor_shapes(src.layout, src.shape, dst.layout, dst.shape)
+        _validate_block_to_tensor_shapes(
+            src.layout, src.shape, dst.layout, dst.padded_shape
+        )
 
     def transfer(self, src: Block, dst: Tensor) -> None:
         """Transfer Block data into tensor."""

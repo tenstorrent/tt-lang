@@ -12,6 +12,7 @@ import ttl
 import ttl.atom as ttl_atom
 import ttl.dialects.ttl as ttl_dialect
 import ttl.ttl_api as ttl_api
+from ttl import ProgramRuntimeResources
 from ttl.constants import SUPPORTED_MATH_FIDELITIES
 from ttl.ir import Context, Module
 
@@ -268,6 +269,7 @@ class TestMeshProgramPlacement:
             "dst_full_sync_en": None,
             "math_fidelity": None,
             "device_domain": domain,
+            "runtime_resource_factory": None,
         }
 
         result = ttl_atom._compile_unified_operation(
@@ -312,6 +314,25 @@ class TestMeshProgramPlacement:
         assert (
             calls[0]["pipe_global_semaphore_cache"]
             is compiled_kernel._pipe_global_semaphore_cache
+        )
+
+
+@pytest.mark.parametrize("logical_selectors", [None, [], [None]])
+def test_resource_factory_requires_complete_logical_selectors(logical_selectors):
+    with pytest.raises(
+        ValueError,
+        match="runtime_resource_factory requires .*logical-kernel selector",
+    ):
+        ttl_api.CompiledTTNNKernel(
+            kernel_paths=[("kernel.cpp", "compute")],
+            kernel_configs=[object()],
+            kernel_arg_specs=[[]],
+            num_tensors=1,
+            core_ranges=object(),
+            kernel_tensor_indices=[[]],
+            kernel_logical_selectors=logical_selectors,
+            operation_name="resource_operation",
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(),
         )
 
 

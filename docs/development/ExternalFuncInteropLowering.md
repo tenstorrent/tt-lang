@@ -96,6 +96,131 @@ logical-to-processor assignment, and final TTNN interop validation. Explicit and
 unified operations therefore report capacity failures with the same logical
 kernel kinds and identities.
 
+## Operation runtime resources
+
+An operation can provide TTNN resources that are created for each invocation:
+
+```python
+def make_collective(runtime_owner):
+    sender = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
+        assert len(tensors) == 2
+        semaphore = ttnn.SemaphoreDescriptor(
+            first_free_semaphore_id,
+            core_ranges=core_ranges,
+            initial_value=0,
+        )
+        return ttl.ProgramRuntimeResources(
+            semaphore_descriptors=(semaphore,),
+            kernel_resources=(
+                ttl.KernelRuntimeResources(
+                    kernel=sender,
+                    runtime_args=(
+                        ttl.CoreRuntimeArgs(
+                            ttnn.CoreCoord(0, 0),
+                            (first_free_semaphore_id, 0),
+                        ),
+                        ttl.CoreRuntimeArgs(
+                            ttnn.CoreCoord(1, 0),
+                            (first_free_semaphore_id, 1),
+                        ),
+                    ),
+                    defines=(ttl.KernelDefine("FABRIC_2D", "1"),),
+                ),
+            ),
+            lifetimes=(runtime_owner, semaphore),
+        )
+
+    @ttl.operation(grid=(2, 1), runtime_resource_factory=make_resources)
+    def collective(input_tensor, output_tensor):
+        ttl.call_extern_func(
+            HEADER,
+            "collective_sender",
+            func_args=[input_tensor, output_tensor],
+            kernel=sender,
+        )
+
+    return collective
+```
+
+The factory has the keyword-only contract
+`(tensors, core_ranges, first_free_semaphore_id)`. `tensors` contains the
+current invocation tensors, `core_ranges` is the operation worker-core range,
+and `first_free_semaphore_id` is the first ID after compiler-managed
+semaphores. The callback executes for every invocation; its result is not
+cached.
+
+The factory returns frozen typed records:
+
+| Record | Purpose |
+| --- | --- |
+| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, and retained owners. |
+| `KernelRuntimeResources` | Selects one logical kernel and supplies per-core runtime arguments and JIT definitions. |
+| `CoreRuntimeArgs` | Associates one ordered integer vector with one worker coordinate. |
+| `KernelDefine` | Associates one definition name with its string value. |
+
+All collection fields are tuples. Runtime values accept integer-indexable
+objects except booleans. Coordinates and semaphore ranges must be inside the
+operation range. Caller semaphore IDs must be unique and greater than or equal
+to `first_free_semaphore_id`. Invalid or incomplete resources raise before
+caller descriptors are materialized; execution never receives a partial caller
+resource plan.
+
+`KernelKind` selects the compiler-owned canonical kernel of that kind. A
+captured `Kernel` is an explicit operation-owned identity and is required to
+distinguish multiple logical kernels of the same kind. The operation body and
+factory must capture the same `Kernel` declaration. A handle owned by another
+operation, an unbound handle, or a physical processor string is invalid.
+
+Core specialization can produce several TTNN descriptors for one logical
+identity. Definitions are copied to every matching descriptor because the
+descriptors compile the same source. Runtime argument records are partitioned
+by coordinate, and every record must match exactly one descriptor. Overlapping
+specialized descriptor ranges are an internal compiler error. Caller runtime
+arguments remain associated with their selected logical descriptor.
+
+Resource structure participates in the TT-Metal program-cache identity. The
+structural fingerprint includes logical identities, descriptor coordinates,
+definitions, runtime-vector lengths, and caller semaphore properties. Runtime
+values, tensor addresses, and lifetime object identities are excluded, so a
+cached program can receive new invocation values. Changing a definition or
+semaphore structure selects a different program-cache identity.
+
+Objects in `lifetimes` remain referenced through execution. The compiled
+operation replaces its retained owner tuple only after successful execution,
+so a failed invocation preserves the previous valid owners.
+
+An emitted runner for a resource-aware operation requires the factory on every
+call:
+
+```python
+runner.run(
+    tensors,
+    runtime_resource_factory=make_resources,
+    device=device,
+)
+```
+
+The runner reconstructs serialized logical identities and uses the normal
+planner and materializer. It does not serialize live owners or create
+replacement topology resources.
+
+Operation runtime resources are a hardware execution interface. The simulator
+does not model TTNN program descriptors or per-core kernel runtime arguments
+and rejects `runtime_resource_factory` as an unsupported `ttl.operation`
+argument.
+
+### Consumer migration
+
+Resource dictionaries keyed by physical processor strings must be replaced by
+typed logical selectors. Use `KernelKind.COMPUTE` or
+`KernelKind.DATA_MOVEMENT` for the compiler-owned canonical kernel. Declare and
+capture a `Kernel` for each explicitly owned logical kernel when an operation
+has several kernels of one kind. Composition helpers merge resources by bound
+logical identity, preserve runtime-vector order, reject conflicting
+definitions, and return unique semaphore descriptors.
+
 ## Argument contract
 
 | Source argument | Generated C++ interface | Restrictions |

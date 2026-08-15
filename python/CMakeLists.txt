@@ -136,6 +136,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     kernel_runner.py
     pipe.py
     domains.py
+    runtime_resources.py
     ttl.py
     ttl_api.py
     ttl_math.py
@@ -160,6 +161,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
+    _src/atom_rules.py
     _src/atom_split.py
     _src/atom_inline.py
     _src/auto_profile.py

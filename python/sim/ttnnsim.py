@@ -29,12 +29,15 @@ from typing import (
     FrozenSet,
     Iterable,
     List,
+    NoReturn,
     Optional,
     Sequence,
     Set,
+    SupportsIndex,
     Tuple,
     Union,
     cast,
+    overload,
 )
 
 import torch
@@ -48,9 +51,20 @@ try:
 except ImportError:
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
-from .constants import TILE_SHAPE
+from .constants import FACE_SHAPE, TILE_SHAPE
 from .trace import TRACE
-from .typedefs import Count, IndexType, Selector, Shape, TensorKey
+from .typedefs import Count, Index, IndexType, Selector, Size, TensorKey
+
+# ``ttl.Shape``, the specification's tuple of dimensions, under an alias: the
+# bare name belongs to ttnn's ``Shape`` class in this module.  Annotates what
+# this module hands to the DSL rather than to a ttnn caller.
+from .typedefs import Shape as TtlShape
+
+# Number of shards along each tensor dimension for a sharded tensor;
+# math.prod(ShardGrid) equals the number of participating cores. This is a
+# distinct concept from a tensor Shape and from a physical CoreGrid, and ttnn
+# has no public named type for it, so the simulator names it here.
+ShardGrid = Tuple[Size, ...]
 
 # Public constants (mirror TTL constants)
 TILE_SIZE: int = TILE_SHAPE[0]
@@ -156,7 +170,7 @@ class ShardSpec:
     def __init__(
         self,
         *args: Any,
-        shard_grid: Optional[Shape] = None,
+        shard_grid: Optional[ShardGrid] = None,
         shard_shape: Optional[Sequence[int]] = None,
         orientation: ShardOrientation = ShardOrientation.ROW_MAJOR,
         grid: Optional["CoreRangeSet"] = None,
@@ -192,12 +206,32 @@ class ShardSpec:
             )
 
     @property
-    def shard_grid(self) -> Shape:
+    def shard_grid(self) -> ShardGrid:
         if self._shard_grid is None:
             raise ValueError(
                 "ShardSpec uses a CoreRangeSet grid; build MemoryConfig(TensorMemoryLayout, BufferType, spec) to resolve shard_grid"
             )
         return self._shard_grid
+
+    @property
+    def shape(self) -> List[int]:
+        """Per-shard extent, under the name ttnn reports it.
+
+        ttnn takes this as ``shard_shape=`` and reports it as ``shape``, as a
+        two-element list (its ``std::array<uint32_t, 2>``); both names read the
+        same value here.
+        """
+        return list(self.shard_shape)
+
+    def num_cores(self) -> int:
+        """Cores the shards are laid out over, as ttnn reports it.
+
+        ttnn reads it off the core grid; where the simulator was given shard
+        counts instead, their product is the same number.
+        """
+        if self.grid is not None:
+            return self.grid.num_cores()
+        return math.prod(self.shard_grid)
 
     def with_resolved_shard_grid(self, layout: "TensorMemoryLayout") -> ShardSpec:
         """Return a spec with ``shard_grid`` set from ``grid`` and layout (tt-metal path)."""
@@ -210,7 +244,7 @@ class ShardSpec:
             TensorMemoryLayout.HEIGHT_SHARDED,
             TensorMemoryLayout.WIDTH_SHARDED,
         ):
-            sg: Shape = (cg.num_cores,)
+            sg: ShardGrid = (cg.num_cores,)
         elif layout == TensorMemoryLayout.BLOCK_SHARDED:
             sg = (cg.y, cg.x)
         else:
@@ -250,7 +284,8 @@ class NdShardSpec:
     Matches the tensor sharding tech report surface API:
 
     - ``shard_shape``: extent of one shard along each tensor dimension in
-      **element** units.
+      **element** units.  Taken in any spelling and reported as a
+      :class:`Shape`, which is what ttnn holds it as.
     - ``core_ranges``: which device cores participate (optional in the simulator
       when only locality math is needed).
 
@@ -266,22 +301,54 @@ class NdShardSpec:
     that only specify ``shard_shape``.
 
 
-    ``num_cores`` applies only to ROUND_ROBIN (modulus for shard assignment).
+    ``round_robin_cores`` applies only to ROUND_ROBIN (modulus for shard
+    assignment).  It is spelled that way rather than ``num_cores`` because ttnn
+    has a ``num_cores()`` *method*, which :meth:`num_cores` is, and the two mean
+    different things: how many cores the shards go round, against how many the
+    spec covers.
     """
 
-    shard_shape: Shape
+    shard_shape: Sequence[int]
     core_ranges: Optional["CoreRangeSet"] = None
-    shard_grid: Optional[Shape] = None
+    shard_grid: Optional[ShardGrid] = None
     distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
-    num_cores: Optional[int] = None
+    round_robin_cores: Optional[int] = None
 
     def __post_init__(self) -> None:
-        # Accept list inputs like the tech report (``shard_shape=[...]``).
-        object.__setattr__(self, "shard_shape", tuple(self.shard_shape))
+        # Accept list inputs like the tech report (``shard_shape=[...]``) and
+        # report a Shape, which is what ttnn's NdShardSpec holds.
+        object.__setattr__(self, "shard_shape", Shape(self.shard_shape))
         if self.shard_grid is not None:
             object.__setattr__(self, "shard_grid", tuple(self.shard_grid))
 
-    def with_resolved_shard_grid(self, tensor_shape: Shape) -> NdShardSpec:
+    @property
+    def grid(self) -> Optional["CoreRangeSet"]:
+        """The participating cores, under the name ttnn reports them."""
+        return self.core_ranges
+
+    @property
+    def shard_distribution_strategy(self) -> ShardDistributionStrategy:
+        """:attr:`distribution`, under the name ttnn reports it."""
+        return self.distribution
+
+    def num_cores(self) -> int:
+        """Cores this spec covers, as ttnn's ``num_cores()`` reports it.
+
+        ttnn reads it off the core grid; where the simulator was given shard
+        counts instead, their product is the same number.
+        """
+        if self.core_ranges is not None:
+            return self.core_ranges.num_cores()
+        if self.round_robin_cores is not None:
+            return self.round_robin_cores
+        if self.shard_grid is not None:
+            return math.prod(self.shard_grid)
+        raise ValueError(
+            "NdShardSpec has neither core_ranges, round_robin_cores nor "
+            "shard_grid, so it covers no known number of cores"
+        )
+
+    def with_resolved_shard_grid(self, tensor_shape: Sequence[int]) -> NdShardSpec:
         """Return a copy with ``shard_grid`` set from ``tensor_shape`` and ``shard_shape``."""
         if self.shard_grid is not None:
             return self
@@ -313,13 +380,19 @@ class MemoryConfig:
 
         MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=...)
 
-    tt-metal style (three positional args; see tensor sharding tech report)::
+    tt-metal style (see tensor sharding tech report)::
 
         MemoryConfig(
             TensorMemoryLayout.HEIGHT_SHARDED,
             BufferType.L1,
             ShardSpec(...),
         )
+        MemoryConfig(TensorMemoryLayout.INTERLEAVED, BufferType.L1)
+        MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+
+    A layout given where the strategy goes names the same thing and is
+    converted, so :attr:`strategy` is a :class:`ShardingStrategy` however the
+    config was spelled.
     """
 
     __slots__ = (
@@ -339,11 +412,16 @@ class MemoryConfig:
         buffer_type: BufferType = BufferType.DRAM,
         tensor_memory_layout: Optional[TensorMemoryLayout] = None,
     ) -> None:
-        if (
-            len(args) == 3
-            and isinstance(args[0], TensorMemoryLayout)
-            and isinstance(args[1], BufferType)
-        ):
+        if len(args) == 3:
+            if not isinstance(args[0], TensorMemoryLayout) or not isinstance(
+                args[1], BufferType
+            ):
+                raise TypeError(
+                    f"three positional arguments are ttnn's "
+                    f"(TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec), got "
+                    f"({type(args[0]).__name__}, {type(args[1]).__name__}, "
+                    f"{type(args[2]).__name__})"
+                )
             layout_tt, buf, spec = args[0], args[1], args[2]
             self.buffer_type = buf
             self.tensor_memory_layout = layout_tt
@@ -362,16 +440,85 @@ class MemoryConfig:
                 )
             return
 
+        if len(args) == 2:
+            # ttnn's own two-argument form, e.g. its L1_MEMORY_CONFIG:
+            # MemoryConfig(TensorMemoryLayout.INTERLEAVED, BufferType.L1).
+            if not isinstance(args[0], TensorMemoryLayout) or not isinstance(
+                args[1], BufferType
+            ):
+                raise TypeError(
+                    f"two positional arguments are ttnn's "
+                    f"(TensorMemoryLayout, BufferType), got "
+                    f"({type(args[0]).__name__}, {type(args[1]).__name__})"
+                )
+            args, buffer_type = args[:1], args[1]
+
+        if len(args) > 1:
+            raise TypeError(
+                f"a memory config takes at most three positional arguments "
+                f"(TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec), got "
+                f"{len(args)}"
+            )
+        if args and not isinstance(args[0], (ShardingStrategy, TensorMemoryLayout)):
+            # Positionally, the first argument is the layout (ttnn's spelling) or
+            # the strategy that stands for it (the simulator's). Anything else is
+            # an argument in the wrong slot -- a buffer type, a shard spec -- and
+            # defaulting past it would build a config the caller did not ask for
+            # and hand back no sign of it.
+            raise TypeError(
+                f"the first positional argument is a TensorMemoryLayout or a "
+                f"ShardingStrategy, got {type(args[0]).__name__}; pass a buffer type "
+                f"or a shard spec by name (buffer_type=..., shard_spec=...)"
+            )
+
         st = strategy if strategy is not None else (args[0] if len(args) == 1 else None)
         if st is None:
-            raise TypeError(
-                "MemoryConfig requires strategy=... or (TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec)"
-            )
+            # ttnn's arguments all have defaults and its default config is an
+            # interleaved one, which is also what a tensor gets when no config
+            # is named.
+            st = ShardingStrategy.INTERLEAVED
+        layout_tt = tensor_memory_layout
+        if isinstance(st, TensorMemoryLayout):
+            # ttnn's first argument is the memory layout and it has no separate
+            # notion of a strategy, so a config spelled ttnn's way -- as its
+            # documentation spells the interleaved one -- arrives with a layout
+            # where the strategy goes.  They name the same thing; record both,
+            # or every strategy comparison silently fails to match.
+            layout_tt = st
+            st = _tensor_memory_layout_to_sharding_strategy(st)
         self.strategy = st
         self.shard_spec = shard_spec
         self.nd_shard_spec = nd_shard_spec
         self.buffer_type = buffer_type
-        self.tensor_memory_layout = tensor_memory_layout
+        # Both names for one thing are filled in, whichever the caller spelled, so
+        # that two configs describing the same memory are equal: leaving the
+        # unspelled one at None would make equality depend on the spelling, and
+        # ttnn's own two-argument form and the simulator's strategy form would
+        # compare unequal.
+        self.tensor_memory_layout = (
+            layout_tt
+            if layout_tt is not None
+            else _sharding_strategy_to_tensor_memory_layout(st)
+        )
+
+    @property
+    def memory_layout(self) -> TensorMemoryLayout:
+        """How the tensor is laid out over memory, under ttnn's name for it.
+
+        Always answers, including for a config built the simulator's way with a
+        strategy: the two say the same thing, and both are recorded at
+        construction.
+        """
+        return self.tensor_memory_layout
+
+    def is_sharded(self) -> bool:
+        """Whether the tensor is sharded rather than interleaved, as ttnn asks."""
+        return self.strategy != ShardingStrategy.INTERLEAVED
+
+    @property
+    def interleaved(self) -> bool:
+        """The complement of :meth:`is_sharded`, as ttnn reports it."""
+        return not self.is_sharded()
 
     def __eq__(self, other: object) -> bool:
         match other:
@@ -386,6 +533,19 @@ class MemoryConfig:
             case _:
                 return False
 
+    def __hash__(self) -> int:
+        """Hashed by the memory it names, leaving the shard spec to equality.
+
+        Defining ``__eq__`` alone would make a config unhashable, and a frozen
+        :class:`TensorSpec` hashes its fields -- so every spec would be unhashable
+        too, now that each one carries a config. ttnn's is hashable, and a spec is
+        a natural cache key.
+
+        A shard spec is compared but not hashed: two configs that are equal agree
+        on everything hashed here, which is all a hash has to promise.
+        """
+        return hash((self.strategy, self.buffer_type, self.tensor_memory_layout))
+
     def __repr__(self) -> str:
         return (
             f"MemoryConfig(strategy={self.strategy!r}, shard_spec={self.shard_spec!r}, "
@@ -394,21 +554,37 @@ class MemoryConfig:
         )
 
 
+_LAYOUT_TO_STRATEGY: Dict[TensorMemoryLayout, ShardingStrategy] = {
+    TensorMemoryLayout.INTERLEAVED: ShardingStrategy.INTERLEAVED,
+    TensorMemoryLayout.HEIGHT_SHARDED: ShardingStrategy.HEIGHT_SHARDED,
+    TensorMemoryLayout.WIDTH_SHARDED: ShardingStrategy.WIDTH_SHARDED,
+    TensorMemoryLayout.BLOCK_SHARDED: ShardingStrategy.BLOCK_SHARDED,
+    TensorMemoryLayout.ND_SHARDED: ShardingStrategy.ND_SHARDED,
+}
+
+
 def _tensor_memory_layout_to_sharding_strategy(
     layout: TensorMemoryLayout,
 ) -> ShardingStrategy:
-    return {
-        TensorMemoryLayout.INTERLEAVED: ShardingStrategy.INTERLEAVED,
-        TensorMemoryLayout.HEIGHT_SHARDED: ShardingStrategy.HEIGHT_SHARDED,
-        TensorMemoryLayout.WIDTH_SHARDED: ShardingStrategy.WIDTH_SHARDED,
-        TensorMemoryLayout.BLOCK_SHARDED: ShardingStrategy.BLOCK_SHARDED,
-        TensorMemoryLayout.ND_SHARDED: ShardingStrategy.ND_SHARDED,
-    }[layout]
+    return _LAYOUT_TO_STRATEGY[layout]
 
 
-@dataclass
+def _sharding_strategy_to_tensor_memory_layout(
+    strategy: ShardingStrategy,
+) -> TensorMemoryLayout:
+    for layout, mapped in _LAYOUT_TO_STRATEGY.items():
+        if mapped == strategy:
+            return layout
+    raise ValueError(f"no memory layout stands for {strategy!r}")
+
+
+@dataclass(kw_only=True)
 class CoreGrid:
     """2-D core grid.  Mirrors ttnn.CoreGrid.
+
+    Named arguments only, as ttnn's constructor is: it takes ``x`` first where
+    this takes ``y`` first, so a positional pair would mean one grid here and
+    its transpose on a device.
 
     Attributes:
         y: Number of core rows.
@@ -426,8 +602,8 @@ class CoreGrid:
 def broadcast_tensors(
     left_tensors: List["Tensor"],
     right_tensors: List["Tensor"],
-    left_shape: Shape,
-    right_shape: Shape,
+    left_shape: Sequence[int],
+    right_shape: Sequence[int],
     op: Any,
 ) -> List["Tensor"]:
     """Apply binary operation to tensor lists with broadcasting.
@@ -477,8 +653,12 @@ def broadcast_tensors(
     return [Tensor(result_flat[i]) for i in range(num_result_tiles)]
 
 
-DRAM_MEMORY_CONFIG: MemoryConfig = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
-L1_MEMORY_CONFIG: MemoryConfig = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+DRAM_MEMORY_CONFIG: MemoryConfig = MemoryConfig(
+    TensorMemoryLayout.INTERLEAVED, BufferType.DRAM
+)
+L1_MEMORY_CONFIG: MemoryConfig = MemoryConfig(
+    TensorMemoryLayout.INTERLEAVED, BufferType.L1
+)
 
 # Type aliases for binary operations
 Scalar = Union[float, int]
@@ -541,6 +721,21 @@ class CoreRange:
         y_range = self.end.y - self.start.y + 1
         return x_range * y_range
 
+    def grid_size(self) -> CoreCoord:
+        """Extent of this range along each axis, as ttnn reports it."""
+        return CoreCoord(self.end.x - self.start.x + 1, self.end.y - self.start.y + 1)
+
+    def contains(self, other: Union[CoreCoord, "CoreRange"]) -> bool:
+        """Whether a core, or every core of another range, lies in this one."""
+        match other:
+            case CoreCoord():
+                return (
+                    self.start.x <= other.x <= self.end.x
+                    and self.start.y <= other.y <= self.end.y
+                )
+            case CoreRange():
+                return self.contains(other.start) and self.contains(other.end)
+
 
 class CoreRangeSet:
     """Collection of :class:`CoreRange` regions (ttnn API).
@@ -576,6 +771,38 @@ class CoreRangeSet:
         """Total cores across all ranges."""
         return sum(r.num_cores() for r in self._ranges)
 
+    def size(self) -> Count:
+        """Number of ranges, as ttnn reports it (not the number of cores)."""
+        return len(self._ranges)
+
+    def bounding_box(self) -> CoreRange:
+        """Smallest range covering every range in the set.
+
+        tt-lang's own runtime asks a core range set for this when it turns a
+        grid into kernel arguments, so a set the simulator produced has to
+        answer it.
+        """
+        if not self._ranges:
+            raise ValueError("an empty CoreRangeSet has no bounding box")
+        return CoreRange(
+            CoreCoord(
+                min(r.start.x for r in self._ranges),
+                min(r.start.y for r in self._ranges),
+            ),
+            CoreCoord(
+                max(r.end.x for r in self._ranges),
+                max(r.end.y for r in self._ranges),
+            ),
+        )
+
+    def contains(self, core: CoreCoord) -> bool:
+        """Whether any range in the set holds ``core``."""
+        return any(r.contains(core) for r in self._ranges)
+
+    def empty(self) -> bool:
+        """Whether the set holds no ranges."""
+        return not self._ranges
+
     def __repr__(self) -> str:
         return f"CoreRangeSet({self._ranges!r})"
 
@@ -585,6 +812,11 @@ class CoreRangeSet:
                 return self._ranges == other._ranges
             case _:
                 return False
+
+    def __hash__(self) -> int:
+        # ttnn's is hashable, and a memory config holding one is compared and
+        # cached by value.
+        return hash(tuple(self._ranges))
 
 
 def num_cores_to_corerangeset(
@@ -649,14 +881,10 @@ def core_range_set_to_core_grid(core_ranges: CoreRangeSet) -> CoreGrid:
     Uses the axis-aligned bounding box of all ranges.  For sharding helpers
     this matches typical tt-metal examples with one rectangular ``CoreRange``.
     """
-    ranges = core_ranges.ranges()
-    if not ranges:
+    if core_ranges.empty():
         raise ValueError("CoreRangeSet is empty")
-    min_x = min(r.start.x for r in ranges)
-    max_x = max(r.end.x for r in ranges)
-    min_y = min(r.start.y for r in ranges)
-    max_y = max(r.end.y for r in ranges)
-    return CoreGrid(y=max_y - min_y + 1, x=max_x - min_x + 1)
+    extent = core_ranges.bounding_box().grid_size()
+    return CoreGrid(y=extent.y, x=extent.x)
 
 
 def _distribute_cores_across_dims(num_cores: int, k: int) -> Tuple[int, ...]:
@@ -683,7 +911,7 @@ def _distribute_cores_across_dims(num_cores: int, k: int) -> Tuple[int, ...]:
 
 
 def _nd_shard_spec_for_dims(
-    shape: Shape,
+    shape: Sequence[int],
     shard_dims: Sequence[int],
     core_ranges: CoreRangeSet,
 ) -> NdShardSpec:
@@ -718,6 +946,12 @@ def _nd_shard_spec_for_dims(
     )
 
 
+# Stands in for "no config was named", so that a spec can fill in the one its
+# own layout and buffer describe.  Never reaches a caller: every spec replaces
+# it in __post_init__.
+_DERIVE_MEMORY_CONFIG = MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+
+
 @dataclass(frozen=True)
 class TensorSpec:
     """Tensor shape/dtype/layout/buffer metadata with optional sharding (ttnn API).
@@ -725,15 +959,37 @@ class TensorSpec:
     Use ``height_sharded`` / ``width_sharded`` / ``block_sharded`` /
     ``sharded_across_dims`` / ``nd_sharded`` to attach a :class:`MemoryConfig`,
     then pass the spec to :func:`from_torch` (see tt-metal tensor sharding examples).
+
+    ``shape`` is taken in any spelling and reported as a :class:`Shape`, as
+    ttnn's ``TensorSpec.shape`` is.
     """
 
-    shape: Tuple[int, ...]
+    shape: Sequence[int]
     dtype: torch.dtype = torch.float32
     layout: IndexType = TILE_LAYOUT
     buffer_type: BufferType = BufferType.DRAM
     memory_layout: TensorMemoryLayout = TensorMemoryLayout.INTERLEAVED
-    memory_config: Optional[MemoryConfig] = None
+    # The factory hands back the one sentinel, which __post_init__ recognises;
+    # a dataclass will not take an unhashable default any other way.
+    memory_config: MemoryConfig = field(default_factory=lambda: _DERIVE_MEMORY_CONFIG)
     core_ranges: Optional[CoreRangeSet] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "shape", Shape(self.shape))
+        # An unsharded spec still describes memory, and ttnn's TensorSpec always
+        # answers with a config, so build the one this spec's layout and buffer
+        # name rather than leaving a None for the caller to reach through.
+        if self.memory_config is _DERIVE_MEMORY_CONFIG:
+            object.__setattr__(
+                self,
+                "memory_config",
+                MemoryConfig(self.memory_layout, self.buffer_type),
+            )
+
+    @property
+    def tile(self) -> Tile:
+        """The tile the stored data is cut into, as ttnn's spec reports it."""
+        return Tile()
 
     def height_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
         """2-D height sharding: collapse leading dims to height, shard along height."""
@@ -803,7 +1059,7 @@ class TensorSpec:
 
     def nd_sharded(
         self,
-        shard_shape: Shape,
+        shard_shape: Sequence[int],
         core_ranges: CoreRangeSet,
     ) -> TensorSpec:
         """ND sharding with explicit per-dimension shard sizes (element units).
@@ -816,7 +1072,7 @@ class TensorSpec:
         For ND sharding derived from ``shard_dims`` and core count instead, use
         :meth:`sharded_across_dims`.
         """
-        nd = NdShardSpec(shard_shape=tuple(shard_shape), core_ranges=core_ranges)
+        nd = NdShardSpec(shard_shape=shard_shape, core_ranges=core_ranges)
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
         return replace(
             self,
@@ -881,6 +1137,18 @@ def _promote_dtype(dtype: "DType") -> torch.dtype:
     if _float32_promotion_enabled and native in _PROMOTABLE_FLOAT_DTYPES.values():
         return torch.float32
     return native
+
+
+def _quotient_dtype(declared: torch.dtype) -> torch.dtype:
+    """The dtype a true division reports, given what its operands declare.
+
+    Dividing integers gives a float, in torch and in ttnn alike, so the quotient's
+    declared dtype cannot be the operands'. Anything already floating divides to
+    itself.
+    """
+    if declared.is_floating_point:
+        return declared
+    return torch.get_default_dtype()
 
 
 def set_disable_float32_promotion(value: bool) -> None:
@@ -1193,7 +1461,7 @@ class ConcatMeshToTensor:
         pass
 
 
-def tile_shape_from_shape(shape: Shape) -> Shape:
+def tile_shape_from_shape(shape: Sequence[int]) -> TtlShape:
     """Tile-grid shape derived purely from an element-space ``shape``.
 
     Pure function of the input shape (no Tensor instance required) so callers
@@ -1202,20 +1470,26 @@ def tile_shape_from_shape(shape: Shape) -> Shape:
     or W==1 treated as degenerate single-tile dimensions) and leading
     dimensions pass through; for 1-D inputs the single dimension is divided
     by ``TILE_SHAPE[0]``.
+
+    Returns a ``ttl.Shape`` rather than a :class:`Shape`: a tile grid is a
+    block shape, which the DSL slices and concatenates freely (a ``Block``
+    holds one, and the matmul shape rules take it apart), and which ttnn has no
+    notion of.
     """
-    if len(shape) == 1:
-        w = shape[0]
+    dims = tuple(shape)
+    if len(dims) == 1:
+        w = dims[0]
         tk = 1 if w == 1 else w // TILE_SHAPE[0]
         return (tk,)
-    h, w = shape[-2], shape[-1]
+    h, w = dims[-2], dims[-1]
     tm = 1 if h == 1 else h // TILE_SHAPE[0]
     tk = 1 if w == 1 else w // TILE_SHAPE[1]
-    if len(shape) > 2:
-        return (*shape[:-2], tm, tk)
+    if len(dims) > 2:
+        return (*dims[:-2], tm, tk)
     return (tm, tk)
 
 
-def tile_count_from_shape(layout: IndexType, shape: Shape) -> int:
+def tile_count_from_shape(layout: IndexType, shape: Sequence[int]) -> int:
     """Layout-aware logical unit count derived purely from primitives.
 
     ROW_MAJOR_LAYOUT counts every element; TILE_LAYOUT counts tile-grid
@@ -1227,16 +1501,24 @@ def tile_count_from_shape(layout: IndexType, shape: Shape) -> int:
     return math.prod(tile_shape_from_shape(shape))
 
 
-def tile_shape_from_tensor(t: "Tensor") -> Shape:
+def tile_shape_from_tensor(t: "Tensor") -> TtlShape:
     """Return the tile-grid shape of a tensor (thin wrapper over
-    :func:`tile_shape_from_shape`)."""
-    return tile_shape_from_shape(t.shape)
+    :func:`tile_shape_from_shape`).
+
+    Uses the physical :attr:`~Tensor.padded_shape` because tile geometry is a
+    property of the stored (tile-aligned) data, not the logical shape.
+    """
+    return tile_shape_from_shape(t.padded_shape)
 
 
 def tile_count_from_tensor(t: "Tensor") -> int:
     """Return the number of logical units a Tensor represents (thin wrapper
-    over :func:`tile_count_from_shape`)."""
-    return tile_count_from_shape(t.layout, t.shape)
+    over :func:`tile_count_from_shape`).
+
+    Uses the physical :attr:`~Tensor.padded_shape` so tile/element counts
+    reflect the stored data, independent of the logical shape.
+    """
+    return tile_count_from_shape(t.layout, t.padded_shape)
 
 
 def check_count_match(
@@ -1270,18 +1552,72 @@ def check_count_match(
 def normalize_selector_to_slice(selector: Selector) -> slice:
     """Convert an integer index to a unit slice, or return slice as-is.
 
+    An integer becomes a unit slice so that no dimension is collapsed, which is
+    what keeps a key's rank equal to the tensor's.
+
     Shared by :meth:`Tensor._normalize_index` and :mod:`sim.sharding` when
     interpreting :class:`~sim.typedefs.Selector` values.
+
+    Raises:
+        TypeError: For anything that is not an integer or a slice -- an
+            ``Ellipsis``, a ``None``, a list of indices, a tensor. Those are all
+            things ttnn's element indexing takes and this does not, so they are
+            named here rather than left to fail further in as an attribute error
+            about ``step``.
     """
     match selector:
+        case bool():
+            # Before int(): a bool is one, and indexing by True is a mistake
+            # rather than a request for element 1.
+            raise TypeError(
+                "a tensor is indexed by integers and slices, not by True/False"
+            )
         case int():
             return slice(selector, selector + 1)
-        case _:
+        case slice():
             return selector
+        case _:
+            raise TypeError(
+                f"a tensor is indexed by integers and slices, got "
+                f"{type(selector).__name__}; ttnn's fancier element indexing "
+                f"(Ellipsis, None, a list of indices, a tensor) is not modelled."
+            )
+
+
+def _tile_extent(dim_size: int, tile_dim: int) -> int:
+    """Tiles along a dimension of ``dim_size`` elements.
+
+    A degenerate dimension -- the size-1 one a broadcast operand carries, which
+    :meth:`Tensor._validate_tile_alignment` allows through -- occupies one
+    (partly used) tile rather than none.
+    """
+    return -(-dim_size // tile_dim)
+
+
+def _validate_selector_bounds(
+    start: int, stop: int, extent: int, dim_name: str, unit: str
+) -> None:
+    """Reject bounds that reach outside a dimension of ``extent`` ``unit`` s.
+
+    A kernel addressing data the tensor does not have is a bug in the kernel,
+    so it is reported rather than clamped the way a torch or Python slice would
+    be.  That also covers an out-of-range index, which arrives here as a unit
+    slice, and a negative one, which the specification's ``ttl.Index`` excludes
+    and which would otherwise select nothing at all.
+
+    Raises:
+        IndexError: If the bounds fall outside ``[0, extent]`` or run backwards.
+    """
+    if 0 <= start <= stop <= extent:
+        return
+    raise IndexError(
+        f"{dim_name} slice {start}:{stop} is outside the tensor, which has "
+        f"{extent} {unit}(s) along it"
+    )
 
 
 def _maybe_resolve_nd_shard_spec_for_tensor(
-    tensor_shape: Shape, memory_config: MemoryConfig
+    tensor_shape: Sequence[int], memory_config: MemoryConfig
 ) -> MemoryConfig:
     """Fill ``NdShardSpec.shard_grid`` from tensor shape when it was omitted."""
     if memory_config.strategy != ShardingStrategy.ND_SHARDED:
@@ -1299,17 +1635,277 @@ def _maybe_resolve_nd_shard_spec_for_tensor(
     )
 
 
+class Shape(tuple[int, ...]):
+    """Dimensions of a tensor, mirroring ``ttnn.Shape``.
+
+    Built from one sequence -- ``Shape([d0, d1, ...])`` or
+    ``Shape((d0, d1, ...))`` -- and offering what ttnn's offers: ``len``,
+    integer indexing, iteration, equality, :attr:`rank` and :meth:`to_rank`.
+
+    Everything a shape does not do on a device it does not do here either:
+    ttnn's ``Shape`` is not a sequence type, so slicing, concatenating and
+    repeating one all raise instead of quietly succeeding, which would let
+    code pass under the simulator and fail on hardware.  Convert first, as the
+    specification's examples do: ``list(shape)[:-2]``.
+
+    The base class is still ``tuple`` so that a shape can be handed to torch's
+    factory functions and compared against the plain tuples used as shapes
+    everywhere else.  Two things follow from that, and are the respects in
+    which this remains the looser of the two: ``isinstance(shape, tuple)`` is
+    true here and false on a device, and ``(1,) + shape`` still concatenates,
+    because Python hands that to the tuple on the left.
+
+    One cosmetic difference is deliberate: this prints as ``(2, 3)`` where ttnn
+    prints ``Shape([2, 3])``.  The simulator's diagnostics quote shapes in their
+    messages, alongside the block shapes that are plain tuples, and the ttnn
+    spelling reads badly there.
+
+    This is ttnn's ``Shape``, and is a different type from ``ttl.Shape``
+    (``sim.typedefs.Shape``), which the specification defines as a tuple of
+    dimensions rather than a class and which is only ever an annotation.  Both
+    names are shapes, so this module annotates parameters that accept one as
+    ``Sequence[int]``, which every spelling of a shape satisfies -- an instance
+    of this class, a plain tuple, a list -- and reserves this class for what it
+    returns, matching ttnn, where ``Tensor.shape`` is a ``Shape``.
+    """
+
+    def __new__(cls, *dims: Sequence[int]) -> "Shape":
+        if len(dims) != 1 or isinstance(dims[0], int):
+            spelled = ", ".join(repr(d) for d in dims)
+            raise TypeError(
+                "Shape takes the dimensions as one sequence: "
+                f"Shape([{spelled}]), not Shape({spelled})"
+            )
+        return super().__new__(cls, dims[0])
+
+    @property
+    def rank(self) -> int:
+        """Number of dimensions."""
+        return len(self)
+
+    def to_rank(self, new_rank: int) -> "Shape":
+        """The same dimensions expressed at ``new_rank``.
+
+        Growing prepends 1s; shrinking drops leading dimensions, which each
+        have to be 1 for the shape to survive the trip.
+        """
+        dims = tuple(self)
+        if new_rank >= len(dims):
+            return Shape((1,) * (new_rank - len(dims)) + dims)
+        dropped = dims[: len(dims) - new_rank]
+        if any(d != 1 for d in dropped):
+            raise RuntimeError(
+                f"Can't convert shape rank: {dims} to rank {new_rank} would "
+                f"drop {dropped}, which is not all ones"
+            )
+        return Shape(dims[len(dims) - new_rank :])
+
+    @overload
+    def __getitem__(self, index: SupportsIndex) -> int: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> NoReturn: ...
+
+    def __getitem__(self, index: Union[SupportsIndex, slice]) -> int:
+        if isinstance(index, slice):
+            raise TypeError(
+                "Shape cannot be sliced; index one dimension, or convert "
+                "first: tuple(shape)[1:]"
+            )
+        return super().__getitem__(index)
+
+    def __eq__(self, other: object) -> bool:
+        """Equal to any spelling of the same dimensions, as ttnn's is.
+
+        ttnn converts a list or tuple of sizes to a ``Shape`` before comparing,
+        so a shape equals both spellings there.  Inheriting tuple's comparison
+        would answer False for a list -- not an error a reader would notice,
+        just a different answer than the device gives.
+        """
+        match other:
+            case Shape() | tuple() | list():
+                return tuple(self) == tuple(cast("Sequence[int]", other))
+            case _:
+                return NotImplemented
+
+    def __ne__(self, other: object) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return result
+        return not result
+
+    def __hash__(self) -> int:
+        """Restore the tuple hash that defining ``__eq__`` sets to None."""
+        return super().__hash__()
+
+    def _refuse_ordering(self, other: object) -> NoReturn:
+        raise TypeError(
+            "Shape cannot be ordered; a shape has no order on a device. "
+            "Compare the dimensions that matter, or convert: tuple(shape) < ..."
+        )
+
+    __lt__ = _refuse_ordering
+    __le__ = _refuse_ordering
+    __gt__ = _refuse_ordering
+    __ge__ = _refuse_ordering
+
+    def __add__(self, other: object) -> NoReturn:
+        raise TypeError(
+            "Shape cannot be concatenated; convert first: tuple(shape) + ..."
+        )
+
+    def __mul__(self, count: object) -> NoReturn:
+        raise TypeError("Shape cannot be repeated; convert first: tuple(shape) * n")
+
+    def __rmul__(self, count: object) -> NoReturn:
+        raise TypeError("Shape cannot be repeated; convert first: n * tuple(shape)")
+
+
 def _dtype_element_size(dtype: torch.dtype) -> int:
     """Return the element size in bytes for a torch dtype."""
     return torch.tensor([], dtype=dtype).element_size()
 
 
+def _dtype_size_in_bytes(dtype: "DType", n_elements: int) -> int:
+    """Bytes ``n_elements`` of ``dtype`` occupy on hardware.
+
+    Elements times their width, except for the block-float dtypes, whose shared
+    exponents make the cost more than a per-element constant.
+    """
+    match dtype:
+        case _BFloat8BDtype():
+            return dtype.size_in_bytes(n_elements)
+        case _:
+            return n_elements * _dtype_element_size(dtype)
+
+
+class Tile:
+    """Tile geometry, mirroring ``ttnn.Tile``.
+
+    Exposes the geometry ttnn's does -- :attr:`tile_shape`, :attr:`face_shape`,
+    :attr:`num_faces`, :meth:`get_tile_size` -- and compares by geometry, as
+    ttnn's ``operator==`` does, so two descriptions of the same tile are equal
+    rather than merely identical.  The shapes come back as two-element lists,
+    which is what a ``std::array<uint32_t, 2>`` reaches Python as.
+
+    The simulator models the one 32x32 tile the DSL uses, so any other geometry
+    is refused rather than silently modelled as 32x32.  That is also why
+    :attr:`tile_shape` defaults here while ttnn's constructor requires it: there
+    is only one shape to ask for, and the flags ttnn accepts for the others
+    (``transpose_tile``) are refused.
+    """
+
+    def __init__(
+        self,
+        tile_shape: Sequence[int] = TILE_SHAPE,
+        transpose_tile: bool = False,
+    ) -> None:
+        shape = tuple(int(d) for d in tile_shape)
+        if shape != TILE_SHAPE:
+            raise ValueError(
+                f"the simulator models the {TILE_SHAPE[0]}x{TILE_SHAPE[1]} tile "
+                f"only, got {list(shape)}"
+            )
+        if transpose_tile:
+            raise ValueError("the simulator does not model transposed tiles")
+        self._tile_shape = shape
+
+    @property
+    def tile_shape(self) -> List[int]:
+        return list(self._tile_shape)
+
+    @property
+    def face_shape(self) -> List[int]:
+        return list(FACE_SHAPE)
+
+    @property
+    def num_faces(self) -> int:
+        return math.prod(self._tile_shape) // math.prod(FACE_SHAPE)
+
+    @property
+    def partial_face(self) -> int:
+        """0, since a tile shorter than 32 rows is the only partial-face one.
+
+        An ``int`` and not a ``bool`` because ttnn's is a ``uint32_t``.
+        """
+        return int(self._tile_shape[0] < TILE_SHAPE[0])
+
+    @property
+    def narrow_tile(self) -> int:
+        """0, since a tile narrower than 32 columns is the only narrow one."""
+        return int(self._tile_shape[1] < TILE_SHAPE[1])
+
+    @property
+    def transpose_within_face(self) -> bool:
+        """False: the constructor refuses a transposed tile."""
+        return False
+
+    @property
+    def transpose_of_faces(self) -> bool:
+        """False, for the same reason as :attr:`transpose_within_face`."""
+        return False
+
+    def get_tile_size(self, dtype: "DType") -> int:
+        """Bytes one tile of ``dtype`` occupies, as ttnn reports it.
+
+        Sized from the dtype as declared, so ``ttnn.bfloat16`` gives 2048 bytes
+        even though the simulator backs that data with float32 for host
+        precision. The declared dtype has to be spelled the ttnn way to get the
+        hardware answer: ``torch.bfloat16`` is rebound to ``torch.float32`` under
+        float32 promotion (see "Float32 Promotion" in docs/sphinx/simulator.md),
+        so passing that spelling reports 4096.
+
+        Raises:
+            TypeError: If ``dtype`` is not a dtype. Without this a missing dtype
+                would take torch's default and report a float32 tile.
+        """
+        if not isinstance(dtype, (torch.dtype, _BFloat8BDtype)):
+            raise TypeError(
+                f"get_tile_size needs the tile's dtype, got "
+                f"{type(dtype).__name__}; a tile's size is its geometry times "
+                f"the width of what it holds."
+            )
+        return _dtype_size_in_bytes(dtype, math.prod(self._tile_shape))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Tile):
+            return NotImplemented
+        return (
+            self._tile_shape == other._tile_shape
+            and self.face_shape == other.face_shape
+        )
+
+    def __hash__(self) -> int:
+        return hash((self._tile_shape, FACE_SHAPE))
+
+    def __repr__(self) -> str:
+        return f"Tile with shape: [{self._tile_shape[0]}, {self._tile_shape[1]}]"
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
-    Exposes `.shape`, `.dtype`, and `.layout`.  The layout determines how
-    indices are interpreted: TILE_LAYOUT uses tile-space indexing (each index
-    unit = 32 elements); ROW_MAJOR_LAYOUT uses element-space indexing directly.
+    Exposes `.shape`, `.dtype`, and `.layout`.
+
+    Two shapes are tracked, as ttnn does: :attr:`shape` is the logical one the
+    caller supplied, and :attr:`padded_shape` is the storage it is held in,
+    tile-aligned and at least rank 2 under TILE_LAYOUT.  They differ whenever a
+    logical shape is not tile-aligned -- a `(3, 5)` tensor is stored as
+    `(32, 32)` -- with the logical data in the top-left of the store.  The two
+    spellings of ``to_torch`` differ accordingly: :meth:`to_torch` hands back
+    the padded store, which is what a kernel addresses, while the module-level
+    :func:`ttnn.to_torch` un-pads to :attr:`shape`, as ttnn's does.
+
+    **Indexing is tile-space and diverges from ttnn deliberately.**  ttnn's
+    ``__getitem__`` indexes elements of the logical shape, as torch does, and
+    drops a dimension indexed by an integer.  Here, the layout decides: under
+    TILE_LAYOUT one index unit is one 32x32 tile and no dimension is dropped,
+    which is how the specification addresses tiled blocks and therefore what
+    ``ttl.copy`` needs from its operands; under ROW_MAJOR_LAYOUT indices are
+    elements, as ttnn's are.  So on a 64x64 tiled tensor ``t[0:2, 0:2]`` is all
+    four of its tiles, the whole 64x64, where ttnn would give a 2x2 element
+    view, and ``t[0, :]`` is its first row of tiles, ``(32, 64)``, against
+    ttnn's ``(64,)``.
     """
 
     def __init__(
@@ -1318,14 +1914,30 @@ class Tensor:
         layout: IndexType = TILE_LAYOUT,
         memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
         dtype: Any = None,
+        logical_shape: Optional[Sequence[int]] = None,
     ) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
         self._layout: IndexType = layout
+        # The logical (user-visible) shape, mirroring ttnn.Tensor.shape: the
+        # dimensions of the actual data, before the store is padded out to whole
+        # tiles and before a low-rank input gains the leading unit dimensions
+        # that give it a tileable rank -- a length-N vector is lifted to a 1xN row
+        # (see _normalize_rank_for_layout) and then tile-padded from there.
+        # ``padded_shape`` reports that stored shape.  ``logical_shape`` defaults to the
+        # backing tensor's shape for tensors produced by internal ops (e.g.
+        # arithmetic / slicing), whose data is already at physical extent; the
+        # creation entry points (from_torch / rand / empty / zeros) pass the
+        # caller's original shape so ``.shape`` matches ttnn.
+        self._logical_shape: Tuple[int, ...] = (
+            tuple(int(d) for d in logical_shape)
+            if logical_shape is not None
+            else tuple(tensor.shape)
+        )
         if memory_config.strategy == ShardingStrategy.ND_SHARDED:
             self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
-                tuple(tensor.shape), memory_config
+                tensor.shape, memory_config
             )
         else:
             self.memory_config: MemoryConfig = memory_config
@@ -1348,7 +1960,39 @@ class Tensor:
 
     @property
     def shape(self) -> Shape:
-        return tuple(self._tensor.shape)
+        """Logical (unpadded) shape, mirroring ``ttnn.Tensor.shape``.
+
+        Reflects the dimensions of the actual data as supplied by the caller,
+        which for ``TILE_LAYOUT`` tensors can be smaller (and lower-rank) than
+        the tile-aligned :attr:`padded_shape` used for physical storage.
+        """
+        return Shape(self._logical_shape)
+
+    @property
+    def padded_shape(self) -> Shape:
+        """Shape after tile-alignment padding.
+
+        Mirrors ``ttnn.Tensor.padded_shape``: the shape of the stored data,
+        including any zero padding added to reach ``TILE_SHAPE`` multiples for
+        ``TILE_LAYOUT`` tensors and any leading unit dimensions a low-rank input
+        gained to reach a tileable rank. A length-N vector is lifted to a 1xN row
+        and then padded out with it, so a length-5 vector reports ``(32, 32)``
+        while its :attr:`shape` stays ``(5,)``. For ``ROW_MAJOR_LAYOUT`` this
+        equals ``shape`` apart from a bare scalar, which is stored as a length-1
+        vector.
+        """
+        return Shape(self._tensor.shape)
+
+    @property
+    def tile(self) -> Tile:
+        """Tile descriptor, mirroring ``ttnn.Tensor.tile``.
+
+        Every simulated tensor is held in the same 32x32 tile, so this describes
+        that one.  Built per access rather than handed out from a shared
+        instance, because ttnn returns a value here and code that holds on to one
+        must not be holding a description every other tensor shares.
+        """
+        return Tile()
 
     @property
     def dtype(self) -> Any:
@@ -1396,11 +2040,7 @@ class Tensor:
         n_elements * element_size.  For dtypes with shared exponents
         (e.g. bfloat8_b) this includes the exponent overhead.
         """
-        match self._dtype:
-            case _BFloat8BDtype():
-                return self._dtype.size_in_bytes(n_elements)
-            case _:
-                return n_elements * _dtype_element_size(self._dtype)
+        return _dtype_size_in_bytes(self._dtype, n_elements)
 
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
@@ -1447,27 +2087,30 @@ class Tensor:
         return normalize_selector_to_slice(selector)
 
     @staticmethod
-    def _validate_tile_slice(s: slice, dim_name: str) -> None:
-        """Validate a tile-coordinate slice has explicit bounds and no step.
+    def _resolve_tile_slice(
+        s: slice, tile_count: int, dim_name: str
+    ) -> Tuple[int, int]:
+        """Resolve a tile-coordinate slice to explicit ``(start, stop)`` tile bounds.
+
+        Open ends follow Python slice semantics: a missing start defaults to 0
+        and a missing stop defaults to ``tile_count`` (the full extent along the
+        dimension). This lets ``t[i, :]`` / ``t[:, j]`` select whole rows/columns
+        of tiles.  The bounds are tiles, not elements: see :class:`Tensor` on how
+        that diverges from ttnn.  Steps remain unsupported.
 
         Raises:
-            ValueError: If start or stop is None, or step is set.
+            ValueError: If ``step`` is set.
+            IndexError: If the bounds reach outside the tensor.
         """
-        if s.start is None:
-            raise ValueError(
-                f"Tile slice '{dim_name}' must have explicit start value, "
-                f"got slice({s.start}, {s.stop}, {s.step})"
-            )
-        if s.stop is None:
-            raise ValueError(
-                f"Tile slice '{dim_name}' must have explicit stop value, "
-                f"got slice({s.start}, {s.stop}, {s.step})"
-            )
         if s.step is not None:
             raise ValueError(
                 f"Tile slice '{dim_name}' must not have a step value, "
                 f"got slice({s.start}, {s.stop}, {s.step}). Only simple slices are supported."
             )
+        start = 0 if s.start is None else s.start
+        stop = tile_count if s.stop is None else s.stop
+        _validate_selector_bounds(start, stop, tile_count, dim_name, "tile")
+        return start, stop
 
     def _to_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Translate a coordinate key to an element-space index tuple.
@@ -1511,6 +2154,32 @@ class Tensor:
         cache[key] = result
         return result
 
+    def _resolve_element_key(
+        self, selectors: Tuple[Selector, ...], unit: str
+    ) -> Tuple[Selector, ...]:
+        """Fill in and check element-space selectors against their dimensions.
+
+        The dimensions of a key that are not tile-scaled: a whole row-major
+        key, or the batch part of a tiled one.  Open ends are resolved to the
+        dimension's extent, as :meth:`_resolve_tile_slice` does for the tile
+        dimensions, so that every selector this returns carries an explicit
+        origin.  ``element_slice_starts`` and the slice origin ``__getitem__``
+        accumulates for the locality statistics both read that origin, and an
+        open end would leave them without one -- reporting the parent's origin
+        for a slice that has moved, or refusing the key outright.
+        """
+        resolved: List[Selector] = []
+        for dim, selector in enumerate(selectors):
+            if not isinstance(selector, slice):
+                resolved.append(selector)
+                continue
+            extent = self._tensor.shape[dim]
+            start = 0 if selector.start is None else selector.start
+            stop = extent if selector.stop is None else selector.stop
+            _validate_selector_bounds(start, stop, extent, f"dimension {dim}", unit)
+            resolved.append(slice(start, stop, selector.step))
+        return tuple(resolved)
+
     def _compute_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Uncached body of :meth:`_to_element_key`.
 
@@ -1528,35 +2197,39 @@ class Tensor:
 
         if self._layout == ROW_MAJOR_LAYOUT:
             # Element-space indexing: no tile scaling needed.
-            return normalized
+            return self._resolve_element_key(normalized, "element")
 
         # Tile alignment is a per-tensor invariant; check once and latch.
         if not self._tile_alignment_checked:
             self._validate_tile_alignment()
             self._tile_alignment_checked = True
         if ndim == 1:
-            self._validate_tile_slice(normalized[0], "col")
-            return (
-                slice(
-                    normalized[0].start * TILE_SHAPE[0],
-                    normalized[0].stop * TILE_SHAPE[0],
-                ),
-            )
+            col_tiles = _tile_extent(self._tensor.shape[0], TILE_SHAPE[0])
+            start, stop = self._resolve_tile_slice(normalized[0], col_tiles, "col")
+            return (slice(start * TILE_SHAPE[0], stop * TILE_SHAPE[0]),)
         *batch_s, row_s, col_s = normalized
-        self._validate_tile_slice(row_s, "row")
-        self._validate_tile_slice(col_s, "col")
+        # Batch dimensions carry an implicit tile size of 1, so they are already
+        # element-space and only need filling in and checking.
+        batch_s = list(self._resolve_element_key(tuple(batch_s), "element"))
+        row_tiles = _tile_extent(self._tensor.shape[-2], TILE_SHAPE[0])
+        col_tiles = _tile_extent(self._tensor.shape[-1], TILE_SHAPE[1])
+        row_start, row_stop = self._resolve_tile_slice(row_s, row_tiles, "row")
+        col_start, col_stop = self._resolve_tile_slice(col_s, col_tiles, "col")
         return (
             *batch_s,
-            slice(row_s.start * TILE_SHAPE[0], row_s.stop * TILE_SHAPE[0]),
-            slice(col_s.start * TILE_SHAPE[1], col_s.stop * TILE_SHAPE[1]),
+            slice(row_start * TILE_SHAPE[0], row_stop * TILE_SHAPE[0]),
+            slice(col_start * TILE_SHAPE[1], col_stop * TILE_SHAPE[1]),
         )
 
-    def element_slice_starts(self, key: TensorKey) -> Shape:
+    def element_slice_starts(self, key: TensorKey) -> Tuple[Index, ...]:
         """Element-space start offset per dimension for ``key`` (``slice.start`` values).
 
         Uses the same rules as :meth:`__getitem__`: tile indices for
         ``TILE_LAYOUT`` are converted to element bounds; ``ROW_MAJOR_LAYOUT`` keys
         are already element-space.
+
+        An origin rather than a shape, so it is a tuple of :data:`~sim.typedefs.Index`
+        and not a :class:`Shape`; ttnn has no type for one.
         """
         match key:
             case tuple():
@@ -1574,10 +2247,25 @@ class Tensor:
         return tuple(starts)
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
+        """Select a sub-tensor, addressing tiles under TILE_LAYOUT.
+
+        The key is in tile units for a tiled tensor and element units for a
+        row-major one, and never drops a dimension -- neither of which is what
+        ttnn's element indexing does.  See :class:`Tensor`.
+
+        A selector is an integer or a slice without a step, one per dimension;
+        the fancier keys ttnn accepts are refused by name
+        (:func:`normalize_selector_to_slice`) rather than half-supported.
+        """
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         ek = self._to_element_key(normalized)
-        result = Tensor(self._tensor[cast(Any, ek)], self._layout, self.memory_config)
+        result = Tensor(
+            self._tensor[cast(Any, ek)],
+            self._layout,
+            self.memory_config,
+            dtype=self._dtype,
+        )
         _name = getattr(self, "_name", None)
         if _name is not None:
             result._name = _name  # type: ignore
@@ -1586,31 +2274,23 @@ class Tensor:
             # the position of this slice within the original (root) sharded
             # tensor.  ``ek`` was just computed above so derive starts directly
             # instead of calling ``element_slice_starts(normalized)`` which would
-            # re-invoke ``_to_element_key``.  Open-ended slices (e.g.
-            # ``tensor[:]``) have no computable start, so fall back to the
-            # parent's origin (which is correct when selecting the full extent).
+            # re-invoke ``_to_element_key``.  Every selector ``ek`` holds has an
+            # explicit start, including the open-ended ones (``tensor[:]``),
+            # which are resolved against the dimension they index.
             # _element_origin is only read by try_count_locality() in sharding.py,
             # which is called from _copy_trace_fields() inside if TRACE.enabled:
             # guards in copy.py, so tracking it is a no-op when tracing is off.
             parent_origin: Tuple[int, ...] = getattr(
-                self, "_element_origin", (0,) * len(self.shape)
+                self, "_element_origin", (0,) * self._tensor.ndim
             )
-            starts: list[int] = []
-            valid = True
-            for s in ek:
-                if not isinstance(s, slice) or s.start is None:
-                    valid = False
-                    break
-                starts.append(s.start)
-            if valid:
-                result._element_origin = tuple(  # type: ignore[attr-defined]
-                    p + s for p, s in zip(parent_origin, starts)
-                )
-            else:
-                result._element_origin = parent_origin  # type: ignore[attr-defined]
+            starts = [s.start if isinstance(s, slice) else s for s in ek]
+            result._element_origin = tuple(  # type: ignore[attr-defined]
+                p + s for p, s in zip(parent_origin, starts)
+            )
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
+        """Write a sub-tensor, addressing it as :meth:`__getitem__` does."""
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         self._tensor[cast(Any, self._to_element_key(normalized))] = value._tensor
 
@@ -1619,24 +2299,78 @@ class Tensor:
         layout_str = (
             f", layout={self._layout.name}" if self._layout != TILE_LAYOUT else ""
         )
-        return f"Tensor(shape={tuple(self._tensor.shape)}{layout_str}, data={repr(self._tensor)})"
+        # ``shape`` is the logical one, so that it reads as the tensor's shape
+        # does everywhere else; the stored extent is named separately when it
+        # differs, since the data shown is the padded store.
+        padded = tuple(self._tensor.shape)
+        padded_str = f", padded_shape={padded}" if padded != self._logical_shape else ""
+        return (
+            f"Tensor(shape={self._logical_shape}{padded_str}{layout_str}, "
+            f"data={repr(self._tensor)})"
+        )
 
     def to_torch(self) -> torch.Tensor:
         """Return the raw backing torch tensor.
 
         Returns the underlying storage tensor directly so that callers can
         perform in-place operations.  The backing dtype may differ from the
-        declared dtype when float32 promotion is active.  Use the module-level
-        ttnn.to_torch() function when the result needs to match the declared
-        dtype (e.g. for comparison with native torch tensors).
+        declared dtype when float32 promotion is active.
+
+        This is the padded store, so its shape is :attr:`padded_shape` and not
+        :attr:`shape`, and it deliberately exposes the padding, because the
+        padding is what a kernel sees and what the simulator's tile-level
+        accesses address.  The logical data occupies the top-left of the store
+        (see ``_pad_to_tile_alignment``), so this is not what ttnn's
+        ``to_torch`` returns: use the module-level ``ttnn.to_torch()`` for that,
+        which un-pads as ttnn does and is what a caller comparing against a
+        torch reference wants.
         """
         return self._tensor
 
     # ---- Dry-run helpers ----
 
+    def _broadcast_logical_shape(self, other: "Tensor") -> Tuple[int, ...]:
+        """Logical result shape of an element-wise op, mirroring ttnn broadcasting.
+
+        Broadcasts the operands' *logical* shapes (not the padded storage), so
+        the result's ``.shape`` matches what ttnn reports even when the operands
+        are non-tile-aligned or low-rank.
+        """
+        return tuple(torch.broadcast_shapes(tuple(self.shape), tuple(other.shape)))
+
+    def _matmul_logical_shape(self, other: "Tensor") -> Tuple[int, ...]:
+        """Logical result shape of ``self @ other`` over the logical shapes.
+
+        Uses meta tensors so torch's batched/broadcast matmul rules (and its
+        errors on incompatible dims) apply to the logical shapes without
+        allocating storage.
+        """
+        return tuple(
+            torch.matmul(
+                torch.empty(tuple(self.shape), device="meta"),
+                torch.empty(tuple(other.shape), device="meta"),
+            ).shape
+        )
+
+    def _promoted_dtype(self, other: "Tensor") -> torch.dtype:
+        """The dtype two operands' declared dtypes come to, torch's way.
+
+        Reading the left operand's instead makes ``a + b`` and ``b + a`` report
+        different dtypes for the same computation, and the answer is not only
+        cosmetic: it is what a dataflow buffer built from the result bills as L1
+        (``dfb.capacity_bytes``), so the operands' order would move the hardware
+        limit warning.
+        """
+        return torch.promote_types(self._dtype, other._dtype)
+
     def _zeros_like(self) -> "Tensor":
         """Return a zero tensor with the same shape, dtype, and layout."""
-        return Tensor(torch.zeros_like(self._tensor), self._layout, dtype=self._dtype)
+        return Tensor(
+            torch.zeros_like(self._tensor),
+            self._layout,
+            dtype=self._dtype,
+            logical_shape=self._logical_shape,
+        )
 
     def _zeros_broadcast(self, other: "Tensor") -> "Tensor":
         """Return zeros shaped by broadcasting self and other."""
@@ -1644,7 +2378,8 @@ class Tensor:
         return Tensor(
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,
-            dtype=self._dtype,
+            dtype=self._promoted_dtype(other),
+            logical_shape=self._broadcast_logical_shape(other),
         )
 
     def _zeros_matmul(self, other: "Tensor") -> "Tensor":
@@ -1662,7 +2397,8 @@ class Tensor:
         return Tensor(
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,
-            dtype=self._dtype,
+            dtype=self._promoted_dtype(other),
+            logical_shape=self._matmul_logical_shape(other),
         )
 
     # ---- Binary operations (element-wise) ----
@@ -1673,11 +2409,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor + other._tensor, self._layout)
+                return Tensor(
+                    self._tensor + other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor + other, self._layout)
+                return Tensor(
+                    self._tensor + other,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1687,11 +2433,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor - other._tensor, self._layout)
+                return Tensor(
+                    self._tensor - other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor - other, self._layout)
+                return Tensor(
+                    self._tensor - other,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1701,11 +2457,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor * other._tensor, self._layout)
+                return Tensor(
+                    self._tensor * other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor * other, self._layout)
+                return Tensor(
+                    self._tensor * other,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1715,11 +2481,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor / other._tensor, self._layout)
+                return Tensor(
+                    self._tensor / other._tensor,
+                    self._layout,
+                    dtype=_quotient_dtype(self._promoted_dtype(other)),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor / other, self._layout)
+                return Tensor(
+                    self._tensor / other,
+                    self._layout,
+                    dtype=_quotient_dtype(self._dtype),
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1729,11 +2505,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor // other._tensor, self._layout)
+                return Tensor(
+                    self._tensor // other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor // other, self._layout)
+                return Tensor(
+                    self._tensor // other,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1743,11 +2529,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor % other._tensor, self._layout)
+                return Tensor(
+                    self._tensor % other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor % other, self._layout)
+                return Tensor(
+                    self._tensor % other,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1757,11 +2553,21 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor**other._tensor, self._layout)
+                return Tensor(
+                    self._tensor**other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor**other, self._layout)
+                return Tensor(
+                    self._tensor**other,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1771,7 +2577,12 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_matmul(other)
-                return Tensor(self._tensor @ other._tensor, self._layout)
+                return Tensor(
+                    self._tensor @ other._tensor,
+                    self._layout,
+                    dtype=self._promoted_dtype(other),
+                    logical_shape=self._matmul_logical_shape(other),
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1779,13 +2590,23 @@ class Tensor:
         """Unary negation."""
         if _is_dry_run():
             return self._zeros_like()
-        return Tensor(-self._tensor, self._layout)
+        return Tensor(
+            -self._tensor,
+            self._layout,
+            dtype=self._dtype,
+            logical_shape=self._logical_shape,
+        )
 
     def __abs__(self) -> "Tensor":
         """Absolute value."""
         if _is_dry_run():
             return self._zeros_like()
-        return Tensor(torch.abs(self._tensor), self._layout)
+        return Tensor(
+            torch.abs(self._tensor),
+            self._layout,
+            dtype=self._dtype,
+            logical_shape=self._logical_shape,
+        )
 
     # ---- Reverse binary operations ----
 
@@ -1795,7 +2616,12 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other + self._tensor, self._layout)
+                return Tensor(
+                    other + self._tensor,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1805,7 +2631,12 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other - self._tensor, self._layout)
+                return Tensor(
+                    other - self._tensor,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1815,7 +2646,12 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other * self._tensor, self._layout)
+                return Tensor(
+                    other * self._tensor,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1825,7 +2661,12 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other / self._tensor, self._layout)
+                return Tensor(
+                    other / self._tensor,
+                    self._layout,
+                    dtype=_quotient_dtype(self._dtype),
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1835,7 +2676,12 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other // self._tensor, self._layout)
+                return Tensor(
+                    other // self._tensor,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1845,7 +2691,12 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other % self._tensor, self._layout)
+                return Tensor(
+                    other % self._tensor,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1855,32 +2706,57 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other**self._tensor, self._layout)
+                return Tensor(
+                    other**self._tensor,
+                    self._layout,
+                    dtype=self._dtype,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
 
-def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
-    """Pad a user tensor's last two dims to ``TILE_SHAPE`` multiples.
+def _normalize_rank_for_layout(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
+    """Lift a low-rank tensor to the minimum rank a layout can represent.
 
-    Per the TT-Lang specification every tile is exactly ``TILE_SHAPE``
-    (32x32) scalar elements (see TTLangSpecification.md, tiled-block
-    section).  Logical shapes that are not already tile-aligned have
-    their data placed in the top-left of each output tile by spec
-    convention - ``(N, 1)`` column vectors live in column 0, ``(1, M)``
-    row vectors live in row 0, ``(1, 1)`` scalars at position
-    ``(0, 0)`` - and the remainder of the tile is padding.  The
-    two-step ``block.broadcast`` and ``math.reduce_*`` ops then
-    overwrite that padding when needed.  ``ROW_MAJOR_LAYOUT`` tensors
-    are returned untouched.
+    Mirrors ttnn: a ``TILE_LAYOUT`` tensor needs at least two dimensions to
+    tile, so 0-D / 1-D inputs get leading unit dimensions prepended (a length-N
+    vector becomes a single ``1xN`` row; a bare scalar becomes ``1x1``) before
+    tile-alignment padding fills each 32x32 tile.  ``ROW_MAJOR_LAYOUT`` keeps
+    rank-1 as-is and only lifts a bare scalar to a length-1 vector.
+
+    tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume) shapes
+    straight through ``ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT,
+    device=device)`` (tests/ttnn/nightly/unit_tests/operations/reduction/
+    test_reduction_ops.py, test_generic_ops), so creation ops and ``from_torch``
+    accept them alike.  The lift is storage only: ``.shape`` keeps the rank the
+    caller passed, while ``.padded_shape`` reports the lifted, tile-aligned one.
     """
+    if layout == TILE_LAYOUT and tensor.ndim < 2:
+        return tensor.reshape((1,) * (2 - tensor.ndim) + tuple(tensor.shape))
+    if layout == ROW_MAJOR_LAYOUT and tensor.ndim == 0:
+        return tensor.reshape(1)
+    return tensor
+
+
+def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
+    """Lift rank then pad a user tensor's last two dims to ``TILE_SHAPE`` multiples.
+
+    Low-rank inputs are first normalized via :func:`_normalize_rank_for_layout`
+    so 0-D / 1-D tensors are accepted (matching ttnn), then per the TT-Lang
+    specification every tile is exactly ``TILE_SHAPE`` (32x32) scalar elements
+    (see TTLangSpecification.md, tiled-block section).  Logical shapes that are
+    not already tile-aligned have their data placed in the top-left of each
+    output tile by spec convention - ``(N, 1)`` column vectors live in column 0,
+    ``(1, M)`` row vectors live in row 0, ``(1, 1)`` scalars at position
+    ``(0, 0)`` - and the remainder of the tile is padding.  The two-step
+    ``block.broadcast`` and ``math.reduce_*`` ops then overwrite that padding
+    when needed.  ``ROW_MAJOR_LAYOUT`` tensors are returned untouched apart from
+    lifting a bare scalar to a length-1 vector.
+    """
+    tensor = _normalize_rank_for_layout(tensor, layout)
     if layout != TILE_LAYOUT:
         return tensor
-    if tensor.ndim < 2:
-        raise ValueError(
-            f"TILE_LAYOUT tensors must have at least 2 dimensions, got shape "
-            f"{tuple(tensor.shape)}"
-        )
     h, w = tensor.shape[-2], tensor.shape[-1]
     pad_h = (-h) % TILE_SHAPE[0]
     pad_w = (-w) % TILE_SHAPE[1]
@@ -1892,8 +2768,27 @@ def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Ten
     return torch.nn.functional.pad(tensor, (0, pad_w, 0, pad_h), value=0.0)
 
 
+def _logical_view(tensor: Tensor) -> torch.Tensor:
+    """The logical data of a tensor, without its padding.
+
+    The inverse of :func:`_pad_to_tile_alignment`: that function places the
+    logical data in the top-left of the stored tiles and zero-fills the rest, so
+    the data is recovered by slicing each stored dimension back to its logical
+    extent and dropping the unit dimensions a low-rank input was lifted through.
+    This is what :func:`to_torch` hands out, and what a wrapped ttnn op computes
+    on.  The slice keeps the store's memory, so this is a view for every shape
+    the simulator stores, but callers should treat it as read-only: a shape
+    torch cannot view would come back as a copy, and ttnn's ``to_torch`` returns
+    a host copy in any case.  Use :meth:`Tensor.to_torch` to mutate a tensor.
+    """
+    logical = tuple(tensor.shape)
+    stored = tensor.to_torch()
+    lifted = (1,) * (stored.ndim - len(logical)) + logical
+    return stored[tuple(slice(0, extent) for extent in lifted)].reshape(logical)
+
+
 def rand(
-    shape: Shape,
+    shape: Sequence[int],
     dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
@@ -1901,11 +2796,16 @@ def rand(
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
     raw = torch.rand(shape, dtype=_promote_dtype(dtype))
-    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
+    return Tensor(
+        _pad_to_tile_alignment(raw, layout),
+        layout,
+        dtype=dtype,
+        logical_shape=tuple(shape),
+    )
 
 
 def empty(
-    shape: Shape,
+    shape: Sequence[int],
     dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
@@ -1913,7 +2813,29 @@ def empty(
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
     raw = torch.empty(shape, dtype=_promote_dtype(dtype))
-    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
+    return Tensor(
+        _pad_to_tile_alignment(raw, layout),
+        layout,
+        dtype=dtype,
+        logical_shape=tuple(shape),
+    )
+
+
+def zeros(
+    shape: Sequence[int],
+    dtype: DType = bfloat16,
+    layout: IndexType = TILE_LAYOUT,
+    device: object = None,
+    memory_config: object = None,
+) -> Tensor:
+    """Create a zero-filled tensor with given shape, dtype, and layout."""
+    raw = torch.zeros(shape, dtype=_promote_dtype(dtype))
+    return Tensor(
+        _pad_to_tile_alignment(raw, layout),
+        layout,
+        dtype=dtype,
+        logical_shape=tuple(shape),
+    )
 
 
 def to_torch(
@@ -1922,11 +2844,20 @@ def to_torch(
 ) -> torch.Tensor:
     """Convert a simulator Tensor or torch.Tensor to torch.Tensor.
 
-    Returns the raw backing tensor.  When float32 promotion is active the
-    backing dtype is float32 regardless of the declared dtype; external torch
-    code also uses float32 (torch.bfloat16 is rebound to torch.float32 at
-    module load time), so comparison with natively created tensors works
-    without an additional cast.
+    Returns the tensor's logical data, as ttnn's ``to_torch`` does: the result
+    has the tensor's :attr:`~Tensor.shape` and not its
+    :attr:`~Tensor.padded_shape`, so tile padding never reaches a caller
+    comparing against a torch reference, and ``from_torch`` followed by
+    ``to_torch`` round-trips a tensor of any shape.  The result is a copy, as
+    ttnn's is, so writing to it does not reach the tensor.  Use
+    :meth:`Tensor.to_torch` for the padded store instead, which is what a kernel
+    addresses and is the storage itself, so it is also the way to mutate a
+    tensor in place.
+
+    When float32 promotion is active the dtype is float32 regardless of the
+    declared dtype; external torch code also uses float32 (torch.bfloat16 is
+    rebound to torch.float32 at module load time), so comparison with natively
+    created tensors works without an additional cast.
 
     Args:
         t: Tensor to convert.
@@ -1937,7 +2868,10 @@ def to_torch(
     """
     match t:
         case Tensor() as tw:
-            return tw.to_torch()
+            # A copy, as ttnn's is: on a device the result is host memory, so
+            # writing to it cannot reach the tensor.  Sharing the store would
+            # let a write that a device would drop take effect here.
+            return _logical_view(tw).clone()
         case torch.Tensor() as tt:
             return tt
         case _:
@@ -1974,7 +2908,11 @@ def from_torch(
             sharding metadata is applied.
 
     Returns:
-        Tensor wrapping the input (potentially dtype-converted) torch tensor.
+        Tensor whose :attr:`~Tensor.shape` is the input's, backed by the input
+        (potentially dtype-converted) torch tensor -- rank-lifted and padded into
+        tile-aligned storage when the layout is ``TILE_LAYOUT`` and the input is
+        not already aligned, in which case :attr:`~Tensor.padded_shape` and the
+        backing tensor are larger than the shape passed in.
     """
     if spec is not None:
         if tuple(tensor.shape) != tuple(spec.shape):
@@ -1983,22 +2921,35 @@ def from_torch(
             )
         layout = spec.layout
         eff_dtype = spec.dtype if dtype is None else dtype
-        eff_mc = (
-            spec.memory_config if spec.memory_config is not None else DRAM_MEMORY_CONFIG
-        )
+        eff_mc = spec.memory_config
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
+    # Preserve the caller's logical shape (mirroring ttnn.Tensor.shape) before
+    # rank lifting / tile padding rewrites the storage extent below.
+    logical_shape = tuple(tensor.shape)
+
+    # Rank lifting for low-rank (0-D / 1-D) inputs and tile-alignment padding are
+    # centralized in _pad_to_tile_alignment so from_torch and the creation ops
+    # (rand / empty / zeros) accept the same shapes and produce identical layouts.
     tensor = _pad_to_tile_alignment(tensor, layout)
 
     match eff_dtype:
         case _ if eff_dtype is not None:
             backing = _promote_dtype(eff_dtype)
             converted = tensor if tensor.dtype == backing else tensor.to(backing)
-            result = Tensor(converted, layout, memory_config=eff_mc, dtype=eff_dtype)
+            result = Tensor(
+                converted,
+                layout,
+                memory_config=eff_mc,
+                dtype=eff_dtype,
+                logical_shape=logical_shape,
+            )
         case _:
-            result = Tensor(tensor, layout, memory_config=eff_mc)
+            result = Tensor(
+                tensor, layout, memory_config=eff_mc, logical_shape=logical_shape
+            )
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
         n = mesh_mapper.mesh.num_devices
@@ -2024,7 +2975,7 @@ _SHARD_STRATEGY_MAP: dict[ShardStrategy, ShardingStrategy] = {
 
 
 def create_sharded_memory_config(
-    shape: Union[Tuple[int, ...], List[int]],
+    shape: Sequence[int],
     core_grid: CoreGrid,
     strategy: ShardStrategy,
     orientation: Optional[ShardOrientation] = None,
@@ -2073,7 +3024,7 @@ def create_sharded_memory_config(
 
     match strategy:
         case ShardStrategy.HEIGHT | ShardStrategy.WIDTH:
-            shard_grid: Shape = (core_grid.num_cores,)
+            shard_grid: ShardGrid = (core_grid.num_cores,)
         case ShardStrategy.BLOCK:
             shard_grid = (core_grid.y, core_grid.x)
 
@@ -2107,40 +3058,157 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
 
     Mirrors ttnn.to_memory_config.  The simulator does not move data between
     memory banks; it only updates the MemoryConfig metadata so that subsequent
-    statistics collection uses the new layout.
+    statistics collection uses the new layout.  Everything else about the
+    tensor -- its shape, dtype and layout -- is the same tensor's.
     """
-    result = Tensor(tensor.to_torch(), tensor.layout, memory_config)
+    result = Tensor(
+        tensor.to_torch(),
+        tensor.layout,
+        memory_config,
+        dtype=tensor.dtype,
+        logical_shape=tensor.shape,
+    )
     if hasattr(tensor, "_name"):
         result._name = tensor._name  # type: ignore[attr-defined]
     return result
 
 
+def _golden_logical_result(
+    golden_fn: Callable[..., Any], args: Tuple[Any, ...], kwargs: Dict[str, Any]
+) -> Optional[torch.Tensor]:
+    """Result of a golden-wrapped op computed on its inputs' logical data.
+
+    ttnn's operations are defined on the logical tensor; tile padding is how the
+    simulator stores it, per :func:`_pad_to_tile_alignment`, which puts the
+    logical data in the top-left of the stored tiles and zeroes the rest.
+    Running the op on the padded store instead makes the padding part of the
+    computation, which gets both halves of a result wrong: its shape (a padded
+    ``(3, 5)`` by ``(5, 7)`` matmul reporting ``(32, 32)`` rather than
+    ``(3, 7)``), and, for anything that is not elementwise, its values -- a mean
+    divided by 1024 elements instead of 15, a softmax normalized over 1009
+    zeros it was never given.  It also loses the invariant above for ops that
+    move data: concatenating a padded ``(3, 5)`` onto a padded ``(2, 5)`` leaves
+    the second operand's rows at row 32 of the store, where nothing can read
+    them back as logical data.
+
+    Running on the logical data instead answers all three: the result is what
+    ttnn computes, its shape is the shape of that result, and re-padding it
+    restores the top-left invariant so the store stays readable.  The cost is
+    lower than the padded run's, since the logical data is the smaller tensor.
+
+    Returns ``None`` when this cannot be done, leaving the caller its padded
+    run: when no input is padded (the two runs are then the same computation),
+    when the op will not run on logical extents (an argument derived from the
+    padded ones), or when it does not return a single tensor.
+    """
+    tensors = [a for a in list(args) + list(kwargs.values()) if isinstance(a, Tensor)]
+    if not any(tuple(t.shape) != tuple(t.padded_shape) for t in tensors):
+        return None
+
+    def unpadded(arg: Any) -> Any:
+        match arg:
+            case Tensor():
+                return _logical_view(arg)
+            case _:
+                return arg
+
+    try:
+        result = golden_fn(
+            *(unpadded(a) for a in args),
+            **{k: unpadded(v) for k, v in kwargs.items()},
+        )
+    except Exception:
+        # Deliberately broad: this is arbitrary third-party code being offered
+        # inputs of a size it was not called with, and every way it can decline
+        # -- an unsupported extent, an argument that only makes sense at padded
+        # sizes -- leads here, to the padded run the caller would have made
+        # anyway.  Letting any of them escape would fail a supported call.
+        return None
+    return result if isinstance(result, torch.Tensor) else None
+
+
+def _elementwise_logical_shape(
+    result: torch.Tensor, inputs: Sequence[Any]
+) -> Optional[Tuple[int, ...]]:
+    """Logical shape for an elementwise op result, mirroring ttnn.
+
+    Broadcasts the ``Tensor`` inputs' logical shapes so a module-level op (e.g.
+    ``ttnn.multiply``) reports the same logical ``.shape`` as the equivalent
+    operator (``a * b``) and as real ttnn.  This is the fallback for the calls
+    :func:`_golden_logical_result` leaves to the padded run, which are the ones
+    whose operands carry no padding for it to differ over, plus the few it
+    cannot run.  Returns ``None`` -- i.e. keep the physical shape as the logical
+    default -- when there are no ``Tensor`` inputs, or when the op was not
+    elementwise, so shape-changing ops still report their physical shape.  Not
+    elementwise covers two cases: operands that do not broadcast against each
+    other at all (``linear``'s ``(32, 64)`` and ``(64, 128)``), and operands that
+    do broadcast but whose broadcast does not match the torch result.
+    """
+    tensors = [t for t in inputs if isinstance(t, Tensor)]
+    if not tensors:
+        return None
+    try:
+        logical = tuple(torch.broadcast_shapes(*[tuple(t.shape) for t in tensors]))
+        padded = tuple(
+            torch.broadcast_shapes(*[tuple(t.padded_shape) for t in tensors])
+        )
+    except RuntimeError:
+        # torch reports non-broadcastable operands by raising rather than by
+        # returning, and every golden-wrapped op is routed through here, so
+        # without this the shape bookkeeping of an op like ``linear`` fails the
+        # call itself.  Non-broadcastable operands are not an elementwise op's,
+        # which is the same answer the comparison below reaches for the operands
+        # that do broadcast.
+        return None
+    return logical if tuple(result.shape) == padded else None
+
+
 def add(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise add (simulator shim for ttnn.add)."""
-    if _is_dry_run():
-        return a._zeros_broadcast(b)
-    return Tensor(a.to_torch() + b.to_torch())
+    return a + b
 
 
 def multiply(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise multiply (simulator shim for ttnn.multiply)."""
-    if _is_dry_run():
-        return a._zeros_broadcast(b)
-    return Tensor(a.to_torch() * b.to_torch())
+    return a * b
 
 
 def matmul(a: Tensor, b: Tensor) -> Tensor:
     """Matrix multiply (simulator shim for ttnn.matmul)."""
-    if _is_dry_run():
-        return a._zeros_matmul(b)
-    return Tensor(a.to_torch() @ b.to_torch())
+    return a @ b
 
 
 def relu(a: Tensor) -> Tensor:
     """Element-wise ReLU (simulator shim for ttnn.relu)."""
     if _is_dry_run():
         return a._zeros_like()
-    return Tensor(torch.relu(a.to_torch()))
+    return Tensor(
+        torch.relu(a.to_torch()),
+        a.layout,
+        dtype=a.dtype,
+        logical_shape=a._logical_shape,
+    )
+
+
+def abs(a: Tensor) -> Tensor:
+    """Element-wise absolute value (simulator shim for ttnn.abs)."""
+    return a.__abs__()
+
+
+def exp(a: Tensor, fast_and_approximate_mode: bool = False) -> Tensor:
+    """Element-wise exponential (simulator shim for ttnn.exp).
+
+    ``fast_and_approximate_mode`` is accepted for ttnn API compatibility and
+    ignored; the simulator always computes the exact ``torch.exp``.
+    """
+    if _is_dry_run():
+        return a._zeros_like()
+    return Tensor(
+        torch.exp(a.to_torch()),
+        a.layout,
+        dtype=a.dtype,
+        logical_shape=a._logical_shape,
+    )
 
 
 def split_work_to_cores(
@@ -2399,7 +3467,14 @@ def all_reduce(
     out_memory_config = (
         memory_config if memory_config is not None else input_tensor.memory_config
     )
-    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    # A reduce leaves the shape alone, so the logical one carries over.
+    result_tensor = Tensor(
+        result,
+        input_tensor.layout,
+        out_memory_config,
+        dtype=dtype if dtype is not None else input_tensor.dtype,
+        logical_shape=input_tensor.shape,
+    )
     result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
@@ -2481,7 +3556,9 @@ def all_gather(
     out_memory_config = (
         memory_config if memory_config is not None else input_tensor.memory_config
     )
-    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    result_tensor = Tensor(
+        result, input_tensor.layout, out_memory_config, dtype=input_tensor.dtype
+    )
     result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
@@ -2500,6 +3577,11 @@ def synchronize_device(*args: Any, **kwargs: Any) -> None:
 def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     """Remove dimensions of size 1 from a tensor.
 
+    Operates on the logical tensor, as ttnn's does, and stores the result
+    padded again: a size-1 dimension of the logical shape is a whole tile of
+    the store, so squeezing the store would find nothing to remove and leave
+    the dimension in place.
+
     Args:
         input_tensor: Input tensor
         dim: If specified, only squeeze this dimension if it has size 1.
@@ -2508,12 +3590,14 @@ def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     Returns:
         Tensor with singleton dimensions removed
     """
-    torch_tensor = input_tensor.to_torch()
-    if dim is None:
-        result = torch_tensor.squeeze()
-    else:
-        result = torch_tensor.squeeze(dim)
-    return Tensor(result)
+    logical = _logical_view(input_tensor)
+    result = logical.squeeze() if dim is None else logical.squeeze(dim)
+    return from_torch(
+        result,
+        dtype=input_tensor.dtype,
+        layout=input_tensor.layout,
+        memory_config=input_tensor.memory_config,
+    )
 
 
 # Dynamically generate wrapper functions for all ttnn operations with golden functions
@@ -2531,6 +3615,16 @@ def _create_golden_wrapper(
     """
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Compute on the logical data where the inputs carry padding, and store
+        # the result padded again, so a wrapped op behaves as ttnn's does and
+        # leaves a tensor indistinguishable from a created one.
+        logical_result = _golden_logical_result(golden_fn, args, kwargs)
+        if logical_result is not None:
+            return Tensor(
+                _pad_to_tile_alignment(logical_result, TILE_LAYOUT),
+                logical_shape=tuple(logical_result.shape),
+            )
+
         # Convert Tensor arguments to torch.Tensor
         def convert_arg(arg: Any) -> Any:
             match arg:
@@ -2545,10 +3639,14 @@ def _create_golden_wrapper(
         # Call golden function
         result = golden_fn(*torch_args, **torch_kwargs)
 
-        # Wrap result in Tensor if it's a torch.Tensor
+        # Wrap result in Tensor if it's a torch.Tensor, carrying the logical
+        # shape where the elementwise rule can supply one.
         match result:
             case torch.Tensor():
-                return Tensor(result)
+                logical = _elementwise_logical_shape(
+                    result, list(args) + list(kwargs.values())
+                )
+                return Tensor(result, logical_shape=logical)
             case _:
                 return result
 
@@ -2561,50 +3659,54 @@ def _create_golden_wrapper(
     return wrapper
 
 
-# Functions that should NOT be auto-wrapped (already implemented or would break things)
-_EXCLUDE_FROM_WRAPPING = {
-    # Names here are skipped in addition to any symbol already in this module's
-    # globals() (those are never overwritten by the golden-function loop).
-    # Core infrastructure functions that are already implemented
-    "from_torch",
-    "to_torch",
-    "from_device",
-    "to_device",
-    "to_dtype",
-    "to_layout",
-    "to_memory_config",
-    # Tensor creation functions that are already implemented
-    "empty",
-    "empty_like",
-    "zeros",
-    "zeros_like",
-    "ones",
-    "ones_like",
-    "full",
-    "full_like",
-    "arange",
-    # Built-in functions that shouldn't be wrapped
+# Python builtins this module calls.  The loop below binds each wrapper into
+# globals(), which for one of these names would shadow the builtin for every
+# function in the file.
+_SHADOWS_A_BUILTIN = {
     "min",
     "max",
     "sum",
-    # Functions that return non-tensor types
+}
+
+# Operations the simulator leaves unavailable rather than serve from a golden
+# function.  Each either creates a tensor or decides how one is stored -- its
+# layout, its dtype width, its padding, which core holds which shard -- and how
+# a tensor is stored is the simulator's own business, so a golden run cannot
+# say where the result lands.  Reaching one of these raises AttributeError,
+# which names the gap; a wrapper would answer with a tensor laid out wrongly.
+_DECIDES_THE_STORE = {
+    "arange",
+    "bitcast",
     "clone",
-    "reshape",
-    "permute",
     "concat",
-    "pad",
-    "squeeze",
-    # Sharding/memory functions
+    "empty_like",
+    "from_device",
+    "full",
+    "full_like",
     "interleaved_to_sharded",
     "interleaved_to_sharded_partial",
+    "ones",
+    "ones_like",
+    "pad",
+    "permute",
+    "reallocate",
+    "reshape",
+    "reshard",
     "sharded_to_interleaved",
     "sharded_to_interleaved_partial",
-    "reallocate",
-    "reshard",
     "tilize",
-    "bitcast",
+    "to_device",
+    "to_dtype",
+    "to_layout",
     "typecast",
+    "zeros_like",
 }
+
+# Names the golden-function loop below must not bind.  Anything this module
+# already defines is skipped there in any case, so only names it does not
+# define belong here -- a name that is both would be a claim about this module
+# that could go stale, and test_ttnnsim pins that it cannot.
+_EXCLUDE_FROM_WRAPPING = _SHADOWS_A_BUILTIN | _DECIDES_THE_STORE
 
 # Get all operations with golden functions and create wrappers at module load time
 if TTNN_AVAILABLE:

@@ -629,6 +629,118 @@ class TestNode:
         test_operation(a, b)
 
 
+class TestPerNodeBodyExecution:
+    """The operation body is evaluated once per node in the grid.
+
+    Every node performs the work the body describes, so the simulator evaluates
+    the body once for each of them, with that node's context injected.  The
+    compiler evaluates it once instead and resolves ttl.node() on the device, so
+    a body that mutates state of the enclosing scope behaves differently on the
+    two; the specification does not currently say which is right.
+    """
+
+    def test_body_runs_once_per_node_on_every_call(self) -> None:
+        """Each node evaluates the body, sees its own index, and does so per call.
+
+        The count follows the grid rather than the call, so a second call is a
+        second round of evaluations and not a cached one.
+        """
+        nodes: list[int] = []
+
+        @ttl.operation(grid=(2, 4))
+        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
+            nodes.append(cast(int, ttl.node(dims=1)))
+
+            @ttl.compute()
+            def compute():
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+        a = make_zeros_tensor(32, 32)
+        b = make_zeros_tensor(32, 32)
+
+        test_operation(a, b)
+        assert sorted(nodes) == [0, 1, 2, 3, 4, 5, 6, 7]
+
+        test_operation(a, b)
+        assert sorted(nodes) == sorted([0, 1, 2, 3, 4, 5, 6, 7] * 2)
+
+    def test_nodes_a_pipe_net_leaves_out_still_run_their_setup(self) -> None:
+        """Inactive nodes skip their kernels but not the body that built them.
+
+        Which nodes a pipe net covers is only known once every body has run and
+        its pipes have been collected, so the body runs everywhere first.  On
+        hardware an inactive node allocates nothing, so its dataflow buffers
+        exist here and not there.
+        """
+        setup_nodes: list[int] = []
+        kernel_nodes: list[int] = []
+
+        @ttl.operation(grid=(2, 2))
+        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
+            setup_nodes.append(cast(int, ttl.node(dims=1)))
+            # A single pipe, so two of the four nodes take no part in the net.
+            net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+
+            @ttl.compute()
+            def compute():
+                kernel_nodes.append(cast(int, ttl.node(dims=1)))
+
+            @ttl.datamovement()
+            def dm0():
+                net.if_src(lambda pipe: None)
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+        test_operation(make_zeros_tensor(32, 32), make_zeros_tensor(32, 32))
+
+        assert sorted(setup_nodes) == [0, 1, 2, 3]
+        assert sorted(kernel_nodes) == [0, 2]
+
+    def test_a_unified_statement_with_no_thread_runs_on_every_selected_kernel(
+        self,
+    ) -> None:
+        """In a unified body, only setup and pinned statements run once per node.
+
+        Thread assignment pins a statement through the TT-Lang call it makes, so a
+        statement that makes none belongs to no thread and is replicated onto every
+        kernel the operation selects -- where a side effect happens once per such
+        kernel per node, while the hoisted construction happens once.  Documented in
+        docs/sphinx/simulator.md, and worth pinning because it is the difference
+        between a unified body and the same body written as explicit kernels.
+        """
+        buffers_seen: list[int] = []
+
+        @ttl.operation(grid=(2, 1))
+        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+            buffers_seen.append(id(dfb))
+            blk = dfb.reserve()
+            ttl.copy(a[0:1, 0:1], blk).wait()
+            blk.push()
+            out_blk = dfb.wait()
+            ttl.copy(out_blk, b[0:1, 0:1]).wait()
+            out_blk.pop()
+
+        test_operation(make_zeros_tensor(32, 32), make_zeros_tensor(32, 32))
+
+        # The body only moves data, so it selects one data movement kernel and no
+        # compute kernel. Two nodes: the statement that pins no thread runs on that
+        # one kernel, and each node's kernels see the one buffer its lifted
+        # construction built.
+        assert len(buffers_seen) == 2
+        assert len(set(buffers_seen)) == 2
+
+
 class TestFlattenNodeCoord:
     """Test flatten_node_index() function."""
 
@@ -1227,3 +1339,137 @@ class TestHardwareKeywordsIgnored:
         """An unrecognised keyword argument raises TypeError."""
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             ttl.operation(grid=(1, 1), totally_unknown_option=42)
+
+
+class TestGridValidation:
+    """A grid that names no node is rejected where it is written.
+
+    The node count is a product over the dimensions, so a zero dimension leaves
+    the run with nothing to schedule and a negative one is counted as its
+    absolute contribution.  Both are reported against the grid rather than as a
+    later failure to find a node's state.
+    """
+
+    @pytest.mark.parametrize("grid", [(0, 2), (2, 0), (0, 0), (1, 1, 0)])
+    def test_zero_dimension_rejected(self, grid: Shape) -> None:
+        """A dimension of zero names no node."""
+        with pytest.raises(ValueError, match="names no node"):
+            _make_passthrough_kernel(ttl.operation(grid=grid))
+
+    @pytest.mark.parametrize("grid", [(-1, 2), (-1, -2)])
+    def test_negative_dimension_rejected(self, grid: Shape) -> None:
+        """A negative dimension is rejected rather than multiplied out."""
+        with pytest.raises(ValueError, match="names no node"):
+            _make_passthrough_kernel(ttl.operation(grid=grid))
+
+    def test_empty_grid_rejected(self) -> None:
+        """A grid with no dimensions has no node to run on."""
+        with pytest.raises(ValueError, match="at least one dimension"):
+            _make_passthrough_kernel(ttl.operation(grid=()))
+
+    def test_message_names_the_offending_dimensions(self) -> None:
+        """The message points at which dimensions are wrong, and at the grid."""
+        with pytest.raises(ValueError) as excinfo:
+            _make_passthrough_kernel(ttl.operation(grid=(0, 2)))
+
+        reason = str(excinfo.value)
+        assert "(0, 2)" in reason, reason
+        assert "dimension 0 is 0" in reason, reason
+
+
+class TestOperationInterface:
+    """The signature and body rules an operation must satisfy, with the compiler.
+
+    The specification states them under "Operation function": an operation takes
+    only tensors, parameters have no defaults and the signature no ``*args`` /
+    ``**kwargs``, and the function returns nothing. Everything else it needs is a
+    compile-time argument captured from the enclosing scope.
+
+    The wording asserted here is the compiler's, pinned on that side by
+    test/python/atom/operation_boundaries_invalid.py, because both frontends now
+    raise it from one place (atom_rules.validate_operation_interface). A program
+    the simulator runs and the compiler refuses is the failure mode worth a test:
+    it is found after the simulator has said the program is fine.
+    """
+
+    def test_a_parameter_with_a_default_is_refused(self) -> None:
+        """A default value would be a compile-time argument wearing runtime clothes."""
+        with pytest.raises(ValueError, match=r"cannot have default values.*'b'"):
+
+            @ttl.operation(grid=(1, 1))
+            def op(a: ttnn.Tensor, b: object = None) -> None:
+                pass
+
+    def test_a_variadic_signature_is_refused(self) -> None:
+        """The tensor parameters are the interface, so it cannot be open-ended."""
+        with pytest.raises(ValueError, match=r"\*args or \*\*kwargs.*'rest'"):
+
+            @ttl.operation(grid=(1, 1))
+            def positional(a: ttnn.Tensor, *rest: ttnn.Tensor) -> None:
+                pass
+
+        with pytest.raises(ValueError, match=r"\*args or \*\*kwargs.*'rest'"):
+
+            @ttl.operation(grid=(1, 1))
+            def keyword(a: ttnn.Tensor, **rest: ttnn.Tensor) -> None:
+                pass
+
+    def test_a_body_that_returns_is_refused(self) -> None:
+        """An operation writes its results into its output tensors, and returns none."""
+        with pytest.raises(ValueError, match="cannot return a value"):
+
+            @ttl.operation(grid=(1, 1))
+            def op(a: ttnn.Tensor) -> ttnn.Tensor:
+                return a
+
+    def test_a_kernel_inside_the_body_may_still_return(self) -> None:
+        """The rule is the operation's, not its kernels'.
+
+        A kernel is a function of its own; the walk stops at nested definitions, so
+        a body that writes one is not refused for what that kernel does.
+        """
+        a = make_zeros_tensor(32, 32)
+        out = make_zeros_tensor(32, 32)
+
+        @ttl.operation(grid=(1, 1))
+        def op(src: ttnn.Tensor, dst: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(src, shape=(1, 1), block_count=2)
+
+            @ttl.datamovement()
+            def reader() -> None:
+                block = dfb.reserve()
+                ttl.copy(src[0:1, 0:1], block).wait()
+                block.push()
+
+            @ttl.compute()
+            def nothing() -> None:
+                pass
+
+            @ttl.datamovement()
+            def writer() -> int:
+                block = dfb.wait()
+                ttl.copy(block, dst[0:1, 0:1]).wait()
+                block.pop()
+                return 0
+
+        op(a, out)
+
+    def test_a_body_whose_source_cannot_be_read_is_left_alone(self) -> None:
+        """Only the return rule needs the source, and an unreadable body is not wrong.
+
+        A function defined by ``exec`` (a REPL line, a generated body) has no
+        source to parse. Refusing it would refuse a program that is otherwise
+        fine, so the signature rules still apply and the return rule stands down.
+        """
+        namespace: dict[str, object] = {"ttl": ttl}
+        exec(
+            "@ttl.operation(grid=(1, 1))\n" "def op(a):\n" "    pass\n",
+            namespace,
+        )
+        assert callable(namespace["op"])
+
+        with pytest.raises(ValueError, match="cannot have default values"):
+            exec(
+                "@ttl.operation(grid=(1, 1))\n" "def bad(a=None):\n" "    pass\n",
+                {"ttl": ttl},
+            )

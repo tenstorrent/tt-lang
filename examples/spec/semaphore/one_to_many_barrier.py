@@ -9,33 +9,52 @@
 #
 #     python docs/sphinx/specs/build_spec.py
 #
-# Everything outside the markers (imports, scaffolding) exists so the file can
-# stand on its own and is not copied into the specification.
-
-import math
-
-import torch
+# Everything outside the markers (imports, the @ttl.operation wrapper, the no-
+# op kernels) exists so the file can run standalone; it is not copied into the
+# specification. The marked lines are nested inside @ttl.operation and dedented
+# on render, so these mechanics add nothing to the rendered text.
+#
+# NOTE: the user-facing ttl.Semaphore barrier API is not implemented in the
+# simulator (or the compiler) yet, so this example is expected to fail at the
+# `ttl.Semaphore()` call. It is tracked by tt-lang issues #176 (simulator),
+# #182 (compiler) and #177 (multi-chip). The simulator test asserts exactly
+# that failure; if semaphore support lands, that test will start failing and
+# this example should be promoted to a real, golden-checked test.
 
 import ttl
-import ttnn
 
-# spec:begin
-node_num = ttl.node(dims=1)
-my_barrier = ttl.Semaphore()
-all_barrier = my_barrier.get_remote_multicast()
+# Concrete grid for a standalone run.
+GRID_X, GRID_Y = 2, 2
 
 
-@ttl.datamovement()
-def dm():
-    if node_num == 0:
+@ttl.operation(grid=(GRID_X, GRID_Y))
+def one_to_many_barrier() -> None:
+    # spec:begin
+    node_num = ttl.node(dims=1)
+    my_barrier = ttl.Semaphore()
+    all_barrier = my_barrier.get_remote_multicast()
 
-        # do something on node 0 while non-0 nodes wait...
+    @ttl.datamovement()
+    def dm():
+        if node_num == 0:
 
-        all_barrier.set(1)
-    else:
-        my_barrier.wait_eq(1)
+            # do something on node 0 while non-0 nodes wait...
 
-        # node 0 is done
+            all_barrier.set(1)
+        else:
+            my_barrier.wait_eq(1)
+
+            # node 0 is done
+
+    # spec:end
+
+    @ttl.compute()
+    def _noop_compute() -> None:
+        pass
+
+    @ttl.datamovement()
+    def _noop_dm1() -> None:
+        pass
 
 
-# spec:end
+one_to_many_barrier()

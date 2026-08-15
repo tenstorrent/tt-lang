@@ -9,6 +9,7 @@ context manager syntax, state machine enforcement) and the low-level ring-buffer
 primitives (reserve/wait/push/pop, error contracts, per-node limits).
 """
 
+import inspect
 import pytest
 import subprocess
 import tempfile
@@ -1060,8 +1061,132 @@ def test_l1_limit_counts_unreferenced_dfbs() -> None:
         def noop_dm1():
             pass
 
-    with pytest.warns(UserWarning, match="exceeds the L1 memory limit"):
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
         test_kernel(element)
+
+    # One node, so nothing to attribute: the warning does not name a node.
+    assert "on node" not in str(record[0].message)
+
+
+def test_l1_limit_warns_about_the_worst_node_not_the_first() -> None:
+    """A node-dependent footprint is judged by its largest node, and named.
+
+    The operation body is re-run per node, so a block_count derived from
+    ttl.node() gives each node a footprint of its own: here 2 blocks (4096
+    bytes) on node 0 up to 5 blocks (10240 bytes) on node 3.  Reporting the
+    first node's footprint would report no problem at all, since node 0 fits
+    inside the limit.
+    """
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(8192)  # Allows two 4096-byte blocks, so nodes 0 and 1 fit
+
+    element = make_ones_tile()
+
+    @ttl.operation(grid=(4,))
+    def test_kernel(a):
+        _dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(1, 1), block_count=2 + ttl.node(dims=1)
+        )
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
+        test_kernel(element)
+
+    message = str(record[0].message)
+    assert "10240 bytes on node 3" in message, message
+
+
+def test_the_l1_warning_points_at_the_line_that_ran_the_operation() -> None:
+    """The warning names the caller's line, not a simulator source file.
+
+    A warning is something to act on, and the action is in the caller's code: the
+    buffers to shrink are in the operation it called.  Attributing it inside the
+    simulator also decides where a ``-W`` filter by module applies, and puts the
+    entry in ``sim.program``'s registry rather than the caller's.
+    """
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(4096)
+
+    element = make_ones_tile()
+
+    @ttl.operation(grid=(1,))
+    def test_kernel(a):
+        _dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=4)
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    here = inspect.currentframe()
+    assert here is not None
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
+        call_line = here.f_lineno + 1
+        test_kernel(element)
+
+    assert record[0].filename == __file__, record[0].filename
+    assert record[0].lineno == call_line, record[0].lineno
+
+
+def test_a_tensor_whose_logical_shape_is_not_tile_aligned_backs_a_buffer() -> None:
+    """A buffer is described in the tiles the tensor is stored as, padding included.
+
+    The specification defines a tile grid over ``tensor.padded_shape``, and gives
+    (2, 2, 120, 30) -> [2, 2, 4, 1] as the case that shows why: the trailing
+    dimensions are padded up to whole tiles, so a tensor no dimension of which is
+    a multiple of 32 still has 4 x 1 tiles per batch entry.  Reading the logical
+    shape instead refuses this tensor outright, and every other test here uses an
+    aligned tensor where the two shapes agree.
+    """
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+    try:
+        ragged = ttnn.from_torch(
+            torch.rand(2, 2, 120, 30, dtype=torch.float32), layout=TILE_LAYOUT
+        )
+        assert tuple(ragged.padded_shape) == (2, 2, 128, 32)
+
+        dfb = DataflowBuffer(likeness_tensor=ragged, shape=(2, 2, 4, 1), block_count=2)
+        assert dfb.capacity_tiles == 2 * (2 * 2 * 4 * 1)
+
+        # And the copy paths agree with the buffer about the extent: a round trip
+        # through it returns the tensor, padding and all.
+        out = ttnn.zeros(
+            ttnn.Shape([2, 2, 120, 30]), layout=TILE_LAYOUT, dtype=torch.float32
+        )
+        block = dfb.reserve()
+        copy(ragged, block).wait()
+        block.push()
+
+        held = dfb.wait()
+        copy(held, out).wait()
+        held.pop()
+
+        assert torch.equal(out.to_torch(), ragged.to_torch())
+    finally:
+        clear_current_kernel_type()
 
 
 def test_heterogeneous_dfbs_independent() -> None:
@@ -1495,6 +1620,38 @@ def test_tiled_dfb_rejects_degenerate_innermost_dim():
     likeness_h = Tensor(torch.ones((1, 32), dtype=torch.float32), TILE_LAYOUT)
     with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
         make_dataflow_buffer_like(likeness_h, shape=(1, 1))
+
+
+def test_a_tile_grid_the_likeness_tensor_cannot_supply_is_rejected():
+    """A buffer's block must fit inside the tensor it is built to look like.
+
+    The likeness tensor is what says how big a tile is and how many there are, so
+    asking for a block the tensor cannot describe is answered at construction
+    rather than at the first copy into it, where the mismatch would surface as a
+    shape error about tiles the user never asked for.
+
+    Each of the three ways the request can exceed the likeness is checked: a rank
+    it does not have, more tiles than it holds, and more of a leading dimension
+    than it has.
+    """
+    square = Tensor(torch.ones((32, 32), dtype=torch.float32), TILE_LAYOUT)
+
+    # A rank the likeness does not have: the tile grid is read against the
+    # tensor's dimensions one for one, so there is no dimension to compare to.
+    with pytest.raises(ValueError, match="dimensionality 2 does not match"):
+        DataflowBuffer(likeness_tensor=square, shape=(1, 1, 1), block_count=2)
+
+    # More tiles than the likeness holds: 64x64 is two tiles by two.
+    four_tiles = Tensor(torch.ones((64, 64), dtype=torch.float32), TILE_LAYOUT)
+    too_many_tiles = "has 2 tiles, but tile shape requires at least 4"
+    with pytest.raises(ValueError, match=too_many_tiles):
+        DataflowBuffer(likeness_tensor=four_tiles, shape=(4, 4), block_count=2)
+
+    # More of a leading dimension than the likeness has: leading dimensions count
+    # tiles' worth of batch, not scalars, so 2 is all there is.
+    batched = Tensor(torch.ones((2, 32, 32), dtype=torch.float32), TILE_LAYOUT)
+    with pytest.raises(ValueError, match="size 2, but tile shape requires at least 4"):
+        DataflowBuffer(likeness_tensor=batched, shape=(4, 1, 1), block_count=2)
 
 
 def test_1d_arithmetic_on_blocks():

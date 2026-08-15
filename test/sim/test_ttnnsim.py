@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import math
+import operator
 from collections.abc import Callable
 from typing import Any
 
@@ -14,7 +15,8 @@ from sim.sharding import (
     count_local_remote_l1_dram_for_getitem,
     shard_origin_from_key,
 )
-from sim.ttnnsim import (
+from sim.trace import TRACE
+from sim.ttnnsim import (  # type: ignore[reportPrivateUsage]
     CoreGrid,
     MemoryConfig,
     NdShardSpec,
@@ -25,6 +27,10 @@ from sim.ttnnsim import (
     ShardingStrategy,
     TensorMemoryLayout,
     TensorSpec,
+    _create_golden_wrapper,
+    _golden_logical_result,
+    _logical_view,
+    tile_shape_from_tensor,
 )
 
 
@@ -182,6 +188,12 @@ def test_tensor_get_set_item_and_repr():
     a = torch.arange(12, dtype=torch.float32).reshape(3, 4)
     assert "shape=(3, 4)" in repr(ttnn.Tensor(a))
 
+    # A padded tensor names both shapes: the logical one it reports as .shape,
+    # and the stored extent, which is the shape of the data printed alongside.
+    padded_repr = repr(ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT))
+    assert "shape=(3, 5)" in padded_repr
+    assert "padded_shape=(32, 32)" in padded_repr
+
     # Tile-coordinate get/set require a tile-aligned tensor.
     raw = torch.zeros(64, 64, dtype=torch.float32)
     tw = ttnn.Tensor(raw)
@@ -207,6 +219,55 @@ def test_to_torch_type_errors():
     bogus: Any = Foo()
     with pytest.raises(TypeError):
         ttnn.to_torch(bogus)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        torch.rand(3, 5),
+        torch.rand(64, 32),
+        torch.rand(40),
+        torch.rand(()),
+    ],
+    ids=["unaligned", "aligned", "vector", "scalar"],
+)
+def test_to_torch_un_pads_so_from_torch_round_trips(source: torch.Tensor):
+    """ttnn.to_torch returns the logical tensor, whatever the storage looks like.
+
+    ttnn's to_torch un-pads, which makes from_torch / to_torch an identity for
+    any shape.  Without that a caller comparing against a torch reference has to
+    know the tensor's storage: a logical (3, 5) comes back as (32, 32) with
+    zeros around the data, and a vector comes back with a rank it never had.
+    """
+    tensor = ttnn.from_torch(source, layout=ttnn.TILE_LAYOUT)
+    result = ttnn.to_torch(tensor)
+
+    assert result.shape == source.shape, "to_torch reported the padded storage"
+    assert torch.equal(result, source)
+
+
+def test_to_torch_spellings_split_the_logical_data_from_the_store():
+    """The method is the store; the module-level function is what ttnn returns.
+
+    The simulator needs both: a kernel addresses padded tiles, so ``.to_torch()``
+    hands back the store (the same storage, which is how tests fill a tensor in
+    place), while ``ttnn.to_torch()`` is the ttnn-facing conversion.  Pinning
+    them together here keeps the difference deliberate.
+    """
+    tensor = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+
+    assert tensor.to_torch().shape == tensor.padded_shape == (32, 32)
+    assert ttnn.to_torch(tensor).shape == tensor.shape == (3, 5)
+    # The logical data is the top-left of the store, so the two agree there.
+    assert torch.equal(ttnn.to_torch(tensor), tensor.to_torch()[0:3, 0:5])
+
+    tensor.to_torch().fill_(4.0)
+    assert torch.all(ttnn.to_torch(tensor) == 4.0), "the store is not the tensor's own"
+
+    # And only that spelling writes through: on a device ttnn.to_torch lands in
+    # host memory, so a write to it is dropped.
+    ttnn.to_torch(tensor).fill_(7.0)
+    assert torch.all(tensor.to_torch() == 4.0), "ttnn.to_torch was not a copy"
 
 
 # ---- Tile-based indexing tests ----
@@ -262,11 +323,10 @@ def test_tensor_0d_raises():
 
 def test_tensor_tile_indexing_invalid_shape():
     """Test that tile indexing fails for key length mismatches."""
-    # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor reaches
-    # _validate_tile_slice, which requires an explicit start value and raises.
+    # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor resolves the
+    # open start to tile 0, selecting the first tile.
     t1d = ttnn.Tensor(torch.randn(64))
-    with pytest.raises(ValueError, match="must have explicit start value"):
-        _ = t1d[slice(None, 1)]  # missing start -> our validation catches it
+    assert t1d[slice(None, 1)].shape == (32,)
 
     # 2-element key on a 4-D tensor: rank mismatch must be caught explicitly
     # rather than silently treating only the last two dims.
@@ -420,11 +480,15 @@ def test_tensor_binary_ops_reject_torch_tensor():
 #     tile layout.  Their inputs are small ad-hoc tensors (e.g. ``(2, 2)`` or
 #     ``(4, 4)``) chosen for readability of the expected values, not for tile
 #     alignment.
-#   - Under ``TILE_LAYOUT`` the shim auto-pads such inputs to ``(32, 32)``
-#     (per ``_pad_to_tile_alignment`` in ``ttnnsim.py``), which would muddy
-#     the exact-shape assertions used here.  We therefore pass
-#     ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly so the original shape is
-#     round-trip-preserved.
+#   - Under ``TILE_LAYOUT`` the shim would store such inputs padded to
+#     ``(32, 32)`` (per ``_pad_to_tile_alignment`` in ``ttnnsim.py``).  ``.shape``
+#     would still read back as written, since it is the logical shape, but the
+#     comparisons below read the store through ``Tensor.to_torch()``, which keeps
+#     the padding, and would have to slice it rather than compare it whole.  We
+#     therefore pass ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly, which stores
+#     the input as-is.  (The module-level ``ttnn.to_torch()`` un-pads, so it is
+#     the other way to compare a padded result; these tests predate it and read
+#     the store directly.)
 #   - Coverage for the tile-layout shim behaviour (auto-pad + arithmetic on
 #     padded inputs) lives in the ``test_tile_layout_shim_*`` tests further
 #     down, alongside the ``_pad_to_tile_alignment`` tests.
@@ -434,8 +498,9 @@ def test_tensor_binary_ops_reject_torch_tensor():
 def test_multiply_basic():
     """Test basic element-wise multiplication.
 
-    Uses ROW_MAJOR_LAYOUT so the (2, 2) shape is round-trip-preserved; the
-    purpose here is to exercise the shim's multiply, not tile semantics.
+    Uses ROW_MAJOR_LAYOUT so the (2, 2) input is stored unpadded and the result
+    can be compared whole; the purpose here is to exercise the shim's multiply,
+    not tile semantics.
     """
     a = ttnn.from_torch(
         torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16),
@@ -547,6 +612,49 @@ def test_multiply_large_tensors():
     assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
 
 
+def test_derived_tensors_keep_the_dtype_and_layout_they_came_from() -> None:
+    """A computed tensor reports the dtype and layout of the operand it came
+    from, as ttnn's does.
+
+    The declared dtype is not the dtype of the store: the simulator backs a
+    bfloat16 tensor with float32 for host precision, so reading it off the
+    store would report float32 and cost twice the L1 bytes -- the figure
+    DataflowBuffer.capacity_bytes and the hardware-limit warnings are computed
+    from.  A row-major operand also has to stay row-major, or the result would
+    be indexed in tile space.
+    """
+    a = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
+    b = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
+    tile_bytes = 2 * 32 * 32
+
+    for derived in (
+        a + b,
+        a * b,
+        a - b,
+        a / b,
+        a @ b,
+        -a,
+        a.__abs__(),
+        a + 1.0,
+        1.0 + a,
+        a[0:1, 0:1],
+        ttnn.add(a, b),
+        ttnn.multiply(a, b),
+        ttnn.matmul(a, b),
+        ttnn.relu(a),
+        ttnn.abs(a),
+        ttnn.exp(a),
+    ):
+        assert derived.dtype == ttnn.bfloat16
+        assert derived.size_in_bytes(32 * 32) == tile_bytes
+        assert derived.layout == ttnn.TILE_LAYOUT
+
+    row = ttnn.rand((8, 8), dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT)
+    assert (row + row).layout == ttnn.ROW_MAJOR_LAYOUT
+    assert ttnn.add(row, row).layout == ttnn.ROW_MAJOR_LAYOUT
+    assert ttnn.exp(row).layout == ttnn.ROW_MAJOR_LAYOUT
+
+
 # ---- Core coordinate classes tests ----
 
 
@@ -620,6 +728,48 @@ def test_core_range_set_empty():
     rs = ttnn.CoreRangeSet([])
     assert rs.num_cores() == 0
     assert len(rs.ranges()) == 0
+    assert rs.empty()
+    with pytest.raises(ValueError, match="no bounding box"):
+        rs.bounding_box()
+
+
+def test_core_ranges_answer_the_questions_ttnn_answers():
+    """A set of ranges reports its extent, its members and its size.
+
+    tt-lang's own runtime asks a core range set for its bounding box when it
+    turns a grid into kernel arguments, and both types have to be usable as
+    dictionary keys because a memory config holding one is compared by value.
+    """
+    lower = ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 1))
+    upper = ttnn.CoreRange(ttnn.CoreCoord(3, 2), ttnn.CoreCoord(4, 4))
+    both = ttnn.CoreRangeSet([lower, upper])
+
+    assert both.bounding_box() == ttnn.CoreRange(
+        ttnn.CoreCoord(0, 0), ttnn.CoreCoord(4, 4)
+    )
+    assert both.size() == 2 and both.num_cores() == 4 + 6
+    assert not both.empty()
+
+    assert lower.grid_size() == ttnn.CoreCoord(2, 2)
+    assert lower.contains(ttnn.CoreCoord(1, 0))
+    assert not lower.contains(ttnn.CoreCoord(2, 0))
+    assert lower.contains(ttnn.CoreRange(ttnn.CoreCoord(1, 1), ttnn.CoreCoord(1, 1)))
+
+    assert both.contains(ttnn.CoreCoord(4, 4))
+    assert not both.contains(ttnn.CoreCoord(2, 2))
+
+    assert len({both, ttnn.CoreRangeSet([lower, upper])}) == 1
+
+
+def test_a_core_grid_takes_its_sizes_by_name():
+    """ttnn's CoreGrid is keyword-only, and its order is the other way round.
+
+    A positional pair would read as ``(y, x)`` here and ``(x, y)`` there, so
+    the same call would describe a grid and its transpose.
+    """
+    assert ttnn.CoreGrid(y=2, x=8).num_cores == 16
+    with pytest.raises(TypeError):
+        ttnn.CoreGrid(2, 8)  # type: ignore[call-arg]
 
 
 # ---- split_work_to_cores tests ----
@@ -851,35 +1001,93 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     ``(1, 1)`` scalars at position ``(0, 0)``; broadcast / reduce then
     overwrite the padding (steps 1 and 2 respectively) when needed.
     """
+    # ``.shape`` reports the logical (unpadded) shape, mirroring ttnn.Tensor.shape;
+    # ``.padded_shape`` reports the tile-aligned physical storage.
     col = ttnn.from_torch(torch.arange(32, dtype=torch.float32).reshape(32, 1))
-    assert col.shape == (32, 32)
+    assert col.shape == (32, 1)
+    assert col.padded_shape == (32, 32)
     assert torch.equal(col.to_torch()[:, 0], torch.arange(32, dtype=torch.float32))
     assert torch.all(col.to_torch()[:, 1:] == 0)
 
     row = ttnn.from_torch(torch.arange(32, dtype=torch.float32).reshape(1, 32))
-    assert row.shape == (32, 32)
+    assert row.shape == (1, 32)
+    assert row.padded_shape == (32, 32)
     assert torch.equal(row.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
     assert torch.all(row.to_torch()[1:, :] == 0)
 
     scalar = ttnn.from_torch(torch.tensor([[3.5]], dtype=torch.float32))
-    assert scalar.shape == (32, 32)
+    assert scalar.shape == (1, 1)
+    assert scalar.padded_shape == (32, 32)
     assert scalar.to_torch()[0, 0].item() == 3.5
     assert torch.all(scalar.to_torch()[1:, :] == 0)
     assert torch.all(scalar.to_torch()[:, 1:] == 0)
 
     odd = ttnn.from_torch(torch.ones((4, 4), dtype=torch.float32))
-    assert odd.shape == (32, 32)
+    assert odd.shape == (4, 4)
+    assert odd.padded_shape == (32, 32)
     assert torch.all(odd.to_torch()[:4, :4] == 1.0)
     assert torch.all(odd.to_torch()[4:, :] == 0)
     assert torch.all(odd.to_torch()[:, 4:] == 0)
 
-    # 1-D tensors still cannot be tile-laid out (no second tile dim to pad).
-    with pytest.raises(ValueError, match="at least 2 dimensions"):
-        ttnn.from_torch(torch.ones((32,)), layout=ttnn.TILE_LAYOUT)
+    # 0-D / 1-D inputs are accepted and padded up to a full tile, matching ttnn:
+    # tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume) shapes
+    # straight through ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT, device=device)
+    # (tests/ttnn/nightly/unit_tests/operations/reduction/test_reduction_ops.py,
+    # test_generic_ops parametrizes tensor_shape over (), (2,), ...). ``.shape``
+    # preserves the logical rank (a length-N vector stays ``(N,)``), while
+    # ``.padded_shape`` / ``.tile`` expose the lifted tile geometry the spec
+    # examples read (a length-N vector tiles as a single ``1xN`` row).
+    vec = ttnn.from_torch(
+        torch.arange(32, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+    )
+    assert vec.shape == (32,)
+    assert vec.padded_shape == (32, 32)
+    assert vec.tile.tile_shape == [32, 32]
+    assert torch.equal(vec.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
+    assert torch.all(vec.to_torch()[1:, :] == 0)
 
-    # rand / empty take a shape directly; they pad transparently too.
-    assert ttnn.rand((32, 1)).shape == (32, 32)
-    assert ttnn.empty((4, 4)).shape == (32, 32)
+    long_vec = ttnn.from_torch(torch.ones((128,)), layout=ttnn.TILE_LAYOUT)
+    assert long_vec.shape == (128,)
+    assert long_vec.padded_shape == (32, 128)
+
+    # The lifted row is then padded like any other shape, so a vector whose length
+    # is not a tile multiple does not stay 1xN: it reports a whole tile.
+    short_vec = ttnn.from_torch(torch.ones((5,)), layout=ttnn.TILE_LAYOUT)
+    assert short_vec.shape == (5,)
+    assert short_vec.padded_shape == (32, 32)
+
+    scalar_0d = ttnn.from_torch(
+        torch.tensor(3.5, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+    )
+    assert scalar_0d.shape == ()
+    assert scalar_0d.padded_shape == (32, 32)
+    assert scalar_0d.to_torch()[0, 0].item() == 3.5
+    assert torch.all(scalar_0d.to_torch()[1:, :] == 0)
+    assert torch.all(scalar_0d.to_torch()[:, 1:] == 0)
+
+    # rand / empty / zeros take a shape directly; they track the logical shape
+    # and lift/pad for storage identically to from_torch, so ttnn.rand(Shape([M]))
+    # and from_torch(torch.rand(M)) agree on both .shape and .padded_shape.
+    assert ttnn.rand((32, 1)).shape == (32, 1)
+    assert ttnn.rand((32, 1)).padded_shape == (32, 32)
+    assert ttnn.empty((4, 4)).shape == (4, 4)
+    assert ttnn.empty((4, 4)).padded_shape == (32, 32)
+    assert ttnn.rand(ttnn.Shape([32])).shape == (32,)
+    assert ttnn.rand(ttnn.Shape([32])).padded_shape == (32, 32)
+    assert ttnn.zeros(ttnn.Shape([128])).shape == (128,)
+    assert ttnn.zeros(ttnn.Shape([128])).padded_shape == (32, 128)
+    assert ttnn.empty(ttnn.Shape([3])).shape == (3,)
+    assert ttnn.empty(ttnn.Shape([3])).padded_shape == (32, 32)
+    assert ttnn.zeros(ttnn.Shape([])).shape == ()
+    assert ttnn.zeros(ttnn.Shape([])).padded_shape == (32, 32)
+    # Row-major creation keeps the logical shape; storage lifts only a bare
+    # scalar to a length-1 vector, which shows up in .padded_shape.
+    rm_scalar = ttnn.zeros(ttnn.Shape([]), layout=ttnn.ROW_MAJOR_LAYOUT)
+    assert rm_scalar.shape == ()
+    assert rm_scalar.padded_shape == (1,)
+    rm_vec = ttnn.zeros(ttnn.Shape([5]), layout=ttnn.ROW_MAJOR_LAYOUT)
+    assert rm_vec.shape == (5,)
+    assert rm_vec.padded_shape == (5,)
 
     # Row-major preserves the original shape exactly.
     assert ttnn.from_torch(torch.ones((32, 1)), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (
@@ -890,6 +1098,388 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
         4,
         4,
     )
+
+
+def test_shapes_are_taken_in_any_spelling_and_returned_as_shape():
+    """A shape is accepted however it is spelled, and reported back as a Shape.
+
+    ttnn takes a shape as a ``Shape``, a tuple, or a list, and reports one as a
+    ``Shape``; the simulator's annotations say the same (``Sequence[int]`` on
+    the way in, ``Shape`` on the way out) so that a caller passing the plain
+    tuple that every example and test passes type-checks.  A ``Shape`` is a
+    tuple subclass, so it compares equal to the tuple it was built from, which
+    is what lets the assertions elsewhere in this file compare against tuples.
+    """
+    spellings = [ttnn.Shape([2, 32]), (2, 32), [2, 32], ttnn.Shape((2, 32))]
+    for shape in spellings:
+        for create in (ttnn.rand, ttnn.zeros, ttnn.empty):
+            assert create(shape).shape == (2, 32), f"{create.__name__} rejected {shape}"
+
+    tensor = ttnn.zeros((3, 5))
+    assert isinstance(tensor.shape, ttnn.Shape)
+    assert isinstance(tensor.padded_shape, ttnn.Shape)
+    assert tensor.shape == (3, 5) and tensor.padded_shape == (32, 32)
+
+    # A tile's geometry is not one of these: ttnn reports it as a plain list of
+    # two, which is what a std::array<uint32_t, 2> becomes in Python.
+    assert tensor.tile.tile_shape == [32, 32]
+
+    # Note that this class is ttnn's Shape.  ttl.Shape (sim.typedefs.Shape) is
+    # the specification's shape type and a separate thing: an annotation for the
+    # tuples the DSL passes around, not a class to construct.
+
+
+def test_shape_offers_what_ttnn_shape_offers():
+    """The readable surface of a Shape matches ttnn's.
+
+    Spelled out as constants, and compared against the installed ttnn by
+    ``test_the_shape_and_tile_surface_matches_the_installed_ttnn``.
+    """
+    shape = ttnn.Shape([2, 3, 32])
+
+    assert len(shape) == 3
+    assert shape.rank == 3
+    assert shape[0] == 2 and shape[-1] == 32
+    assert list(shape) == [2, 3, 32]
+    # Equal to either spelling of the same dimensions, as ttnn's is: it takes a
+    # list or tuple of sizes as a Shape before comparing.
+    assert shape == (2, 3, 32)
+    assert shape == [2, 3, 32]
+    assert shape != [2, 3, 64]
+    assert shape != 3
+    # And still usable as a key, interchangeably with the tuple it equals.
+    keyed: dict[tuple[int, ...], str] = {(2, 3, 32): "tile grid"}
+    assert keyed[shape] == "tile grid"
+
+    # to_rank pads with leading ones to grow, and drops leading ones to shrink.
+    assert ttnn.Shape([32, 64]).to_rank(4) == (1, 1, 32, 64)
+    assert ttnn.Shape([1, 1, 32, 64]).to_rank(2) == (32, 64)
+    assert ttnn.Shape([32, 64]).to_rank(2) == (32, 64)
+    with pytest.raises(RuntimeError, match="Can't convert shape rank"):
+        ttnn.Shape([2, 32, 64]).to_rank(2)
+
+
+@pytest.mark.parametrize(
+    "spelling, message",
+    [
+        (lambda: ttnn.Shape(2, 32), "one sequence"),  # type: ignore[arg-type]
+        (lambda: ttnn.Shape(32), "one sequence"),  # type: ignore[arg-type]
+        (lambda: ttnn.Shape([2, 32])[1:], "cannot be sliced"),
+        (lambda: ttnn.Shape([2, 32]) + (1,), "cannot be concatenated"),
+        (lambda: ttnn.Shape([2, 32]) * 2, "cannot be repeated"),
+        (lambda: 2 * ttnn.Shape([2, 32]), "cannot be repeated"),
+        (lambda: ttnn.Shape([2, 32]) < (3, 32), "cannot be ordered"),
+        (lambda: ttnn.Shape([2, 32]) >= ttnn.Shape([2, 32]), "cannot be ordered"),
+    ],
+)
+def test_shape_refuses_what_a_device_shape_refuses(
+    spelling: Callable[[], Any], message: str
+):
+    """Code that a device would reject is rejected here too.
+
+    ttnn's Shape takes its dimensions as one sequence and is not a sequence
+    type itself, so none of these work against hardware.  The simulator's is a
+    tuple underneath and would happily do all of them, which is exactly how a
+    kernel comes to pass in simulation and fail on a device.
+    """
+    with pytest.raises(TypeError, match=message):
+        spelling()
+
+
+def test_tiles_describe_their_geometry_as_ttnn_does():
+    """A tile reports the geometry ttnn reports, and compares by it.
+
+    ttnn's Tile is a description of a tile, not an identity: two of them that
+    describe the same tile are equal.  Reading one off two tensors, or building
+    one directly, all have to agree.
+
+    The numbers here are ttnn's, written out as constants because ttnn need not
+    be installed to run this;
+    ``test_the_shape_and_tile_surface_matches_the_installed_ttnn`` reads them off
+    the real thing where there is one.
+    """
+    tile = ttnn.zeros((32, 32)).tile
+
+    assert tile.tile_shape == [32, 32]
+    assert tile.face_shape == [16, 16]
+    assert tile.num_faces == 4
+    assert repr(tile) == "Tile with shape: [32, 32]"
+    # A full 32x32 tile, laid out as it comes: none of the flags ttnn reports
+    # about a smaller or transposed one are set.
+    assert tile.partial_face == 0
+    assert tile.narrow_tile == 0
+    assert tile.transpose_within_face is False
+    assert tile.transpose_of_faces is False
+
+    # 1024 elements at the declared dtype's width, even where the simulator
+    # backs a narrow float with float32.  bfloat8_b adds its shared exponents:
+    # one byte per group of 16 elements.
+    assert tile.get_tile_size(ttnn.bfloat16) == 2048
+    assert tile.get_tile_size(torch.float32) == 4096
+    assert tile.get_tile_size(torch.uint8) == 1024
+    assert tile.get_tile_size(ttnn.bfloat8_b) == 1024 + 64
+
+    assert tile == ttnn.Tile() == ttnn.zeros((64, 64)).tile
+    assert tile != object()
+    assert len({tile, ttnn.Tile()}) == 1
+
+    # Reading .tile is reading a value, as it is in ttnn: two tensors describe the
+    # same tile without handing out one object between them.
+    assert tile is not ttnn.zeros((64, 64)).tile
+
+    # Handing out the geometry does not hand out the tile's state.
+    shape = tile.tile_shape
+    shape.append(1)
+    assert tile.tile_shape == [32, 32]
+
+    # A tile's size needs a dtype; without asking, torch's default would answer
+    # for a missing one and report a float32 tile.
+    with pytest.raises(TypeError, match="needs the tile's dtype"):
+        tile.get_tile_size(None)  # type: ignore[arg-type]
+
+
+@requires_ttnn
+def test_the_shape_and_tile_surface_matches_the_installed_ttnn():
+    """The constants the shim pins are read off real ttnn where there is one.
+
+    The tests above spell out ttnn's surface -- a rank, a rank conversion, a
+    face shape, a tile size per dtype -- as constants, which is all they can do
+    without ttnn installed.  This is the one that compares them, so drift in the
+    thing being mirrored shows up as a failure here rather than as a shim that
+    quietly stopped matching.
+    """
+    import ttnn as real_ttnn  # type: ignore[reportMissingImports]
+
+    shape = real_ttnn.Shape([2, 3])
+    assert shape.rank == ttnn.Shape([2, 3]).rank == 2
+    assert tuple(shape.to_rank(4)) == tuple(ttnn.Shape([2, 3]).to_rank(4))
+    with pytest.raises(Exception, match="onvert shape rank"):
+        real_ttnn.Shape([2, 3]).to_rank(1)
+
+    tile = real_ttnn.Tile([32, 32])
+    assert tile.tile_shape == ttnn.Tile().tile_shape
+    assert tile.face_shape == ttnn.Tile().face_shape
+    assert tile.num_faces == ttnn.Tile().num_faces
+    assert repr(tile) == repr(ttnn.Tile())
+
+    # The sizes come from ttnn.tile_size rather than from the tile itself:
+    # Tile.get_tile_size pads the shared exponents to the device's L1 alignment,
+    # so it reads the device context and raises a map lookup error where none has
+    # been initialized -- and these tests open no device. ttnn's free function is
+    # the same number for the 32x32 tile and answers without one.
+    for dtype_name in ("bfloat16", "float32", "bfloat8_b"):
+        real_size = real_ttnn.tile_size(getattr(real_ttnn, dtype_name))
+        assert real_size == ttnn.Tile().get_tile_size(
+            getattr(ttnn, dtype_name)
+        ), f"{dtype_name} tile size drifted"
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"tile_shape": (16, 32)}, "models the 32x32 tile only"),
+        ({"tile_shape": (32, 32), "transpose_tile": True}, "transposed tiles"),
+    ],
+)
+def test_tile_refuses_geometry_the_simulator_does_not_model(
+    kwargs: dict[str, Any], message: str
+):
+    """Tiles the simulator cannot model say so.
+
+    ttnn supports several tile geometries and a transposed tile; the DSL uses
+    one 32x32 tile, and everything here assumes it, so asking for another has
+    to fail rather than be quietly treated as 32x32.
+    """
+    with pytest.raises(ValueError, match=message):
+        ttnn.Tile(**kwargs)
+
+
+def test_specs_report_their_shapes_as_ttnn_does():
+    """A spec holds a Shape, whatever spelling built it.
+
+    ttnn's ``TensorSpec.shape`` and ``NdShardSpec.shard_shape`` are both
+    ``Shape``, so reading one back gets the class and its surface, not the list
+    or tuple the caller happened to pass.
+    """
+    spec = TensorSpec(shape=[2, 64, 512], dtype=torch.float32)
+    assert isinstance(spec.shape, ttnn.Shape)
+    assert spec.shape == (2, 64, 512) and spec.shape.rank == 3
+
+    nd = NdShardSpec(shard_shape=[1, 32, 512], shard_grid=(2, 2, 1))
+    assert isinstance(nd.shard_shape, ttnn.Shape)
+    assert nd.shard_shape == (1, 32, 512)
+
+
+def test_tile_grids_are_block_shapes_not_ttnn_shapes():
+    """A tile grid comes back as a plain tuple, so the DSL can slice it.
+
+    ttnn has no tile-grid shape; the grid is a block shape (``ttl.Shape``),
+    and the block bookkeeping that consumes it slices and concatenates it.
+    """
+    tensor = ttnn.zeros((64, 96))
+    grid = tile_shape_from_tensor(tensor)
+
+    assert grid == (2, 3)
+    assert type(grid) is tuple
+    assert grid[:-1] + (1,) == (2, 1)
+
+
+def test_arithmetic_propagates_logical_shape():
+    """Element-wise / matmul results report ttnn-logical shapes.
+
+    Derived tensors broadcast the operands' *logical* shapes (not the padded
+    storage), so ``.shape`` matches ttnn even when operands are non-tile-aligned
+    or low-rank; ``.padded_shape`` still reports the tile-aligned storage.
+    """
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    assert a.shape == (3, 5)
+    assert a.padded_shape == (32, 32)
+
+    # Tensor-tensor element-wise: logical broadcast, padded stays tile-aligned.
+    assert (a + a).shape == (3, 5)
+    assert (a + a).padded_shape == (32, 32)
+    assert (a * a).shape == (3, 5)
+
+    # Scalar, reverse-scalar, and unary ops preserve the logical shape.
+    assert (a * 2).shape == (3, 5)
+    assert (2 + a).shape == (3, 5)
+    assert (2 - a).shape == (3, 5)
+    assert (-a).shape == (3, 5)
+    assert abs(a).shape == (3, 5)
+
+    # Broadcasting operands of differing logical shape.
+    row = ttnn.from_torch(torch.rand(1, 5), layout=ttnn.TILE_LAYOUT)
+    col = ttnn.from_torch(torch.rand(3, 1), layout=ttnn.TILE_LAYOUT)
+    assert (row + col).shape == (3, 5)
+    assert (row + col).padded_shape == (32, 32)
+
+    # Low-rank (1-D) operands keep their logical rank.
+    vec = ttnn.from_torch(torch.rand(5), layout=ttnn.TILE_LAYOUT)
+    assert vec.shape == (5,)
+    assert (vec + vec).shape == (5,)
+    assert (vec * 3).shape == (5,)
+
+    # Matmul over logical shapes: (3,5) @ (5,7) -> (3,7).
+    y = ttnn.from_torch(torch.rand(5, 7), layout=ttnn.TILE_LAYOUT)
+    prod = a @ y
+    assert prod.shape == (3, 7)
+    assert prod.padded_shape == (32, 32)
+
+
+_ARITHMETIC_OPERATORS: list[tuple[str, Callable[[Any, Any], Any]]] = [
+    ("add", operator.add),
+    ("sub", operator.sub),
+    ("mul", operator.mul),
+    ("truediv", operator.truediv),
+    ("floordiv", operator.floordiv),
+    ("mod", operator.mod),
+    ("pow", operator.pow),
+]
+
+
+@pytest.mark.parametrize(
+    "name, op", _ARITHMETIC_OPERATORS, ids=[n for n, _ in _ARITHMETIC_OPERATORS]
+)
+@pytest.mark.parametrize("reverse", [False, True], ids=["tensor_op", "scalar_op"])
+def test_every_arithmetic_operator_keeps_the_shape_dtype_and_layout(
+    name: str, op: Callable[[Any, Any], Any], reverse: bool
+) -> None:
+    """Each operator's result describes itself like the operand it came from.
+
+    Every one of these carries the logical shape, the declared dtype and the
+    layout across, and each does it in its own branch, so the ones no other test
+    reaches (floor division, modulo, the reverse forms) can lose a field on their
+    own.  Values are checked against torch on the padded store, which is what the
+    operator computed on.
+    """
+    a = ttnn.from_torch(
+        torch.rand(3, 5) + 1.0, layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16
+    )
+    scalar = 2.0
+
+    result = op(scalar, a) if reverse else op(a, scalar)
+
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+    assert result.dtype == ttnn.bfloat16
+    assert result.layout == ttnn.TILE_LAYOUT
+
+    store = a.to_torch()
+    expected = op(scalar, store) if reverse else op(store, scalar)
+    assert torch.allclose(result.to_torch(), expected, equal_nan=True)
+
+
+def test_mixed_dtypes_report_the_wider_one_whichever_side_it_is_on() -> None:
+    """A result's dtype is the two operands', promoted, not the left one's.
+
+    The declared dtype is what a dataflow buffer built from the result bills as
+    L1, so reading it off the left operand makes the same computation cost twice
+    as much written the other way round -- and the number decides whether the
+    hardware-limit warning fires.
+
+    True division is the one operator whose result cannot be its operands' dtype:
+    dividing integers gives a float, in torch and in ttnn.
+    """
+    narrow = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    wide = ttnn.rand((32, 32), dtype=torch.float32)
+
+    assert (narrow + wide).dtype == torch.float32
+    assert (wide + narrow).dtype == torch.float32
+    assert (narrow * wide).dtype == (wide * narrow).dtype == torch.float32
+    # Same dtype on both sides keeps it, which is what makes a bfloat16 buffer
+    # cost half a float32 one.
+    assert (narrow + narrow).dtype == ttnn.bfloat16
+
+    from sim.dfb import DataflowBuffer
+
+    def billed(tensor: Any) -> int:
+        return DataflowBuffer(
+            likeness_tensor=tensor, shape=(1, 1), block_count=2
+        ).capacity_bytes
+
+    assert billed(narrow + wide) == billed(wide + narrow)
+    assert billed(narrow + narrow) < billed(wide + wide)
+
+    whole = ttnn.from_torch(torch.ones(32, 32, dtype=torch.int32))
+    assert (whole / whole).dtype == torch.float32
+    assert (whole / 2).dtype == (2 / whole).dtype == torch.float32
+    # Floor division of integers stays integral, as torch's does.
+    assert (whole // whole).dtype == torch.int32
+
+
+def test_arithmetic_logical_shape_matches_under_dry_run():
+    """Dry-run and real paths agree on the logical result shape and dtype.
+
+    A dry run walks a body without computing, so anything it reports
+    differently is a difference between what a user inspects and what runs.
+    """
+    from sim.context import set_dry_run
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    y = ttnn.from_torch(torch.rand(5, 7), layout=ttnn.TILE_LAYOUT)
+    b = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    wide = ttnn.rand((32, 32), dtype=torch.float32)
+    real_add = (a + a).shape
+    real_mm = (a @ y).shape
+    real_mixed_dtype = (b + wide).dtype
+
+    set_dry_run(True)
+    try:
+        assert (a + a).shape == real_add == (3, 5)
+        assert (a @ y).shape == real_mm == (3, 7)
+        assert (a * 2).shape == (3, 5)
+        assert (b + b).dtype == ttnn.bfloat16
+        # A dry run promotes the operands' dtypes as the real path does, so the
+        # buffer a body sizes from a described result is the one it will get.
+        assert (b + wide).dtype == real_mixed_dtype == torch.float32
+        # The unary shims describe their result the same way, each on its own
+        # dry-run branch.
+        for shim in (ttnn.relu, ttnn.abs, ttnn.exp):
+            described = shim(a)
+            assert described.shape == (3, 5), shim.__name__
+            assert described.padded_shape == (32, 32), shim.__name__
+    finally:
+        set_dry_run(False)
 
 
 # ---- TILE_LAYOUT shim behaviour ----
@@ -913,7 +1503,8 @@ def test_pad_to_tile_alignment_3d_last_two_unaligned():
     """
     src = torch.arange(2 * 5 * 7, dtype=torch.float32).reshape(2, 5, 7)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 32, 32)
+    assert t.shape == (2, 5, 7)
+    assert t.padded_shape == (2, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, :5, :7], src)
     assert torch.all(out[:, 5:, :] == 0)
@@ -927,7 +1518,8 @@ def test_pad_to_tile_alignment_3d_column_vector_per_slice():
     """
     src = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3, 1)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 32, 32)
+    assert t.shape == (2, 3, 1)
+    assert t.padded_shape == (2, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, :3, 0:1], src)
     assert torch.all(out[:, :, 1:] == 0)
@@ -938,7 +1530,8 @@ def test_pad_to_tile_alignment_3d_row_vector_per_slice():
     """3-D ``(B, 1, M)`` pads to ``(B, 32, 32)`` with data in row 0."""
     src = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 1, 3)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 32, 32)
+    assert t.shape == (2, 1, 3)
+    assert t.padded_shape == (2, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, 0:1, :3], src)
     assert torch.all(out[:, 1:, :] == 0)
@@ -953,7 +1546,8 @@ def test_pad_to_tile_alignment_4d_pads_only_last_two_dims():
     """
     src = torch.arange(2 * 3 * 5 * 7, dtype=torch.float32).reshape(2, 3, 5, 7)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 3, 32, 32)
+    assert t.shape == (2, 3, 5, 7)
+    assert t.padded_shape == (2, 3, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, :, :5, :7], src)
     assert torch.all(out[:, :, 5:, :] == 0)
@@ -991,10 +1585,15 @@ def test_tile_layout_shim_multiply_column_vectors():
     b_src = torch.arange(33, 65, dtype=torch.float32).reshape(32, 1)
     a = ttnn.from_torch(a_src)
     b = ttnn.from_torch(b_src)
-    assert a.shape == b.shape == (32, 32)
+    # .shape is the logical (unpadded) column-vector shape; .padded_shape is the
+    # tile-aligned storage that carries the data in column 0.
+    assert a.shape == b.shape == (32, 1)
+    assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.multiply(a, b)
-    assert c.shape == (32, 32)
+    # Elementwise multiply broadcasts the logical column-vector shapes.
+    assert c.shape == (32, 1)
+    assert c.padded_shape == (32, 32)
     out = c.to_torch()
     assert torch.equal(out[:, 0:1], a_src * b_src)
     assert torch.all(out[:, 1:] == 0)
@@ -1012,10 +1611,15 @@ def test_tile_layout_shim_add_row_vectors():
     b_src = torch.arange(101, 133, dtype=torch.float32).reshape(1, 32)
     a = ttnn.from_torch(a_src)
     b = ttnn.from_torch(b_src)
-    assert a.shape == b.shape == (32, 32)
+    # .shape is the logical (unpadded) row-vector shape; .padded_shape is the
+    # tile-aligned storage that carries the data in row 0.
+    assert a.shape == b.shape == (1, 32)
+    assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.add(a, b)
-    assert c.shape == (32, 32)
+    # Elementwise add broadcasts the logical row-vector shapes.
+    assert c.shape == (1, 32)
+    assert c.padded_shape == (32, 32)
     out = c.to_torch()
     assert torch.equal(out[0:1, :], a_src + b_src)
     assert torch.all(out[1:, :] == 0)
@@ -1042,7 +1646,10 @@ def test_tile_layout_shim_multiply_corner_block():
     b_src = torch.full((4, 4), 2.0, dtype=torch.float32)
     a = ttnn.from_torch(a_src)
     b = ttnn.from_torch(b_src)
-    assert a.shape == b.shape == (32, 32)
+    # .shape is the logical (unpadded) 4x4 shape; .padded_shape is the
+    # tile-aligned storage that carries the data in the top-left corner.
+    assert a.shape == b.shape == (4, 4)
+    assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.multiply(a, b)
     out = c.to_torch()
@@ -1337,6 +1944,231 @@ def test_golden_function_wrappers_logical():
     assert torch.equal(result.to_torch(), expected)
 
 
+# The tests below build a wrapper from a stand-in golden function instead of
+# calling a wrapped ``ttnn`` op, so they run without ttnn installed.  The
+# module-level wrappers exist only when ttnn does (that is where the golden
+# functions come from), which is how a wrapper that raised on every matmul-shaped
+# op went unnoticed against a green suite.
+
+
+def test_golden_wrapper_handles_non_broadcastable_operands():
+    """A wrapped op whose operands do not broadcast still returns its result.
+
+    The logical-shape bookkeeping broadcasts the operand shapes to decide whether
+    the op was elementwise, and torch answers "these do not broadcast" by
+    raising.  Uncaught, that turns shape bookkeeping into a failed call for every
+    op shaped like a matmul.
+    """
+
+    def golden_linear(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x @ y
+
+    a = ttnn.from_torch(torch.rand(32, 64), layout=ttnn.TILE_LAYOUT)
+    w = ttnn.from_torch(torch.rand(64, 128), layout=ttnn.TILE_LAYOUT)
+
+    wrapped = _create_golden_wrapper("linear", golden_linear)
+    result = wrapped(a, w)
+
+    assert isinstance(result, ttnn.Tensor)
+    assert torch.equal(result.to_torch(), a.to_torch() @ w.to_torch())
+    # Not elementwise, so the result reports its own shape rather than a
+    # broadcast of the operands'.
+    assert result.shape == (32, 128)
+
+
+def test_golden_wrapper_reports_logical_shape_for_elementwise_operands():
+    """Operands that do broadcast still get the ttnn-logical result shape.
+
+    Pairs with the test above: dropping the logical shape whenever the operands
+    are awkward would also pass there, and would silently report padded shapes
+    for every wrapped elementwise op.
+
+    Both mechanisms answer here -- the op runs on the logical data, and the
+    elementwise rule would supply the same shape for the padded run -- which is
+    what makes this the shape a caller sees either way.  The test below isolates
+    the second one.
+    """
+
+    def golden_multiply(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x * y
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    row = ttnn.from_torch(torch.rand(1, 5), layout=ttnn.TILE_LAYOUT)
+
+    wrapped = _create_golden_wrapper("multiply", golden_multiply)
+    result = wrapped(a, row)
+
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+
+
+def test_the_elementwise_rule_names_the_shape_when_the_logical_run_declines():
+    """An op that only runs at padded extents still reports a logical shape.
+
+    The elementwise rule is the second of the two mechanisms, and reachable on its
+    own: an op that declines the logical extents leaves the padded run, whose
+    result is shaped like the store and would otherwise be reported as the
+    tensor's own shape.  Written with a golden that insists on a whole tile so the
+    logical run is the one that fails, which is the only way in.
+    """
+
+    def golden_tile_sized(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if x.shape[-2:] != (32, 32):
+            raise ValueError("this op is defined on whole tiles")
+        return x * y
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    row = ttnn.from_torch(torch.rand(1, 5), layout=ttnn.TILE_LAYOUT)
+    assert _golden_logical_result(golden_tile_sized, (a, row), {}) is None
+
+    wrapped = _create_golden_wrapper("tile_sized", golden_tile_sized)
+    result = wrapped(a, row)
+
+    # Computed on the store, described as ttnn describes it.
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+    assert torch.equal(result.to_torch(), a.to_torch() * row.to_torch())
+
+
+def _golden_matmul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return x @ y
+
+
+def _golden_row_sum(x: torch.Tensor) -> torch.Tensor:
+    return x.sum(dim=-1)
+
+
+def _golden_transpose(x: torch.Tensor) -> torch.Tensor:
+    return x.transpose(0, 1)
+
+
+@pytest.mark.parametrize(
+    "golden, logical_shapes, expected",
+    [
+        (_golden_matmul, [(3, 5), (5, 7)], (3, 7)),
+        (_golden_row_sum, [(3, 5)], (3,)),
+        (_golden_transpose, [(3, 5)], (5, 3)),
+    ],
+    ids=["matmul", "reduction", "transpose"],
+)
+def test_golden_wrapper_reports_logical_shape_for_shape_changing_ops(
+    golden: Callable[..., torch.Tensor],
+    logical_shapes: list[tuple[int, ...]],
+    expected: tuple[int, ...],
+):
+    """Padded operands get the op's own logical result shape, as ttnn reports it.
+
+    Running the op on the padded store would report a padded result shape, which
+    says nothing about the logical one, and broadcasting the operands cannot
+    supply it either: a matmul's operands do not broadcast, a reduction's result
+    is not their broadcast, and a transpose inside square padding would be
+    mistaken for an elementwise op and take its operand's shape unchanged.
+    """
+    sources = [torch.rand(*shape) for shape in logical_shapes]
+    inputs = [ttnn.from_torch(src, layout=ttnn.TILE_LAYOUT) for src in sources]
+    assert all(t.padded_shape == (32, 32) for t in inputs), "inputs must be padded"
+
+    result = _create_golden_wrapper("op", golden)(*inputs)
+
+    assert result.shape == expected
+    # Stored padded, like any tensor of this logical shape, and holding what the
+    # op computes from the logical data.
+    assert (
+        result.padded_shape
+        == ttnn.from_torch(golden(*sources), layout=ttnn.TILE_LAYOUT).padded_shape
+    )
+    assert torch.allclose(_logical_view(result), golden(*sources))
+
+
+def test_golden_wrapper_keeps_the_logical_data_readable_when_an_op_moves_it():
+    """A joining op leaves its result where the logical shape says it is.
+
+    Concatenating on the padded store would put the second operand's rows after
+    the first operand's *padding* -- at row 32 of a 64-row store whose logical
+    shape claims 5 rows -- leaving the result unreadable from its shape.  Running
+    on the logical data and padding the result keeps the store's one invariant:
+    logical data in the top-left, padding everywhere else.
+    """
+
+    def golden_concat(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return torch.cat([x, y], dim=0)
+
+    top = torch.arange(15, dtype=torch.float32).reshape(3, 5)
+    bottom = torch.arange(100, 110, dtype=torch.float32).reshape(2, 5)
+    a = ttnn.from_torch(top, layout=ttnn.TILE_LAYOUT)
+    b = ttnn.from_torch(bottom, layout=ttnn.TILE_LAYOUT)
+
+    result = _create_golden_wrapper("concat", golden_concat)(a, b)
+
+    assert result.shape == (5, 5)
+    assert result.padded_shape == (32, 32)
+    stored = result.to_torch()
+    assert torch.equal(stored[0:5, 0:5], torch.cat([top, bottom], dim=0))
+    assert torch.all(stored[5:, :] == 0) and torch.all(stored[:, 5:] == 0)
+
+
+def test_golden_wrapper_does_not_compute_over_padding():
+    """Padding is storage, not data: an op must not reduce over it.
+
+    A mean taken on the store divides by the 1024 elements of a padded tile
+    instead of the 15 it was given, and a softmax normalizes over 1009 zeros
+    nobody passed.  Both are silently wrong answers of the right shape.
+    """
+    source = torch.arange(1, 16, dtype=torch.float32).reshape(3, 5)
+    a = ttnn.from_torch(source, layout=ttnn.TILE_LAYOUT)
+
+    mean = _create_golden_wrapper("mean", lambda x: x.mean())(a)
+    assert mean.shape == ()
+    assert torch.isclose(mean.to_torch()[0, 0], source.mean())
+
+    softmax = _create_golden_wrapper("softmax", lambda x: torch.softmax(x, dim=-1))(a)
+    assert softmax.shape == (3, 5)
+    assert torch.allclose(softmax.to_torch()[0:3, 0:5], torch.softmax(source, dim=-1))
+
+
+def test_golden_wrapper_falls_back_to_the_padded_store_when_logical_extents_fail():
+    """An op that only accepts the padded extents still runs, on those extents.
+
+    Computing on the logical data is preferable but not always possible -- an
+    argument can be derived from the padded shape, as this reshape is -- and a
+    call that the simulator used to serve must not start failing over it.
+    """
+
+    def golden_reshape(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(32 * 32)
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+
+    result = _create_golden_wrapper("reshape", golden_reshape)(a)
+
+    assert result.shape == (1024,)
+    assert torch.equal(result.to_torch(), a.to_torch().reshape(1024))
+
+
+def test_the_wrapping_exclusions_say_only_what_is_true() -> None:
+    """No excluded name is one this module implements.
+
+    The golden-function loop skips every name the module defines, so an
+    excluded name that is also defined tells the reader nothing except, once it
+    stops being true, something false.  The exclusions are for names that would
+    otherwise be bound: the builtins a wrapper would shadow, and the ops the
+    simulator leaves unavailable on purpose.
+    """
+    from sim import ttnnsim
+
+    defined = vars(ttnnsim)
+    excluded = ttnnsim._EXCLUDE_FROM_WRAPPING  # type: ignore[reportPrivateUsage]
+    redundant = sorted(n for n in excluded if n in defined)
+    assert redundant == [], "these are implemented, so excluding them says nothing"
+
+    # The builtins are still the builtins inside the module, which is what
+    # excluding them is for.
+    builtin_names = ttnnsim._SHADOWS_A_BUILTIN  # type: ignore[reportPrivateUsage]
+    assert all(n not in defined for n in builtin_names)
+    # And an unavailable op is absent rather than answered wrongly.
+    assert not hasattr(ttnnsim, "concat")
+
+
 class TestTensorTileIndexing:
     """Tests for Tensor tile-coordinate __getitem__ and __setitem__."""
 
@@ -1366,15 +2198,35 @@ class TestTensorTileIndexing:
 
     # --- slice format validation ---
 
-    def test_slice_none_start_raises(self) -> None:
+    def test_slice_none_start_resolves_to_zero(self) -> None:
+        """An open start defaults to tile 0 (full extent up to stop)."""
         t = ttnn.Tensor(torch.zeros(64, 64))
-        with pytest.raises(ValueError, match="must have explicit start value"):
-            _ = t[slice(None, 1), slice(0, 1)]
+        # Open row start -> tile 0; one column tile selected.
+        assert t[slice(None, 1), slice(0, 1)].shape == (32, 32)
 
-    def test_slice_none_stop_raises(self) -> None:
+    def test_slice_none_stop_resolves_to_full_extent(self) -> None:
+        """An open stop defaults to the full tile count along the dimension."""
         t = ttnn.Tensor(torch.zeros(64, 64))
-        with pytest.raises(ValueError, match="must have explicit stop value"):
-            _ = t[slice(0, None), slice(0, 1)]
+        # Open row stop -> all row tiles (2 tiles == 64 rows).
+        assert t[slice(0, None), slice(0, 1)].shape == (64, 32)
+
+    @pytest.mark.parametrize(
+        "key",
+        [(Ellipsis, 0), (None, 0), ([0], 0), ((0,), 0), (True, 0)],
+        ids=["ellipsis", "none", "list", "tuple", "bool"],
+    )
+    def test_keys_that_are_not_integers_or_slices_are_refused(self, key: Any) -> None:
+        """The keys ttnn takes and this does not are named, not half-supported.
+
+        Every one of these is a valid ttnn element key, and each would otherwise
+        travel far enough in to fail as an attribute error about ``step``, which
+        says nothing about the key.  Refusing them by name is also what keeps
+        "a key never drops a dimension" true: an integer becomes a unit slice, and
+        nothing else gets in.
+        """
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        with pytest.raises(TypeError, match="indexed by integers and slices"):
+            _ = t[key]
 
     def test_slice_with_step_raises(self) -> None:
         t = ttnn.Tensor(torch.zeros(64, 64))
@@ -1466,6 +2318,124 @@ class TestTensorTileIndexing:
         assert tile.shape == (32, 1)
         assert torch.allclose(tile.to_torch(), raw)
 
+        # A degenerate dimension is one (partly used) tile, so the open slice
+        # spans it rather than selecting nothing.
+        assert torch.allclose(t[0, :].to_torch(), raw)
+
+    # --- bounds ---
+
+    @pytest.mark.parametrize(
+        "key, message",
+        [
+            ((2, 0, 0), "dimension 0 slice 2:3"),
+            ((0, 2, 0), "row slice 2:3"),
+            ((0, 0, 2), "col slice 2:3"),
+            ((0, slice(0, 3), 0), "row slice 0:3"),
+            ((0, -1, 0), "row slice -1:0"),
+            ((0, slice(2, 1), 0), "row slice 2:1"),
+        ],
+    )
+    def test_out_of_range_tile_key_is_reported(
+        self, key: tuple[Any, ...], message: str
+    ) -> None:
+        """A key reaching past the tensor says so instead of being clamped.
+
+        A torch or Python slice would clamp, and an index the specification's
+        ttl.Index excludes -- a negative one -- would quietly select nothing.
+        Either way the kernel would read a block that is not the one it asked
+        for, so the tile-space key is checked against the tensor first.
+        """
+        t = ttnn.Tensor(torch.zeros(2, 64, 64))
+        with pytest.raises(IndexError, match=message):
+            _ = t[key]
+        with pytest.raises(IndexError, match=message):
+            t[key] = ttnn.Tensor(torch.zeros(32, 32))
+
+    def test_out_of_range_row_major_key_is_reported(self) -> None:
+        """Element-space keys are checked against the tensor too."""
+        t = ttnn.Tensor(torch.zeros(4, 4), ttnn.ROW_MAJOR_LAYOUT)
+        with pytest.raises(IndexError, match="dimension 1 slice 0:5"):
+            _ = t[0:4, 0:5]
+
+    def test_indexing_is_tile_space_and_keeps_the_rank(self) -> None:
+        """Tile-space addressing, which is a deliberate divergence from ttnn.
+
+        ttnn indexes elements of the logical shape and drops a dimension an
+        integer selects.  A tiled tensor here is addressed in tiles and keeps
+        its rank, because that is how the specification addresses blocks and
+        what ttl.copy needs of its operands.  Pinned so the two conventions
+        cannot quietly converge.
+        """
+        t = ttnn.Tensor(torch.zeros(64, 64))
+
+        # The whole tensor: four tiles, where ttnn would read a 2x2 element view.
+        assert t[0:2, 0:2].shape == (64, 64)
+        # A row of tiles, where ttnn would read one row of elements, (64,).
+        assert t[0, :].shape == (32, 64)
+
+        # Row-major tensors are element-space, as ttnn's are, but still keep
+        # the rank an integer index would drop.
+        row_major = ttnn.Tensor(torch.zeros(64, 64), ttnn.ROW_MAJOR_LAYOUT)
+        assert row_major[0:2, 0:2].shape == (2, 2)
+        assert row_major[0, :].shape == (1, 64)
+
+    def test_whole_extent_keys_stay_in_range(self) -> None:
+        """The bounds check leaves every in-range spelling alone."""
+        t = ttnn.Tensor(torch.zeros(2, 64, 64))
+        assert t[0, :, :].shape == (1, 64, 64)
+        assert t[0:2, 0:2, 0:2].shape == (2, 64, 64)
+        assert t[1, 1, 1].shape == (1, 32, 32)
+
+    @pytest.mark.parametrize(
+        "layout, extent, key",
+        [
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (1, 1, 1)),
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (slice(None), 0, 0)),
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (0, slice(None), slice(None))),
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (slice(0, 2), slice(1, 2), slice(0, 1))),
+            (ttnn.ROW_MAJOR_LAYOUT, (8, 8), (2, slice(None))),
+            (ttnn.ROW_MAJOR_LAYOUT, (8, 8), (slice(None), 3)),
+            (ttnn.ROW_MAJOR_LAYOUT, (8, 8), (slice(2, 4), slice(0, 8))),
+        ],
+    )
+    def test_a_slice_agrees_with_itself_about_where_it_starts(
+        self, layout: Any, extent: tuple[int, ...], key: tuple[Any, ...]
+    ) -> None:
+        """The origin a slice records equals the one its key computes.
+
+        Two paths answer where a slice sits in its tensor: the origin
+        ``__getitem__`` accumulates while tracing, and ``element_slice_starts``
+        from the key.  The locality statistics read the first and the copy
+        handlers the second, so a disagreement bills one transfer two ways.
+        """
+        tensor = ttnn.from_torch(torch.rand(*extent), layout=layout)
+
+        TRACE.enabled = True
+        try:
+            sliced = tensor[key]
+        finally:
+            TRACE.enabled = False
+
+        assert sliced._element_origin == tensor.element_slice_starts(key)
+
+    def test_an_open_end_locates_the_slice_like_a_spelled_out_one(self) -> None:
+        """``t[i, :]`` reports the origin ``t[i, 0:n]`` reports.
+
+        The origin is what the locality statistics attribute a copy to, so an
+        open end that left it unknown would bill the same transfer differently
+        depending on how its slice was spelled -- or, in the element-space case,
+        refuse to give an origin at all.
+        """
+        row_major = ttnn.Tensor(torch.zeros(8, 8), ttnn.ROW_MAJOR_LAYOUT)
+        assert row_major.element_slice_starts((slice(2, 3), slice(None))) == (2, 0)
+        assert row_major.element_slice_starts(
+            (slice(2, 3), slice(0, 8))
+        ) == row_major.element_slice_starts((slice(2, 3), slice(None)))
+
+        tiled = ttnn.Tensor(torch.zeros(2, 64, 64))
+        assert tiled.element_slice_starts((slice(None), 1, 1)) == (0, 32, 32)
+        assert tiled.element_slice_starts((1, slice(None), 1)) == (1, 0, 32)
+
 
 class TestShardingTypes:
     """Tests for ShardingStrategy, ShardSpec, NdShardSpec, and MemoryConfig data types.
@@ -1551,6 +2521,27 @@ class TestShardingTypes:
         )
         assert spec_col.orientation == ShardOrientation.COL_MAJOR
 
+    def test_shard_specs_answer_to_the_names_ttnn_reports(self) -> None:
+        """The per-shard extent and core count read as ttnn's do.
+
+        ttnn takes the extent as ``shard_shape=`` and reports it as ``shape``,
+        and ``num_cores()`` is a method on both spec types -- where the
+        simulator once had a field of that name meaning something else, so
+        calling it the way device code does raised.
+        """
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 8))
+        assert spec.shape == [2, 8]
+        assert spec.num_cores() == 4
+
+        cores = ttnn.num_cores_to_corerangeset(8, [8, 8])
+        assert ShardSpec(cores, [2, 8], ShardOrientation.ROW_MAJOR).num_cores() == 8
+
+        nd = NdShardSpec(shard_shape=[1, 64, 128], core_ranges=cores)
+        assert nd.num_cores() == 8
+        assert nd.grid is cores
+        assert nd.shard_distribution_strategy == nd.distribution
+        assert NdShardSpec(shard_shape=[64, 128], shard_grid=(2, 3)).num_cores() == 6
+
     def test_core_grid_creation(self) -> None:
         """CoreGrid stores y, x, and exposes num_cores."""
         grid = CoreGrid(y=4, x=8)
@@ -1564,6 +2555,156 @@ class TestShardingTypes:
         assert isinstance(ttnn.L1_MEMORY_CONFIG, MemoryConfig)
         assert ttnn.DRAM_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
         assert ttnn.L1_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
+        # Both are interleaved, so the buffer is the whole difference between
+        # them; equal constants would make asking for L1 a no-op.
+        assert ttnn.DRAM_MEMORY_CONFIG.buffer_type == ttnn.BufferType.DRAM
+        assert ttnn.L1_MEMORY_CONFIG.buffer_type == ttnn.BufferType.L1
+        assert ttnn.DRAM_MEMORY_CONFIG != ttnn.L1_MEMORY_CONFIG
+
+    def test_a_config_answers_whether_it_is_sharded(self) -> None:
+        """A config reports its layout and whether it shards, under ttnn's names.
+
+        ttnn asks a config these directly, and answers for any config: the
+        simulator's own spelling names a sharding strategy instead of a memory
+        layout, and the two say the same thing.
+        """
+        interleaved = MemoryConfig()
+        assert interleaved.memory_layout == TensorMemoryLayout.INTERLEAVED
+        assert interleaved.buffer_type == ttnn.BufferType.DRAM
+        assert not interleaved.is_sharded()
+        assert interleaved.interleaved
+
+        block = MemoryConfig(strategy=ShardingStrategy.BLOCK_SHARDED)
+        assert block.memory_layout == TensorMemoryLayout.BLOCK_SHARDED
+        assert block.is_sharded()
+        assert not block.interleaved
+
+    def test_a_spec_always_describes_its_memory(self) -> None:
+        """An unsharded spec reports a config too, as ttnn's does.
+
+        Answering None means every reader has to know whether a spec was
+        sharded before it can ask where the tensor lives.
+        """
+        spec = TensorSpec(shape=(64, 64), buffer_type=ttnn.BufferType.L1)
+
+        assert spec.memory_config.memory_layout == TensorMemoryLayout.INTERLEAVED
+        assert spec.memory_config.buffer_type == ttnn.BufferType.L1
+        assert not spec.memory_config.is_sharded()
+        assert spec.tile == ttnn.Tile()
+
+        # And sharding it keeps the config the sharding built, shard spec and all.
+        cores = ttnn.num_cores_to_corerangeset(4, [8, 8])
+        sharded = spec.height_sharded(cores)
+        assert sharded.memory_config.is_sharded()
+        assert sharded.memory_config.shard_spec is not None
+
+    def test_a_memory_layout_names_the_strategy_it_stands_for(self) -> None:
+        """A config spelled ttnn's way reports a ShardingStrategy.
+
+        ttnn's first argument is the memory layout, and its documentation
+        spells the interleaved config exactly this way.  Storing the layout
+        where the strategy goes would leave every strategy comparison
+        unmatched, so an interleaved tensor would report itself sharded and be
+        billed as L1.
+        """
+        interleaved = MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+        in_l1 = MemoryConfig(TensorMemoryLayout.INTERLEAVED, ttnn.BufferType.L1)
+
+        assert interleaved.strategy == ShardingStrategy.INTERLEAVED
+        assert interleaved.tensor_memory_layout == TensorMemoryLayout.INTERLEAVED
+        assert interleaved.buffer_type == ttnn.BufferType.DRAM
+        assert in_l1.strategy == ShardingStrategy.INTERLEAVED
+        assert in_l1.buffer_type == ttnn.BufferType.L1
+
+        for mc in (interleaved, in_l1):
+            assert not ttnn.is_sharded(
+                ttnn.from_torch(torch.zeros(32, 32), memory_config=mc)
+            )
+
+    def test_specs_and_configs_can_be_used_as_keys(self) -> None:
+        """ttnn's are hashable, and a spec is a natural key to cache work under.
+
+        A spec is frozen and hashes its fields, so the config every spec now
+        carries decides whether the spec can be a key at all: a config that
+        defines equality without a hash makes the spec unhashable too, sharded or
+        not.
+        """
+        spec = TensorSpec(shape=(64, 64))
+        cores = ttnn.num_cores_to_corerangeset(4, [8, 8])
+
+        assert hash(spec) == hash(TensorSpec(shape=(64, 64)))
+        assert {spec: "plain"}[TensorSpec(shape=(64, 64))] == "plain"
+        # A sharded spec hashes as well: its shard spec is compared but not
+        # hashed, and its core ranges are hashable.
+        assert isinstance(hash(spec.height_sharded(cores)), int)
+        assert {ttnn.DRAM_MEMORY_CONFIG: "dram"}[MemoryConfig()] == "dram"
+
+    def test_two_spellings_of_the_same_memory_are_one_config(self) -> None:
+        """A config is equal to another that names the same memory.
+
+        ttnn names a layout where the simulator's own spelling names the strategy
+        that stands for it, so the same interleaved DRAM can arrive either way.
+        Comparing them unequal would make the spelling part of the memory's
+        identity, and a caller who built a config one way could not recognize the
+        constant for it.
+        """
+        ttnn_way = MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+        sim_way = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+
+        assert ttnn_way == sim_way == ttnn.DRAM_MEMORY_CONFIG
+        assert hash(ttnn_way) == hash(sim_way)
+        assert MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED) == MemoryConfig(
+            TensorMemoryLayout.HEIGHT_SHARDED
+        )
+        # Different memory still compares different: the buffer is part of it.
+        assert ttnn_way != MemoryConfig(
+            TensorMemoryLayout.INTERLEAVED, ttnn.BufferType.L1
+        )
+
+    def test_arguments_in_the_wrong_slots_are_refused(self) -> None:
+        """A config the caller did not ask for is worse than no config.
+
+        ttnn's arguments all have defaults, so a spelling that misses is easy to
+        write and, defaulted past, describes different memory than the caller
+        asked for: interleaved DRAM where they wanted height-sharded L1, or a shard
+        spec dropped because it arrived in the buffer type's slot. Nothing reads
+        back to say so, and the tensor is then billed and localized as if the
+        request had been honoured.
+        """
+        cores = ttnn.CoreRangeSet(
+            [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+        )
+        spec = ttnn.ShardSpec(grid=cores, shard_shape=(32, 32))
+
+        # A strategy where the layout goes: the pair form is ttnn's, and ttnn's
+        # first argument is a layout.
+        with pytest.raises(TypeError, match="two positional arguments"):
+            MemoryConfig(ShardingStrategy.HEIGHT_SHARDED, ttnn.BufferType.L1)
+
+        # The shard spec and the buffer type transposed.
+        with pytest.raises(TypeError, match="three positional arguments"):
+            MemoryConfig(TensorMemoryLayout.HEIGHT_SHARDED, spec, ttnn.BufferType.L1)
+
+        # A buffer type alone, which would have meant interleaved DRAM.
+        with pytest.raises(TypeError, match="first positional argument"):
+            MemoryConfig(ttnn.BufferType.L1)
+
+        with pytest.raises(TypeError, match="at most three positional arguments"):
+            MemoryConfig(
+                TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, spec, spec
+            )
+
+        # And the spellings that do carry the request still do.
+        by_strategy = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED, buffer_type=ttnn.BufferType.L1
+        )
+        assert (
+            by_strategy.is_sharded() and by_strategy.buffer_type == ttnn.BufferType.L1
+        )
+        ttnn_way = MemoryConfig(
+            TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, spec
+        )
+        assert ttnn_way.is_sharded() and ttnn_way.shard_spec is not None
 
     def test_tensor_spec_nd_sharded_matches_tech_report_inputs(self) -> None:
         """TensorSpec.nd_sharded(shard_shape, core_ranges) sets ND shard_shape."""
@@ -2363,6 +3504,35 @@ class TestShardingHelpers:
         src = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
         dst = ttnn.to_memory_config(src, ttnn.DRAM_MEMORY_CONFIG)
         assert dst.layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_to_memory_config_preserves_the_shape_and_dtype(self) -> None:
+        """Only the memory config changes; a padded tensor keeps its shape.
+
+        Rebuilding from the store alone would report the padding as the shape,
+        so moving a tensor to L1 would change what it says it is.
+        """
+        src = ttnn.from_torch(torch.rand(3, 5), dtype=ttnn.bfloat16)
+        dst = ttnn.to_memory_config(src, ttnn.L1_MEMORY_CONFIG)
+        assert (dst.shape, dst.padded_shape, dst.dtype) == (
+            (3, 5),
+            (32, 32),
+            ttnn.bfloat16,
+        )
+
+    def test_squeeze_removes_a_logical_dimension_not_a_stored_one(self) -> None:
+        """squeeze reads the logical shape, as ttnn's does.
+
+        A size-1 logical dimension is a whole tile of the store, so squeezing
+        the store finds nothing of size 1 to drop and returns the tensor
+        unchanged.
+        """
+        col = ttnn.from_torch(torch.arange(64.0).reshape(64, 1))
+        assert col.padded_shape == (64, 32)
+
+        squeezed = ttnn.squeeze(col, 1)
+        assert squeezed.shape == (64,)
+        assert torch.equal(ttnn.to_torch(squeezed), torch.arange(64.0))
+        assert ttnn.squeeze(col).shape == (64,)
 
 
 class TestRowMajorLayout:

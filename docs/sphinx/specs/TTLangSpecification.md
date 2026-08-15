@@ -89,10 +89,8 @@ def __add(
     # and the addition on the compute thread.
     a_dst_blk = a_dfb.reserve()
     b_dst_blk = b_dfb.reserve()
-    a_tx = ttl.copy(a[0:1, 0:1], a_dst_blk)
-    b_tx = ttl.copy(b[0:1, 0:1], b_dst_blk)
-    a_tx.wait()
-    b_tx.wait()
+    ttl.copy(a[0:1, 0:1], a_dst_blk).wait()
+    ttl.copy(b[0:1, 0:1], b_dst_blk).wait()
     a_dst_blk.push()
     b_dst_blk.push()
 
@@ -103,8 +101,7 @@ def __add(
     a_blk.pop()
     b_blk.pop()
 
-    out_tx = ttl.copy(out_dfb.wait(), out[0:1, 0:1])
-    out_tx.wait()
+    ttl.copy(out_dfb.wait(), out[0:1, 0:1]).wait()
     out_blk.push()
 
 
@@ -397,23 +394,17 @@ N_BLOCKS = N_TILES // N_BLOCK_SIZE
 
 a_dfb = ttl.make_dataflow_buffer_like(a, shape=(N_BLOCK_SIZE, M_TILES))
 
-# Tiled DFB shape needs to be at least two-dimensional;
-# When tiled, the vector b of shape (N, 1) is placed in column 0
-# of each tile in a column of N_TILES tiles
+# Tiled DFB shape needs to be at least two-dimensional; when tiled, the vector b of
+# shape (N, 1) is placed in column 0 of each tile in a column of N_TILES tiles
 b_dfb = ttl.make_dataflow_buffer_like(b, shape=(N_BLOCK_SIZE, 1))
-# When tiled, the vector c of shape M is placed in row 0
-# of each tile in a row of M_TILES tiles
+# When tiled, the vector c of shape M is placed in row 0 of each tile in a row of M_TILES tiles
 c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, M_TILES))
-# When tiled, the scalar value d of shape () is placed at position (0, 0)
-# of a single tile
+# When tiled, the scalar value d of shape () is placed at position (0, 0) of a single tile
 d_dfb = ttl.make_dataflow_buffer_like(d, shape=(1, 1))
-# When untiled, the vector y is formed from column 0
-# of each tile in a column of N_TILES tiles
+# When untiled, the vector y is formed from column 0 of each tile in a column of N_TILES tiles
 y_dfb = ttl.make_dataflow_buffer_like(y, shape=(N_BLOCK_SIZE, 1))
-# When untiled, the vector z is formed from row 0
-# of each tile in a row of M_TILES tiles
+# When untiled, the vector z is formed from row 0 of each tile in a row of M_TILES tiles
 z_dfb = ttl.make_dataflow_buffer_like(z, shape=(1, M_TILES))
-
 
 @ttl.datamovement()
 def elwise_read():
@@ -423,21 +414,19 @@ def elwise_read():
         c_dfb.reserve() as c_blk,
         d_dfb.reserve() as d_blk,
     ):
-        # Load entire (1×M_TILES) of c;
-        # When tiled, the vector c of shape M is placed in row 0
-        # of each tile in a row of M_TILES tiles
+        # Load entire (1×M_TILES) of c; when tiled, the vector c of shape M is placed
+        # in row 0 of each tile in a row of M_TILES tiles
         c_xf = ttl.copy(c[0, :], c_blk)
 
-        # Load entire (1×1) d;
-        # When tiled, the scalar value d of shape () is placed at position (0, 0)
-        # of a single tile
+        # Load entire (1×1) d; when tiled, the scalar value d of shape () is placed at
+        # position (0, 0) of a single tile
         d_xf = ttl.copy(d[0, 0], d_blk)
 
         c_xf.wait()
         d_xf.wait()
 
-        # End of "with" scope:
-        # Push c_blk and d_blk to make them ready for elwise_compute
+        # End of "with" scope: c_blk and d_blk are pushed implicitly, which makes
+        # them ready for elwise_compute
 
     for n_block in range(N_BLOCKS):
 
@@ -451,9 +440,8 @@ def elwise_read():
                 a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk
             )
 
-            # Load N_BLOCK_SIZE×1 block of b;
-            # When tiled, the vector b of shape (N, 1) is placed in column 0
-            # of each tile in a column of N_TILES tiles
+            # Load N_BLOCK_SIZE×1 block of b; when tiled, the vector b of shape (N, 1)
+            # is placed in column 0 of each tile in a column of N_TILES tiles
             b_xf = ttl.copy(
                 b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk
             )
@@ -461,15 +449,13 @@ def elwise_read():
             a_xf.wait()
             b_xf.wait()
 
-            # End of "with" scope:
-            # Push a_blk and b_blk to make them ready for elwise_compute
-
+            # End of "with" scope: a_blk and b_blk are pushed implicitly, which makes
+            # them ready for elwise_compute
 
 @ttl.compute()
 def elwise_compute():
 
-    # Wait for c_blk and d_blk to be loaded and pushed by elwise_read;
-    # Reserve z_blk
+    # Wait for c_blk and d_blk to be loaded and pushed by elwise_read; reserve z_blk
     with (
         c_dfb.wait() as c_blk,
         d_dfb.wait() as d_blk,
@@ -478,16 +464,16 @@ def elwise_compute():
         c_squared = c_blk**2
         d_squared = d_blk**2
 
-        # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES;
-        # This first broadcasts column 0 to fill each of M_TILES tiles
-        # then it broadcasts column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
+        # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES; this
+        # first broadcasts column 0 to fill each of M_TILES tiles, then it broadcasts the
+        # column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
         c_squared_bcast = ttl.block.broadcast(
             c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES)
         )
 
-        # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
-        # This first broadcasts single scalar value at position (0, 0) to fill a single tile
-        # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
+        # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES; this
+        # first broadcasts the single scalar value at position (0, 0) to fill a single tile,
+        # then it broadcasts that tile to get N_BLOCK_SIZE×M_TILES tiles
         d_squared_bcast = ttl.block.broadcast(
             d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES)
         )
@@ -497,8 +483,7 @@ def elwise_compute():
 
         for _ in range(N_BLOCKS):
 
-            # Wait for a_blk and b_blk to be loaded and pushed by elwise_read;
-            # Reserve y_blk
+            # Wait for a_blk and b_blk to be loaded and pushed by elwise_read; reserve y_blk
             with (
                 a_dfb.wait() as a_blk,
                 b_dfb.wait() as b_blk,
@@ -507,9 +492,9 @@ def elwise_compute():
                 a_squared = a_blk**2
                 b_squared = b_blk**2
 
-                # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES;
-                # This first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
-                # then it broadcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
+                # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES; this
+                # first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles, then it
+                # broadcasts the row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
                 b_squared_bcast = ttl.block.broadcast(
                     b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES)
                 )
@@ -538,17 +523,15 @@ def elwise_compute():
                 # Accumulate-add partial z_final
                 z_final += z_partial
 
-                # End of "with" scope:
-                # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
-                # Push y_blk to make it ready for elwise_write
+                # End of "with" scope: a_blk and b_blk are popped implicitly, which makes
+                # them available for elwise_read to load and push the next blocks, and
+                # y_blk is pushed implicitly, which makes it ready for elwise_write
 
         # Store z_final
         z_blk.store(z_final)
 
-        # End of "with" scope:
-        # Pop c_blk and d_blk;
-        # Push z_blk to make it ready for elwise_write
-
+        # End of "with" scope: c_blk and d_blk are popped implicitly, and z_blk is
+        # pushed implicitly, which makes it ready for elwise_write
 
 @ttl.datamovement()
 def elwise_write():
@@ -556,14 +539,12 @@ def elwise_write():
     # Wait for elwise_compute to store and push z_blk
     with z_dfb.wait() as z_blk:
 
-        # Store entire (1xM_TILES) of z;
-        # When untiled, the vector z is formed from row 0
+        # Store entire (1xM_TILES) of z; when untiled, the vector z is formed from row 0
         # of each tile in a row of M_TILES tiles
         z_xf = ttl.copy(z_blk, z[0, :])
         z_xf.wait()
 
-        # End of "with" scope:
-        # Pop z_blk
+        # End of "with" scope: z_blk is popped implicitly
 
     for n_block in range(N_BLOCKS):
         n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
@@ -571,15 +552,13 @@ def elwise_write():
         # Wait for elwise_compute to store and push y_blk
         with y_dfb.wait() as y_blk:
 
-            # Store N_BLOCK_SIZExM_TILES of y;
-            # When untiled, the vector y is formed from column 0
-            # of each tile in a column of N_TILES tiles
+            # Store N_BLOCK_SIZExM_TILES of y; when untiled, the vector y is formed from
+            # column 0 of each tile in a column of N_TILES tiles
             y_xf = ttl.copy(y_blk, y[n_slice, :])
             y_xf.wait()
 
-            # End of "with" scope:
-            # Pop y_blk to make it available for elwise_compute to store and push next block
-
+            # End of "with" scope: y_blk is popped implicitly, which makes it available
+            # for elwise_compute to store and push the next block
 
 ```
 
@@ -621,7 +600,6 @@ y_dfb = ttl.make_dataflow_buffer_like(
     y, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
 )
 
-
 @ttl.datamovement()
 def matmul_read():
     for l_block in range(L_BLOCKS):
@@ -631,7 +609,9 @@ def matmul_read():
             m_slice = slice(m_block * M_BLOCK_SIZE, (m_block + 1) * M_BLOCK_SIZE)
 
             for n_block in range(N_BLOCKS):
-                n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
+                n_slice = slice(
+                    n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE
+                )
 
                 # Reserve c_blk
                 with c_dfb.reserve() as c_blk:
@@ -640,8 +620,8 @@ def matmul_read():
                     c_xf = ttl.copy(c[m_slice, n_slice], c_blk)
                     c_xf.wait()
 
-                    # End of "with" scope:
-                    # Push c_blk to make it ready for matmul_compute
+                    # End of "with" scope: c_blk is pushed implicitly, which makes it
+                    # ready for matmul_compute
 
                 # Repeat for each K block
                 for k_block in range(K_BLOCKS):
@@ -662,9 +642,8 @@ def matmul_read():
                         a_xf.wait()
                         b_xf.wait()
 
-                        # End of "with" scope:
-                        # Push a_blk and b_blk to make it ready for matmul_compute
-
+                        # End of "with" scope: a_blk and b_blk are pushed implicitly,
+                        # which makes them ready for matmul_compute
 
 @ttl.compute()
 def matmul_compute():
@@ -701,8 +680,9 @@ def matmul_compute():
                             # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
                             y_final += a_blk @ b_bcast
 
-                            # End of "with" scope:
-                            # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
+                            # End of "with" scope: a_blk and b_blk are popped implicitly,
+                            # which makes them available for matmul_read to load and push
+                            # the next blocks
 
                     # Wait for c_blk to be loaded and pushed by matmul_read
                     with c_dfb.wait() as c_blk:
@@ -718,14 +698,13 @@ def matmul_compute():
 
                         y_final = y_final + c_bcast
 
-                        # End of "with" scope:
-                        # Pop c_blk to make it available for matmul_read to load and push next block
+                        # End of "with" scope: c_blk is popped implicitly, which makes it
+                        # available for matmul_read to load and push the next block
 
                     y_blk.store(y_final)
 
-                    # End of "with" scope:
-                    # Push y_blk to make it ready for matmul_write
-
+                    # End of "with" scope: y_blk is pushed implicitly, which makes it
+                    # ready for matmul_write
 
 @ttl.datamovement()
 def matmul_write():
@@ -747,9 +726,8 @@ def matmul_write():
                     )
                     y_xf.wait()
 
-                    # End of "with" scope:
-                    # Pop y_blk to make it available for matmul_compute to store and push next block
-
+                    # End of "with" scope: y_blk is popped implicitly, which makes it
+                    # available for matmul_compute to store and push the next block
 
 ```
 
@@ -871,7 +849,6 @@ net = ttl.PipeNet(
 # (1, 1) -> (0, 1)               |
 # ...                            |
 
-
 @ttl.datamovement()
 def dm():
     with dfb.reserve() as blk:
@@ -898,7 +875,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
@@ -918,7 +894,6 @@ net = ttl.PipeNet(
 # (1, 0) => (1, 1) (1, 2) (1, 3) ... | concurrent
 # ...                                |
 
-
 @ttl.datamovement()
 def dm():
     with dfb.reserve() as blk:
@@ -945,7 +920,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
@@ -973,7 +947,6 @@ net = ttl.PipeNet(
 # (1, 0) => (1, 0) (1, 1) (1, 2) ...              |
 # ...                                             |
 
-
 @ttl.datamovement()
 def dm():
     with dfb.reserve() as blk:
@@ -1000,7 +973,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
@@ -1030,7 +1002,6 @@ net = ttl.PipeNet(
 # ...               |
 #
 # * - assuming (8, 8) grid
-
 
 @ttl.datamovement()
 def dm():
@@ -1063,7 +1034,6 @@ def dm():
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
 
-
 ```
 
 
@@ -1089,7 +1059,6 @@ node_num = ttl.node(dims=1)
 start_ct = node_num * cols_per_node
 end_ct = min(start_ct + cols_per_node, col_tiles)
 
-
 @ttl.datamovement()
 def dm():
     for ct in range(start_ct, end_ct):
@@ -1102,9 +1071,10 @@ def dm():
                 # then copy from a tensor slice of matching shape:
 
                 row_slice = slice(rt * g, (rt + 1) * g)  # explicit row slice
-                a_xf = ttl.copy(A[row_slice, ct : ct + 1], a_blk)  # in-line col slice
+                a_xf = ttl.copy(
+                    A[row_slice, ct : ct + 1], a_blk
+                )  # in-line col slice
                 a_xf.wait()
-
 
 ```
 
@@ -1135,7 +1105,6 @@ WO = WI * W_SCALE_FACTOR
 
 io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), block_count=2)
 
-
 @ttl.datamovement()
 def reader():
     for n in range(N):
@@ -1148,7 +1117,6 @@ def reader():
                     xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
 
                     xf.wait()
-
 
 @ttl.datamovement()
 def writer():
@@ -1181,7 +1149,6 @@ def writer():
 
                     gxf.wait_all()
 
-
 ```
 
 | Function | Description |
@@ -1205,7 +1172,6 @@ node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 all_barrier = my_barrier.get_remote_multicast()
 
-
 @ttl.datamovement()
 def dm():
     if node_num == 0:
@@ -1218,7 +1184,6 @@ def dm():
 
         # node 0 is done
 
-
 ```
 
 #### Many-to-one barrier example
@@ -1228,7 +1193,6 @@ node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 node_0_barrier = my_barrier.get_remote((0, 0))
 non_0_node_count = grid_size(dims=1) - 1
-
 
 @ttl.datamovement()
 def dm():
@@ -1241,7 +1205,6 @@ def dm():
         my_barrier.wait_eq(non_0_node_count)
 
         # non-0 nodes are done
-
 
 ```
 
@@ -1309,7 +1272,6 @@ def matmul_read():
 
                                     a_xf.wait()
                                     b_xf.wait()
-
 
 ```
 
@@ -1389,7 +1351,6 @@ def matmul_read():
 
                         a_xf.wait()
                         b_xf.wait()
-
 
 ```
 
