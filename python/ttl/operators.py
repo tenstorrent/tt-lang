@@ -1188,6 +1188,20 @@ def _get_block_scalar_type(block):
     )
 
 
+def _as_index_values(block, coords):
+    context = block.type.context
+    index_type = IndexType.get(context)
+    index_values = []
+    for coord in coords:
+        if isinstance(coord, int):
+            index_values.append(arith.ConstantOp(index_type, coord))
+        elif hasattr(coord, "type") and isinstance(coord.type, IndexType):
+            index_values.append(coord)
+        else:
+            index_values.append(arith.IndexCastOp(index_type, coord))
+    return index_values
+
+
 @syntax("raw_element_read")
 def raw_element_read(block, *coords):
     """Read a scalar element from a block at flat coordinates.
@@ -1209,16 +1223,24 @@ def raw_element_read(block, *coords):
     if len(coords) < 1:
         raise ValueError("raw_element_read requires at least one coordinate")
     scalar_type = _get_block_scalar_type(block)
-    ctx = block.type.context
-    index_vals = []
-    for c in coords:
-        if isinstance(c, int):
-            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
-        elif hasattr(c, "type") and isinstance(c.type, IndexType):
-            index_vals.append(c)
-        else:
-            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
-    return ttl.raw_element_read(scalar_type, block, index_vals)
+    return ttl.raw_element_read(scalar_type, block, _as_index_values(block, coords))
+
+
+@syntax("read_index")
+def read_index(block, *coords):
+    """Read a nonnegative scalar element as an index.
+
+    Coordinates follow ``raw_element_read``. Fractional values truncate
+    toward zero. The source value must be finite, nonnegative, and no greater
+    than INT32_MAX; behavior is undefined otherwise.
+
+    Only supported in data movement (noc) threads.
+    """
+    if len(coords) < 1:
+        raise ValueError("read_index requires at least one coordinate")
+    # Validate before op construction so unsupported dtypes raise in Python.
+    _get_block_scalar_type(block)
+    return ttl.read_index(block, _as_index_values(block, coords))
 
 
 @syntax("raw_element_write")
@@ -1250,14 +1272,7 @@ def raw_element_write(block, *args):
     coord_args = args[:-1]
     val = args[-1]
     ctx = block.type.context
-    index_vals = []
-    for c in coord_args:
-        if isinstance(c, int):
-            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
-        elif hasattr(c, "type") and isinstance(c.type, IndexType):
-            index_vals.append(c)
-        else:
-            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+    index_vals = _as_index_values(block, coord_args)
 
     block_scalar_type = _get_block_scalar_type(block)
     if hasattr(val, "type") and val.type != block_scalar_type:
@@ -1280,6 +1295,7 @@ __all__ = [
     "exp",
     "raw_element_read",
     "raw_element_write",
+    "read_index",
     "call_extern_func",
     "dfb_descriptor",
     "get_dfb_id",
