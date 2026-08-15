@@ -406,8 +406,8 @@ void populateTTLModule(nb::module_ &m) {
           },
           nb::arg("context"), nb::arg("kind"), nb::arg("dependency_index"))
       .def_prop_ro("kind", &DFBNonTransactionalAccessAttr::getKind)
-       .def_prop_ro("dependency_index",
-                    &DFBNonTransactionalAccessAttr::getDependencyIndex);
+      .def_prop_ro("dependency_index",
+                   &DFBNonTransactionalAccessAttr::getDependencyIndex);
 
   //===--------------------------------------------------------------------===//
   // SliceAttr
