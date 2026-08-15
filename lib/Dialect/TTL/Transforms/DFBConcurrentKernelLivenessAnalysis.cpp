@@ -436,25 +436,53 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
-static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
-    Operation *operation, AccessDomain accessDomain,
-    const LivenessDomainState &domainState) {
-  if (accessDomain.domain.known) {
-    return accessDomain;
+static DenseMap<Operation *, AccessDomain>
+collectRefinedAccessDomains(ArrayRef<Operation *> operations,
+                            const LivenessDomainState &domainState) {
+  DenseMap<Operation *, AccessDomain> domains;
+  DenseMap<Operation *, LaunchNodeDomain> exactDomains;
+  DenseSet<Operation *> unresolvedOperations;
+  for (Operation *operation : operations) {
+    if (domains.contains(operation)) {
+      continue;
+    }
+    auto domainIt = domainState.accessDomains.find(operation);
+    AccessDomain domain =
+        domainIt == domainState.accessDomains.end()
+            ? AccessDomain{LaunchNodeDomain::unknown(), operation}
+            : domainIt->second;
+    domains.try_emplace(operation, domain);
+    if (!domain.domain.known) {
+      exactDomains.try_emplace(operation);
+      unresolvedOperations.insert(operation);
+    }
   }
 
-  LaunchNodeDomain exactDomain;
+  // Group queries by node so the bounded context cache serves every operation
+  // before advancing to the next launch location.
   for (LaunchNodeCoord node : domainState.baseDomain.nodes) {
-    std::optional<std::uint64_t> executionCount =
-        getExactExecutionCountAtLaunchNode(operation, node, domainState);
-    if (!executionCount) {
-      return accessDomain;
-    }
-    if (*executionCount > 0) {
-      exactDomain.nodes.insert(node);
+    for (auto &[operation, exactDomain] : exactDomains) {
+      if (!unresolvedOperations.contains(operation)) {
+        continue;
+      }
+      std::optional<std::uint64_t> executionCount =
+          getExactExecutionCountAtLaunchNode(operation, node, domainState);
+      if (!executionCount) {
+        unresolvedOperations.erase(operation);
+        continue;
+      }
+      if (*executionCount > 0) {
+        exactDomain.nodes.insert(node);
+      }
     }
   }
-  return {std::move(exactDomain), nullptr};
+
+  for (auto &[operation, exactDomain] : exactDomains) {
+    if (unresolvedOperations.contains(operation)) {
+      domains[operation] = {std::move(exactDomain), nullptr};
+    }
+  }
+  return domains;
 }
 
 /// Proves that an access executes once in every iteration of one immutable
@@ -3668,21 +3696,31 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     return;
   }
 
+  SmallVector<Operation *> domainOperations;
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    llvm::append_range(domainOperations,
+                       llvm::map_range(logicalDFB.accesses,
+                                       [](const DFBAccessOccurrence &access) {
+                                         return access.operation;
+                                       }));
+  }
+  llvm::append_range(
+      domainOperations,
+      llvm::map_range(resetOccurrences,
+                      [](const SynchronizedResetOccurrence &reset) {
+                        return reset.operation;
+                      }));
+  llvm::append_range(domainOperations, unknownAccessOperations);
+  DenseMap<Operation *, AccessDomain> refinedDomains =
+      collectRefinedAccessDomains(domainOperations, domainState);
+
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     if (logicalDFB.accesses.empty()) {
       logicalDFB.launchDomain = LaunchNodeDomain::unknown();
       continue;
     }
     for (DFBAccessOccurrence &access : logicalDFB.accesses) {
-      auto domainIt = domainState.accessDomains.find(access.operation);
-      AccessDomain accessDomain;
-      if (domainIt == domainState.accessDomains.end()) {
-        accessDomain = {LaunchNodeDomain::unknown(), access.operation};
-      } else {
-        accessDomain = domainIt->second;
-      }
-      accessDomain = refineUnknownAccessDomainFromExecutionCounts(
-          access.operation, accessDomain, domainState);
+      AccessDomain accessDomain = refinedDomains.lookup(access.operation);
       access.launchDomain = accessDomain.domain;
       access.unanalyzableDomainOperation = accessDomain.unanalyzableOperation;
       logicalDFB.launchDomain =
@@ -3691,14 +3729,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
 
   for (SynchronizedResetOccurrence &reset : resetOccurrences) {
-    auto domainIt = domainState.accessDomains.find(reset.operation);
-    AccessDomain resetDomain =
-        domainIt == domainState.accessDomains.end()
-            ? AccessDomain{LaunchNodeDomain::unknown(), reset.operation}
-            : domainIt->second;
-    resetDomain = refineUnknownAccessDomainFromExecutionCounts(
-        reset.operation, resetDomain, domainState);
-    reset.launchDomain = resetDomain.domain;
+    reset.launchDomain = refinedDomains.lookup(reset.operation).domain;
   }
   if (failed(validateSynchronizedResetDeclarations(resetOccurrences,
                                                    analysisFailure))) {
@@ -3708,13 +3739,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
 
   for (Operation *unknownAccess : unknownAccessOperations) {
-    auto domainIt = domainState.accessDomains.find(unknownAccess);
-    AccessDomain accessDomain =
-        domainIt == domainState.accessDomains.end()
-            ? AccessDomain{LaunchNodeDomain::unknown(), unknownAccess}
-            : domainIt->second;
-    accessDomain = refineUnknownAccessDomainFromExecutionCounts(
-        unknownAccess, accessDomain, domainState);
+    AccessDomain accessDomain = refinedDomains.lookup(unknownAccess);
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
       if (logicalDFB.compilerCreated) {
         continue;
@@ -3798,11 +3823,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         &possibleAccessEvents = possibleGraphState.accessEvents;
     ResetBoundaryEvents &possibleResetBoundaryEvents =
         possibleGraphState.resetBoundaryEvents;
-    addSynchronizedResetAccessEdges(
-        logicalDFBs, validatedResets, node, graph, operationEvents,
-        accessEvents, resetBoundaryEvents, executionCounts, accessRuns,
-        structuralOrder,
-        /*includeUnknownDomains=*/false);
+    addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
+                                    operationEvents, accessEvents,
+                                    resetBoundaryEvents, executionCounts,
+                                    accessRuns, structuralOrder,
+                                    /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(
         logicalDFBs, graph, operationEvents, accessEvents, executionCounts,
         accessRuns, node, domainState, /*includeUnknownDomains=*/false);
