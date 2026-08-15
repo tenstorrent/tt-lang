@@ -1,7 +1,7 @@
 // Verify that non-f32 broadcasts reject f32 DST mode on every architecture
 // and broadcast dimension whose LLK ignores that configuration, including an
 // automatic conflict with an f32 SFPU operation.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' --split-input-file --verify-diagnostics
 
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
   // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}

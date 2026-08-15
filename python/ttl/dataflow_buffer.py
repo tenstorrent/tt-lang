@@ -12,6 +12,11 @@ from ttl.ir import *
 
 from ._src.ttl_ast import syntax
 from .constants import DEFAULT_TILE_SIZE, SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS
+from .dfb_allocation_group import (
+    DFBAllocationGroup,
+    _BoundDFBAllocationGroup,
+    _bind_current_dfb_allocation_group,
+)
 from .dtype_utils import normalize_tile_dimensions
 from ttl.dialects import ttl
 
@@ -177,6 +182,7 @@ class DataflowBuffer:
         tensor_backing: Any = None,
         byte_offset: int = 0,
         byte_size: Optional[int] = None,
+        allocation_group: Optional[DFBAllocationGroup] = None,
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
@@ -200,6 +206,17 @@ class DataflowBuffer:
         self.tensor_backing = tensor_backing
         self.byte_offset = byte_offset
         self.byte_size = byte_size
+        if isinstance(allocation_group, DFBAllocationGroup):
+            allocation_group = _bind_current_dfb_allocation_group(allocation_group)
+        elif allocation_group is not None and not isinstance(
+            allocation_group, _BoundDFBAllocationGroup
+        ):
+            raise TypeError(
+                "allocation_group must be created by "
+                "ttl.make_dfb_allocation_group(), got "
+                f"{type(allocation_group).__name__}"
+            )
+        self.allocation_group = allocation_group
         self._cb_index = _next_cb_index()
 
     @property
@@ -304,6 +321,8 @@ def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
+    *,
+    allocation_group: Optional[DFBAllocationGroup] = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer with properties derived from a tensor.
@@ -312,6 +331,8 @@ def make_dataflow_buffer_like(
         tensor: Tensor that determines the DFB's data type
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
+        allocation_group: Optional immutable identity requiring compiler-verified
+            physical allocation sharing with the other group members
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -319,7 +340,13 @@ def make_dataflow_buffer_like(
     tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
-    return DataflowBuffer(tensor, shape, block_count, tile=tile)
+    return DataflowBuffer(
+        tensor,
+        shape,
+        block_count,
+        tile=tile,
+        allocation_group=allocation_group,
+    )
 
 
 def make_tensor_backed_dfb(
@@ -328,8 +355,14 @@ def make_tensor_backed_dfb(
     *,
     block_count: int = 1,
     byte_offset: int = 0,
+    allocation_group: Optional[DFBAllocationGroup] = None,
 ) -> DataflowBuffer:
-    """Bind a DFB's complete capacity to a sharded L1 tensor byte range."""
+    """Bind a DFB's complete capacity to a sharded L1 tensor byte range.
+
+    ``allocation_group`` requires compiler-verified physical allocation sharing
+    with the other group members. Tensor-backed group members must retain an
+    identical DFB capacity descriptor.
+    """
     from .dtype_utils import is_ttnn_tensor
 
     if not is_ttnn_tensor(tensor):
@@ -366,6 +399,7 @@ def make_tensor_backed_dfb(
         tensor_backing=tensor,
         byte_offset=byte_offset,
         byte_size=byte_size,
+        allocation_group=allocation_group,
     )
 
 
@@ -389,6 +423,8 @@ def make_dfb(
     shape: Tuple[int, ...],
     block_count: int = 2,
     tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
+    *,
+    allocation_group: Optional[DFBAllocationGroup] = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.
@@ -402,6 +438,8 @@ def make_dfb(
         block_count: Capacity multiplier (default 2 for double-buffering)
         tile: Physical tile dimensions. tt-metal supports heights 1, 2, 4, 8,
             16, or 32 and widths 16 or 32.
+        allocation_group: Optional immutable identity requiring compiler-verified
+            physical allocation sharing with the other group members
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -412,4 +450,5 @@ def make_dfb(
         block_count=block_count,
         dtype=_resolve_dfb_dtype(dtype),
         tile=tile,
+        allocation_group=allocation_group,
     )

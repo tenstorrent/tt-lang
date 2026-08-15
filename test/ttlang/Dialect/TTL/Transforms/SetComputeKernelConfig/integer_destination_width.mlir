@@ -1,5 +1,5 @@
 // Summary: Verify integer compute types select the required destination width.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
