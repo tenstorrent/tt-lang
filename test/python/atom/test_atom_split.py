@@ -17,6 +17,7 @@ import textwrap
 
 import pytest
 import ttl
+import ttl.atom as atom_module
 import ttl.kernel as kernel_module
 
 from ttl._src.atom_split import split_function_body
@@ -27,6 +28,7 @@ from ttl.atom import (
     _build_atom_spec,
     _lift_setup,
 )
+from ttl.compiler_options import CompilerOptions
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 
@@ -140,6 +142,153 @@ def test_captured_kernel_is_bound_for_final_operation():
         kernel_capacities=_backend_kernel_capacities(),
     )
     assert result.kernels == (reader,)
+
+
+def test_captured_fabric_manager_claim_binds_to_selected_kernel():
+    """A claim and its selected logical kernel share operation ownership."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+
+    def operation():
+        ttl.call_extern_func(
+            "reader.hpp",
+            "open",
+            kernel=reader,
+            fabric_manager_effects=(manager.acquire(),),
+        )
+
+    spec = _build_atom_spec(operation)
+
+    assert spec.logical_kernels["reader"] is reader
+    assert spec.fabric_manager_claims["manager"] is manager
+    assert manager.operation_identity == spec.operation_identity
+    assert manager.kernel is reader
+
+
+def test_captured_fabric_manager_claim_cannot_have_two_names():
+    """One claim identity has one source name in its operation."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+    manager_alias = manager
+
+    def operation():
+        ttl.call_extern_func(
+            "reader.hpp",
+            "open",
+            kernel=reader,
+            fabric_manager_effects=(manager.acquire(), manager_alias.use()),
+        )
+
+    with pytest.raises(ValueError, match="multiple names"):
+        _build_atom_spec(operation)
+    with pytest.raises(ValueError, match="has no operation identity"):
+        manager.operation_identity
+
+
+def test_external_fabric_manager_effect_must_select_claim_kernel():
+    """A manager effect and its external call select the same kernel."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    writer = _logical_kernel(KernelKind.DATA_MOVEMENT, "writer")
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+    function = _fn(
+        """
+        def operation():
+            ttl.call_extern_func(
+                "writer.hpp",
+                "open",
+                kernel=writer,
+                fabric_manager_effects=(manager.acquire(),),
+            )
+        """
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "fabric manager claim 'external' selects data_movement kernel "
+            "'reader', but the external call selects data_movement kernel "
+            "'writer'"
+        ),
+    ):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader, "writer": writer},
+            selector_scope={
+                "reader": reader,
+                "writer": writer,
+                "manager": manager,
+            },
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+
+
+def test_inferred_external_fabric_effect_must_select_claim_kernel():
+    """Inferred external-call placement also validates manager ownership."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    manager = ttl.FabricManagerClaim("external", kernel=reader)
+    function = _fn(
+        """
+        def operation():
+            def receive(pipe):
+                ttl.call_extern_func(
+                    "receiver.hpp",
+                    "open",
+                    fabric_manager_effects=(manager.acquire(),),
+                )
+            exchange_net.if_dst(receive)
+        """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "fabric manager claim 'external' selects data_movement kernel "
+            "'reader', but the external call selects data_movement"
+        ),
+    ):
+        split_function_body(
+            function,
+            dfb_param_names=set(),
+            logical_kernels={"reader": reader},
+            selector_scope={"reader": reader, "manager": manager},
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+
+
+def test_unified_operation_propagates_runtime_resource_factory(monkeypatch):
+    observed = {}
+
+    def make_resources(**_kwargs):
+        return None
+
+    def fake_compile_atom(*_args, **kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(atom_module, "_compile_atom", fake_compile_atom)
+    result = atom_module._compile_unified_operation(
+        object(),
+        {
+            "num_outs": 1,
+            "memory_space": "L1",
+            "tiled": True,
+            "fp32_dest_acc_en": None,
+            "dst_full_sync_en": None,
+            "math_fidelity": None,
+            "device_domain": None,
+            "runtime_resource_factory": make_resources,
+        },
+        (),
+        {},
+        (1, 1),
+        1,
+        None,
+        CompilerOptions(),
+        0,
+    )
+
+    assert result is not None
+    assert observed["runtime_resource_factory"] is make_resources
 
 
 def test_captured_kernel_cannot_bind_to_two_operations():
@@ -328,6 +477,48 @@ def test_operation_identity_encodes_pipe_topology(capture_kind):
 
     assert identity_for((1, 0)) == identity_for((1, 0))
     assert identity_for((1, 0)) != identity_for((2, 0))
+
+
+def test_operation_identity_encodes_graph_pipenet_topology():
+    """Graph PipeNet identity includes its domain and transfer relation."""
+
+    def identity_for(destination):
+        domain = ttl.DeviceDomain((1, 3))
+        graph = ttl.TransferGraph.edges(
+            domain,
+            edges=[((0, 0), destination)],
+        )
+        pipe_net = ttl.PipeNet(graph=graph)
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((0, 1)) == identity_for((0, 1))
+    assert identity_for((0, 1)) != identity_for((0, 2))
+
+
+def test_operation_identity_encodes_device_domain():
+    """Device-domain components distinguish factory-created operations."""
+
+    def identity_for(domain):
+        def selected_operation():
+            return domain
+
+        return _operation_identity(selected_operation)
+
+    regular = ttl.DeviceDomain((2, 3), name="worker")
+    same_regular = ttl.DeviceDomain((2, 3), name="worker")
+    different_extent = ttl.DeviceDomain((2, 4), name="worker")
+    product = ttl.DeviceDomain.product(
+        rack=ttl.DeviceDomain((2,)),
+        worker=ttl.DeviceDomain((3,)),
+    )
+
+    assert identity_for(regular) == identity_for(same_regular)
+    assert identity_for(regular) != identity_for(different_extent)
+    assert identity_for(regular) != identity_for(product)
 
 
 def test_operation_identity_encodes_global_semaphore_address(monkeypatch):

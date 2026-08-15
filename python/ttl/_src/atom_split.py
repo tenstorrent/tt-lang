@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
+from ttl.fabric import FabricManagerClaim
 from ttl.kernel import (
     Kernel,
     KernelKind,
@@ -196,6 +197,7 @@ class _KernelSelectorResolver:
         selector = _kernel_keyword(call)
         if selector is None:
             if len(inferred_kernels) == 1:
+                self._validate_fabric_manager_effects(call, inferred_kernels)
                 return inferred_kernels
             raise _split_error(
                 call,
@@ -211,7 +213,40 @@ class _KernelSelectorResolver:
                 f"({_format_kernels(selected)}) conflicts with inferred "
                 f"selection ({_format_kernels(inferred_kernels)})",
             )
+        self._validate_fabric_manager_effects(call, selected)
         return selected
+
+    def _validate_fabric_manager_effects(
+        self, call: ast.Call, selected: FrozenSet[KernelSelector]
+    ) -> None:
+        effects = next(
+            (
+                keyword.value
+                for keyword in call.keywords
+                if keyword.arg == "fabric_manager_effects"
+            ),
+            None,
+        )
+        if not isinstance(effects, (ast.Tuple, ast.List)):
+            return
+        for effect in effects.elts:
+            if (
+                not isinstance(effect, ast.Call)
+                or not isinstance(effect.func, ast.Attribute)
+                or not isinstance(effect.func.value, ast.Name)
+            ):
+                continue
+            claim = self.selector_scope.get(effect.func.value.id)
+            if not isinstance(claim, FabricManagerClaim):
+                continue
+            claim_selection = frozenset({claim.kernel})
+            if selected != claim_selection:
+                raise _split_error(
+                    effect,
+                    f"fabric manager claim {claim.identity!r} selects "
+                    f"{_format_kernels(claim_selection)}, but the external "
+                    f"call selects {_format_kernels(selected)}",
+                )
 
     def resolve_release(self, call: ast.Call) -> Optional[KernelSelector]:
         selector = _kernel_keyword(call)

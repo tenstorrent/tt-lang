@@ -21,7 +21,7 @@ module attributes {ttl.launch_grid = array<i64: 18, 1>} {
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_POINTER]]
 func.func @mixed_completion_counter_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %recv_dfb = ttl.bind_cb {cb_index = 1, block_count = 17}
+  %recv_dfb = ttl.bind_cb {cb_index = 1, block_count = 17} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 17>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "mixed_completion" pipes [
@@ -60,7 +60,7 @@ func.func @mixed_completion_counter_receiver()
 
 func.func @mixed_completion_counter_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "mixed_completion" pipes [

@@ -190,16 +190,9 @@ bool isRegionReachable(RegionBranchOpInterface branch, Region &sourceRegion,
 
 } // namespace
 
-class ExecutionCountAnalysis::Impl {
+class ExecutionCountAnalysisSharedState::Impl {
 public:
-  Impl(Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
-       RegionInvocationCountEvaluator regionInvocationCountEvaluator,
-       Options options)
-      : rootRegion(rootRegion),
-        symbolValueEvaluator(std::move(symbolValueEvaluator)),
-        regionInvocationCountEvaluator(
-            std::move(regionInvocationCountEvaluator)),
-        options(options) {
+  explicit Impl(Region &rootRegion) : rootRegion(rootRegion) {
     Operation *parent = rootRegion.getParentOp();
     if (!parent) {
       return;
@@ -210,6 +203,22 @@ public:
       dataFlowSolver.reset();
     }
   }
+
+  Region &rootRegion;
+  std::unique_ptr<DataFlowSolver> dataFlowSolver;
+};
+
+class ExecutionCountAnalysis::Impl {
+public:
+  Impl(ExecutionCountAnalysisSharedState::Impl &sharedState,
+       SymbolValueEvaluator symbolValueEvaluator,
+       RegionInvocationCountEvaluator regionInvocationCountEvaluator,
+       Options options)
+      : sharedState(sharedState), rootRegion(sharedState.rootRegion),
+        symbolValueEvaluator(std::move(symbolValueEvaluator)),
+        regionInvocationCountEvaluator(
+            std::move(regionInvocationCountEvaluator)),
+        options(options) {}
 
   std::optional<std::uint64_t> getExecutionCount(Operation *operation) {
     if (!operation) {
@@ -298,11 +307,12 @@ private:
 
   /// Return an integer constant propagated through block and region arguments.
   std::optional<llvm::APInt> getDataFlowIntegerConstant(Value value) const {
-    if (!dataFlowSolver) {
+    if (!sharedState.dataFlowSolver) {
       return std::nullopt;
     }
     using ConstantLattice = dataflow::Lattice<dataflow::ConstantValue>;
-    const auto *lattice = dataFlowSolver->lookupState<ConstantLattice>(value);
+    const auto *lattice =
+        sharedState.dataFlowSolver->lookupState<ConstantLattice>(value);
     if (!lattice || lattice->getValue().isUninitialized()) {
       return std::nullopt;
     }
@@ -335,23 +345,26 @@ private:
   }
 
   bool isKnownDead(Block *block) const {
-    if (!dataFlowSolver) {
+    if (!sharedState.dataFlowSolver) {
       return false;
     }
-    ProgramPoint *blockStart = dataFlowSolver->getProgramPointBefore(block);
+    ProgramPoint *blockStart =
+        sharedState.dataFlowSolver->getProgramPointBefore(block);
     const auto *executable =
-        dataFlowSolver->lookupState<dataflow::Executable>(blockStart);
+        sharedState.dataFlowSolver->lookupState<dataflow::Executable>(
+            blockStart);
     return executable && !executable->isLive();
   }
 
   bool isKnownDead(Block *source, Block *target) const {
-    if (!dataFlowSolver) {
+    if (!sharedState.dataFlowSolver) {
       return false;
     }
     dataflow::CFGEdge *edge =
-        dataFlowSolver->getLatticeAnchor<dataflow::CFGEdge>(source, target);
+        sharedState.dataFlowSolver->getLatticeAnchor<dataflow::CFGEdge>(source,
+                                                                        target);
     const auto *executable =
-        dataFlowSolver->lookupState<dataflow::Executable>(edge);
+        sharedState.dataFlowSolver->lookupState<dataflow::Executable>(edge);
     return executable && !executable->isLive();
   }
 
@@ -672,17 +685,30 @@ private:
     return total;
   }
 
+  ExecutionCountAnalysisSharedState::Impl &sharedState;
   Region &rootRegion;
   SymbolValueEvaluator symbolValueEvaluator;
   RegionInvocationCountEvaluator regionInvocationCountEvaluator;
   Options options;
-  std::unique_ptr<DataFlowSolver> dataFlowSolver;
   llvm::DenseMap<Block *, std::optional<std::uint64_t>>
       blockExecutionCountCache;
   /// Reuse block counts when different induction values select the same edges.
   llvm::DenseMap<Region *, llvm::DenseMap<BlockFlowKey, BlockCountResult>>
       blockCountCache;
 };
+
+ExecutionCountAnalysisSharedState::ExecutionCountAnalysisSharedState(
+    Region &rootRegion)
+    : impl(std::make_unique<Impl>(rootRegion)) {}
+
+ExecutionCountAnalysisSharedState::~ExecutionCountAnalysisSharedState() =
+    default;
+
+ExecutionCountAnalysisSharedState::ExecutionCountAnalysisSharedState(
+    ExecutionCountAnalysisSharedState &&) noexcept = default;
+
+ExecutionCountAnalysisSharedState &ExecutionCountAnalysisSharedState::operator=(
+    ExecutionCountAnalysisSharedState &&) noexcept = default;
 
 ExecutionCountAnalysis::ExecutionCountAnalysis(
     Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
@@ -695,9 +721,28 @@ ExecutionCountAnalysis::ExecutionCountAnalysis(
     Region &rootRegion, SymbolValueEvaluator symbolValueEvaluator,
     RegionInvocationCountEvaluator regionInvocationCountEvaluator,
     Options options)
-    : impl(std::make_unique<Impl>(rootRegion, std::move(symbolValueEvaluator),
-                                  std::move(regionInvocationCountEvaluator),
-                                  options)) {}
+    : ownedSharedState(
+          std::make_unique<ExecutionCountAnalysisSharedState>(rootRegion)),
+      impl(std::make_unique<Impl>(
+          *ownedSharedState->impl, std::move(symbolValueEvaluator),
+          std::move(regionInvocationCountEvaluator), options)) {}
+
+ExecutionCountAnalysis::ExecutionCountAnalysis(
+    ExecutionCountAnalysisSharedState &sharedState,
+    SymbolValueEvaluator symbolValueEvaluator,
+    RegionInvocationCountEvaluator regionInvocationCountEvaluator)
+    : ExecutionCountAnalysis(sharedState, std::move(symbolValueEvaluator),
+                             std::move(regionInvocationCountEvaluator),
+                             Options{}) {}
+
+ExecutionCountAnalysis::ExecutionCountAnalysis(
+    ExecutionCountAnalysisSharedState &sharedState,
+    SymbolValueEvaluator symbolValueEvaluator,
+    RegionInvocationCountEvaluator regionInvocationCountEvaluator,
+    Options options)
+    : impl(std::make_unique<Impl>(
+          *sharedState.impl, std::move(symbolValueEvaluator),
+          std::move(regionInvocationCountEvaluator), options)) {}
 
 ExecutionCountAnalysis::~ExecutionCountAnalysis() = default;
 
