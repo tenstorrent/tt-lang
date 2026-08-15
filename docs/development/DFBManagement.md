@@ -21,6 +21,12 @@ share one physical index without merging their producer/consumer protocols.
 Every user declaration carries `dfb_id`. Compiler-created declarations may
 omit it until module finalization assigns a unique identity.
 
+User declarations may also carry `allocation_group`. Equal typed group
+identities require those logical DFBs to use one physical index. The identity
+does not merge logical protocols, add synchronization, or reset DFB state. The
+allocator validates the group contract before contracting its members into one
+allocation vertex.
+
 ## Tensor-backed storage
 
 `ttl.make_tensor_backed_dfb` binds a DFB's complete capacity to a byte range
@@ -65,6 +71,11 @@ launch-node storage segments in `ttl.dfb_allocations`. Tensor-backed segments
 do not contribute static DFB L1 bytes because the tensor allocator already
 accounts for their storage. Scratch and tensor-backed segments may use the
 same physical DFB index only on disjoint launch nodes.
+
+Allocation groups do not weaken tensor storage identity. Tensor-backed group
+members must have the same DFB capacity descriptor, and their backing ranges
+must satisfy the normal per-node storage compatibility rules. The scratch-only
+capacity-envelope rule described below does not apply to tensor-backed members.
 
 The simulator exposes the same constructor signature but rejects it because
 simulated tensor-backed storage is not implemented.
@@ -1125,12 +1136,21 @@ index to logical DFBs whose lifetimes cannot overlap. The default analysis
 considers all kernel functions concurrently, including user-declared DFBs
 shared across data-movement and compute kernels.
 
-Two DFBs may share an index only if they have identical `CircularBufferType`
-(shape, element type, block count), equal transaction tile counts, and a
-transaction count that divides the physical capacity. These conditions ensure
-one physical allocation has one page size, capacity, data format, and legal
-ring-pointer progression. `CircularBufferType` is an MLIR-uniqued type, so
-exact type equality is a pointer comparison.
+Ordinary reuse requires identical `CircularBufferType` values (shape, element
+type, and block count). An explicit allocation group may combine scratch DFBs
+with different block shapes or block counts when their element types and page
+formats are identical. The physical descriptor then uses the largest total
+capacity. Both mechanisms require complete quiescent lifecycles. Ordinary reuse
+also requires matching write- and read-pointer runs unless a synchronized reset
+establishes canonical state. The matched sequences must remain boundary-safe
+when repeated from their terminal offsets. Allocation groups instead advance
+independent write and read cursors through each ordered member. A terminal
+synchronized reset establishes equal canonical offsets before the next
+handoff; otherwise the offsets must already be equal. Any pointer movement that
+crosses the shared physical envelope is rejected. These conditions retain one
+page format, sufficient storage, and legal ring-pointer progression.
+`CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
+is a pointer comparison.
 
 ### Logical identity
 
@@ -1152,6 +1172,13 @@ rewriting `cb_index`. Repeated finalization therefore cannot merge logical
 DFBs that already share a physical slot. Allocation visits DFBs in immutable
 declaration order. Changing logical ID values therefore does not affect
 acceptance.
+
+The frontend creates allocation groups with
+`ttl.make_dfb_allocation_group()`. Composition, operation splitting, and
+logical-kernel replication preserve the declaration identity as a module-local
+`#ttl.dfb_allocation_group<ordinal>` attribute. The ordinal has no runtime
+meaning. Every declaration of one logical DFB must carry the same group or no
+group; partial propagation is rejected.
 
 ### Concurrent-kernel lifetime analysis
 
@@ -1223,6 +1250,15 @@ Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
 unknown execution remains unproven.
 
+An access with an unknown launch-node domain is refined to an exact domain when
+execution-count analysis proves a count on every base launch node. Nodes with
+positive counts belong to the domain; nodes with zero counts do not. The proof
+applies per access before their domains are combined. One unresolved count
+preserves the unknown result. A logical DFB whose access-domain union is empty
+has no runtime storage access and may share a type-compatible scratch descriptor
+without a lifetime-order proof. Tensor-backed empty domains retain the issue
+#813 allocation diagnostic.
+
 The pass runs after `ttl-insert-copy-wait`. A transfer into or out of a DFB
 completes at its `ttl.wait`, whose transfer-handle operand does not identify the
 DFB. Inserting that wait before the corresponding push or pop ensures the
@@ -1256,13 +1292,42 @@ Those DFBs remain unbounded and conflict with every other allocation candidate.
 The external call does not disable reuse among other DFBs whose visible
 lifecycles remain bounded.
 
-The current DSL cannot declare a dependency-only DFB, summarize hidden
-protocol effects, or represent an unknown DFB access set. An external callee
-with an unknown set is outside the valid-program assumption. A future explicit
-unknown form must disable user DFB reuse for the complete module because an
-unresolved raw index may name any physical allocation. Issue
-[#806](https://github.com/tenstorrent/tt-lang/issues/806) tracks the required
-DFB dependency and protocol-effect representation.
+`dfb_dependencies` declares dependency-only storage, ordered typed
+`dfb_effects` summarize synchronous reserve, push, wait, and pop actions, and
+`dfb_accesses` describes typed synchronous accesses without queue transactions.
+`ttl.DFBAccess.interface_preserved(dfb)` states that the callee restores the
+selected dependency's complete interface state before returning. The call
+remains a storage access, so reuse still requires strict lifetime order; the
+summary only establishes an identity queue-state transition. One dependency
+occurrence cannot declare both a protocol effect and a non-transactional
+access. `unknown_dfb_access=True` declares access to user-managed DFBs outside
+the listed set and conservatively prevents affected physical-index reuse. These
+contracts describe external behavior without adding calls or inspecting C++.
+
+An exact static `dfb_effects` sequence may describe cumulative queue state
+rather than one-to-one transactions. Reserve and wait effects establish
+readiness thresholds relative to the current write or read cursor. Push and pop
+effects advance those cursors. One readiness check may therefore authorize
+several smaller pointer movements, and one publication may satisfy several
+smaller waits. Repeated readiness checks retain the greatest still-valid
+threshold.
+
+The cumulative proof requires every protocol effect to execute exactly once in
+one ordered external-call sequence. Producer and consumer cursor movement must
+have equal positive totals, each side must have one constant pointer owner, and
+every non-protocol DFB access must remain inside an acquire/release interval.
+The analysis relates each wait completion to the first push that publishes its
+required cumulative position. When a reservation exceeds currently available
+capacity, it also relates that reserve completion to the first pop that returns
+the required credit. A relation that would introduce a cycle is rejected as a
+blocking protocol. Unknown order, dynamic counts, mixed native and external
+cumulative sequences, condition mismatch, and incomplete terminal consumption
+remain conservative.
+
+Reports preserve the normalized transaction boundaries and the raw
+`write_cursor_runs` and `read_cursor_runs`. Allocation compatibility uses the
+raw cursor movements; the normalized sequence is diagnostic evidence and does
+not erase different pointer advancement.
 
 `num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
 tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
@@ -1273,10 +1338,10 @@ a physical index.
 TT-Metal advances each ring pointer by
 [`num_pages * fifo_page_size`](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L208-L214).
 The pointer wraps only when it reaches the end of the physical DFB. Logical
-DFBs sharing one physical index therefore use the same transaction tile count,
-and that count divides `block_count * elements_per_block`. This keeps every
-reserve, push, wait, and pop within the allocation and places each pointer on a
-legal wrap boundary.
+DFBs sharing one physical index therefore preserve their exact write and read
+cursor runs. Each run must remain within the physical capacity from its current
+offset; a movement that crosses the allocation end is rejected. Producer and
+consumer cursors must reach the same offset at a lifecycle handoff.
 
 For a bounded DFB, every storage-accessing operation with a direct DFB operand
 is projected to a top-level function operation. `attach_cb` and `get_dfb_id`
@@ -1398,6 +1463,8 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
   logicalDFBs = group bind_cb declarations by logical dfb_id
   collect every lifecycle operation and direct runtime use
   compute the launch-node domain of every access
+  if every per-node execution count is exact for an otherwise unknown access:
+    use the nodes with positive counts as its exact access domain
 
   for each launched physical node:
     graph = empty happens-before graph
@@ -1408,8 +1475,9 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         add previous completion -> entry
 
     for each logical DFB active on the node:
-      if exactly one reserve, push, wait, and pop form a matched lifecycle:
-        DFB.nodeLifetime.transactionTileCount = transactionTileCount
+      if statically counted reserve, push, wait, and pop runs match, or one
+         reserve, push, wait, and pop share one at-most-once condition:
+        DFB.nodeLifetime.transactionRuns = normalized counted transactions
         DFB.nodeLifetime.pointerOwners = read and write hardware processors
         add DFB.push.completion -> DFB.wait.completion
 
@@ -1422,16 +1490,134 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         DFB.nodeLifetime.terminalEvents = {DFB.pop.completion}
         DFB.nodeLifetime.quiescence = proven
 
+    build a second graph with every unknown access domain treated as possible
+    prove conditionally bounded lifetimes only for one complete conditional
+      transaction on every possible node; separately evaluated conditions
+      match across logical kernels only through typed dispatch-condition
+      identities at one launch coordinate
+    retain possible-domain order separately from exact-domain order
+
   return logical DFB lifecycles, per-node quiescence, pointer owners,
-         source evidence, and pairwise per-node lifetime order
+         conditional boundedness, source evidence, and pairwise per-node
+         exact and possible-domain lifetime order
 ```
 
 `DFBPhysicalAllocationPlanner` consumes those immutable facts and constructs a
 typed conflict model before selecting any assignment. Every edge retains the
 logical DFB pair, optional launched node, source operations, and one of the
-following reasons: descriptor mismatch, unknown launch-node domain, unproven
-quiescence, transaction mismatch, pointer-owner mismatch, or concurrent
-lifetime.
+following reasons: descriptor mismatch, storage mismatch, unknown launch-node
+domain, unproven quiescence, transaction mismatch, pointer-owner mismatch,
+static-configuration mismatch, or concurrent lifetime.
+
+Before coloring, each allocation group is checked pairwise with the normal
+conflict construction except for exact descriptor equality. The replacement
+compatibility check requires identical element types, scratch storage for an
+unequal capacity envelope, compatible static compute configuration, and no
+lifecycle conflict. A successful group is contracted to one graph vertex. A
+failed group request is a compilation error rather than permission to allocate
+its members separately.
+
+The optional unsafe allocation-group policy changes only explicit group
+validation. It accepts missing launch-domain, quiescence, pointer-handoff, and
+lifetime-order proofs as user-supplied runtime epoch contracts. Each accepted
+group emits a warning and a `ttl.assumed_dfb_allocation_groups` audit record.
+The allocator still rejects incompatible page formats, tensor storage,
+compute-kernel configuration, mutually reachable access events, required
+cumulative synchronization that contradicts established order, and transaction
+sequences that cross the selected ring envelope when started at an assumed
+epoch boundary. Automatic reuse and every target-capacity and L1-budget check
+remain proof-based. Strict validation is the default.
+
+#### Allocation diagnostics
+
+An assertions-enabled build can print the allocation inputs and conflict
+evidence without changing allocation behavior:
+
+```bash
+ttlang-opt input.mlir \
+  --ttl-finalize-dfb-indices='reuse-user-dfbs=true' \
+  -debug-only=ttl-finalize-dfb-indices \
+  -o /dev/null
+```
+
+The report is emitted after liveness and conflict construction and before
+capacity or L1-budget validation. Each logical DFB records its descriptor,
+tensor backing, launch-node domain, boundedness, accesses, protocol effects,
+exact execution counts, transaction sizes, pointer owners, and lifetime
+frontiers. Frontier entries are access-occurrence indices that refer to the
+numbered access records and their source locations. Each conflict records both
+logical IDs, the typed reason, an applicable launch node, and source
+operations.
+
+For each validated allocation group, the report records its member logical
+IDs, maximum byte capacity, `handoff=proven` or `handoff=assumed`, and every
+compatible descriptor conflict replaced by the physical envelope. Logical DFB
+and final-assignment rows also retain the typed group identity.
+
+The report evaluates each base launch node with every unknown-domain access
+treated as possible. Exact-zero execution excludes an access. These rows use
+`domain_assumption=unknown-possible`. A row records
+`conditional_execution=1` only when every unresolved active access shares one
+structured at-most-once condition and forms one complete transaction. A
+logical DFB becomes `conditionally_bounded=1` only when the proof succeeds on
+every possible node. Two conditionally bounded unknown-domain DFBs may share
+when their descriptors, transaction runs, pointer owners, and possible-domain
+lifetimes are compatible. Unknown/exact-domain pairs and all other unknown
+pairs retain an `unknown-launch-node-domain` conflict. Nodes with identical
+facts are grouped for deterministic bounded output.
+
+#### Dispatch-stable condition identity
+
+An external predicate can be evaluated independently in multiple logical
+kernels when the frontend records one typed condition declaration:
+
+```python
+def make_conditional_operation():
+    active = ttl.DispatchCondition(ttl.ScalarType.I64)
+    producer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    consumer_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def conditional_operation(input_tensor):
+        producer_active = ttl.call_extern_func(
+            "condition.hpp",
+            "evaluate_for_producer",
+            condition_result=active,
+            kernel=producer_kernel,
+        )
+        consumer_active = ttl.call_extern_func(
+            "condition.hpp",
+            "evaluate_for_consumer",
+            condition_result=active,
+            kernel=consumer_kernel,
+        )
+```
+
+`DispatchCondition` is immutable and must be captured from an enclosing
+operation factory. Its declaration selects the i32 or i64 external result
+carrier. Zero is false and nonzero is true. The declared truth value must be
+stable for one dispatch and launch coordinate, and each evaluation must be
+repeat-safe. A condition-result call cannot access a DFB, declare DFB protocol
+effects, or declare unknown DFB access. DFB arguments, indices, and descriptors
+are all invalid on the call.
+
+The frontend assigns deterministic ordinals by declaration identity within the
+module compiled for an operation. Composition, unified-operation splitting,
+and explicit logical-kernel replication preserve those ordinals. Equal IR
+attributes identify the same condition; distinct conditions in one module use
+distinct ordinals. The attribute on `ttl.opaque_call` has no runtime effect and
+disappears with the opaque call during lowering.
+
+The liveness analysis proves equality from the typed identity and the actual
+structured condition expression. It preserves branch polarity and ordered
+nesting and supports exact `arith.andi`, `arith.ori`, and `arith.xori`
+expression trees over i1 values. Cross-function proof also requires the same
+launch coordinate and a typed expression for every unresolved conditional
+frame. Distinct identities, missing identities, mixed typed and untyped
+nesting, differing expressions, and unresolved loops remain conservative.
+Callee names, source
+locations, generated C++, template arguments, and textual equality do not
+establish condition identity.
 
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
@@ -1459,12 +1645,20 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
 
   for each logical DFB pair A, B:
     add descriptor mismatch if A.type != B.type
-    add unknown-domain conflict if either launch-node domain is unknown
+    add unknown-domain conflict unless both unknown domains are conditionally
+      bounded
     for each node where A and B both execute:
       add unproven-quiescence conflict unless both node lifetimes are proven
       add transaction conflict unless their transaction sizes match
       add pointer-owner conflict unless read and write owners match
       add concurrent-lifetime conflict unless A precedes B or B precedes A
+
+  for each typed allocation group:
+    validate every member pair with descriptor equality disabled
+    reject incompatible element types or tensor-backed capacity envelopes
+    reject any storage, static-configuration, protocol, owner, domain, or
+      lifetime conflict
+    compute the largest scratch byte capacity required by a member
 
   if reuseUserDFBs:
     candidates = all logical DFBs in immutable declaration order
@@ -1475,6 +1669,7 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     candidates = compilerDFBs
 
   conflicts = typed conflict graph induced by candidates
+  contract each validated allocation group to one allocation vertex
   assignment = deterministicFirstFit(conflicts)
   pairwiseConflictLowerBound = findCliqueLowerBound(conflicts)
   if assignment exceeds the physical-index limit:
@@ -1550,7 +1745,9 @@ earliest-event antichain and completes no later than the terminal pop.
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
 
-1. A and B have the same page shape, data format, and block count.
+1. A and B either have identical descriptors or belong to one validated
+   scratch allocation group with the same element type and a physical capacity
+   at least as large as both logical capacities.
 2. They use the same transaction tile count, and that count divides their
    physical capacity. Their ring pointers therefore advance by equal increments
    and wrap only at the allocation boundary.
@@ -1594,7 +1791,9 @@ mutually conflicting lifetimes are rejected without target metadata.
 `test/python/test_user_dfb_reuse.py` recursively composes copy atoms into an
 operation with 33 logical DFBs. Reuse reduces the physical allocation for all
 targets. A focused Blackhole case disables reuse and executes all 33 distinct
-indices.
+indices. The same file checks a typed allocation group whose two differently
+sized scratch DFBs execute in different logical kernels and share the largest
+capacity envelope for BF16 and FP32 with DRAM and L1 tensors.
 
 ### Module attribute and runtime integration
 
@@ -1622,9 +1821,12 @@ initialization.
 ```text
 buildRuntimeDescriptors(assignments):
   for assignment in assignments:
-    reject assignment.physicalIndex if another assignment at that index
-        has a different exact type
-    allocationByIndex.insert(assignment.physicalIndex, assignment.type)
+    if assignment.physicalIndex is new:
+      allocationByIndex.insert(assignment.physicalIndex, assignment.type)
+    else if assignment.type differs from the selected type:
+      require both assignments belong to one allocation group
+      require identical element types and scratch storage
+      retain the type with the largest byte capacity
 
   for (index, type) in allocationByIndex sorted by index:
     emit {dfb_index = index,
@@ -1634,10 +1836,11 @@ buildRuntimeDescriptors(assignments):
           block_count = type.blockCount}
 ```
 
-Every finalized declaration contributes to the table. Type equality makes
-each deduplicated descriptor valid for every declaration at that physical
-index, and deriving the page size from the same element type used by lowering
-keeps compiler and runtime allocation sizes equal.
+Every finalized declaration contributes to the table. Exact-type reuse keeps
+one unchanged descriptor. A validated allocation group retains one element
+type and selects a descriptor with the maximum required scratch bytes.
+Deriving the page size from the same element type used by lowering keeps
+compiler and runtime page formats equal.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
@@ -1650,10 +1853,11 @@ the same physical configuration as direct execution.
 Setting `reuse-user-dfbs=false` retains physical sharing already expressed by
 equal provisional user indices but does not introduce new sharing between user
 DFBs. It compacts the distinct provisional values, then assigns only
-compiler-created DFBs. Both allocation modes use the same concurrent lifetime
-proof and conflict relation for every DFB whose index they select. Both modes
-emit the complete `ttl.dfb_allocations` table and assign identities to
-compiler-created declarations.
+compiler-created DFBs. An allocation-group declaration is rejected in this
+mode because its required sharing cannot be honored. Both modes use the same
+concurrent lifetime proof and conflict relation for every DFB whose index they
+select. Both modes emit the complete `ttl.dfb_allocations` table and assign
+identities to compiler-created declarations.
 
 ```text
 allocateWithoutUserReuse(module, lifetimes):
@@ -1721,19 +1925,16 @@ with releases before finalization.
   applies the same conservative restriction when repeated regions invalidate a
   dominance-based `happensBefore` result.
 
-- **Repeated protocols.** The analysis accepts one reserve/push/wait/pop
-  occurrence per logical DFB. Loops and multi-acquire protocols require
-  symbolic occurrence matching so a push, wait, and pop from the same
-  iteration are related without conflating different iterations. PipeNet
-  schedule verification already pairs static protocol occurrences and uses
-  `ExecutionCountAnalysis` to prove equal dynamic counts. DFB reuse requires
-  the corresponding reserve/push/wait/pop occurrence matching.
+- **Unresolved repeated protocols.** Static loops with matched structured
+  iteration domains and exact external cumulative sequences are supported.
+  Dynamic trip counts, conditionally repeated iterations, unknown external
+  effect order, and mixed native/external cumulative sequences remain
+  conservative.
 
-- **Credit-return ordering.** Only push-to-wait completion is modeled across
-  kernels. Proving additional pop-to-reserve ordering could shorten later
-  producer frontiers, but requires exact protocol and occurrence matching.
-  PipeNet schedule verification proves receiver post/send/wait correspondence,
-  but does not establish a DFB pop-to-reserve credit-return edge.
+- **General credit-return ordering.** Exact cumulative external sequences add
+  pop-to-reserve completion relations when capacity requires returned credit.
+  Native and dynamically repeated protocols still require exact occurrence
+  matching before the compiler may infer the same relation.
 
 - **Assignment granularity.** Allocation currently selects one physical index
   per logical DFB over its complete launch-node domain. Per-node or hybrid
@@ -1744,13 +1945,13 @@ with releases before finalization.
   pointer state between NOC0, NOC1, Pack, and Unpack. Reuse across different
   hardware pointer owners requires an explicit state transfer or reset.
 
-- **Storage compatibility.** Exact `CircularBufferType` equality forbids reuse
-  across different block shapes, tile dimensions, element types, or block
-  counts. A broader compatibility relation would need one physical descriptor
-  that satisfies every logical DFB assigned to it, including page size,
-  capacity, and data format.
-  A max-capacity descriptor could support some unequal logical types, but it
-  must also prove compatible transaction counts and address calculations.
+- **Storage compatibility.** Automatic reuse still requires exact
+  `CircularBufferType` equality. Typed allocation groups support a
+  scratch-only capacity envelope across different block shapes and block counts
+  with one exact page format. Different element types, tile formats,
+  tensor-backed capacities, or statically incompatible compute configurations
+  remain invalid. General page-format reconfiguration would require a typed
+  synchronized epoch transition and runtime descriptor updates.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One

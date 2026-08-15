@@ -1,6 +1,6 @@
 // Verify invalid targets, policy constraints, and execution strategies are
 // diagnosed before kernel configuration mutates the IR.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0}))' --split-input-file --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0})' --split-input-file --verify-diagnostics
 
 // expected-error @below {{'builtin.module' op ttl.target_arch must be a #ttcore.arch attribute}}
 module attributes {ttl.target_arch = "blackhole"} {

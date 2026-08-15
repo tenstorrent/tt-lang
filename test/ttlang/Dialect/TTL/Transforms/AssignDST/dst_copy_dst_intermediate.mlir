@@ -15,7 +15,7 @@
 //   rsqrt(abs)       -> DST[1]  (in-place on abs result)
 //   mul(x, rsqrt)    -> DST[0]  (SFPU binary, consumes original x at DST[0])
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst{dst-capacity=8}),canonicalize)' | FileCheck %s
 
 // CHECK-LABEL: func.func @dst_intermediate_reuse_unary_chain
 // CHECK:           ttl.compute

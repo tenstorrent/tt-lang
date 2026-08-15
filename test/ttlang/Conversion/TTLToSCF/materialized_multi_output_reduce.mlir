@@ -1,7 +1,7 @@
 // Verifies that materializing a published reduction adds a second compute
 // output and that accumulating-loop lowering selects each formal output map.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-lower-to-loops{dst-accumulation=true}))' | FileCheck %s
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-lower-to-loops{dst-accumulation=true}))' | FileCheck %s --check-prefix=NO-COMPUTE
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute),ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-lower-to-loops{dst-accumulation=true}))' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute),ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-lower-to-loops{dst-accumulation=true}))' | FileCheck %s --check-prefix=NO-COMPUTE
 
 // NO-COMPUTE: module
 // NO-COMPUTE-NOT: ttl.compute

@@ -47,6 +47,81 @@ func.func @compute_wait_no_pop(
 
 // -----
 
+// Hidden push and pop effects satisfy automatic synchronization without
+// emitting duplicate concrete releases.
+// CHECK-LABEL: func.func @external_releases_preserved
+// CHECK: %[[PRODUCER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[CONSUMER:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.cb_reserve %[[PRODUCER]]
+// CHECK-NEXT: ttl.opaque_call "publish" dfb_dependencies(%[[PRODUCER]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] ()
+// CHECK-NOT: ttl.cb_push
+// CHECK: ttl.cb_wait %[[CONSUMER]]
+// CHECK-NEXT: ttl.opaque_call "release" dfb_dependencies(%[[CONSUMER]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] ()
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @external_releases_preserved() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %producer = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserved = ttl.cb_reserve %producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "publish" dfb_dependencies(%producer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  %waited = ttl.cb_wait %consumer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "release" dfb_dependencies(%consumer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  func.return
+}
+
+// -----
+
+// Opposite-direction external effects do not consume the current acquired
+// slot, so automatic releases precede those external transactions.
+// CHECK-LABEL: func.func @external_opposite_direction_release_placement
+// CHECK: %[[PRODUCER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[CONSUMER:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.cb_reserve %[[PRODUCER]]
+// CHECK-NEXT: ttl.cb_push %[[PRODUCER]]
+// CHECK-NEXT: ttl.opaque_call "consume"
+// CHECK-NEXT: ttl.cb_wait %[[CONSUMER]]
+// CHECK-NEXT: ttl.cb_pop %[[CONSUMER]]
+// CHECK-NEXT: ttl.opaque_call "produce"
+// CHECK-NEXT: return
+func.func @external_opposite_direction_release_placement() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %producer = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserved = ttl.cb_reserve %producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "consume" dfb_dependencies(%producer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  %waited = ttl.cb_wait %consumer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "produce" dfb_dependencies(%consumer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  func.return
+}
+
+// -----
+
+// Unknown access extends every user-managed acquisition interval but not a
+// compiler-created intermediate interval.
+// CHECK-LABEL: func.func @unknown_access_release_placement
+// CHECK: %[[FIRST_USER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[SECOND_USER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[INTERMEDIATE:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
+// CHECK-NEXT: ttl.cb_reserve %[[FIRST_USER]]
+// CHECK-NEXT: ttl.cb_reserve %[[SECOND_USER]]
+// CHECK-NEXT: ttl.cb_reserve %[[INTERMEDIATE]]
+// CHECK-NEXT: ttl.cb_push %[[INTERMEDIATE]]
+// CHECK-NEXT: ttl.opaque_call "unknown"
+// CHECK-NEXT: ttl.cb_push %[[SECOND_USER]]
+// CHECK-NEXT: ttl.cb_push %[[FIRST_USER]]
+// CHECK-NEXT: return
+func.func @unknown_access_release_placement() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %first_user = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_user = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %intermediate = ttl.bind_cb {cb_index = 2, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_user_slot = ttl.cb_reserve %first_user : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %second_user_slot = ttl.cb_reserve %second_user : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %intermediate_slot = ttl.cb_reserve %intermediate : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "unknown" () {header = "effects.hpp", unknown_dfb_access} : () -> ()
+  return
+}
+
+// -----
+
 // Test 3: DM thread, chase copy -> transfer_handle -> wait chain.
 
 // CHECK-LABEL: func.func @dm_reserve_copy_chain

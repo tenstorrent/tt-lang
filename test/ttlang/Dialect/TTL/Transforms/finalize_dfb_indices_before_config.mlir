@@ -1,6 +1,6 @@
 // Summary: Verify compute configuration captures finalized physical DFB indices.
 //
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false},func.func(ttl-set-compute-kernel-config))' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false},ttl-set-compute-kernel-config)' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
