@@ -147,3 +147,60 @@ def test_external_fabric_manager_can_select_pipe_source_kernel(monkeypatch):
     interval = selected_spec.fabric_manager_intervals[0]
     assert interval.kind is FabricManagerIntervalKind.EXTERNAL
     assert interval.claim == manager.identity
+
+
+def test_composed_fabric_manager_lifetime_reaches_selected_kernel(monkeypatch):
+    """Composed acquire, use, and release produce one ownership interval."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    manager = ttl.FabricManagerClaim("external", kernel=ttl.PIPE_SOURCE_KERNEL)
+
+    @ttl.operation()
+    def open_manager():
+        ttl.call_extern_func(
+            HEADER,
+            "open",
+            kernel=ttl.PIPE_SOURCE_KERNEL,
+            fabric_manager_effects=(manager.acquire(),),
+        )
+
+    @ttl.operation()
+    def use_manager():
+        ttl.call_extern_func(
+            HEADER,
+            "use",
+            kernel=ttl.PIPE_SOURCE_KERNEL,
+            fabric_manager_effects=(manager.use(),),
+        )
+
+    @ttl.operation()
+    def close_manager():
+        ttl.call_extern_func(
+            HEADER,
+            "close",
+            kernel=ttl.PIPE_SOURCE_KERNEL,
+            fabric_manager_effects=(manager.release(),),
+        )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_manager(inp):
+        open_manager()
+        use_manager()
+        close_manager()
+
+    composed_manager(
+        ttnn.from_torch(
+            torch.zeros((32, 32), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+    )
+
+    selected_spec = next(
+        spec
+        for spec in _kernel_specs(_compiled_kernel(composed_manager))
+        if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
+    )
+    assert len(selected_spec.fabric_manager_intervals) == 1
+    interval = selected_spec.fabric_manager_intervals[0]
+    assert interval.kind is FabricManagerIntervalKind.EXTERNAL
+    assert interval.claim == manager.identity

@@ -12,6 +12,7 @@ import hashlib
 import inspect
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from ttl.fabric import FabricManagerClaim
 from ttl.kernel import Kernel
 
 _NESTED_SCOPES = (
@@ -124,10 +125,15 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
-) -> Tuple[Dict[str, object], Dict[str, Kernel]]:
+) -> Tuple[Dict[str, object], Dict[str, Kernel], Dict[str, FabricManagerClaim]]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
     logical_kernels = {}
+    fabric_manager_claims = {
+        name: fn_globals[name]
+        for name in sorted(_loaded_names(fn_def.body))
+        if name in fn_globals and isinstance(fn_globals[name], FabricManagerClaim)
+    }
     inline_discriminators = {}
     fn_def.body = _inline_statements(
         fn_def.body,
@@ -136,9 +142,10 @@ def inline_atom_calls(
         reserved_names,
         external_pipenets,
         logical_kernels,
+        fabric_manager_claims,
         inline_discriminators,
     )
-    return external_pipenets, logical_kernels
+    return external_pipenets, logical_kernels, fabric_manager_claims
 
 
 def _inline_statements(
@@ -148,6 +155,7 @@ def _inline_statements(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
@@ -159,6 +167,7 @@ def _inline_statements(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            fabric_manager_claims,
             inline_discriminators,
         )
         match = _standalone_operation_call(statement, scope)
@@ -176,6 +185,7 @@ def _inline_statements(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                fabric_manager_claims,
                 inline_discriminators,
             )
         )
@@ -189,6 +199,7 @@ def _inline_compound_bodies(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     inline_discriminators: Dict[str, int],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
@@ -204,6 +215,7 @@ def _inline_compound_bodies(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            fabric_manager_claims,
             inline_discriminators,
         )
         setattr(statement, attribute, inlined)
@@ -220,6 +232,7 @@ def _inline_compound_bodies(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                fabric_manager_claims,
                 inline_discriminators,
             )
 
@@ -295,6 +308,7 @@ def _expand_call(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
@@ -315,6 +329,13 @@ def _expand_call(
         scope,
         reserved_names,
         logical_kernels,
+    )
+    _add_fabric_manager_claim_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        fabric_manager_claims,
     )
 
     local_names = _collect_local_names(spec.fn_ast)
@@ -402,6 +423,32 @@ def _add_logical_kernel_bindings(
             existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
             scope[existing_name] = kernel
             logical_kernels[existing_name] = kernel
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+
+
+def _add_fabric_manager_claim_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, claim in spec.fabric_manager_claims.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in fabric_manager_claims.items()
+                if candidate is claim
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = claim
+            fabric_manager_claims[existing_name] = claim
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 

@@ -128,6 +128,11 @@ strictly between one acquire and release. `scoped()` declares one opaque call
 that acquires, uses, and releases the manager. Effects must occur in the
 selected logical kernel's straight-line entry block.
 
+An expand-only operation forwards captured claims to the final grid-bearing
+operation. Acquire, use, and release effects may therefore reside in separate
+composed helpers. The claim binds once when the final operation is registered;
+reusing the same claim in two independent grid-bearing operations is invalid.
+
 The runtime resource factory supplies one `FabricConnectionBinding` for every
 captured claim. Its requirements must cover every active logical-device and
 worker-node instance of the selected kernel. `fixed_link_index` is an external

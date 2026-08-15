@@ -66,7 +66,11 @@ from .kernel import (
     _selector_implicit_role,
     _selector_kind,
 )
-from .fabric import FabricManagerClaim, _bind_fabric_manager_claims
+from .fabric import (
+    FabricManagerClaim,
+    _bind_fabric_manager_claims,
+    _validate_fabric_manager_claims,
+)
 from .operators import _set_current_grid
 from .pipe import PipeNet
 from .runtime_resources import ProgramRuntimeResources
@@ -229,7 +233,9 @@ def _classify_params(fn: Callable) -> List[_ParamInfo]:
     return info
 
 
-def _build_atom_spec(fn: Callable) -> _AtomSpec:
+def _build_atom_spec(
+    fn: Callable, *, bind_fabric_manager_claims: bool = True
+) -> _AtomSpec:
     name = fn.__name__
     try:
         source_file = inspect.getfile(fn)
@@ -255,9 +261,11 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets, inlined_logical_kernels = inline_atom_calls(
-        fn_def, scope, caller_name=name
-    )
+    (
+        inlined_pipenets,
+        inlined_logical_kernels,
+        inlined_fabric_manager_claims,
+    ) = inline_atom_calls(fn_def, scope, caller_name=name)
     validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -270,7 +278,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
     captured_logical_kernels: Dict[str, Kernel] = {}
-    fabric_manager_claims: Dict[str, FabricManagerClaim] = {}
+    fabric_manager_claims: Dict[str, FabricManagerClaim] = dict(
+        inlined_fabric_manager_claims
+    )
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
@@ -285,7 +295,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             if not any(value is kernel for kernel in logical_kernels.values()):
                 captured_logical_kernels[capture_name] = value
         elif isinstance(value, FabricManagerClaim):
-            fabric_manager_claims[capture_name] = value
+            if not any(value is claim for claim in fabric_manager_claims.values()):
+                fabric_manager_claims[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -298,7 +309,14 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     operation_identity = _operation_identity(fn)
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
-    _bind_fabric_manager_claims(fabric_manager_claims, operation_identity)
+    if bind_fabric_manager_claims:
+        _bind_fabric_manager_claims(
+            fabric_manager_claims,
+            operation_identity,
+            logical_kernels,
+        )
+    else:
+        _validate_fabric_manager_claims(fabric_manager_claims)
 
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
@@ -680,7 +698,10 @@ def _unified_operation(
     _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
 
     def _decorator(f):
-        spec = _build_atom_spec(f)
+        spec = _build_atom_spec(
+            f,
+            bind_fabric_manager_claims=grid is not None,
+        )
         return Atom(
             spec,
             {
