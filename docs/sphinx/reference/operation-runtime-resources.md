@@ -119,6 +119,9 @@ def sender(input_tensor, output_tensor):
     )
 ```
 
+Use `ttl.PIPE_SOURCE_KERNEL` as the claim kernel when the external manager must
+execute on the compiler-owned PipeNet source kernel.
+
 Ownership begins at entry to the acquire call because that opaque call may open
 connections. It ends after the release call returns. Every `use()` must occur
 strictly between one acquire and release. `scoped()` declares one opaque call
