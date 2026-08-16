@@ -373,7 +373,7 @@ static void planGeneratedFabricManagerOwnership(
   if (enableLocalOwnership) {
     for (const auto &[receiverFunction, receiverRuntimeIntervals] :
          intervalsByFunction) {
-      if (receiverRuntimeIntervals.size() != 1 ||
+      if (receiverRuntimeIntervals.empty() ||
           llvm::any_of(receiverRuntimeIntervals,
                        [&](std::size_t runtimeIntervalIndex) {
                          return plan.managerIntervals
@@ -390,7 +390,8 @@ static void planGeneratedFabricManagerOwnership(
            intervalsByFunction) {
         if (pairedSenderFunctions.contains(senderFunction) ||
             receiverFunction == senderFunction ||
-            senderRuntimeIntervals.size() != 1) {
+            senderRuntimeIntervals.size() !=
+                receiverRuntimeIntervals.size()) {
           continue;
         }
         bool matches = true;
@@ -435,9 +436,14 @@ static void planGeneratedFabricManagerOwnership(
       pairedSenderFunctions.insert(senderFunction);
       ArrayRef<std::size_t> senderRuntimeIntervals =
           intervalsByFunction.find(senderFunction)->second;
-      for (auto [receiverRuntimeIndex, senderRuntimeIndex] :
-           llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals)) {
-        std::size_t semaphoreIndex = plan.ownershipSemaphoreCount++;
+      std::size_t semaphoreIndex = plan.ownershipSemaphoreCount++;
+      for (std::size_t intervalPosition = 0;
+           intervalPosition < receiverRuntimeIntervals.size();
+           ++intervalPosition) {
+        std::size_t receiverRuntimeIndex =
+            receiverRuntimeIntervals[intervalPosition];
+        std::size_t senderRuntimeIndex =
+            senderRuntimeIntervals[intervalPosition];
         FabricRuntimeIntervalPlan &receiverRuntime =
             plan.runtimeIntervals[receiverRuntimeIndex];
         FabricRuntimeIntervalPlan &senderRuntime =
@@ -445,11 +451,11 @@ static void planGeneratedFabricManagerOwnership(
         receiverRuntime.scope = receiverRuntime.protocolOperations.front();
         senderRuntime.scope = senderRuntime.protocolOperations.front();
         receiverRuntime.ownershipSemaphoreIndex = semaphoreIndex;
-        receiverRuntime.acquireGeneration = 0;
-        receiverRuntime.releaseGeneration = 1;
+        receiverRuntime.acquireGeneration = 2 * intervalPosition;
+        receiverRuntime.releaseGeneration = 2 * intervalPosition + 1;
         senderRuntime.ownershipSemaphoreIndex = semaphoreIndex;
-        senderRuntime.acquireGeneration = 1;
-        senderRuntime.releaseGeneration = 2;
+        senderRuntime.acquireGeneration = 2 * intervalPosition + 1;
+        senderRuntime.releaseGeneration = 2 * intervalPosition + 2;
         ownershipGroupByManager[receiverRuntime.managerIntervalIndex] =
             semaphoreIndex;
         ownershipGroupByManager[senderRuntime.managerIntervalIndex] =
