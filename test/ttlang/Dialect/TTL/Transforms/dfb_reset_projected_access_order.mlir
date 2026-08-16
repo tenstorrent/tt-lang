@@ -6,8 +6,8 @@
 // every reset. Its incomplete local ordering must not create reverse relations
 // between reset boundaries or prevent the interleaved group from sharing.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 3 : i32, dfb_index = 0 : i32
-// CHECK-SAME: {block_count = 3 : i32, dfb_index = 1 : i32
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 3 : i32, dfb_index = 0 : i32
+// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 3 : i32, dfb_index = 1 : i32
 // CHECK: %{{.*}} = ttl.bind_cb{cb_index = 0, block_count = 3} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
 // CHECK: %{{.*}} = ttl.bind_cb{cb_index = 0, block_count = 3} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
 // CHECK: %{{.*}} = ttl.bind_cb{cb_index = 1, block_count = 3} {dfb_id = 2 : index}

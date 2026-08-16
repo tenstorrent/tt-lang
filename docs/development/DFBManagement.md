@@ -1814,7 +1814,12 @@ non-DFB argument index.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
 Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
-and `block_count`. The planner computes `page_size` with
+and `block_count`. When the compiler proves the exact union of launch nodes
+that access the physical index, the descriptor also contains
+`allocation_nodes`. An empty array records an unreachable allocation. Omitting
+the field retains conservative whole-grid allocation when the node domain is
+unknown. This metadata controls storage residency independently from optional
+per-core executable specialization. The planner computes `page_size` with
 `ttcore::getElementSizeBytes()` on the finalized element type, so subtile
 dimensions affect the physical allocation without requiring runtime device
 initialization.
@@ -1834,7 +1839,8 @@ buildRuntimeDescriptors(assignments):
           num_tiles = type.elementsPerBlock,
           element_type = type.elementType,
           page_size = byteSize(type.elementType),
-          block_count = type.blockCount}
+          block_count = type.blockCount,
+          allocation_nodes = exactUnionOrUnknown(launchDomains(index))}
 ```
 
 Every finalized declaration contributes to the table. Exact-type reuse keeps
@@ -1842,6 +1848,12 @@ one unchanged descriptor. A validated allocation group retains one element
 type and selects a descriptor with the maximum required scratch bytes.
 Deriving the page size from the same element type used by lowering keeps
 compiler and runtime page formats equal.
+
+The runtime intersects `allocation_nodes` with final per-kernel DFB-use
+metadata when both are available. The allocation domain therefore scopes an
+unspecialized grid-wide kernel, while specialized use metadata may remove
+additional DFBs after coordinate folding. Tensor-backed storage segments must
+cover the exact allocation nodes and retain their existing storage identity.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It

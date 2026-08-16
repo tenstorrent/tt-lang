@@ -1720,7 +1720,15 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         dfbType.getElementType(),
         static_cast<int32_t>(*pageSizeBytes),
         static_cast<int32_t>(dfbType.getBlockCount()),
+        LaunchNodeDomain{},
         {}};
+
+    for (const DFBPhysicalIndexAssignment &candidate : assignments) {
+      if (candidate.physicalIndex == physicalIndex) {
+        descriptor.allocationDomain =
+            descriptor.allocationDomain.unionWith(candidate.launchDomain);
+      }
+    }
 
     bool hasTensorBacking = llvm::any_of(
         assignments, [&](const DFBPhysicalIndexAssignment &candidate) {

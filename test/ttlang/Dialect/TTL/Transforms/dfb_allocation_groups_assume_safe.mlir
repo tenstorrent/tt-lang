@@ -5,7 +5,7 @@
 // The source declares one must-alias allocation group but omits consumer
 // effects and a synchronization relation between its producer lifecycles.
 
-// CHECK: module attributes {ttl.assumed_dfb_allocation_groups = [{allocation_group = #ttl.dfb_allocation_group<0>, assumptions = [{lhs = 0 : i64, reason = "unproven-quiescence", rhs = 1 : i64}, {lhs = 0 : i64, reason = "unproven-cursor-order", rhs = 1 : i64}], members = [0, 1]}], ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32
+// CHECK: module attributes {ttl.assumed_dfb_allocation_groups = [{allocation_group = #ttl.dfb_allocation_group<0>, assumptions = [{lhs = 0 : i64, reason = "unproven-quiescence", rhs = 1 : i64}, {lhs = 0 : i64, reason = "unproven-cursor-order", rhs = 1 : i64}], members = [0, 1]}], ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32
 // CHECK-LABEL: func.func @assumed_handoff
 // CHECK: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
 // CHECK-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}

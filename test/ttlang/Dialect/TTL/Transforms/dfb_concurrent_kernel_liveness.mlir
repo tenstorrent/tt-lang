@@ -7,7 +7,7 @@
 // The acknowledgment DFB orders B's reserve and wait after A's pop. A and B may
 // share physical index 0; the acknowledgment requires physical index 1.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
 // REUSE-LABEL: func.func @synchronized_dm
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: %[[DM_A:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
@@ -36,7 +36,7 @@
 // REPEAT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // REPEAT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 
-// DISABLED: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// DISABLED: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {{.*}}block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
 // DISABLED-LABEL: func.func @synchronized_dm
 // DISABLED-SAME: ttl.base_cta_index = 3 : i32
 // DISABLED: ttl.bind_cb{cb_index = 0,
@@ -149,7 +149,7 @@ func.func @three_kernel_relay()
 // Source order in both kernels does not order A's consumer completion before
 // B's producer entry. The two DFBs must retain separate physical indices.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @unordered_dm
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0,
@@ -190,7 +190,7 @@ func.func @unordered_compute()
 // B's producer entry after A's pop, but does not order the wait entry after
 // A's pop. A, the acknowledgment, and B require separate physical indices.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 2 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 2 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @early_wait_producer
 // REUSE-SAME: ttl.base_cta_index = 3 : i32
 // REUSE: ttl.bind_cb{cb_index = 0,
@@ -244,7 +244,7 @@ func.func @early_wait_consumer()
 // A missing pop leaves A unbounded. Source order alone cannot permit A and B
 // to share a physical index.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @unbalanced_dm
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0,
@@ -283,7 +283,7 @@ func.func @unbalanced_compute()
 // Sequential DFBs with different exact types cannot share an index. Immutable
 // declaration order determines the physical assignment, not logical numbering.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @different_types
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -310,7 +310,7 @@ func.func @different_types()
 // Declaration-only compiler-created DFBs are valid. They receive distinct
 // identities even when their provisional cb_index values match.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @first_compiler_dfb
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {dfb_id = 0 : index, ttl.compiler_allocated}
@@ -337,7 +337,7 @@ func.func @second_compiler_dfb()
 // Repeated lifecycle operations cannot be matched by static operation site, so
 // the loop DFB remains unbounded even though B starts after the loop completes.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @loop_lifecycle
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0,
@@ -369,7 +369,7 @@ func.func @loop_lifecycle()
 // Ordered lifetimes cannot share when the producer pointer changes from NOC0
 // to Pack. Quiescence does not transfer write-pointer ownership.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @producer_transition_dm
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {dfb_id = 0 : index}
@@ -407,7 +407,7 @@ func.func @producer_transition_compute()
 // Ordered lifetimes cannot share when the consumer pointer changes from Unpack
 // to NOC0. The acknowledgment orders B's reserve and wait after A's pop.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 2 : i32, {{.*}}}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{{.*}}block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}, {{.*}}block_count = 2 : i32, dfb_index = 2 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @consumer_transition_compute
 // REUSE-SAME: ttl.base_cta_index = 3 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {dfb_id = 0 : index}

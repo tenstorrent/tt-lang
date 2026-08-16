@@ -140,6 +140,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // Per-node counts establish disjoint strict subsets. The DFBs therefore share
 // one physical index without a local lifetime-order proof.
 
+// REUSE: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32
 // REUSE-LABEL: func.func @exact_disjoint_subsets_reuse
 // REUSE: %[[FIRST_SUBSET:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 14 : index}
 // REUSE-NEXT: %[[SECOND_SUBSET:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 15 : index}
@@ -318,6 +319,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // A generic external storage access receives the same exact-domain refinement
 // before it is conservatively attached to every user-managed DFB.
 
+// REUSE: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32
 // REUSE-LABEL: func.func @generic_access_exact_subset
 // REUSE: %[[GENERIC_SUBSET:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 24 : index}
 
@@ -362,6 +364,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // Exact inactivity does not override CircularBufferType compatibility.
 
+// REUSE: module attributes {ttl.dfb_allocations = [{allocation_nodes = [], block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32
 // REUSE-LABEL: func.func @descriptor_mismatch
 // REUSE: %[[INACTIVE_NARROW:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 20 : index}
 // REUSE-NEXT: %[[UNKNOWN_WIDE:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 21 : index}

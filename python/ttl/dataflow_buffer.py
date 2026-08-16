@@ -301,6 +301,7 @@ class PhysicalDFBConfig:
     page_size: int
     tile: Optional[Tuple[int, int]]
     storage_segments: Tuple["DFBStorageSegment", ...] = ()
+    allocation_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
 
 
 @dataclass(frozen=True)
