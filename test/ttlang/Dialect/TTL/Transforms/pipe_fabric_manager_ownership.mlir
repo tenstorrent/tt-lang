@@ -52,10 +52,10 @@
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[RECEIVER_OWNERSHIP_0]], %[[RECEIVER_GENERATION_0]])
 // CHECK-NEXT: %[[RECEIVER_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[RECEIVER_COUNT_0:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_MANAGER_0]],
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER_0]], %[[RECEIVER_COUNT_0]],
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER_0]], %[[RECEIVER_COUNT_0]],
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_MANAGER_0]],
 // CHECK-NEXT: ttkernel.noc_semaphore_set(%[[RECEIVER_OWNERSHIP_0]], %[[RECEIVER_GENERATION_1]])
-// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @idle_compute() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {

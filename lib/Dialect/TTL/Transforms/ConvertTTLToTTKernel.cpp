@@ -50,6 +50,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -817,6 +818,142 @@ static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
          records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
 }
 
+struct GridMajorPipeRecordIndexTables {
+  int64_t gridX = 0;
+  int64_t gridArea = 0;
+  SmallVector<int64_t> edgeOffsetsByDevice;
+  SmallVector<int64_t> edgeBlocks;
+  SmallVector<int64_t> sourceDeviceIndices;
+  SmallVector<int64_t> destinationDeviceIndices;
+};
+
+static std::optional<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op) {
+  ModuleOp module = op->getParentOfType<ModuleOp>();
+  if (!module) {
+    return std::nullopt;
+  }
+  Attribute gridAttr = module->getAttr(kLaunchGridAttrName);
+  SmallVector<int64_t, 2> extents;
+  if (auto dense = mlir::dyn_cast_if_present<DenseI64ArrayAttr>(gridAttr)) {
+    extents.append(dense.asArrayRef().begin(), dense.asArrayRef().end());
+  } else if (auto array = mlir::dyn_cast_if_present<ArrayAttr>(gridAttr)) {
+    for (Attribute extentAttr : array) {
+      auto extent = mlir::dyn_cast<IntegerAttr>(extentAttr);
+      if (!extent) {
+        return std::nullopt;
+      }
+      extents.push_back(extent.getInt());
+    }
+  }
+  if (extents.size() != 2 || extents[0] <= 0 || extents[1] <= 0) {
+    return std::nullopt;
+  }
+  return std::make_pair(extents[0], extents[1]);
+}
+
+static std::optional<int64_t> getDeviceCount(DeviceDomainAttr domain) {
+  std::uint64_t deviceCount = 1;
+  for (DeviceDomainComponentAttr component : domain.getComponents()) {
+    for (int64_t extent : component.getExtent().asArrayRef()) {
+      if (extent <= 0) {
+        return std::nullopt;
+      }
+      std::optional<std::uint64_t> maybeDeviceCount = llvm::checkedMulUnsigned(
+          deviceCount, static_cast<std::uint64_t>(extent));
+      if (!maybeDeviceCount ||
+          *maybeDeviceCount >
+              static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return std::nullopt;
+      }
+      deviceCount = *maybeDeviceCount;
+    }
+  }
+  return static_cast<int64_t>(deviceCount);
+}
+
+static std::optional<GridMajorPipeRecordIndexTables>
+buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
+                                    Operation *op) {
+  DeviceTransferAttr firstTransfer =
+      records.getPipes().front().getDeviceTransfer();
+  if (!firstTransfer) {
+    return std::nullopt;
+  }
+  std::optional<std::pair<int64_t, int64_t>> maybeGrid = getLaunchGrid(op);
+  std::optional<int64_t> maybeDeviceCount =
+      getDeviceCount(firstTransfer.getDomain());
+  if (!maybeGrid || !maybeDeviceCount) {
+    return std::nullopt;
+  }
+  auto [gridX, gridY] = *maybeGrid;
+  std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
+  if (!maybeGridArea || records.getPipes().size() % *maybeGridArea != 0) {
+    return std::nullopt;
+  }
+  int64_t gridArea = *maybeGridArea;
+  if (records.getPipes().size() >
+      static_cast<std::size_t>(std::numeric_limits<int64_t>::max())) {
+    return std::nullopt;
+  }
+  int64_t recordCount = static_cast<int64_t>(records.getPipes().size());
+  int64_t edgeCount = recordCount / gridArea;
+  if (*maybeDeviceCount >= recordCount) {
+    return std::nullopt;
+  }
+
+  SmallVector<SmallVector<int64_t>> edgeBlocksByDevice(
+      static_cast<std::size_t>(*maybeDeviceCount));
+  GridMajorPipeRecordIndexTables tables;
+  tables.gridX = gridX;
+  tables.gridArea = gridArea;
+  tables.sourceDeviceIndices.reserve(edgeCount);
+  tables.destinationDeviceIndices.reserve(edgeCount);
+  for (int64_t edgeBlock = 0; edgeBlock < edgeCount; ++edgeBlock) {
+    int64_t blockStart = edgeBlock * gridArea;
+    PipeRecordAttr firstRecord = records.getPipes()[blockStart];
+    DeviceTransferAttr transfer = firstRecord.getDeviceTransfer();
+    if (!transfer || transfer.getDomain() != firstTransfer.getDomain()) {
+      return std::nullopt;
+    }
+    for (int64_t nodeIndex = 0; nodeIndex < gridArea; ++nodeIndex) {
+      PipeRecordAttr record = records.getPipes()[blockStart + nodeIndex];
+      int64_t expectedX = nodeIndex % gridX;
+      int64_t expectedY = nodeIndex / gridX;
+      if (record.getDeviceTransfer() != transfer ||
+          record.getSrcX() != expectedX || record.getSrcY() != expectedY ||
+          record.getDstStartX() != expectedX ||
+          record.getDstStartY() != expectedY ||
+          record.getDstEndX() != expectedX ||
+          record.getDstEndY() != expectedY) {
+        return std::nullopt;
+      }
+    }
+
+    int64_t sourceDeviceIndex = getLogicalDeviceIndex(
+        transfer.getDomain(), transfer.getEdge().getSource());
+    int64_t destinationDeviceIndex = getLogicalDeviceIndex(
+        transfer.getDomain(), transfer.getEdge().getDestination());
+    if (sourceDeviceIndex < 0 || sourceDeviceIndex >= *maybeDeviceCount ||
+        destinationDeviceIndex < 0 ||
+        destinationDeviceIndex >= *maybeDeviceCount) {
+      return std::nullopt;
+    }
+    tables.sourceDeviceIndices.push_back(sourceDeviceIndex);
+    tables.destinationDeviceIndices.push_back(destinationDeviceIndex);
+    int64_t endpointDeviceIndex =
+        role == PipeRole::Source ? sourceDeviceIndex : destinationDeviceIndex;
+    edgeBlocksByDevice[endpointDeviceIndex].push_back(edgeBlock);
+  }
+
+  tables.edgeOffsetsByDevice.push_back(0);
+  for (ArrayRef<int64_t> edgeBlocks : edgeBlocksByDevice) {
+    tables.edgeBlocks.append(edgeBlocks.begin(), edgeBlocks.end());
+    tables.edgeOffsetsByDevice.push_back(
+        static_cast<int64_t>(tables.edgeBlocks.size()));
+  }
+  return tables;
+}
+
 template <typename SelectOp, typename SelectedType>
 static SelectOp
 buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
@@ -843,6 +980,23 @@ buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
       buildConstantIndexTableLookup(builder, loc, tables.destinationDeviceIndex,
                                     recordIndex),
       records);
+}
+
+template <typename SelectOp, typename SelectedType>
+static SelectOp buildGridMajorSelectedPipe(
+    OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
+    const GridMajorPipeRecordIndexTables &tables, Value recordIndex,
+    Value edgeBlock, Value nodeX, Value nodeY) {
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value sourceDeviceIndex = buildConstantIndexTableLookup(
+      builder, loc, tables.sourceDeviceIndices, edgeBlock);
+  Value destinationDeviceIndex = buildConstantIndexTableLookup(
+      builder, loc, tables.destinationDeviceIndices, edgeBlock);
+  Value srcInDstRange = arith::ConstantIntOp::create(builder, loc, 1, 1);
+  return SelectOp::create(builder, loc, SelectedType::get(builder.getContext()),
+                          recordIndex, nodeX, nodeY, nodeX, nodeY, nodeX, nodeY,
+                          one, srcInDstRange, sourceDeviceIndex,
+                          destinationDeviceIndex, records);
 }
 
 static void collectOutermostPipeNetForeachOps(
@@ -876,6 +1030,59 @@ clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
     Operation *clonedOp = builder.clone(bodyOp, mapping);
     collectOutermostPipeNetForeachOps(clonedOp, foreachWorklist);
   }
+}
+
+template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
+static bool
+tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
+                                PipeForeachLoweringInfo &foreachLoweringInfo,
+                                PipeRole role,
+                                PipeNetRecordSelection recordSelection,
+                                SmallVectorImpl<Operation *> &foreachWorklist) {
+  PipeNetRecordsAttr records = op.getRecords();
+  std::optional<GridMajorPipeRecordIndexTables> maybeTables =
+      buildGridMajorPipeRecordIndexTables(records, role, op);
+  if (!maybeTables) {
+    return false;
+  }
+  const GridMajorPipeRecordIndexTables &tables = *maybeTables;
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value gridX = arith::ConstantIndexOp::create(rewriter, loc, tables.gridX);
+  Value gridArea =
+      arith::ConstantIndexOp::create(rewriter, loc, tables.gridArea);
+  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridX);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  DeviceDomainAttr deviceDomain =
+      records.getPipes().front().getDeviceTransfer().getDomain();
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), deviceDomain);
+  Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  Value nextDevice = arith::AddIOp::create(rewriter, loc, currentDevice, one);
+  Value lower = buildConstantIndexTableLookup(
+      rewriter, loc, tables.edgeOffsetsByDevice, currentDevice);
+  Value upper = buildConstantIndexTableLookup(
+      rewriter, loc, tables.edgeOffsetsByDevice, nextDevice);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
+  foreachLoweringInfo.controlOps.push_back(forOp);
+  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value edgeBlock = buildConstantIndexTableLookup(
+      rewriter, loc, tables.edgeBlocks, forOp.getInductionVar());
+  Value edgeRecordOffset =
+      arith::MulIOp::create(rewriter, loc, edgeBlock, gridArea);
+  Value recordIndex =
+      arith::AddIOp::create(rewriter, loc, edgeRecordOffset, nodeIndex);
+  auto selectedPipe = buildGridMajorSelectedPipe<SelectOp, SelectedPipeType>(
+      rewriter, loc, records, tables, recordIndex, edgeBlock, nodeX, nodeY);
+  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
+  rewriter.eraseOp(op);
+  return true;
 }
 
 static Value buildRecordRoleMatch(RewriterBase &rewriter, Location loc,
@@ -955,6 +1162,11 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   if (shouldLowerPipeNetForeachDirect(records)) {
     lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
                               foreachWorklist);
+    return;
+  }
+  if (tryLowerGridMajorPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
+          op, rewriter, foreachLoweringInfo, role, recordSelection,
+          foreachWorklist)) {
     return;
   }
 
