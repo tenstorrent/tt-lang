@@ -28,9 +28,7 @@ def _plugin_environment() -> dict[str, str]:
 def test_abnormal_xdist_worker_termination_fails_session(tmp_path: Path) -> None:
     crash_test = tmp_path / "test_000_crash.py"
     crash_test.write_text(
-        "import os\n\n"
-        "def test_worker_crash():\n"
-        "    os._exit(17)\n"
+        "import os\n\n" "def test_worker_crash():\n" "    os._exit(17)\n"
     )
     pending_test = tmp_path / "test_pending.py"
     pending_test.write_text(
