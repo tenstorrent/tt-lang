@@ -16,6 +16,7 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -315,6 +316,12 @@ static bool intervalHasSingleInvocationContext(
     if (generatedControlOps.contains(parent) || isa<scf::IfOp>(parent)) {
       continue;
     }
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(parent)) {
+      std::optional<std::uint64_t> tripCount = getLoopTripCount(loop);
+      if (tripCount && *tripCount == 1) {
+        continue;
+      }
+    }
     if (parent->getNumRegions() != 0) {
       return false;
     }
@@ -390,8 +397,7 @@ static void planGeneratedFabricManagerOwnership(
            intervalsByFunction) {
         if (pairedSenderFunctions.contains(senderFunction) ||
             receiverFunction == senderFunction ||
-            senderRuntimeIntervals.size() !=
-                receiverRuntimeIntervals.size()) {
+            senderRuntimeIntervals.size() != receiverRuntimeIntervals.size()) {
           continue;
         }
         bool matches = true;
