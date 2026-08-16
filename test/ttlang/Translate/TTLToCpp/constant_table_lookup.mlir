@@ -5,10 +5,10 @@
 // RUN: FileCheck %s --input-file=%t.cpp --check-prefix=NUM
 
 // Verify that immutable TTKernel tables become bit-packed static C++ storage
-// without variadic template arguments or arrays allocated in kernel_main.
+// in executable L1, without variadic arguments or kernel-local arrays.
 
-// EMITC: emitc.global static const @__ttlang_constant_table_{{[A-F0-9]+}} : !emitc.array<2xui64> = #emitc.opaque<"{0xC5A928398A418820ULL, 0x107B9AULL}">
-// EMITC-NEXT: emitc.global static const @__ttlang_constant_table_{{[A-F0-9]+}} : !emitc.array<1xui64> = #emitc.opaque<"{0x853ULL}">
+// EMITC: emitc.global static const @__ttlang_constant_table_{{[A-F0-9]+}} : !emitc.array<2x!emitc.opaque<"uint64_t __attribute__((section(\22.text.ttlang_constant_table\22), aligned(8)))">> = #emitc.opaque<"{0xC5A928398A418820ULL, 0x107B9AULL}">
+// EMITC-NEXT: emitc.global static const @__ttlang_constant_table_{{[A-F0-9]+}} : !emitc.array<1x!emitc.opaque<"uint64_t __attribute__((section(\22.text.ttlang_constant_table\22), aligned(8)))">> = #emitc.opaque<"{0x853ULL}">
 // EMITC-LABEL: func.func @kernel_main
 // EMITC: emitc.get_global @[[NARROW:__ttlang_constant_table_[A-F0-9]+]]
 // EMITC: emitc.call_opaque "experimental::constant_table_lookup"
@@ -17,10 +17,10 @@
 // EMITC: emitc.get_global @[[NARROW]]
 // EMITC: emitc.call_opaque "experimental::constant_table_lookup"
 
-// NUM-COUNT-2: static const uint64_t __ttlang_constant_table_
+// NUM-COUNT-2: static const uint64_t __attribute__((section(".text.ttlang_constant_table"), aligned(8))) __ttlang_constant_table_
 // CPP: #include <cstdint>
-// CPP: static const uint64_t __ttlang_constant_table_{{[A-F0-9]+}}[1] = {0x853ULL};
-// CPP-NEXT: static const uint64_t __ttlang_constant_table_{{[A-F0-9]+}}[2] = {0xC5A928398A418820ULL, 0x107B9AULL};
+// CPP: static const uint64_t __attribute__((section(".text.ttlang_constant_table"), aligned(8))) __ttlang_constant_table_{{[A-F0-9]+}}[1] = {0x853ULL};
+// CPP-NEXT: static const uint64_t __attribute__((section(".text.ttlang_constant_table"), aligned(8))) __ttlang_constant_table_{{[A-F0-9]+}}[2] = {0xC5A928398A418820ULL, 0x107B9AULL};
 // CPP-LABEL: void kernel_main()
 // CPP-NOT: size_t v{{[0-9]+}}[3];
 // Values [3, 5, 8] require four bits each and pack into 0x853.
