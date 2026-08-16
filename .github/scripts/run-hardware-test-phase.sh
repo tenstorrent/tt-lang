@@ -33,12 +33,45 @@ activate_build() {
     set -u
 }
 
+report_host_cpu_budget() {
+    local available_cpu_count="unavailable"
+    local cgroup_cpu_budget="unavailable"
+    local cgroup_cpu_dir machine_cpu_count="unavailable" period quota
+    if command -v nproc > /dev/null 2>&1; then
+        if ! machine_cpu_count="$(nproc --all 2>/dev/null)"; then
+            machine_cpu_count="unavailable"
+        fi
+        if ! available_cpu_count="$(nproc 2>/dev/null)"; then
+            available_cpu_count="unavailable"
+        fi
+    fi
+    if [ -r /sys/fs/cgroup/cpu.max ]; then
+        if read -r quota period < /sys/fs/cgroup/cpu.max; then
+            cgroup_cpu_budget="v2:${quota}/${period}"
+        fi
+    else
+        for cgroup_cpu_dir in \
+            /sys/fs/cgroup/cpu \
+            /sys/fs/cgroup/cpu,cpuacct; do
+            if [ -r "$cgroup_cpu_dir/cpu.cfs_quota_us" ] && \
+                [ -r "$cgroup_cpu_dir/cpu.cfs_period_us" ] && \
+                read -r quota < "$cgroup_cpu_dir/cpu.cfs_quota_us" && \
+                read -r period < "$cgroup_cpu_dir/cpu.cfs_period_us"; then
+                cgroup_cpu_budget="v1:${quota}/${period}"
+                break
+            fi
+        done
+    fi
+    printf 'Host CPU budget: machine=%s available=%s cgroup=%s\n' \
+        "$machine_cpu_count" "$available_cpu_count" "$cgroup_cpu_budget"
+}
+
 collect_exabox_reports() {
     local report_root="${EXABOX_REPORT_DIR:?EXABOX_REPORT_DIR is required}"
     local host_report_dir
     case "$report_root" in
-        / | '')
-            echo "EXABOX_REPORT_DIR must not be / or empty" >&2
+        /)
+            echo "EXABOX_REPORT_DIR must not be /" >&2
             return 2
             ;;
         /*) ;;
@@ -69,6 +102,7 @@ collect_exabox_reports() {
 
 case "$PHASE" in
     configure)
+        report_host_cpu_budget
         cmake -G Ninja -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTLANG_USE_TOOLCHAIN=ON \

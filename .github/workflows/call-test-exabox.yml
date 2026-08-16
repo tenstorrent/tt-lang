@@ -12,7 +12,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 90
+        default: 240
       docker_tag:
         description: 'Docker image tag for the IRD worker container.'
         required: true
@@ -44,16 +44,25 @@ jobs:
       WORKER_SRC: /home/user/tt-lang
       EXABOX_WORKER_HOME: /home/user
       EXABOX_REPORT_DIR: /ci/tt-lang-test-reports
+      CCACHE_DIR: /ci/ccache
       RUNS_ON: galaxy-bh
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
       HW_SERIAL_TEST_VISIBLE_DEVICES: 0,1
+      HW_PYTEST_WORKERS: 8
+      HW_PYTEST_TIMEOUT: 600
 
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
+
+      - name: Restore worker ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: Linux-ttlang-hw-galaxy
+          max-size: 1G
 
       - name: Stage workspace on every host
         id: stage

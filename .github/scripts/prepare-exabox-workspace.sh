@@ -6,7 +6,8 @@
 #
 # Env: STAGE_DIR and WORKER_SRC are required. GITHUB_WORKSPACE is required by
 # the stage operation. EXABOX_REPORT_DIR optionally selects a shared report
-# directory that every worker can write.
+# directory that every worker can write. CCACHE_DIR optionally selects a cache
+# restored by the controller for worker builds.
 # Usage: prepare-exabox-workspace.sh <stage|install>
 
 set -euo pipefail
@@ -19,8 +20,8 @@ validate_target() {
     local name="$1"
     local target="$2"
     case "$target" in
-        / | '')
-            echo "$name must not be / or empty" >&2
+        /)
+            echo "$name must not be /" >&2
             return 2
             ;;
         /*) ;;
@@ -39,6 +40,9 @@ validate_target WORKER_SRC "$WORKER_SRC"
 }
 if [ -n "${EXABOX_REPORT_DIR:-}" ]; then
     validate_target EXABOX_REPORT_DIR "$EXABOX_REPORT_DIR"
+fi
+if [ -n "${CCACHE_DIR:-}" ]; then
+    validate_target CCACHE_DIR "$CCACHE_DIR"
 fi
 
 case "$MODE" in
@@ -59,6 +63,12 @@ case "$MODE" in
         if [ -n "${EXABOX_REPORT_DIR:-}" ]; then
             mkdir -p "$EXABOX_REPORT_DIR"
             chmod 0777 "$EXABOX_REPORT_DIR"
+        fi
+        if [ -n "${CCACHE_DIR:-}" ]; then
+            mkdir -p "$CCACHE_DIR"
+            # The controller and worker use different UIDs on job-scoped shared
+            # storage, so both must be able to update restored cache entries.
+            chmod -R ugo+rwX "$CCACHE_DIR"
         fi
         mpirun --pernode --tag-output \
             bash "$STAGE_DIR/.github/scripts/prepare-exabox-workspace.sh" install

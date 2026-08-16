@@ -30,6 +30,7 @@ def test_disabled_galaxy_tests_retain_exabox_configuration() -> None:
     assert "uses: ./.github/workflows/call-test-exabox.yml" in call_build
     assert "if: ${{ inputs.run_galaxy_tests }}" in call_build
     assert "needs: [test-hardware, test-exabox]" in call_build
+    assert "timeout: 240" in call_build
     assert '"in-service", "galaxy-bh"' not in call_build
     assert "galaxy-bh" not in n150_workflow
 
@@ -40,8 +41,30 @@ def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> N
     assert "runs-on: exabox-multihost-ci-sc1" in workflow
     assert "image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:" in workflow
     assert "run: |" not in workflow
+    assert "default: 240" in workflow
+    assert "CCACHE_DIR: /ci/ccache" in workflow
+    assert "HW_PYTEST_WORKERS: 8" in workflow
+    assert "HW_PYTEST_TIMEOUT: 600" in workflow
+    assert "uses: hendrikmuhs/ccache-action@v1.2" in workflow
+    assert "key: Linux-ttlang-hw-galaxy" in workflow
     assert ".github/scripts/prepare-exabox-workspace.sh stage" in workflow
-    assert workflow.count(".github/scripts/run-exabox-hardware-phase.sh") == 13
+    required_phases = {
+        "configure",
+        "build",
+        "install-dependencies",
+        "reset",
+        "smoketest",
+        "simple-add",
+        "simulator",
+        "python-lit",
+        "python-pytests",
+        "me2e",
+        "examples",
+        "tutorials",
+        "collect-exabox-reports",
+    }
+    for phase in required_phases:
+        assert f".github/scripts/run-exabox-hardware-phase.sh {phase}" in workflow
     assert workflow.count("steps.stage.outcome == 'success'") == 2
     assert "options: --device /dev/tenstorrent" not in workflow
 
@@ -50,6 +73,7 @@ def test_manual_workflow_calls_the_reusable_exabox_workflow() -> None:
     workflow = MANUAL_TEST_EXABOX.read_text()
 
     assert "workflow_dispatch:" in workflow
+    assert "default: 240" in workflow
     assert "uses: ./.github/workflows/call-build-docker.yml" in workflow
     assert "push: true" in workflow
     assert "uses: ./.github/workflows/call-test-exabox.yml" in workflow
@@ -64,7 +88,13 @@ def test_ird_image_installs_versioned_exabox_worker_support() -> None:
 
     assert "install-exabox-worker.sh" in dockerfile
     assert "OMPI_TAG=v5.0.7" in dockerfile
+    assert "ENV LD_LIBRARY_PATH=$OMPI_PREFIX" not in dockerfile
+    assert "ENV CPATH=$OMPI_PREFIX" not in dockerfile
+    assert "ENV PKG_CONFIG_PATH=$OMPI_PREFIX" not in dockerfile
     assert 'test -x "$OMPI_PREFIX/bin/prted"' in installer
+    assert 'install -d -o "$worker_uid" -g "$worker_gid" -m 0755' in installer
+    assert "install -d -m 0777" not in installer
+    assert "xargs -r" not in installer
     assert "build/profiler/build_wasm/traces" in installer
     assert "prted --version" in build_workflow
     assert "docker run --rm --user 1001:1001" in build_workflow

@@ -43,9 +43,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV OMPI_TAG=v5.0.7
 ENV OMPI_PREFIX=/opt/openmpi-v5.0.7-ulfm
 ENV PATH=$OMPI_PREFIX/bin:$PATH
-ENV LD_LIBRARY_PATH=$OMPI_PREFIX/lib
-ENV CPATH=$OMPI_PREFIX/include
-ENV PKG_CONFIG_PATH=$OMPI_PREFIX/lib/pkgconfig
 
 COPY --from=tt-triage-python /opt/ttlang-toolchain/tt-triage-venv $TTLANG_TOOLCHAIN_DIR/tt-triage-venv/
 

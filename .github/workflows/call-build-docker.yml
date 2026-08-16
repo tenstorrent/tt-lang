@@ -18,7 +18,7 @@ on:
         type: string
         required: false
       push:
-        description: "Push built images to GHCR. Default false so accidental invocations don't upload. Only on-push (main) and publish-pypi (release tag) should set this true."
+        description: "Push built images to GHCR. Set true only when downstream jobs require a registry-visible image."
         type: boolean
         default: false
     outputs:

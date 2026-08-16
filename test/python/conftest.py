@@ -39,6 +39,8 @@ atexit.register(_cleanup_temp_kernel_files)
 
 # Add test root to path for shared utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+pytest_plugins = ("hardware_pytest_plugin",)
+
 from ttlang_test_utils import (
     is_hardware_available,
     is_ttnn_available,
@@ -82,11 +84,6 @@ def pytest_configure(config):
         "markers",
         "multi_device: needs a fabric mesh; excluded from the "
         "per-chip parallel run and executed serially",
-    )
-    config.addinivalue_line(
-        "markers",
-        "compile_only: does not execute on a device; executed serially on "
-        "multi-chip hosts",
     )
 
 

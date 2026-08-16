@@ -4,7 +4,14 @@
 
 """Shared pytest fixtures for simulator tests."""
 
+import os
+import sys
+
 import pytest
+
+# Add test root to path for shared pytest plugins.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+pytest_plugins = ("hardware_pytest_plugin",)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

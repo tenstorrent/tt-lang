@@ -15,6 +15,8 @@ import sys
 
 # Shared test utilities live at the test/ root, one level up.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+pytest_plugins = ("hardware_pytest_plugin",)
+
 from ttlang_test_utils import pin_xdist_worker_to_device
 
 pin_xdist_worker_to_device()

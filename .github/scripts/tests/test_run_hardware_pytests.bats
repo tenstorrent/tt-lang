@@ -19,6 +19,8 @@ setup() {
     unset TT_METAL_CACHE
     unset TTLANG_PIN_XDIST_WORKERS_TO_DEVICES
     unset TTLANG_XDIST_TT_METAL_CACHE_ROOT
+    unset HW_PYTEST_WORKERS
+    unset HW_PYTEST_TIMEOUT
 }
 
 # Fake python3 recording each invocation's args, exiting with $1 (default 0).
@@ -71,6 +73,29 @@ EOF
     assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
     [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: worker cap limits xdist concurrency" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=4 HW_PYTEST_WORKERS=2 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "Detected 4 chips: single-device tests in parallel (-n 2)"
+    run cat "$CALLS"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 2"
+}
+
+@test "per-test timeout is configurable" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=1 HW_PYTEST_TIMEOUT=600 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    assert_output --partial "--timeout=600"
 }
 
 @test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for every phase" {
@@ -207,4 +232,23 @@ EOF
 
     assert_failure 2
     assert_output --partial "chip count"
+}
+
+@test "rejects invalid worker and timeout overrides" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=1 HW_PYTEST_WORKERS=0 run "$SCRIPT" \
+        test/python build/test/pytest-report
+    assert_failure 2
+    assert_output --partial "worker count must be a positive integer"
+
+    HW_PYTEST_CHIPS=4 HW_PYTEST_WORKERS=5 run "$SCRIPT" \
+        test/python build/test/pytest-report
+    assert_failure 2
+    assert_output --partial "worker count 5 exceeds chip count 4"
+
+    HW_PYTEST_CHIPS=4 HW_PYTEST_TIMEOUT=invalid run "$SCRIPT" \
+        test/python build/test/pytest-report
+    assert_failure 2
+    assert_output --partial "timeout must be a positive integer"
 }

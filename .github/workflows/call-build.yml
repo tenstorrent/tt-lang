@@ -141,7 +141,7 @@ jobs:
         secrets: inherit
         with:
             defer_result_check: true
-            timeout: 90
+            timeout: 240
             docker_tag: ${{ inputs.docker_tag }}
 
     report-skipped-galaxy:
