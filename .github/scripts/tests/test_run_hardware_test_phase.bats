@@ -80,6 +80,7 @@ EOF
     PATH="$BIN:$PATH"
     export PATH
     unset EXABOX_WORKER_HOME TT_METAL_RUNTIME_ROOT TT_METAL_HOME LD_LIBRARY_PATH
+    unset HW_TEST_WORKERS
     unset TT_VISIBLE_DEVICES
 }
 
@@ -121,12 +122,18 @@ EOF
 
 @test "smoketest and simulator phases dispatch their Python commands" {
     run -0 "$SCRIPT" smoketest
-    run -0 "$SCRIPT" simulator
+    HW_TEST_WORKERS=8 run -0 "$SCRIPT" simulator
 
     run cat "$CALLS"
     assert_line --partial "python3 active:1 args:test/python/smoketest.py"
-    assert_line --partial "python3 active:1 args:-m pytest test/sim -m requires_ttnn"
+    assert_line --partial "python3 active:1 args:-m pytest test/sim -m requires_ttnn -v -n 8"
     assert_line --partial "--junitxml=build/test/sim-report.xml"
+}
+
+@test "simulator rejects an invalid worker override" {
+    HW_TEST_WORKERS=0 run -2 "$SCRIPT" simulator
+
+    assert_output --partial "worker count must be a positive integer or auto"
 }
 
 @test "hardware suite phases dispatch the shared runners" {

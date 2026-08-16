@@ -540,10 +540,10 @@ script makes the job-scoped cache writable by controller and worker UIDs. The
 reusable workflow defaults to a 240-minute timeout so a complete build and
 hardware suite have explicit margin.
 
-The Galaxy job limits compiler-heavy pytest execution to eight xdist workers
-and uses a 600-second per-test timeout. This avoids CPU contention from one
-pytest worker per Galaxy chip while retaining a bounded timeout for native
-device deadlocks.
+The Galaxy job limits Python lit, simulator, and device pytest execution to
+eight parallel workers and uses a 600-second per-test timeout for device
+pytests. This avoids CPU contention from one process per Galaxy chip while
+retaining a bounded timeout for native device deadlocks.
 
 #### Rebuilding Docker images
 

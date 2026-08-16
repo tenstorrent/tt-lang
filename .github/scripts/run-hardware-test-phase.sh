@@ -8,6 +8,7 @@
 #   RUNS_ON identifies the hardware configuration (default: n150).
 #   EXABOX_WORKER_HOME selects the valid home directory in an Exabox worker.
 #   EXABOX_REPORT_DIR receives reports copied from an Exabox worker.
+#   HW_TEST_WORKERS caps host-parallel test processes when set.
 #
 # Usage: run-hardware-test-phase.sh <phase>
 
@@ -135,7 +136,15 @@ case "$PHASE" in
         ;;
     simulator)
         activate_build
-        python3 -m pytest test/sim -m requires_ttnn -v -n auto \
+        simulator_workers="${HW_TEST_WORKERS:-auto}"
+        case "$simulator_workers" in
+            auto) ;;
+            0 | *[!0-9]*)
+                echo "run-hardware-test-phase.sh: worker count must be a positive integer or auto, got '$simulator_workers'" >&2
+                exit 2
+                ;;
+        esac
+        python3 -m pytest test/sim -m requires_ttnn -v -n "$simulator_workers" \
             --tb=short --timeout=60 --timeout-method=signal \
             --junitxml=build/test/sim-report.xml
         ;;

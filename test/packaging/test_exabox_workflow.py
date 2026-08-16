@@ -43,7 +43,7 @@ def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> N
     assert "run: |" not in workflow
     assert "default: 240" in workflow
     assert "CCACHE_DIR: /ci/ccache" in workflow
-    assert "HW_PYTEST_WORKERS: 8" in workflow
+    assert "HW_TEST_WORKERS: 8" in workflow
     assert "HW_PYTEST_TIMEOUT: 600" in workflow
     assert "uses: hendrikmuhs/ccache-action@v1.2" in workflow
     assert "key: Linux-ttlang-hw-galaxy" in workflow

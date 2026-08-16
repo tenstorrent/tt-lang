@@ -2,12 +2,13 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Run hardware Python lit tests with one serial lit process per chip. Each shard
-# is restricted with TT_VISIBLE_DEVICES, preserving one open device per process.
+# Run hardware Python lit tests in chip-pinned serial shards. Parallel shard
+# count can be capped below the chip count to preserve host CPU capacity.
 # Multi-device lit tests run afterward in a serial process.
 #
 # Env:
 #   HW_LIT_CHIPS overrides the detected chip count.
+#   HW_TEST_WORKERS caps parallel lit shards at no more than the chip count.
 #   HW_LIT_MULTI_DEVICE_FILTER overrides the lit filter for multi-device tests.
 #
 # Usage: run-hardware-lit.sh <lit-test-dir> <report-prefix>
@@ -25,6 +26,21 @@ chips="$(resolve_tt_chip_count "${HW_LIT_CHIPS:-}")" || {
     exit 2
 }
 
+workers="$chips"
+if [ -n "${HW_TEST_WORKERS:-}" ]; then
+    workers="$HW_TEST_WORKERS"
+    case "$workers" in
+        0 | *[!0-9]*)
+            echo "run-hardware-lit.sh: worker count must be a positive integer, got '$workers'" >&2
+            exit 2
+            ;;
+    esac
+    [ "$workers" -le "$chips" ] || {
+        echo "run-hardware-lit.sh: worker count $workers exceeds chip count $chips" >&2
+        exit 2
+    }
+fi
+
 lit_common=(-j1 --verbose)
 multi_device_filter="${HW_LIT_MULTI_DEVICE_FILTER:-mesh_tensor}"
 cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
@@ -38,11 +54,11 @@ if [ "$chips" -le 1 ]; then
     exit $?
 fi
 
-echo "Detected ${chips} chips: Python lit shards in parallel, multi-device serial"
+echo "Detected ${chips} chips: ${workers} Python lit shards in parallel, multi-device serial"
 
 rc=0
 pids=()
-for ((chip_index = 0; chip_index < chips; chip_index++)); do
+for ((chip_index = 0; chip_index < workers; chip_index++)); do
     shard_number=$((chip_index + 1))
     (
         export TT_VISIBLE_DEVICES="${chip_index}"
@@ -50,7 +66,7 @@ for ((chip_index = 0; chip_index < chips; chip_index++)); do
         export TTLANG_LIT_TEST_EXEC_ROOT="${lit_exec_root}/shard-${shard_number}"
         mkdir -p "$TT_METAL_CACHE"
         llvm-lit "$TEST_DIR" \
-            --num-shards "$chips" \
+            --num-shards "$workers" \
             --run-shard "$shard_number" \
             --filter-out "$multi_device_filter" \
             --allow-empty-runs \

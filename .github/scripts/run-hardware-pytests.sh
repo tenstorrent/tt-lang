@@ -13,7 +13,7 @@
 # tests run serially after that. With one chip the whole suite runs serially.
 #
 # Env: HW_PYTEST_CHIPS overrides the detected chip count.
-# Env: HW_PYTEST_WORKERS caps xdist concurrency at no more than the chip count.
+# Env: HW_TEST_WORKERS caps xdist concurrency at no more than the chip count.
 # Env: HW_PYTEST_TIMEOUT overrides the per-test timeout in seconds (default 300).
 # Env: HW_SERIAL_TEST_VISIBLE_DEVICES restricts device visibility for serial
 #      phases that need multiple devices. Unset means every chip remains visible.
@@ -43,8 +43,8 @@ case "$timeout_seconds" in
 esac
 
 workers="$chips"
-if [ -n "${HW_PYTEST_WORKERS:-}" ]; then
-    workers="$HW_PYTEST_WORKERS"
+if [ -n "${HW_TEST_WORKERS:-}" ]; then
+    workers="$HW_TEST_WORKERS"
     case "$workers" in
         0 | *[!0-9]*)
             echo "run-hardware-pytests.sh: worker count must be a positive integer, got '$workers'" >&2
@@ -96,10 +96,8 @@ if [ "$chips" -gt 1 ]; then
     unset TT_VISIBLE_DEVICES
     cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
     rc=0
-    # Workers are pinned 1:1 to chips by index (see pin_xdist_worker_to_device).
-    # Disable xdist's crash-restart: a replacement worker gets the next index
-    # (e.g. gw8 on an 8-chip host), which maps to a nonexistent device and turns
-    # one crash into a flood of "Invalid device ID" errors.
+    # Abnormal worker termination must fail the session. A replacement can hide
+    # the original crash and invalidate the crash guard's completeness check.
     TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
         TTLANG_XDIST_TT_METAL_CACHE_ROOT="$cache_root" \
         run_pytest_phase "$TEST_DIR" -m "not multi_device and not compile_only" -n "$workers" \

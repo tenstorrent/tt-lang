@@ -19,7 +19,7 @@ setup() {
     unset TT_METAL_CACHE
     unset TTLANG_PIN_XDIST_WORKERS_TO_DEVICES
     unset TTLANG_XDIST_TT_METAL_CACHE_ROOT
-    unset HW_PYTEST_WORKERS
+    unset HW_TEST_WORKERS
     unset HW_PYTEST_TIMEOUT
 }
 
@@ -78,7 +78,7 @@ EOF
 @test "multi-chip: worker cap limits xdist concurrency" {
     write_fake_python 0
 
-    HW_PYTEST_CHIPS=4 HW_PYTEST_WORKERS=2 run "$SCRIPT" \
+    HW_PYTEST_CHIPS=4 HW_TEST_WORKERS=2 run "$SCRIPT" \
         test/python build/test/pytest-report
 
     assert_success
@@ -237,12 +237,12 @@ EOF
 @test "rejects invalid worker and timeout overrides" {
     write_fake_python 0
 
-    HW_PYTEST_CHIPS=1 HW_PYTEST_WORKERS=0 run "$SCRIPT" \
+    HW_PYTEST_CHIPS=1 HW_TEST_WORKERS=0 run "$SCRIPT" \
         test/python build/test/pytest-report
     assert_failure 2
     assert_output --partial "worker count must be a positive integer"
 
-    HW_PYTEST_CHIPS=4 HW_PYTEST_WORKERS=5 run "$SCRIPT" \
+    HW_PYTEST_CHIPS=4 HW_TEST_WORKERS=5 run "$SCRIPT" \
         test/python build/test/pytest-report
     assert_failure 2
     assert_output --partial "worker count 5 exceeds chip count 4"
