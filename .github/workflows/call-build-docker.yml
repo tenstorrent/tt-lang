@@ -236,6 +236,22 @@ jobs:
             FileCheck --version
             python3 --version
             tt-triage --help
+            prted --version
+          '
+          docker run --rm --user 1001:1001 \
+            "${{ steps.build-ird.outputs.local-image }}" bash -c '
+            set -e
+            export HOME=/home/user
+            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
+            export TT_METAL_HOME=/opt/ttlang-toolchain/tt-metal
+            export TT_METAL_RUNTIME_ROOT=$TT_METAL_HOME
+            export PYTHONPATH=$TT_METAL_HOME/python_packages/ttnn:$TT_METAL_HOME/python_packages/tools
+            export LD_LIBRARY_PATH=$TT_METAL_HOME/lib:${LD_LIBRARY_PATH:-}
+            test "$(id -u)" = 1001
+            test -w "$TT_METAL_HOME/build/profiler/build_wasm/traces"
+            test -w "$TT_METAL_HOME/generated/profiler"
+            prted --version
+            python3 -c "import ttnn"
           '
 
       # Push after the ird smoke test so the local image can be removed before

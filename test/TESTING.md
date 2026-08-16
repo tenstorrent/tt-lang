@@ -223,16 +223,21 @@ pytest test/python/
 
 ### Pytest timeouts in CI
 
-`call-test-hardware.yml` bounds every pytest run so a hung test cannot hold the
-hardware runner until the job timeout. The simulator step passes
+`call-test-hardware.yml` and `call-test-exabox.yml` bound every pytest run so a
+hung test cannot hold the hardware allocation until the job timeout. The
+simulator step passes
 `--timeout=60 --timeout-method=signal`; the device suites (`test/python`,
 `test/me2e`, `test/tutorial`) run through
 `.github/scripts/run-hardware-pytests.sh`, which passes
-`--timeout=300 --timeout-method=thread` — the thread method interrupts C-level
+`--timeout=300 --timeout-method=thread`; the thread method interrupts C-level
 device deadlocks that `SIGALRM` cannot. Tests that legitimately need longer set
 their own `@pytest.mark.timeout(...)` override; the tutorial suite raises its
 backstop above the per-script subprocess timeout for this reason. Local runs use
 the default (no timeout) unless you pass `--timeout` yourself.
+
+On multi-chip hosts, tests marked `compile_only` execute serially without
+xdist, single-device tests execute in parallel with one worker per chip, and
+tests marked `multi_device` execute serially with the required device set.
 
 Middle end-to-end tests (requires ttnn and a TT device or simulator):
 ```bash

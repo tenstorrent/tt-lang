@@ -159,8 +159,7 @@ jobs:
     secrets: inherit
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
-      # TODO: re-enable once the Galaxy Blackhole runner is available again.
-      run_galaxy_tests: false
+      run_galaxy_tests: true
 
   build-docs:
     name: Build documentation

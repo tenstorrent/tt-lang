@@ -35,6 +35,7 @@ EOF
 write_fake_python_sequence() {
     local first_exit="$1"
     local second_exit="$2"
+    local third_exit="$3"
     local count_file="$BATS_TEST_TMPDIR/python-call-count"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
@@ -45,13 +46,14 @@ printf '%s\n' "\$call_count" > "$count_file"
 printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 case "\$call_count" in
     1) exit $first_exit ;;
-    *) exit $second_exit ;;
+    2) exit $second_exit ;;
+    *) exit $third_exit ;;
 esac
 EOF
     chmod +x "$BIN/python3"
 }
 
-@test "multi-chip: parallel single-device run, then serial multi_device run" {
+@test "multi-chip: parallel device run, then serial compile-only and multi-device runs" {
     write_fake_python 0
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
@@ -59,17 +61,19 @@ EOF
     assert_success
     run cat "$CALLS"
     assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache args:-m pytest"
-    assert_line --partial "pytest test/python -m not multi_device -n 4"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 4"
     # Crash-restart disabled and flaky-retry enabled on the parallel phase.
     assert_line --partial "-n 4 --max-worker-restart=0"
     assert_line --partial "--reruns 3"
     assert_line --partial "pytest-report-parallel.xml"
+    assert_line --partial "env: cache-root: args:-m pytest test/python -m compile_only"
+    assert_line --partial "pytest-report-compile-only.xml"
     assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for both phases" {
+@test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for every phase" {
     write_fake_python 0
 
     TT_VISIBLE_DEVICES=2 HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
@@ -77,7 +81,7 @@ EOF
     assert_success
     run cat "$CALLS"
     refute_output --partial "vis:2"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "multi-chip: serial test visibility override applies to multi_device phase" {
@@ -88,11 +92,12 @@ EOF
     assert_success
     assert_output --partial "Restricting serial multi_device pytest phase to TT_VISIBLE_DEVICES=0,1"
     run cat "$CALLS"
-    assert_line --partial "pytest test/python -m not multi_device"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only"
     assert_line --partial "vis:"
+    assert_line --partial "pytest test/python -m compile_only"
     assert_line --partial "pytest test/python -m multi_device"
     assert_line --partial "vis:0,1"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "single chip: one serial run over the whole suite" {
@@ -140,38 +145,48 @@ EOF
     [ "${#lines[@]}" -eq 1 ]
 }
 
-@test "multi-chip: both runs execute even when the parallel run fails" {
+@test "multi-chip: all runs execute even when the parallel run fails" {
     write_fake_python 1
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
 
     assert_failure
     run cat "$CALLS"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "multi-chip: empty parallel phase is allowed when multi_device tests run" {
-    write_fake_python_sequence 5 0
+    write_fake_python_sequence 5 5 0
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_multidevice.py build/test/pytest-report
 
     assert_success
     run cat "$CALLS"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "multi-chip: empty multi_device phase is allowed when parallel tests run" {
-    write_fake_python_sequence 0 5
+    write_fake_python_sequence 0 5 5
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_single_device.py build/test/pytest-report
 
     assert_success
     run cat "$CALLS"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "multi-chip: both phases empty is an error" {
-    write_fake_python_sequence 5 5
+@test "multi-chip: compile-only tests can be the only selected phase" {
+    write_fake_python_sequence 5 0 5
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_compile.py build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: all phases empty is an error" {
+    write_fake_python_sequence 5 5 5
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/empty.py build/test/pytest-report
 

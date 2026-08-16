@@ -475,8 +475,9 @@ to query GHCR. If the image is present, `build-docker` is skipped and
 downstream jobs proceed immediately. If the image is missing and the
 resolved tag is the uplift form, `build-docker` runs `call-build-docker.yml`
 with `push: true` and uploads the rebuilt image so downstream jobs
-(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) can pull
-it. If the image is missing and the resolved tag is the bare release form
+(`build`, `build-wheels`, `test-hardware`, `test-exabox`,
+`test-dist-tutorials`) can pull it. If the image is missing and the resolved
+tag is the bare release form
 (e.g. `vX.Y.Z`), the probe step fails the job with an error directing the
 maintainer to run `call-build-docker.yml` with `push: true` at that exact
 release tag. Recovery uses that workflow rather than `publish-pypi.yml` so the
@@ -510,11 +511,28 @@ resolved tag.
 
 #### Hardware test timeouts
 
-`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
-`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
-test exits within ~60 seconds instead of holding the single `n150` runner
-until the 90-minute job timeout. Tests that legitimately need longer should
-set their own `@pytest.mark.timeout(...)` override.
+`call-test-hardware.yml` and `call-test-exabox.yml` pass
+`--timeout=60 --timeout-method=signal` to simulator tests. Device suites run
+through `.github/scripts/run-hardware-pytests.sh`, which passes
+`--timeout=300 --timeout-method=thread`; the thread method interrupts C-level
+device deadlocks that `SIGALRM` cannot. `call-test-dist-tutorials.yml` uses the
+60-second signal timeout for its distribution tests. Tests that legitimately
+need longer set their own `@pytest.mark.timeout(...)` override. On multi-chip
+hosts, `compile_only` and `multi_device` tests execute serially while
+single-device tests execute in parallel with one worker per chip.
+
+#### Exabox Galaxy tests
+
+`call-build.yml` runs N150 tests through `call-test-hardware.yml` and Galaxy
+tests through `call-test-exabox.yml`. The Exabox job uses
+`exabox-multihost-ci-sc1`, which provisions a Galaxy allocation from the IRD
+image while Actions steps execute in a CPU-side container. The checkout is
+staged on `/ci`, copied to `/home/user/tt-lang` on every worker host, and reset,
+build, and test commands execute through `mpirun --pernode`.
+
+`manual-test-exabox.yml` builds and publishes the current revision's IRD image,
+then dispatches the same reusable workflow with the resulting tag. This keeps
+the worker toolchain and Exabox services aligned with the tested source.
 
 #### Rebuilding Docker images
 

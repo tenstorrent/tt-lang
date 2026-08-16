@@ -8,7 +8,7 @@ on:
                 type: boolean
                 default: false
             run_galaxy_tests:
-                description: "Run hardware tests on the Galaxy Blackhole runner."
+                description: "Run hardware tests on a shared Exabox Galaxy."
                 type: boolean
                 default: false
             docker_tag:
@@ -23,7 +23,7 @@ on:
                 required: false
                 default: false
             run_galaxy_tests:
-                description: "Run hardware tests on the Galaxy Blackhole runner."
+                description: "Run hardware tests on a shared Exabox Galaxy."
                 type: boolean
                 required: false
                 default: false
@@ -128,16 +128,19 @@ jobs:
                   path: ./build/docs/sphinx/_build/html
 
     test-hardware:
-        strategy:
-            fail-fast: false
-            matrix:
-                runner: ${{ inputs.run_galaxy_tests && fromJSON('["n150","galaxy-bh"]') || fromJSON('["n150"]') }}
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
             defer_result_check: true
-            runs-on: ${{ matrix.runner }}
-            runner_labels: ${{ matrix.runner == 'galaxy-bh' && '["in-service", "galaxy-bh"]' || '["tt-ubuntu-2204-n150-stable"]' }}
+            timeout: 90
+            docker_tag: ${{ inputs.docker_tag }}
+
+    test-exabox:
+        if: ${{ inputs.run_galaxy_tests }}
+        uses: ./.github/workflows/call-test-exabox.yml
+        secrets: inherit
+        with:
+            defer_result_check: true
             timeout: 90
             docker_tag: ${{ inputs.docker_tag }}
 
@@ -148,12 +151,12 @@ jobs:
         timeout-minutes: 5
 
         steps:
-            - name: Report unavailable runner
-              run: echo "::warning::Galaxy hardware tests are disabled for this workflow run."
+            - name: Report skipped tests
+              run: echo "::warning::Exabox Galaxy hardware tests are disabled for this workflow run."
 
     check-hardware:
         name: "Check aggregate hardware result"
-        needs: test-hardware
+        needs: [test-hardware, test-exabox]
         if: ${{ !cancelled() }}
         runs-on: ubuntu-24.04
         timeout-minutes: 5
