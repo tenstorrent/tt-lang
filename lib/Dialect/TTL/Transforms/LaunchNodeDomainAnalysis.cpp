@@ -171,6 +171,12 @@ getUnknownDomainWithBound(std::set<LaunchNodeCoord> boundNodes) {
 
 LaunchNodeDomain
 LaunchNodeDomain::unionWith(const LaunchNodeDomain &rhs) const {
+  if (known && rhs.isUpperBoundSubsetOf(*this)) {
+    return *this;
+  }
+  if (rhs.known && isUpperBoundSubsetOf(rhs)) {
+    return rhs;
+  }
   LaunchNodeDomain result =
       known && rhs.known ? LaunchNodeDomain{} : LaunchNodeDomain::unknown();
   const std::set<LaunchNodeCoord> *lhsBound = getUpperBoundNodes();
