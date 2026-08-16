@@ -202,6 +202,14 @@ class Kernel:
         return f"Kernel({self.kind!r}, identity={self.identity!r})"
 
 
+# PipeNet source callbacks and external transport code must share the target's
+# source-side data-movement processor and its invocation-specific resources.
+PIPE_SOURCE_KERNEL: Final[Kernel] = Kernel._implicit(
+    KernelKind.DATA_MOVEMENT,
+    _PIPE_SOURCE_KERNEL_ROLE,
+)
+
+
 KernelSelector = Union[KernelKind, Kernel]
 ExternalKernelSelection = Union[KernelSelector, Tuple[KernelSelector, ...]]
 ReleaseKernelSelection = KernelSelector

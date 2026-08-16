@@ -119,11 +119,19 @@ def sender(input_tensor, output_tensor):
     )
 ```
 
+Use `ttl.PIPE_SOURCE_KERNEL` as the claim kernel when the external manager must
+execute on the compiler-owned PipeNet source kernel.
+
 Ownership begins at entry to the acquire call because that opaque call may open
 connections. It ends after the release call returns. Every `use()` must occur
 strictly between one acquire and release. `scoped()` declares one opaque call
 that acquires, uses, and releases the manager. Effects must occur in the
 selected logical kernel's straight-line entry block.
+
+An expand-only operation forwards captured claims to the final grid-bearing
+operation. Acquire, use, and release effects may therefore reside in separate
+composed helpers. The claim binds once when the final operation is registered;
+reusing the same claim in two independent grid-bearing operations is invalid.
 
 The runtime resource factory supplies one `FabricConnectionBinding` for every
 captured claim. Its requirements must cover every active logical-device and
