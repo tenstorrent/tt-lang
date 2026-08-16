@@ -22,6 +22,8 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "DFBVerification.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -213,6 +215,10 @@ struct TTLVerifyDFBSPSCPass
 
     if (hasInconsistentIndex) {
       signalPassFailure();
+      return;
+    }
+
+    if (isDFBProtocolDomainVerificationRelaxed()) {
       return;
     }
 
