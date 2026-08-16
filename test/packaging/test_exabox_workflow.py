@@ -21,12 +21,12 @@ INSTALL_EXABOX_WORKER = (
 UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
 
 
-def test_enabled_galaxy_tests_use_exabox_instead_of_legacy_runner() -> None:
+def test_disabled_galaxy_tests_retain_exabox_configuration() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
     call_build = CALL_BUILD.read_text()
     n150_workflow = CALL_TEST_HARDWARE.read_text()
 
-    assert "run_galaxy_tests: true" in ci_workflow
+    assert "run_galaxy_tests: false" in ci_workflow
     assert "uses: ./.github/workflows/call-test-exabox.yml" in call_build
     assert "if: ${{ inputs.run_galaxy_tests }}" in call_build
     assert "needs: [test-hardware, test-exabox]" in call_build
