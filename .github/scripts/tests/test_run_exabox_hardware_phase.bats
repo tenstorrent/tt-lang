@@ -26,7 +26,7 @@ EOF
     run -0 "$SCRIPT" python-pytests
 
     run cat "$MPIRUN_CALLS"
-    assert_output "--pernode --tag-output bash /home/user/tt-lang/.github/scripts/run-hardware-test-phase.sh python-pytests"
+    assert_output "--pernode --bind-to none --tag-output bash /home/user/tt-lang/.github/scripts/run-hardware-test-phase.sh python-pytests"
 }
 
 @test "worker source directory must be absolute" {

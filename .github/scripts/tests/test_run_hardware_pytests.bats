@@ -98,6 +98,17 @@ EOF
     assert_output --partial "--timeout=600"
 }
 
+@test "per-test timeout defaults to 300 seconds" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=1 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    assert_output --partial "--timeout=300"
+}
+
 @test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for every phase" {
     write_fake_python 0
 

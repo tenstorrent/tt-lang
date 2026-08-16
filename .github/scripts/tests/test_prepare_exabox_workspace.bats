@@ -24,7 +24,13 @@ setup() {
     cat > "$BATS_TEST_TMPDIR/bin/mpirun" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$MPIRUN_CALLS"
-shift 2
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --pernode | --tag-output) shift ;;
+        --bind-to) shift 2 ;;
+        *) break ;;
+    esac
+done
 exec "$@"
 EOF
     chmod +x "$BATS_TEST_TMPDIR/bin/mpirun"
@@ -56,7 +62,7 @@ EOF
     [ ! -e "$WORKER_SRC/stale.txt" ]
     [ "$(stat -c '%a' "$EXABOX_REPORT_DIR")" = 777 ]
     run cat "$MPIRUN_CALLS"
-    assert_output "--pernode --tag-output bash $STAGE_DIR/.github/scripts/prepare-exabox-workspace.sh install"
+    assert_output "--pernode --bind-to none --tag-output bash $STAGE_DIR/.github/scripts/prepare-exabox-workspace.sh install"
 }
 
 @test "install does not require the CPU runner workspace" {

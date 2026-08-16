@@ -20,5 +20,7 @@ case "$WORKER_SRC" in
         ;;
 esac
 
-exec mpirun --pernode --tag-output \
+# OpenMPI otherwise binds a single per-host rank to one core, and every build
+# and test process inherits that affinity restriction.
+exec mpirun --pernode --bind-to none --tag-output \
     bash "$WORKER_SRC/.github/scripts/run-hardware-test-phase.sh" "$PHASE"

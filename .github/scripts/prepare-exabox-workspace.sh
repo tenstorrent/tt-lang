@@ -70,7 +70,8 @@ case "$MODE" in
             # storage, so both must be able to update restored cache entries.
             chmod -R ugo+rwX "$CCACHE_DIR"
         fi
-        mpirun --pernode --tag-output \
+        # Use the same unbound worker-shell contract as hardware test phases.
+        mpirun --pernode --bind-to none --tag-output \
             bash "$STAGE_DIR/.github/scripts/prepare-exabox-workspace.sh" install
         ;;
     install)

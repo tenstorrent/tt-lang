@@ -30,7 +30,10 @@ def test_disabled_galaxy_tests_retain_exabox_configuration() -> None:
     assert "uses: ./.github/workflows/call-test-exabox.yml" in call_build
     assert "if: ${{ inputs.run_galaxy_tests }}" in call_build
     assert "needs: [test-hardware, test-exabox]" in call_build
-    assert "timeout: 240" in call_build
+    test_exabox = call_build.split("\n    test-exabox:", 1)[1].split(
+        "\n    report-skipped-galaxy:", 1
+    )[0]
+    assert "timeout: 90" in test_exabox
     assert '"in-service", "galaxy-bh"' not in call_build
     assert "galaxy-bh" not in n150_workflow
 
@@ -41,10 +44,10 @@ def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> N
     assert "runs-on: exabox-multihost-ci-sc1" in workflow
     assert "image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:" in workflow
     assert "run: |" not in workflow
-    assert "default: 240" in workflow
+    assert "default: 90" in workflow
     assert "CCACHE_DIR: /ci/ccache" in workflow
-    assert "HW_TEST_WORKERS: 8" in workflow
-    assert "HW_PYTEST_TIMEOUT: 600" in workflow
+    assert "HW_TEST_WORKERS: 32" in workflow
+    assert "HW_PYTEST_TIMEOUT" not in workflow
     assert "uses: hendrikmuhs/ccache-action@v1.2" in workflow
     assert "key: Linux-ttlang-hw-galaxy" in workflow
     assert ".github/scripts/prepare-exabox-workspace.sh stage" in workflow
@@ -73,7 +76,7 @@ def test_manual_workflow_calls_the_reusable_exabox_workflow() -> None:
     workflow = MANUAL_TEST_EXABOX.read_text()
 
     assert "workflow_dispatch:" in workflow
-    assert "default: 240" in workflow
+    assert "default: 90" in workflow
     assert "uses: ./.github/workflows/call-build-docker.yml" in workflow
     assert "push: true" in workflow
     assert "uses: ./.github/workflows/call-test-exabox.yml" in workflow

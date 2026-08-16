@@ -7,7 +7,7 @@ on:
         description: 'Job timeout in minutes.'
         required: false
         type: number
-        default: 240
+        default: 90
 
 permissions:
   checks: write
