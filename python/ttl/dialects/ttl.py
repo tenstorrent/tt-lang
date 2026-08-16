@@ -39,6 +39,7 @@ DeviceRefAttr = ir.DeviceRefAttr
 DeviceTransferAttr = ir.DeviceTransferAttr
 TransferEdgeAttr = ir.TransferEdgeAttr
 FabricManagerEffectAttr = ir.FabricManagerEffectAttr
+FabricManagerExecutionLocationAttr = ir.FabricManagerExecutionLocationAttr
 FabricManagerIntervalAttr = ir.FabricManagerIntervalAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType

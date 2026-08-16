@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Mapping, Optional
 
+from .domains import DeviceRef
 from .kernel import Kernel
 
 
@@ -39,12 +40,41 @@ class _FabricManagerClaimBinding:
         self.operation = operation
 
 
+@dataclass(frozen=True)
+class FabricManagerExecutionLocation:
+    """One logical device and worker core that may own an external manager."""
+
+    device: DeviceRef
+    worker_node: tuple[int, int]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.device, DeviceRef):
+            raise TypeError("FabricManagerExecutionLocation device must be a DeviceRef")
+        if (
+            not isinstance(self.worker_node, tuple)
+            or len(self.worker_node) != 2
+            or any(type(coordinate) is not int for coordinate in self.worker_node)
+            or any(coordinate < 0 for coordinate in self.worker_node)
+        ):
+            raise TypeError(
+                "FabricManagerExecutionLocation worker_node must be a "
+                "non-negative integer coordinate pair"
+            )
+
+
 @dataclass(frozen=True, eq=False)
 class FabricManagerClaim:
-    """Operation-local identity for one external fabric manager lifetime."""
+    """Operation-local identity for one external fabric manager lifetime.
+
+    ``worker_nodes`` declares a finite worker-node domain on every logical
+    device. ``execution_locations`` declares an exact device-qualified domain.
+    When both are ``None``, the complete logical-kernel range owns the manager.
+    """
 
     name: str
     kernel: Kernel
+    worker_nodes: Optional[tuple[tuple[int, int], ...]] = None
+    execution_locations: Optional[tuple[FabricManagerExecutionLocation, ...]] = None
     _binding: _FabricManagerClaimBinding = field(
         default_factory=_FabricManagerClaimBinding,
         init=False,
@@ -59,6 +89,52 @@ class FabricManagerClaim:
                 "FabricManagerClaim kernel must be a Kernel, got "
                 f"{type(self.kernel).__name__}"
             )
+        if self.worker_nodes is not None and self.execution_locations is not None:
+            raise ValueError(
+                "FabricManagerClaim accepts worker_nodes or execution_locations, "
+                "not both"
+            )
+        if self.worker_nodes is not None:
+            if not isinstance(self.worker_nodes, tuple) or not self.worker_nodes:
+                raise TypeError(
+                    "FabricManagerClaim worker_nodes must be a nonempty tuple"
+                )
+            for node in self.worker_nodes:
+                if (
+                    not isinstance(node, tuple)
+                    or len(node) != 2
+                    or any(type(coordinate) is not int for coordinate in node)
+                    or any(coordinate < 0 for coordinate in node)
+                ):
+                    raise TypeError(
+                        "FabricManagerClaim worker_nodes entries must be "
+                        "non-negative integer coordinate pairs"
+                    )
+            if len(set(self.worker_nodes)) != len(self.worker_nodes):
+                raise ValueError(
+                    "FabricManagerClaim worker_nodes must not contain duplicates"
+                )
+        if self.execution_locations is not None:
+            if (
+                not isinstance(self.execution_locations, tuple)
+                or not self.execution_locations
+            ):
+                raise TypeError(
+                    "FabricManagerClaim execution_locations must be a nonempty tuple"
+                )
+            if any(
+                not isinstance(location, FabricManagerExecutionLocation)
+                for location in self.execution_locations
+            ):
+                raise TypeError(
+                    "FabricManagerClaim execution_locations entries must be "
+                    "FabricManagerExecutionLocation values"
+                )
+            if len(set(self.execution_locations)) != len(self.execution_locations):
+                raise ValueError(
+                    "FabricManagerClaim execution_locations must not contain "
+                    "duplicates"
+                )
 
     @property
     def operation_identity(self) -> str:
@@ -92,7 +168,16 @@ class FabricManagerClaim:
         self._binding.bind(operation_identity, self.name)
 
     def _operation_identity_capture(self) -> tuple:
-        return ("fabric-manager-claim", self.name, self.kernel.kind.value)
+        return (
+            "fabric-manager-claim",
+            self.name,
+            self.kernel.kind.value,
+            self.worker_nodes,
+            tuple(
+                (location.device.coordinates, location.worker_node)
+                for location in (self.execution_locations or ())
+            ),
+        )
 
     def _effect(self, kind: FabricManagerEffectKind) -> FabricManagerEffect:
         return FabricManagerEffect(self, kind)
@@ -147,6 +232,7 @@ def _bind_fabric_manager_claims(
 
 __all__ = [
     "FabricManagerClaim",
+    "FabricManagerExecutionLocation",
     "FabricManagerEffect",
     "FabricManagerEffectKind",
 ]

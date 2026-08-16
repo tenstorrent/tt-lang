@@ -15,14 +15,21 @@ namespace mlir::tt::ttl {
 
 /// One verified external manager ownership interval.
 struct ExternalFabricManagerInterval {
-  StringAttr claim;
-  func::FuncOp function;
   OpaqueCallOp acquire;
   OpaqueCallOp release;
 };
 
+/// All verified ownership intervals for one operation-local external claim.
+struct ExternalFabricManagerClaimLifetime {
+  StringAttr claim;
+  func::FuncOp function;
+  DenseI64ArrayAttr workerNodes;
+  SmallVector<FabricManagerExecutionLocationAttr> executionLocations;
+  SmallVector<ExternalFabricManagerInterval> intervals;
+};
+
 /// Validate external manager effects without mutating the module.
-FailureOr<SmallVector<ExternalFabricManagerInterval>>
+FailureOr<SmallVector<ExternalFabricManagerClaimLifetime>>
 analyzeExternalFabricManagerLifetimes(ModuleOp module);
 
 } // namespace mlir::tt::ttl

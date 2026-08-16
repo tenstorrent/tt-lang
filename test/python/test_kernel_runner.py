@@ -479,6 +479,8 @@ def _fabric_manager_interval(
     *,
     kind=kernel_runner.FabricManagerIntervalKind.GENERATED_SENDER,
     claim=None,
+    worker_nodes=(),
+    execution_locations=(),
     route_indices=(0,),
     interfering_intervals=(),
 ):
@@ -486,6 +488,8 @@ def _fabric_manager_interval(
         identity=identity,
         kind=kind,
         claim=claim,
+        worker_nodes=worker_nodes,
+        execution_locations=execution_locations,
         route_indices=route_indices,
         interfering_intervals=interfering_intervals,
     )
@@ -3282,6 +3286,67 @@ def test_routing_plane_rejects_incomplete_external_node_coverage(monkeypatch):
         )
 
     assert fake_ttnn.fabric_setup_calls == []
+
+
+@pytest.mark.parametrize("device_coordinates", ((0, 0), (0, 1)))
+def test_routing_plane_accepts_device_qualified_external_nodes(
+    monkeypatch, device_coordinates
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    program.kernels[0].core_ranges = _FakeTTNN.CoreRangeSet(
+        [
+            _FakeTTNN.CoreRange(
+                _FakeTTNN.CoreCoord(1, 0),
+                _FakeTTNN.CoreCoord(2, 0),
+            )
+        ]
+    )
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 1),
+                remote_device=DeviceRef(0, 0),
+                worker_nodes=((2, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[]],
+        kernel_fabric_runtime_arg_base_common_indices=[None],
+        kernel_fabric_manager_intervals=[
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    execution_locations=(
+                        ((0, 0), (1, 0)),
+                        ((0, 1), (2, 0)),
+                    ),
+                    route_indices=(),
+                ),
+            )
+        ],
+        external_fabric_connections=(external_binding,),
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=device_coordinates,
+        grid_cols=3,
+        grid_rows=1,
+    )
 
 
 def test_device_domain_plans_all_fabric_bindings_before_setup(monkeypatch):

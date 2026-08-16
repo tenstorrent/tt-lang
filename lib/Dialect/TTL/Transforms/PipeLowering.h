@@ -61,11 +61,11 @@ struct FabricManagerIntervalPlan {
   FabricManagerIntervalKind kind;
   func::FuncOp function;
   std::optional<StringAttr> claim;
+  SmallVector<int64_t> workerNodes;
+  SmallVector<FabricManagerExecutionLocationAttr> executionLocations;
   SmallVector<Operation *> protocolOperations;
   SmallVector<std::size_t> routeIndices;
   SmallVector<PipeTransferNodeId> transferNodes;
-  Operation *acquireBoundary;
-  Operation *releaseBoundary;
   SmallVector<std::size_t> interferingIntervals;
 };
 
@@ -297,7 +297,7 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
-    ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
+    ArrayRef<ExternalFabricManagerClaimLifetime> externalManagerLifetimes,
     bool enableLocalManagerOwnership, FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.

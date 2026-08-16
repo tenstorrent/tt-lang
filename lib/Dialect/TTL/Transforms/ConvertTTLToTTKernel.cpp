@@ -2330,9 +2330,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
-  FailureOr<SmallVector<ExternalFabricManagerInterval>>
-      externalManagerIntervals = analyzeExternalFabricManagerLifetimes(mod);
-  if (failed(externalManagerIntervals)) {
+  FailureOr<SmallVector<ExternalFabricManagerClaimLifetime>>
+      externalManagerLifetimes = analyzeExternalFabricManagerLifetimes(mod);
+  if (failed(externalManagerLifetimes)) {
     return failure();
   }
 
@@ -2384,7 +2384,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   FabricRoutePlan fabricRoutePlan;
   if (failed(
           buildFabricRoutePlan(mod, transferIndex, *pipeGraphOrErr,
-                               foreachLoweringInfo, *externalManagerIntervals,
+                               foreachLoweringInfo, *externalManagerLifetimes,
                                !pipeGlobalSemaphoresOnly, fabricRoutePlan))) {
     return failure();
   }

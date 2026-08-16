@@ -1295,11 +1295,44 @@ def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
                 "Expected FabricManagerIntervalAttr entries in "
                 f"ttl.fabric_manager_intervals on kernel {kernel_name!r}"
             )
+        execution_locations = []
+        for raw_location in interval.execution_locations:
+            location = ttl_dialect.FabricManagerExecutionLocationAttr.maybe_downcast(
+                raw_location
+            )
+            if location is None:
+                raise ValueError(
+                    "Expected FabricManagerExecutionLocationAttr entries in "
+                    f"interval {interval.identity!r}"
+                )
+            device = ttl_dialect.DeviceRefAttr.maybe_downcast(location.device)
+            if device is None:
+                raise ValueError(
+                    "Expected DeviceRefAttr in fabric manager execution "
+                    f"location for interval {interval.identity!r}"
+                )
+            execution_locations.append(
+                (
+                    tuple(
+                        coordinate
+                        for component in device.coordinates
+                        for coordinate in component
+                    ),
+                    tuple(location.worker_node),
+                )
+            )
         intervals.append(
             FabricManagerIntervalSpec(
                 identity=interval.identity,
                 kind=kind_map[interval.kind],
                 claim=interval.claim,
+                worker_nodes=tuple(
+                    zip(
+                        tuple(interval.worker_nodes)[::2],
+                        tuple(interval.worker_nodes)[1::2],
+                    )
+                ),
+                execution_locations=tuple(execution_locations),
                 route_indices=tuple(interval.route_indices),
                 interfering_intervals=tuple(interval.interfering_intervals),
             )

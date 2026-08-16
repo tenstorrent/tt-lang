@@ -444,14 +444,6 @@ static void planGeneratedFabricManagerOwnership(
             plan.runtimeIntervals[senderRuntimeIndex];
         receiverRuntime.scope = receiverRuntime.protocolOperations.front();
         senderRuntime.scope = senderRuntime.protocolOperations.front();
-        FabricManagerIntervalPlan &receiverManager =
-            plan.managerIntervals[receiverRuntime.managerIntervalIndex];
-        FabricManagerIntervalPlan &senderManager =
-            plan.managerIntervals[senderRuntime.managerIntervalIndex];
-        receiverManager.acquireBoundary = receiverRuntime.scope;
-        receiverManager.releaseBoundary = receiverRuntime.scope;
-        senderManager.acquireBoundary = senderRuntime.scope;
-        senderManager.releaseBoundary = senderRuntime.scope;
         receiverRuntime.ownershipSemaphoreIndex = semaphoreIndex;
         receiverRuntime.acquireGeneration = 0;
         receiverRuntime.releaseGeneration = 1;
@@ -484,7 +476,7 @@ static void planGeneratedFabricManagerOwnership(
 LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
-    ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
+    ArrayRef<ExternalFabricManagerClaimLifetime> externalManagerLifetimes,
     bool enableLocalManagerOwnership, FabricRoutePlan &plan) {
   LogicalResult result = success();
   RecordAlignedTableBuilder<std::size_t> routeIndices;
@@ -607,33 +599,33 @@ LogicalResult buildFabricRoutePlan(
         kind,
         function,
         std::nullopt,
+        {},
+        {},
         operations,
         getIntervalRouteIndices(operations, plan),
         getIntervalTransferNodes(operations, pipeGraph),
-        scope,
-        scope,
         {}});
     plan.runtimeIntervals.push_back(
         FabricRuntimeIntervalPlan{managerIntervalIndex, scope,
                                   std::move(operations), std::nullopt, 0, 0});
   }
 
-  for (const ExternalFabricManagerInterval &externalInterval :
-       externalManagerIntervals) {
+  for (const ExternalFabricManagerClaimLifetime &externalLifetime :
+       externalManagerLifetimes) {
     StringAttr identity = StringAttr::get(
         module.getContext(),
-        (Twine("external.") + externalInterval.claim.getValue()).str());
-    plan.managerIntervals.push_back(
-        FabricManagerIntervalPlan{identity,
-                                  FabricManagerIntervalKind::External,
-                                  externalInterval.function,
-                                  externalInterval.claim,
-                                  {},
-                                  {},
-                                  {},
-                                  externalInterval.acquire,
-                                  externalInterval.release,
-                                  {}});
+        (Twine("external.") + externalLifetime.claim.getValue()).str());
+    plan.managerIntervals.push_back(FabricManagerIntervalPlan{
+        identity,
+        FabricManagerIntervalKind::External,
+        externalLifetime.function,
+        externalLifetime.claim,
+        SmallVector<int64_t>(externalLifetime.workerNodes.asArrayRef()),
+        externalLifetime.executionLocations,
+        {},
+        {},
+        {},
+        {}});
   }
 
   planGeneratedFabricManagerOwnership(plan, pipeGraph, generatedControlOps,
@@ -687,6 +679,8 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
         FabricManagerIntervalAttr::get(
             mod.getContext(), interval.identity, interval.kind,
             interval.claim.value_or(StringAttr()),
+            builder.getDenseI64ArrayAttr(interval.workerNodes),
+            interval.executionLocations,
             builder.getDenseI64ArrayAttr(routeIndices), interferingIntervals));
   }
   for (auto &[function, intervals] : intervalsByFunction) {

@@ -24,7 +24,7 @@ Math operations:
 from .ttl_api import compute, datamovement
 from .atom import operation, DFB
 from .kernel import Kernel, KernelKind, PIPE_SOURCE_KERNEL
-from .fabric import FabricManagerClaim
+from .fabric import FabricManagerClaim, FabricManagerExecutionLocation
 from .runtime_resources import (
     CoreRuntimeArgs,
     FabricConnectionBinding,
@@ -65,6 +65,7 @@ __all__ = [
     "KernelKind",
     "PIPE_SOURCE_KERNEL",
     "FabricManagerClaim",
+    "FabricManagerExecutionLocation",
     "CoreRuntimeArgs",
     "FabricConnectionBinding",
     "FabricConnectionRequirement",

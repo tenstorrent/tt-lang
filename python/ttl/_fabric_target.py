@@ -34,6 +34,8 @@ class FabricManagerIntervalSpec:
     identity: str
     kind: FabricManagerIntervalKind
     claim: Optional[str]
+    worker_nodes: Tuple[Tuple[int, int], ...]
+    execution_locations: Tuple[Tuple[Tuple[int, ...], Tuple[int, int]], ...]
     route_indices: Tuple[int, ...]
     interfering_intervals: Tuple[str, ...]
 
@@ -822,14 +824,95 @@ def build_fabric_target_binding_plan(
                 "to one manager interval"
             )
         interval_identity = next(iter(interval_identities))
-        expected_external_nodes.setdefault(interval_identity, set()).update(
-            (node_x, node_y)
-            for kernel_index, _ in interval_matches
-            for node_y in range(grid_rows)
-            for node_x in range(grid_cols)
-            if program_descriptor.kernels[kernel_index].core_ranges.contains(
-                ttnn_api.CoreCoord(node_x, node_y)
+        declared_worker_domains = {
+            interval.worker_nodes for _, interval in interval_matches
+        }
+        if len(declared_worker_domains) != 1:
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} has "
+                "inconsistent worker-node domains"
             )
+        declared_worker_nodes = next(iter(declared_worker_domains))
+        declared_execution_domains = {
+            interval.execution_locations for _, interval in interval_matches
+        }
+        if len(declared_execution_domains) != 1:
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} has "
+                "inconsistent device-qualified execution domains"
+            )
+        declared_execution_locations = next(iter(declared_execution_domains))
+        if declared_worker_nodes and declared_execution_locations:
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} declares "
+                "both uniform and device-qualified worker domains"
+            )
+        if declared_execution_locations:
+            provided_execution_locations = {
+                (
+                    tuple(
+                        coordinate
+                        for component in requirement.local_device.coordinates
+                        for coordinate in component
+                    ),
+                    node_coordinates,
+                )
+                for requirement in binding.connections
+                for node_coordinates in requirement.worker_nodes
+            }
+            if provided_execution_locations != set(declared_execution_locations):
+                missing_locations = tuple(
+                    sorted(
+                        set(declared_execution_locations) - provided_execution_locations
+                    )
+                )
+                extra_locations = tuple(
+                    sorted(
+                        provided_execution_locations - set(declared_execution_locations)
+                    )
+                )
+                raise ValueError(
+                    f"external fabric interval {interval_identity!r} does not "
+                    "cover its device-qualified execution domain; missing "
+                    f"locations {missing_locations}, extra locations "
+                    f"{extra_locations}"
+                )
+        if declared_execution_locations:
+            expected_nodes = {
+                node_coordinates
+                for local_device, node_coordinates in declared_execution_locations
+                if local_device == device_coordinates
+            }
+        elif declared_worker_nodes:
+            expected_nodes = set(declared_worker_nodes)
+        else:
+            expected_nodes = {
+                (node_x, node_y)
+                for kernel_index, _ in interval_matches
+                for node_y in range(grid_rows)
+                for node_x in range(grid_cols)
+                if program_descriptor.kernels[kernel_index].core_ranges.contains(
+                    ttnn_api.CoreCoord(node_x, node_y)
+                )
+            }
+        if declared_worker_nodes or declared_execution_locations:
+            for node_coordinates in expected_nodes:
+                worker_node = ttnn_api.CoreCoord(*node_coordinates)
+                matching_kernel_indices = [
+                    kernel_index
+                    for kernel_index, _ in interval_matches
+                    if program_descriptor.kernels[kernel_index].core_ranges.contains(
+                        worker_node
+                    )
+                ]
+                if len(matching_kernel_indices) != 1:
+                    raise ValueError(
+                        f"external fabric interval {interval_identity!r} "
+                        f"declared node {node_coordinates} must map to one "
+                        "kernel descriptor"
+                    )
+        expected_external_nodes.setdefault(interval_identity, set()).update(
+            expected_nodes
         )
         for requirement in binding.connections:
             local_device = tuple(

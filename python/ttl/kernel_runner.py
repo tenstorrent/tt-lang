@@ -2463,7 +2463,9 @@ def _fabric_manager_intervals_to_source(kernel_specs: List[KernelSpec]) -> str:
             "FabricManagerIntervalSpec("
             f"{interval.identity!r}, "
             f"FabricManagerIntervalKind({interval.kind.value!r}), "
-            f"{interval.claim!r}, {interval.route_indices!r}, "
+            f"{interval.claim!r}, {interval.worker_nodes!r}, "
+            f"{interval.execution_locations!r}, "
+            f"{interval.route_indices!r}, "
             f"{interval.interfering_intervals!r})"
             for interval in spec.fabric_manager_intervals
         ]

@@ -3189,6 +3189,19 @@ class TTLGenericCompiler(TTCompilerBase):
                         self.ctx,
                         claim.identity,
                         effect_kind_map[method_name],
+                        [
+                            coordinate
+                            for worker_node in (claim.worker_nodes or ())
+                            for coordinate in worker_node
+                        ],
+                        [
+                            ttl.ir.FabricManagerExecutionLocationAttr.get(
+                                self.ctx,
+                                self._device_ref_attr(location.device),
+                                list(location.worker_node),
+                            )
+                            for location in (claim.execution_locations or ())
+                        ],
                     )
                 )
 

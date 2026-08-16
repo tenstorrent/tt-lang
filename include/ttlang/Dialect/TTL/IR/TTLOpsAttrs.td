@@ -276,6 +276,21 @@ def TTL_ExternalTemplateArgAttr
   let genVerifyDecl = 1;
 }
 
+def TTL_FabricManagerExecutionLocationAttr
+    : TTL_Attr<"FabricManagerExecutionLocation",
+               "fabric_manager_execution_location"> {
+  let summary = "Device-qualified external fabric manager owner";
+  let description = [{
+    Identifies one logical device and worker core on which an external fabric
+    manager may execute. The worker coordinate is local to the logical kernel.
+  }];
+  let parameters = (ins
+    "DeviceRefAttr":$device,
+    "DenseI64ArrayAttr":$workerNode
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 def TTL_FabricManagerEffectAttr
     : TTL_Attr<"FabricManagerEffect", "fabric_manager_effect"> {
   let summary = "External fabric manager lifetime effect";
@@ -283,11 +298,16 @@ def TTL_FabricManagerEffectAttr
     Associates one external call with an operation-local fabric manager claim.
     Acquire ownership begins at call entry and remains live after a successful
     return. Release ownership ends when the call returns. A scoped effect owns
-    the manager for the complete call.
+    the manager for the complete call. `workerNodes` is a flattened sequence
+    of worker-coordinate pairs. An empty sequence selects the complete logical
+    kernel range. `executionLocations` is an exact device-qualified execution
+    domain and is mutually exclusive with nonempty `workerNodes`.
   }];
   let parameters = (ins
     "StringAttr":$claim,
-    "FabricManagerEffectKind":$kind
+    "FabricManagerEffectKind":$kind,
+    "DenseI64ArrayAttr":$workerNodes,
+    ArrayRefParameter<"FabricManagerExecutionLocationAttr">:$executionLocations
   );
   let assemblyFormat = "`<` struct(params) `>`";
 }
@@ -300,11 +320,16 @@ def TTL_FabricManagerIntervalAttr
     logical kernel. Generated intervals reference the function's fabric route
     indices. External intervals reference an operation-local claim. The
     interference list contains interval identities whose lifetimes may overlap.
+    External `workerNodes` restrict the claim to a finite subset of the logical
+    kernel range; an empty sequence selects the complete range unless
+    `executionLocations` defines an exact device-qualified execution domain.
   }];
   let parameters = (ins
     "StringAttr":$identity,
     "FabricManagerIntervalKind":$kind,
     OptionalParameter<"StringAttr">:$claim,
+    "DenseI64ArrayAttr":$workerNodes,
+    ArrayRefParameter<"FabricManagerExecutionLocationAttr">:$executionLocations,
     "DenseI64ArrayAttr":$routeIndices,
     ArrayRefParameter<"StringAttr">:$interferingIntervals
   );

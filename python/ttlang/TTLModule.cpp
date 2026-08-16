@@ -205,16 +205,51 @@ void populateTTLModule(nb::module_ &m) {
       .value("Release", FabricManagerEffectKind::Release)
       .value("Scoped", FabricManagerEffectKind::Scoped);
 
+  tt_attribute_class<FabricManagerExecutionLocationAttr>(
+      m, "FabricManagerExecutionLocationAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, MlirAttribute device,
+             const std::vector<int64_t> &workerNode) {
+            MLIRContext *cppContext = unwrap(context);
+            return wrap(FabricManagerExecutionLocationAttr::get(
+                cppContext, mlir::cast<DeviceRefAttr>(unwrap(device)),
+                DenseI64ArrayAttr::get(cppContext, workerNode)));
+          },
+          nb::arg("context"), nb::arg("device"), nb::arg("worker_node"))
+      .def_prop_ro("device", [](FabricManagerExecutionLocationAttr attribute) {
+        return wrap(attribute.getDevice());
+      })
+      .def_prop_ro(
+          "worker_node", [](FabricManagerExecutionLocationAttr attribute) {
+            ArrayRef<int64_t> workerNode =
+                attribute.getWorkerNode().asArrayRef();
+            return std::vector<int64_t>(workerNode.begin(), workerNode.end());
+          });
+
   tt_attribute_class<FabricManagerEffectAttr>(m, "FabricManagerEffectAttr")
       .def_static(
           "get",
           [](MlirContext context, std::string claim,
-             FabricManagerEffectKind kind) {
+             FabricManagerEffectKind kind,
+             const std::vector<int64_t> &workerNodes,
+             const std::vector<MlirAttribute> &executionLocations) {
             MLIRContext *cppContext = unwrap(context);
+            SmallVector<FabricManagerExecutionLocationAttr> locationAttrs;
+            locationAttrs.reserve(executionLocations.size());
+            for (MlirAttribute location : executionLocations) {
+              locationAttrs.push_back(
+                  mlir::cast<FabricManagerExecutionLocationAttr>(
+                      unwrap(location)));
+            }
             return wrap(FabricManagerEffectAttr::get(
-                cppContext, StringAttr::get(cppContext, claim), kind));
+                cppContext, StringAttr::get(cppContext, claim), kind,
+                DenseI64ArrayAttr::get(cppContext, workerNodes),
+                locationAttrs));
           },
-          nb::arg("context"), nb::arg("claim"), nb::arg("kind"))
+          nb::arg("context"), nb::arg("claim"), nb::arg("kind"),
+          nb::arg("worker_nodes") = std::vector<int64_t>{},
+          nb::arg("execution_locations") = std::vector<MlirAttribute>{})
       .def_prop_ro("claim",
                    [](FabricManagerEffectAttr attribute) {
                      return attribute.getClaim().getValue().str();
@@ -241,6 +276,23 @@ void populateTTLModule(nb::module_ &m) {
                      }
                      return std::nullopt;
                    })
+      .def_prop_ro("worker_nodes",
+                   [](FabricManagerIntervalAttr attribute) {
+                     ArrayRef<int64_t> workerNodes =
+                         attribute.getWorkerNodes().asArrayRef();
+                     return std::vector<int64_t>(workerNodes.begin(),
+                                                 workerNodes.end());
+                   })
+      .def_prop_ro(
+          "execution_locations", [](FabricManagerIntervalAttr attribute) {
+            std::vector<MlirAttribute> locations;
+            locations.reserve(attribute.getExecutionLocations().size());
+            for (FabricManagerExecutionLocationAttr location :
+                 attribute.getExecutionLocations()) {
+              locations.push_back(wrap(location));
+            }
+            return locations;
+          })
       .def_prop_ro("route_indices",
                    [](FabricManagerIntervalAttr attribute) {
                      ArrayRef<int64_t> routeIndices =
