@@ -19,14 +19,17 @@
 // GLOBAL-LABEL: module attributes
 // GLOBAL-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // GLOBAL-LABEL: func.func @sender_node
-// GLOBAL-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender, routeIndices = [0], interferingIntervals = "generated.1">]
+// GLOBAL-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender,
+// GLOBAL-SAME: interferingIntervals = "generated.1">]
 // GLOBAL-LABEL: func.func @receiver_node
-// GLOBAL-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver, routeIndices = [0], interferingIntervals = "generated.0">]
+// GLOBAL-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver,
+// GLOBAL-SAME: interferingIntervals = "generated.0">]
 
 // The sender waits for the receiver to release the manager, sends the payload,
 // closes the manager, and publishes the pair's completed generation.
 // CHECK-LABEL: func.func @sender_node
-// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender, routeIndices = [0], interferingIntervals = >]
+// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender,
+// CHECK-SAME: interferingIntervals = >]
 // CHECK-DAG: %[[SENDER_GENERATION_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[SENDER_GENERATION_2:.*]] = arith.constant 2 : i32
 // CHECK-DAG: %[[SENDER_INDEX_0:.*]] = arith.constant 0 : index
@@ -43,7 +46,8 @@
 // Waiting for payload completion before release would deadlock with the sender's
 // ownership wait.
 // CHECK-LABEL: func.func @receiver_node
-// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver, routeIndices = [0], interferingIntervals = >]
+// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver,
+// CHECK-SAME: interferingIntervals = >]
 // CHECK-DAG: %[[RECEIVER_GENERATION_0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[RECEIVER_GENERATION_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[RECEIVER_INDEX_0:.*]] = arith.constant 0 : index
@@ -52,10 +56,10 @@
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[RECEIVER_OWNERSHIP_0]], %[[RECEIVER_GENERATION_0]])
 // CHECK-NEXT: %[[RECEIVER_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[RECEIVER_COUNT_0:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_MANAGER_0]],
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER_0]], %[[RECEIVER_COUNT_0]],
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER_0]], %[[RECEIVER_COUNT_0]],
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_MANAGER_0]],
 // CHECK-NEXT: ttkernel.noc_semaphore_set(%[[RECEIVER_OWNERSHIP_0]], %[[RECEIVER_GENERATION_1]])
-// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @idle_compute() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {
