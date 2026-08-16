@@ -156,6 +156,8 @@ struct DFBAcquireReleaseOperations {
   SmallVector<Operation *> pops;
   SmallVector<Operation *> acquisitions;
   SmallVector<Operation *> releases;
+  SmallVector<Operation *> producerProtocolReleases;
+  SmallVector<Operation *> consumerProtocolReleases;
 };
 
 /// Collects DFB lifecycle operations from `func` in walk order.
@@ -182,10 +184,9 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval);
 /// acquire is searched. When non-null and it extends past that boundary, the
 /// search also accepts releases after `lastOwnedUse`; this makes repeated
 /// auto-sync insertion idempotent.
-DFBReleaseSearch
-findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
-                     ArrayRef<Operation *> releases,
-                     const llvm::DenseSet<Operation *> *erased = nullptr);
+DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
+                                      Operation *lastOwnedUse,
+                                      ArrayRef<Operation *> releases);
 
 /// Immutable release-to-acquisition relations for one kernel.
 ///

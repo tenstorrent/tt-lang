@@ -1,0 +1,581 @@
+// Tests synchronized dataflow-buffer reset epochs.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s
+
+// A collective reset terminates a producer-only lifecycle and orders the next
+// complete lifecycle in different logical kernels.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=0,terminal_state=canonical}]
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @unconditional_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %old_slot = ttl.cb_reserve %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    %current_slot = ttl.cb_reserve %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @unconditional_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    %current_slot = ttl.cb_wait %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// An all-local reset also partitions tensor-backed interface state. Payload
+// produced before the reset cannot be consumed after the runtime clears it.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=missing-protocol-effect
+// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1]
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @tensor_crossing_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3}
+        {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 6144>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %slot = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = compute>, <kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    return
+  }
+
+  func.func @tensor_crossing_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3}
+        {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 6144>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = compute>, <kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    %slot = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// Four two-tile transactions fit contiguously in a nine-tile DFB. The reset
+// canonicalizes their safe nonzero terminal pointer offset.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: transactions=[2, 2, 2, 2]
+// CHECK-SAME: terminal_reset=0,terminal_state=canonical
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @safe_nondividing_run_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %transaction = %lower to %upper step %step {
+      ttl.opaque_call "produce_two" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
+    }
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) -> ()
+    return
+  }
+
+  func.func @safe_nondividing_run_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %transaction = %lower to %upper step %step {
+      ttl.opaque_call "consume_two" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "consumer.hpp"} : () -> ()
+    }
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) -> ()
+    return
+  }
+}
+
+// -----
+
+// A fifth two-tile acquire would start at offset eight and cross the end of a
+// nine-tile DFB. A later reset cannot make that transaction contiguous.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=mismatched-transaction
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @straddling_nondividing_run_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 5 : index
+    %step = arith.constant 1 : index
+    scf.for %transaction = %lower to %upper step %step {
+      ttl.opaque_call "produce_two" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
+    }
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) -> ()
+    return
+  }
+
+  func.func @straddling_nondividing_run_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 5 : index
+    %step = arith.constant 1 : index
+    scf.for %transaction = %lower to %upper step %step {
+      ttl.opaque_call "consume_two" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "consumer.hpp"} : () -> ()
+    }
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) -> ()
+    return
+  }
+}
+
+// -----
+
+// A conditional reset cannot order unconditional accesses across logical
+// kernels because the synchronization does not execute on the disabled branch.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=unsupported-control-flow
+// CHECK: DFB logical_id=1 bounded=0
+// CHECK: quiescence=unsupported-control-flow
+// CHECK: Total DFB count: 2
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @independent_conditional_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %old_slot = ttl.cb_reserve %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %value = ttl.opaque_call "active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %active = arith.cmpi ne, %value, %zero : i64
+    scf.if %active {
+      ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = compute>, <kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    }
+    %following_slot = ttl.cb_reserve %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @independent_conditional_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %old_slot = ttl.cb_wait %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %value = ttl.opaque_call "active_again" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %active = arith.cmpi ne, %value, %zero : i64
+    scf.if %active {
+      ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = compute>, <kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    }
+    %following_slot = ttl.cb_wait %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// A reset makes a complete two-tile transaction canonical even when its
+// pointer movement does not divide the nine-tile descriptor capacity.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: reset_epochs=[{accesses=[0, 1, 2, 3],transactions=[2],write_owner=(0,0):noc0:write,read_owner=(0,0):unpack:read,terminal_reset=0,terminal_state=canonical}]
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @nondividing_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 9} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    ttl.opaque_call "produce_two" dfb_dependencies(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) -> ()
+    %current_slot = ttl.cb_reserve %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    return
+  }
+
+  func.func @nondividing_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 9} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    ttl.opaque_call "consume_two" dfb_dependencies(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "consumer.hpp"} : () -> ()
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) -> ()
+    %current_slot = ttl.cb_wait %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    return
+  }
+}
+
+// -----
+
+// An all-local reset partitions nested logical DFB lifecycles that cannot be
+// named at the reset call site.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: reset_epochs=[{accesses=[0, 1, 2, 3],transactions=[2],write_owner=(0,0):noc0:write,read_owner=(0,0):unpack:read,terminal_reset=0,terminal_state=canonical}]
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @all_local_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 9} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    ttl.opaque_call "produce_two" dfb_dependencies(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
+    ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = compute>, <kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    %current_slot = ttl.cb_reserve %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    return
+  }
+
+  func.func @all_local_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 9} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 9} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    ttl.opaque_call "consume_two" dfb_dependencies(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 9>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "consumer.hpp"} : () -> ()
+    ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = compute>, <kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    %current_slot = ttl.cb_wait %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %current : <[1, 1], !ttcore.tile<32x32, bf16>, 9>
+    return
+  }
+}
+
+// -----
+
+// A payload access after reset belongs to a new epoch and cannot consume the
+// preceding epoch's produced data.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=incomplete-use-order{{.*}}evidence=ttl.cb_push
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @payload_crosses_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 1 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %slot = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    ttl.opaque_call "late_payload_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) () {header = "use.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Access in a logical kernel outside the participant set is unordered with
+// the reset and leaves the complete lifecycle conservative.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=incomplete-use-order
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @concurrent_access_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 1 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %slot = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    return
+  }
+
+  func.func @concurrent_access_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %slot = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// Multiple ordered resets partition one logical DFB into multiple producer
+// epochs. The final reset establishes canonical state for the next lifecycle.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=0,terminal_state=canonical}, {accesses=[2, 3],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,terminal_reset=1,terminal_state=canonical}]
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @multiple_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %epochs = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %first = ttl.cb_reserve %epochs : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %epochs : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%epochs) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    %second = ttl.cb_reserve %epochs : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %epochs : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <1, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%epochs) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    %next = ttl.cb_reserve %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @multiple_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %epochs = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%epochs) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    ttl.opaque_call "reset" dfb_reset <1, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%epochs) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    %next = ttl.cb_wait %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// Equal typed condition identities prove that every participant and every
+// preceding payload effect executes in the same conditional reset instance.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: conditional_execution=1
+// CHECK: terminal_reset=0,terminal_state=canonical
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @conditional_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %produce_value = ttl.opaque_call "active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %produce_active = arith.cmpi ne, %produce_value, %zero : i64
+    scf.if %produce_active {
+      %slot = ttl.cb_reserve %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    }
+    %reset_value = ttl.opaque_call "active_again" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %reset_active = arith.cmpi ne, %reset_value, %zero : i64
+    scf.if %reset_active {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    }
+    %next = ttl.cb_reserve %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @conditional_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %reset_value = ttl.opaque_call "active_for_compute" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %reset_active = arith.cmpi ne, %reset_value, %zero : i64
+    scf.if %reset_active {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    }
+    %next = ttl.cb_wait %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// Equal nested condition identities order accesses and the reset within one
+// structured conditional operation in each participant.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: conditional_execution=1
+// CHECK: terminal_reset=0,terminal_state=canonical
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @nested_conditional_reset_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %outer_value = ttl.opaque_call "outer_active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %outer_active = arith.cmpi ne, %outer_value, %zero : i64
+    scf.if %outer_active {
+      %inner_value = ttl.opaque_call "inner_active" () {condition_result = #ttl.dispatch_condition<1, i64>, header = "condition.hpp"} : () -> i64
+      %inner_active = arith.cmpi ne, %inner_value, %zero : i64
+      scf.if %inner_active {
+        %slot = ttl.cb_reserve %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+        ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+      }
+    }
+    %next = ttl.cb_reserve %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @nested_conditional_reset_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %outer_value = ttl.opaque_call "outer_for_compute" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %outer_active = arith.cmpi ne, %outer_value, %zero : i64
+    scf.if %outer_active {
+      %inner_value = ttl.opaque_call "inner_for_compute" () {condition_result = #ttl.dispatch_condition<1, i64>, header = "condition.hpp"} : () -> i64
+      %inner_active = arith.cmpi ne, %inner_value, %zero : i64
+      scf.if %inner_active {
+        ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+      }
+    }
+    %next = ttl.cb_wait %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// Opposite reset polarity cannot prove one dynamic reset instance.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=unsupported-control-flow
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 2
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @opposite_reset_polarity_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %produce_value = ttl.opaque_call "active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %produce_active = arith.cmpi ne, %produce_value, %zero : i64
+    scf.if %produce_active {
+      %slot = ttl.cb_reserve %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %old : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    }
+    %reset_value = ttl.opaque_call "inactive" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %reset_inactive = arith.cmpi eq, %reset_value, %zero : i64
+    scf.if %reset_inactive {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    }
+    %next = ttl.cb_reserve %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @opposite_reset_polarity_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %following = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %zero = arith.constant 0 : i64
+    %reset_value = ttl.opaque_call "inactive_for_compute" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+    %reset_inactive = arith.cmpi eq, %reset_value, %zero : i64
+    scf.if %reset_inactive {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    }
+    %next = ttl.cb_wait %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %following : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+}
+
+// -----
+
+// A targeted reset declaration may denote one synchronized reset instance per
+// immutable sequential loop iteration.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_targeted_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// An all-local reset declaration has the same repeated-instance semantics.
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_all_local_reset()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32} {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset_all" dfb_reset <0, all_local = true, participants[<kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    }
+    return
+  }
+}

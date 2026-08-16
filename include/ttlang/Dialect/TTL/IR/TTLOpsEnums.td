@@ -90,6 +90,23 @@ def TTL_FabricManagerEffectKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_DFBProtocolEffectKind_Reserve :
+    I32EnumAttrCase<"Reserve", 0, "reserve">;
+def TTL_DFBProtocolEffectKind_Push :
+    I32EnumAttrCase<"Push", 1, "push">;
+def TTL_DFBProtocolEffectKind_Wait :
+    I32EnumAttrCase<"Wait", 2, "wait">;
+def TTL_DFBProtocolEffectKind_Pop :
+    I32EnumAttrCase<"Pop", 3, "pop">;
+
+def TTL_DFBProtocolEffectKind : I32EnumAttr<
+    "DFBProtocolEffectKind", "Dataflow buffer protocol effect kind",
+    [TTL_DFBProtocolEffectKind_Reserve, TTL_DFBProtocolEffectKind_Push,
+     TTL_DFBProtocolEffectKind_Wait, TTL_DFBProtocolEffectKind_Pop]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_FabricManagerIntervalKind_GeneratedReceiver :
     I32EnumAttrCase<"GeneratedReceiver", 0, "generated_receiver">;
 def TTL_FabricManagerIntervalKind_GeneratedSender :
@@ -107,6 +124,29 @@ def TTL_FabricManagerIntervalKind : I32EnumAttr<
      TTL_FabricManagerIntervalKind_External]> {
   let cppNamespace = "::mlir::tt::ttl";
   let genSpecializedAttr = 0;
+}
+
+def TTL_DFBNonTransactionalAccessKind_Inspect :
+    I32EnumAttrCase<"Inspect", 0, "inspect">;
+
+def TTL_DFBNonTransactionalAccessKind : I32EnumAttr<
+    "DFBNonTransactionalAccessKind",
+    "Dataflow buffer non-transactional access kind",
+    [TTL_DFBNonTransactionalAccessKind_Inspect]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DFBTileStoreKind_Producer :
+    I32EnumAttrCase<"Producer", 0, "producer">;
+def TTL_DFBTileStoreKind_ConsumerReplacement :
+    I32EnumAttrCase<"ConsumerReplacement", 1, "consumer_replacement">;
+
+def TTL_DFBTileStoreKind : I32EnumAttr<
+    "DFBTileStoreKind", "Dataflow buffer tile-store ownership",
+    [TTL_DFBTileStoreKind_Producer,
+     TTL_DFBTileStoreKind_ConsumerReplacement]> {
+  let cppNamespace = "::mlir::tt::ttl";
 }
 
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;

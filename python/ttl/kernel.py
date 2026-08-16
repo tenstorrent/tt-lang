@@ -16,7 +16,10 @@ from ._src.global_semaphore import (
     get_ttnn_global_semaphore_address,
     is_ttnn_global_semaphore,
 )
+from .condition import DispatchCondition
+from .dfb_allocation_group import DFBAllocationGroup
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
+from .scalar import ScalarType
 
 
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
@@ -217,6 +220,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
     if isinstance(value, str):
         encoded = value.encode("utf-8")
         return f"str:{len(encoded)}:".encode("ascii") + encoded
+    if isinstance(value, ScalarType):
+        return f"scalar:{value.name}".encode("ascii")
     if isinstance(value, (tuple, list)):
         elements = []
         for element in value:
@@ -288,6 +293,10 @@ def _referenced_operation_values(function: Callable) -> dict[str, object]:
 
 
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
+    # Local import avoids the dfb_reset -> kernel import cycle during module
+    # initialization while retaining a typed resource check.
+    from .dfb_reset import DFBReset
+
     function_id = id(function)
     if function_id in active_functions:
         raise TypeError(
@@ -311,10 +320,62 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
             (name, value)
             for name, value in referenced_values.items()
             if isinstance(value, Kernel)
+            or isinstance(value, DispatchCondition)
+            or isinstance(value, DFBAllocationGroup)
+            or isinstance(value, DFBReset)
             or callable(getattr(value, "_operation_identity_capture", None))
         )
+        condition_ordinals = {}
+        allocation_group_ordinals = {}
+        reset_ordinals = {}
+        kernel_capture_names = {
+            id(value): name
+            for name, value in identity_captures.items()
+            if isinstance(value, Kernel)
+        }
         for name, value in sorted(identity_captures.items()):
-            encoded = _encode_identity_capture(name, value, active_functions)
+            if isinstance(value, DispatchCondition):
+                condition_identity = id(value)
+                ordinal = condition_ordinals.setdefault(
+                    condition_identity, len(condition_ordinals)
+                )
+                encoded = (
+                    f"dispatch-condition:{ordinal}:{value.scalar_type.name}"
+                ).encode("ascii")
+            elif isinstance(value, DFBAllocationGroup):
+                group_identity = id(value)
+                ordinal = allocation_group_ordinals.setdefault(
+                    group_identity, len(allocation_group_ordinals)
+                )
+                encoded = f"dfb-allocation-group:{ordinal}".encode("ascii")
+            elif isinstance(value, DFBReset):
+                reset_identity = id(value)
+                ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
+                participant_tokens = []
+                for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
+                    if participant._implicit_role is not None:
+                        participant_tokens.append(
+                            "role:"
+                            f"{participant.kind.name}:"
+                            f"{participant._implicit_role}"
+                        )
+                        continue
+                    participant_name = kernel_capture_names.get(id(participant))
+                    if participant_name is None:
+                        raise TypeError(
+                            "DFBReset participant Kernel must be captured by "
+                            "the enclosing @ttl.operation"
+                        )
+                    participant_tokens.append(f"kernel:{participant_name}")
+                encoded = (
+                    f"dfb-reset:{ordinal}:{value.scope.name}:"
+                    + ",".join(sorted(participant_tokens))
+                ).encode("utf-8")
+            else:
+                encoded = _encode_identity_capture(name, value, active_functions)
             encoded_name = name.encode("utf-8")
             encoded_captures.append(
                 f"{len(encoded_name)}:".encode("ascii")
