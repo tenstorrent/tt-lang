@@ -3067,9 +3067,12 @@ def pykernel_gen(
 
     def _decorator(f):
         operation_identity = _operation_identity(f)
-        _bind_kernel_declarations(_captured_kernel_declarations(f), operation_identity)
+        captured_kernels = _captured_kernel_declarations(f)
+        _bind_kernel_declarations(captured_kernels, operation_identity)
         _bind_fabric_manager_claims(
-            _captured_fabric_manager_claims(f), operation_identity
+            _captured_fabric_manager_claims(f),
+            operation_identity,
+            captured_kernels,
         )
 
         def _compile_explicit(
