@@ -42,6 +42,10 @@ bool verifyLaunchNodeDomainAlgebra() {
                !boundedLeft.isUpperBoundSubsetOf(rightColumn) &&
                boundedLeft.unionWith(boundedRight) ==
                    LaunchNodeDomain::unknownWithin(fullDomain) &&
+               leftColumn.unionWith(boundedLeft) == leftColumn &&
+               boundedLeft.unionWith(leftColumn) == leftColumn &&
+               fullDomain.unionWith(boundedLeft) == fullDomain &&
+               boundedLeft.unionWith(fullDomain) == fullDomain &&
                boundedLeft.intersectWith(rightColumn) == LaunchNodeDomain{} &&
                boundedLeft.unionWith(boundedRight).subtract(rightColumn) ==
                    LaunchNodeDomain::unknownWithin(leftColumn) &&
