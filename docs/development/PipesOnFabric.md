@@ -639,22 +639,26 @@ not interpret or modify the external manager's runtime arguments. The complete
 plan is validated before program descriptors, semaphores, or runtime arguments
 are modified.
 
-The compiler serializes a generated receiver and sender manager only when each
-participating function contains one fabric manager interval, each interval
-contains one protocol operation, executes at most once with matching execution
-conditions at the same device and TENSIX node, and uses the same route. One
-compiler-allocated local semaphore transfers ownership between the proven
-one-to-one pair. The receiver opens its manager, publishes readiness, closes
-the manager before
-waiting for payload completion, and publishes the sender generation. The
-sender then opens its manager, sends the payload, and closes the manager. This
-ordering avoids holding the manager while waiting for an operation that
-requires the same forwarding link. Different transfer pairs, repeated
-transfers, and unproven executions remain interfering and receive distinct
-links. Program submission reinitializes compiler-managed semaphores, including
-when a cached program descriptor is reused. Global-semaphore-only compilation
-does not allocate this local ownership semaphore, so every manager remains
-interfering in that mode.
+The compiler serializes an ordered sequence of generated receiver and sender
+manager intervals only when corresponding intervals each contain one protocol
+operation, implement the same transfers at the same device and TENSIX node,
+use the same routes, and have equal statically bounded loop invocation counts.
+PipeNet verification separately proves matching execution counts for every
+send and receiver post. Unknown loop counts, mismatched interval sequences, or
+generation-count overflow remain interfering and require distinct links.
+
+One compiler-allocated local semaphore transfers ownership across the complete
+proven sequence. The receiver opens its manager, publishes readiness, closes
+the manager before waiting for payload completion, and publishes the sender
+generation. The sender then opens its manager, sends the payload, closes the
+manager, and publishes the next receiver generation. Repeated or
+multi-interval sequences derive generations from a kernel-local invocation
+ordinal that advances only when an interval executes. This preserves the
+sequence when a conditional skips an interval. One single-shot interval uses
+constant generations and requires no ordinal. Program submission reinitializes
+compiler-managed semaphores, including when a cached program descriptor is
+reused. Global-semaphore-only compilation does not allocate this local
+ownership semaphore, so every manager remains interfering in that mode.
 
 Connection setup still runs for each constructed program descriptor because
 its semaphores and runtime arguments are invocation resources. Both the cached

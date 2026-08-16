@@ -16,6 +16,7 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -37,6 +38,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -305,22 +307,77 @@ executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
          });
 }
 
-static bool intervalHasSingleInvocationContext(
+static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
     const FabricRuntimeIntervalPlan &interval,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
   if (interval.protocolOperations.size() != 1) {
-    return false;
+    return std::nullopt;
   }
+  std::uint64_t invocationUpperBound = 1;
   for (Operation *parent = interval.protocolOperations.front()->getParentOp();
        parent && !isa<FuncOp>(parent); parent = parent->getParentOp()) {
     if (generatedControlOps.contains(parent) || isa<scf::IfOp>(parent)) {
       continue;
     }
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(parent)) {
+      std::optional<std::uint64_t> tripCount = getLoopTripCount(loop);
+      if (!tripCount) {
+        return std::nullopt;
+      }
+      std::optional<std::uint64_t> product =
+          llvm::checkedMulUnsigned(invocationUpperBound, *tripCount);
+      if (!product) {
+        return std::nullopt;
+      }
+      invocationUpperBound = *product;
+      continue;
+    }
     if (parent->getNumRegions() != 0) {
-      return false;
+      return std::nullopt;
     }
   }
-  return true;
+  return invocationUpperBound;
+}
+
+static std::optional<bool> getInvocationCounterRequirement(
+    ArrayRef<std::size_t> receiverRuntimeIntervals,
+    ArrayRef<std::size_t> senderRuntimeIntervals, const FabricRoutePlan &plan,
+    const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
+  assert(receiverRuntimeIntervals.size() == senderRuntimeIntervals.size() &&
+         "paired manager functions must have equal interval counts");
+  std::uint64_t totalInvocationUpperBound = 0;
+  // A runtime ordinal preserves the generation sequence when a conditional
+  // skips one interval. Constants are sufficient only for one single-shot
+  // interval.
+  bool requiresInvocationCounter = receiverRuntimeIntervals.size() > 1;
+  for (auto [receiverRuntimeIndex, senderRuntimeIndex] :
+       llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals)) {
+    std::optional<std::uint64_t> receiverUpperBound =
+        getIntervalInvocationUpperBound(
+            plan.runtimeIntervals[receiverRuntimeIndex], generatedControlOps);
+    std::optional<std::uint64_t> senderUpperBound =
+        getIntervalInvocationUpperBound(
+            plan.runtimeIntervals[senderRuntimeIndex], generatedControlOps);
+    if (!receiverUpperBound || receiverUpperBound != senderUpperBound) {
+      return std::nullopt;
+    }
+    std::optional<std::uint64_t> newTotal = llvm::checkedAddUnsigned(
+        totalInvocationUpperBound, *receiverUpperBound);
+    if (!newTotal) {
+      return std::nullopt;
+    }
+    totalInvocationUpperBound = *newTotal;
+    requiresInvocationCounter |= *receiverUpperBound > 1;
+  }
+
+  // Each invocation consumes two monotonically increasing generations. Leave
+  // room for the sender's final release generation.
+  constexpr std::uint64_t maxInvocationCount =
+      (std::numeric_limits<std::uint32_t>::max() - 2) / 2;
+  if (totalInvocationUpperBound > maxInvocationCount) {
+    return std::nullopt;
+  }
+  return requiresInvocationCounter;
 }
 
 static SmallVector<const FabricRoute *>
@@ -374,7 +431,7 @@ static void planGeneratedFabricManagerOwnership(
   if (enableLocalOwnership) {
     for (const auto &[receiverFunction, receiverRuntimeIntervals] :
          intervalsByFunction) {
-      if (receiverRuntimeIntervals.size() != 1 ||
+      if (receiverRuntimeIntervals.empty() ||
           llvm::any_of(receiverRuntimeIntervals,
                        [&](std::size_t runtimeIntervalIndex) {
                          return plan.managerIntervals
@@ -387,11 +444,12 @@ static void planGeneratedFabricManagerOwnership(
       }
 
       SmallVector<FuncOp> candidateSenderFunctions;
+      llvm::DenseMap<Operation *, bool> invocationCounterRequirements;
       for (const auto &[senderFunction, senderRuntimeIntervals] :
            intervalsByFunction) {
         if (pairedSenderFunctions.contains(senderFunction) ||
             receiverFunction == senderFunction ||
-            senderRuntimeIntervals.size() != 1) {
+            senderRuntimeIntervals.size() != receiverRuntimeIntervals.size()) {
           continue;
         }
         bool matches = true;
@@ -411,10 +469,6 @@ static void planGeneratedFabricManagerOwnership(
               getIntervalExecutionLocations(senderInterval, pipeGraph);
           if (senderInterval.kind !=
                   FabricManagerIntervalKind::GeneratedSender ||
-              !intervalHasSingleInvocationContext(receiverRuntime,
-                                                  generatedControlOps) ||
-              !intervalHasSingleInvocationContext(senderRuntime,
-                                                  generatedControlOps) ||
               receiverInterval.transferNodes != senderInterval.transferNodes ||
               !locationsAreUnique(receiverLocations) ||
               !locationsAreUnique(senderLocations) ||
@@ -424,8 +478,19 @@ static void planGeneratedFabricManagerOwnership(
             break;
           }
         }
+        std::optional<bool> invocationCounterRequirement;
+        if (matches) {
+          invocationCounterRequirement = getInvocationCounterRequirement(
+              receiverRuntimeIntervals, senderRuntimeIntervals, plan,
+              generatedControlOps);
+          matches = invocationCounterRequirement.has_value();
+        }
         if (matches) {
           candidateSenderFunctions.push_back(senderFunction);
+          FuncOp candidateSenderFunction = senderFunction;
+          invocationCounterRequirements[candidateSenderFunction
+                                            .getOperation()] =
+              *invocationCounterRequirement;
         }
       }
       if (candidateSenderFunctions.size() != 1) {
@@ -436,9 +501,16 @@ static void planGeneratedFabricManagerOwnership(
       pairedSenderFunctions.insert(senderFunction);
       ArrayRef<std::size_t> senderRuntimeIntervals =
           intervalsByFunction.find(senderFunction)->second;
-      for (auto [receiverRuntimeIndex, senderRuntimeIndex] :
-           llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals)) {
-        std::size_t semaphoreIndex = plan.ownershipSemaphoreCount++;
+      bool useInvocationCounter =
+          invocationCounterRequirements.lookup(senderFunction.getOperation());
+      std::size_t semaphoreIndex = plan.ownershipSemaphoreCount++;
+      for (std::size_t intervalPosition = 0;
+           intervalPosition < receiverRuntimeIntervals.size();
+           ++intervalPosition) {
+        std::size_t receiverRuntimeIndex =
+            receiverRuntimeIntervals[intervalPosition];
+        std::size_t senderRuntimeIndex =
+            senderRuntimeIntervals[intervalPosition];
         FabricRuntimeIntervalPlan &receiverRuntime =
             plan.runtimeIntervals[receiverRuntimeIndex];
         FabricRuntimeIntervalPlan &senderRuntime =
@@ -454,11 +526,17 @@ static void planGeneratedFabricManagerOwnership(
         senderManager.acquireBoundary = senderRuntime.scope;
         senderManager.releaseBoundary = senderRuntime.scope;
         receiverRuntime.ownershipSemaphoreIndex = semaphoreIndex;
-        receiverRuntime.acquireGeneration = 0;
-        receiverRuntime.releaseGeneration = 1;
+        receiverRuntime.useInvocationCounter = useInvocationCounter;
+        receiverRuntime.acquireGeneration =
+            useInvocationCounter ? 0 : 2 * intervalPosition;
+        receiverRuntime.releaseGeneration =
+            useInvocationCounter ? 1 : 2 * intervalPosition + 1;
         senderRuntime.ownershipSemaphoreIndex = semaphoreIndex;
-        senderRuntime.acquireGeneration = 1;
-        senderRuntime.releaseGeneration = 2;
+        senderRuntime.useInvocationCounter = useInvocationCounter;
+        senderRuntime.acquireGeneration =
+            useInvocationCounter ? 1 : 2 * intervalPosition + 1;
+        senderRuntime.releaseGeneration =
+            useInvocationCounter ? 2 : 2 * intervalPosition + 2;
         ownershipGroupByManager[receiverRuntime.managerIntervalIndex] =
             semaphoreIndex;
         ownershipGroupByManager[senderRuntime.managerIntervalIndex] =
@@ -638,9 +716,9 @@ LogicalResult buildFabricRoutePlan(
         scope,
         scope,
         {}});
-    plan.runtimeIntervals.push_back(
-        FabricRuntimeIntervalPlan{managerIntervalIndex, scope,
-                                  std::move(operations), std::nullopt, 0, 0});
+    plan.runtimeIntervals.push_back(FabricRuntimeIntervalPlan{
+        managerIntervalIndex, scope, std::move(operations), std::nullopt, false,
+        0, 0});
   }
 
   for (const ExternalFabricManagerInterval &externalInterval :
@@ -722,6 +800,31 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
 
 void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime) {
+  llvm::DenseMap<std::pair<Operation *, int64_t>, Value>
+      ownershipInvocationCounters;
+  for (const FabricRuntimeIntervalPlan &interval : plan.runtimeIntervals) {
+    if (!interval.ownershipSemaphoreIndex || !interval.useInvocationCounter) {
+      continue;
+    }
+    FuncOp func = interval.scope->getParentOfType<FuncOp>();
+    assert(func && "fabric connection interval must be inside a function");
+    auto counterKey =
+        std::make_pair(func.getOperation(), *interval.ownershipSemaphoreIndex);
+    if (ownershipInvocationCounters.contains(counterKey)) {
+      continue;
+    }
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    auto counterType = MemRefType::get({1}, builder.getI32Type());
+    Value counter = memref::AllocaOp::create(builder, loc, counterType);
+    Value counterIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    memref::StoreOp::create(builder, loc, zero, counter,
+                            ValueRange{counterIndex});
+    ownershipInvocationCounters.insert({counterKey, counter});
+  }
+
   for (const FabricRuntimeIntervalPlan &interval : plan.runtimeIntervals) {
     FuncOp func = interval.scope->getParentOfType<FuncOp>();
     assert(func && "fabric connection interval must be inside a function");
@@ -733,6 +836,9 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
     OpBuilder builder(interval.scope);
     Location loc = interval.scope->getLoc();
     Value ownershipSemaphorePtr;
+    Value ownershipInvocationCounter;
+    Value ownershipInvocation;
+    Value ownershipGenerationBase;
     if (interval.ownershipSemaphoreIndex) {
       Value semaphoreIndex = arith::ConstantIndexOp::create(
           builder, loc, *interval.ownershipSemaphoreIndex);
@@ -741,8 +847,27 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
       auto l1PtrType = ttk::L1AddrPtrType::get(builder.getContext(), 32);
       ownershipSemaphorePtr = ttk::CastToL1PtrOp::create(
           builder, loc, l1PtrType, ownershipSemaphore);
+      if (interval.useInvocationCounter) {
+        auto counterKey = std::make_pair(func.getOperation(),
+                                         *interval.ownershipSemaphoreIndex);
+        ownershipInvocationCounter =
+            ownershipInvocationCounters.lookup(counterKey);
+        assert(ownershipInvocationCounter &&
+               "repeated fabric ownership is missing its local counter");
+        Value counterIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+        ownershipInvocation = memref::LoadOp::create(
+            builder, loc, ownershipInvocationCounter, ValueRange{counterIndex});
+        Value generationsPerInvocation =
+            arith::ConstantIntOp::create(builder, loc, 2, 32);
+        ownershipGenerationBase = arith::MulIOp::create(
+            builder, loc, ownershipInvocation, generationsPerInvocation);
+      }
       Value acquireGeneration = arith::ConstantIntOp::create(
           builder, loc, interval.acquireGeneration, 32);
+      if (ownershipGenerationBase) {
+        acquireGeneration = arith::AddIOp::create(
+            builder, loc, ownershipGenerationBase, acquireGeneration);
+      }
       ttk::SemaphoreWaitMinOp::create(builder, loc, ownershipSemaphorePtr,
                                       acquireGeneration);
     }
@@ -782,8 +907,21 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
       builder.setInsertionPointAfter(close);
       Value releaseGeneration = arith::ConstantIntOp::create(
           builder, loc, interval.releaseGeneration, 32);
+      if (ownershipGenerationBase) {
+        releaseGeneration = arith::AddIOp::create(
+            builder, loc, ownershipGenerationBase, releaseGeneration);
+      }
       ttk::NocSemaphoreSetOp::create(builder, loc, ownershipSemaphorePtr,
                                      releaseGeneration);
+      if (ownershipInvocationCounter) {
+        Value one = arith::ConstantIntOp::create(builder, loc, 1, 32);
+        Value nextInvocation =
+            arith::AddIOp::create(builder, loc, ownershipInvocation, one);
+        Value counterIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+        memref::StoreOp::create(builder, loc, nextInvocation,
+                                ownershipInvocationCounter,
+                                ValueRange{counterIndex});
+      }
     }
   }
 }
