@@ -440,6 +440,34 @@ class TTLGenericCompiler(TTCompilerBase):
             return tuple(values)
         return self._resolve_static_python_value(node)
 
+    def _resolve_static_python_condition(self, node) -> Any:
+        """Resolve a host condition without evaluating device expressions."""
+        if (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and len(node.comparators) == 1
+        ):
+            lhs = self._resolve_static_python_value(node.left)
+            rhs = self._resolve_static_python_value(node.comparators[0])
+            host_types = (bool, int, float, str, type(None))
+            if not isinstance(lhs, host_types) or not isinstance(rhs, host_types):
+                return self._UNRESOLVED_PYTHON_VALUE
+            if isinstance(node.ops[0], ast.Eq):
+                return lhs == rhs
+            if isinstance(node.ops[0], ast.NotEq):
+                return lhs != rhs
+            return self._UNRESOLVED_PYTHON_VALUE
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            value = self._resolve_static_python_condition(node.operand)
+            if value is self._UNRESOLVED_PYTHON_VALUE:
+                return value
+            return not value
+
+        value = self._resolve_static_python_value(node)
+        if isinstance(value, (bool, int, float, str, type(None))):
+            return bool(value)
+        return self._UNRESOLVED_PYTHON_VALUE
+
     def _resolve_pipe_net_receiver(self, node, method_name: str, required: bool):
         """Resolve a PipeNet method receiver from compile-time Python metadata."""
         from ..pipe import PipeNet
@@ -627,6 +655,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 self.symbol_tables.pop()
             return
         return super().visit_For(node)
+
+    def visit_If(self, node):
+        static_condition = self._resolve_static_python_condition(node.test)
+        if static_condition is self._UNRESOLVED_PYTHON_VALUE:
+            return super().visit_If(node)
+        for statement in node.body if static_condition else node.orelse:
+            self.visit(statement)
 
     def _device_domain_attr(self, domain):
         components = [
