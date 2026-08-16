@@ -51,6 +51,10 @@ struct FabricRuntimeIntervalPlan {
   Operation *scope;
   SmallVector<Operation *> protocolOperations;
   std::optional<int64_t> ownershipSemaphoreIndex;
+  /// Repeated or multi-interval ownership sequences derive generations from a
+  /// kernel-local invocation ordinal. Only one single-shot interval uses the
+  /// constants below directly.
+  bool useInvocationCounter = false;
   int64_t acquireGeneration = 0;
   int64_t releaseGeneration = 0;
 };
