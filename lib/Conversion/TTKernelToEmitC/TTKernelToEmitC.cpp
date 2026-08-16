@@ -1242,8 +1242,12 @@ getOrCreateConstantTableGlobal(ConversionPatternRewriter &rewriter,
   ModuleOp module = anchor->getParentOfType<ModuleOp>();
   assert(module && "constant table lookup must be nested in a module");
 
-  IntegerType wordType = IntegerType::get(
-      rewriter.getContext(), 64, IntegerType::SignednessSemantics::Unsigned);
+  // TT-Metal links ordinary rodata into the small per-RISC private-data
+  // region, while immutable lookup tables can reside in executable L1.
+  auto wordType = emitc::OpaqueType::get(
+      rewriter.getContext(),
+      "uint64_t __attribute__((section(\".text.ttlang_constant_table\"), "
+      "aligned(8)))");
   auto arrayType = emitc::ArrayType::get(
       {static_cast<int64_t>(packedWords.size())}, wordType);
   std::string initializerText = "{";
