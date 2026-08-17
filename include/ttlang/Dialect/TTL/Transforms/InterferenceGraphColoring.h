@@ -194,6 +194,22 @@ colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
                                             unsigned colorLimit,
                                             std::uint64_t searchStateLimit);
 
+/// Result of deciding whether a weighted allocation fits fixed slot and byte
+/// limits.
+using InterferenceGraphWeightLimitResult = InterferenceGraphColorLimitResult;
+
+/// Finds a valid coloring whose sum of maximum vertex weight per used color is
+/// at most `weightLimit` while using at most `colorLimit` colors.
+///
+/// This searches the complete graph because disconnected components still
+/// interact through color weights: permuting one component's colors can change
+/// the combined allocation size. Reaching the state limit is inconclusive.
+InterferenceGraphWeightLimitResult
+colorInterferenceGraphWithinWeightLimitExactly(
+    const InterferenceGraph &graph, llvm::ArrayRef<std::uint64_t> vertexWeights,
+    unsigned colorLimit, std::uint64_t weightLimit,
+    std::uint64_t searchStateLimit);
+
 /// Computes a deterministic assignment with the minimum resource-slot count.
 ///
 /// Disconnected candidate groups have no conflicts between them, so they are

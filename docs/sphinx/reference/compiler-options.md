@@ -156,9 +156,9 @@ The pipeline runs these passes and subpasses in order:
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-insert-cb-sync` -- insert missing DFB synchronization
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
-- `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while reserving synchronized-reset scratch
+- `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate combined DFB and synchronized-reset capacity, and emit runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, and `exact-coloring-search-limit` bounds exhaustive fixed-limit and minimum physical-index-count queries
+- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate combined DFB and fixed-state capacity, and emit runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -202,12 +202,12 @@ allocation table.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `reuse-user-dfbs` | bool | `true` | Reuse a physical index when concurrent-kernel liveness proves that two compatible logical DFB lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing and apply the same lifetime proof only to compiler-created DFBs. |
-| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search runs when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. Reaching the limit fails with an inconclusive-search diagnostic only when acceptance requires the search result; a reservation-only search may retain an authoritative-budget-valid first-fit assignment. |
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined DFB and synchronized-reset scratch budget used during physical allocation. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search runs when order-dependent first-fit prevents acceptance by the index or weighted L1 limit, or exceeds the provisional threshold after a conservative PipeNet reservation. Reaching the limit fails with an inconclusive-search diagnostic only when acceptance requires the result; a reservation-only search may retain an authoritative-budget-valid assignment. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined DFB and fixed-state budget used during physical allocation. |
 | `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation groups when launch-domain, access-completion, pointer-handoff, or lifetime-order proof is incomplete. Emit one warning per accepted group and record the assumptions in `ttl.assumed_dfb_allocation_groups`. Page-format, storage, static compute-configuration, per-member ring-envelope, target-capacity, and L1-budget errors remain fatal. |
 
 ```bash
-ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true unsafe-assume-allocation-groups=false exact-coloring-search-limit=1000000})'
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true unsafe-assume-allocation-groups=false exact-coloring-search-limit=1000000 l1-budget-override=0})'
 ```
 
 #### `ttl-set-compute-kernel-config`

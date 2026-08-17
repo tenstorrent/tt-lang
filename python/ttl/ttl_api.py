@@ -2572,8 +2572,8 @@ def _lower_program_to_kernel(
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "
-            f"exact-coloring-search-limit={exact_coloring_search_limit}"
-            f" l1-budget-override={l1_budget_override}"
+            f"exact-coloring-search-limit={exact_coloring_search_limit} "
+            f"l1-budget-override={l1_budget_override}"
             "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
