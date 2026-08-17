@@ -2779,6 +2779,10 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
       return;
     }
+    if (failed(validateDFBReconfigurationTarget(mod))) {
+      signalPassFailure();
+      return;
+    }
     std::string targetFailureReason;
     FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
         ComputeTargetEnvironment::get(mod, targetFailureReason);

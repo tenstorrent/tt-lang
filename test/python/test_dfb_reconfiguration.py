@@ -10,6 +10,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
+from ttl import ttl_api  # noqa: E402
 from ttlang_test_utils import to_dram, to_l1  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
@@ -100,6 +101,9 @@ def _make_reconfiguration_operation(data_format, grid_cols):
 def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution(
     device, dtype, grid_cols, to_device, monkeypatch, tmp_path
 ):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
     data_format = "bf16" if dtype == torch.bfloat16 else "float32"
     operation = _make_reconfiguration_operation(data_format, grid_cols)
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(tmp_path / "reconfiguration.mlir"))

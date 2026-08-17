@@ -43,11 +43,10 @@ constexpr uint32_t packArrivalBit = 1U << 2;
 constexpr uint32_t mathArrivalBit = 1U << 3;
 constexpr uint32_t allArrivalBits =
     dm0ArrivalBit | unpackArrivalBit | packArrivalBit | mathArrivalBit;
-constexpr uint32_t entryReleaseBit = 1U << 31;
-constexpr uint32_t exitWaitingParticipantCount = 4;
+constexpr uint32_t releaseBit = 1U << 31;
 
 // Unpack and math handshake so pack completes before any TRISC polls L1.
-FORCE_INLINE void quiesceComputePipeline() {
+FORCE_INLINE void waitForComputePipelineCompletion() {
 #if defined(TTL_DFB_RECONFIGURATION_UNPACK)
   tensix_sync();
   mailbox_write(ThreadId::MathThreadId, 1);
@@ -63,14 +62,14 @@ FORCE_INLINE void quiesceComputePipeline() {
 #endif
 }
 
-// DM1 releases the other RISCs only after all prior-epoch work is complete
-// because reconfiguration changes DFB state shared across those RISCs.
-FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// Waiting for DM1 to clear the release bit prevents any participant from
+// beginning following work before all participants complete the barrier.
+FORCE_INLINE void synchronizeParticipants(
+    volatile uint32_t tt_l1_ptr *synchronizationState) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK) ||                                   \
     defined(TTL_DFB_RECONFIGURATION_MATH)
-  quiesceComputePipeline();
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
   constexpr uint32_t arrivalBit = dm0ArrivalBit;
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
@@ -82,38 +81,43 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 #endif
   __atomic_fetch_or(&synchronizationState[0], arrivalBit, __ATOMIC_RELEASE);
   while ((__atomic_load_n(&synchronizationState[0], __ATOMIC_RELAXED) &
-          entryReleaseBit) == 0) {
+          releaseBit) == 0) {
   }
   __atomic_thread_fence(__ATOMIC_ACQUIRE);
   __atomic_fetch_and(&synchronizationState[0], ~arrivalBit, __ATOMIC_RELEASE);
+  while ((__atomic_load_n(&synchronizationState[0], __ATOMIC_RELAXED) &
+          releaseBit) != 0) {
+  }
+  __atomic_thread_fence(__ATOMIC_ACQUIRE);
 #elif defined(TTL_DFB_RECONFIGURATION_DM1)
   while ((__atomic_load_n(&synchronizationState[0], __ATOMIC_RELAXED) &
           allArrivalBits) != allArrivalBits) {
   }
   __atomic_thread_fence(__ATOMIC_ACQUIRE);
-  __atomic_fetch_or(&synchronizationState[0], entryReleaseBit,
-                    __ATOMIC_RELEASE);
+  __atomic_fetch_or(&synchronizationState[0], releaseBit, __ATOMIC_RELEASE);
   while ((__atomic_load_n(&synchronizationState[0], __ATOMIC_RELAXED) &
           allArrivalBits) != 0) {
   }
-  __atomic_store_n(&synchronizationState[0], 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&synchronizationState[0], 0, __ATOMIC_RELEASE);
 #endif
 }
 
-// DM1 releases the other participants only after updating shared stream state.
-FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-#if defined(TTL_DFB_RECONFIGURATION_DM1)
-  __atomic_fetch_add(&synchronizationState[1], exitWaitingParticipantCount,
-                     __ATOMIC_RELEASE);
-#elif defined(TTL_DFB_RECONFIGURATION_DM0) ||                                  \
+// The entry barrier follows compute-pipeline completion because DFB interface
+// state is shared across the compute RISCs.
+FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
+#if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK) ||                                   \
     defined(TTL_DFB_RECONFIGURATION_MATH)
-  while (__atomic_load_n(&synchronizationState[1], __ATOMIC_RELAXED) == 0) {
-  }
-  __atomic_thread_fence(__ATOMIC_ACQUIRE);
-  __atomic_fetch_sub(&synchronizationState[1], 1, __ATOMIC_RELEASE);
+  waitForComputePipelineCompletion();
 #endif
+  synchronizeParticipants(synchronizationState);
+}
+
+// DM1 cannot begin next-epoch work until every other RISC has completed its
+// interface updates.
+FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
+  synchronizeParticipants(&synchronizationState[1]);
 }
 
 template <bool updateReadPointer, bool updateWritePointer,

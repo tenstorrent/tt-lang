@@ -130,6 +130,32 @@ FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module) {
   return *stateBytes;
 }
 
+LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
+  DFBReconfigurationOp firstBoundary;
+  module.walk([&](DFBReconfigurationOp boundary) -> WalkResult {
+    firstBoundary = boundary;
+    return WalkResult::interrupt();
+  });
+  if (!firstBoundary) {
+    return success();
+  }
+
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(module, failureReason);
+  if (failed(targetArch)) {
+    module.emitOpError(failureReason);
+    return failure();
+  }
+  if (!*targetArch || **targetArch == ttcore::Arch::Blackhole) {
+    return success();
+  }
+  firstBoundary.emitOpError()
+      << "is supported only for Blackhole; selected target is "
+      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
+  return failure();
+}
+
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
   llvm::DenseSet<int64_t> boundaryOrdinals;
   module.walk([&](DFBReconfigurationOp reconfiguration) {

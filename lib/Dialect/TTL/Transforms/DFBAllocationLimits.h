@@ -61,6 +61,9 @@ FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
 FailureOr<uint64_t>
 getDFBReconfigurationStateAllocationBytes(ModuleOp module);
 
+/// Verifies that the selected target implements DFB reconfiguration.
+LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
+
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:
