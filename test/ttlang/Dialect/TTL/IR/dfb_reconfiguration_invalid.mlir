@@ -1,3 +1,4 @@
+// Summary: Verifies DFB reconfiguration attribute and operation diagnostics.
 // RUN: ttlang-opt --verify-diagnostics --split-input-file %s
 
 func.func @negative_ordinal() {

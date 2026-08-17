@@ -19,8 +19,10 @@ class DFBReconfiguration:
     """One worker-local synchronized DFB configuration-epoch boundary.
 
     Every participant executes the same dynamic boundary instances in the same
-    order. Prior DFB, compute, and data-movement work completes before the next
-    epoch's compiler-derived DFB configuration is installed.
+    order. Each boundary executes zero or one dynamic instance per dispatch and
+    launch node, and every boundary declared by one operation uses the same
+    participant set. Prior DFB, compute, and data-movement work completes before
+    the next epoch's compiler-derived DFB configuration is installed.
     """
 
     participants: tuple[KernelSelector, ...]

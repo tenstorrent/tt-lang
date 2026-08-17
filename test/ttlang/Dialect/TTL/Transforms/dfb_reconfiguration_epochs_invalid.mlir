@@ -1,4 +1,4 @@
-// Verifies diagnostics for invalid DFB reconfiguration epoch plans.
+// Summary: Verifies diagnostics for invalid DFB reconfiguration epoch plans.
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})'
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">

@@ -1,3 +1,4 @@
+// Summary: Verifies tensor-backed DFB storage across configuration epochs.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">

@@ -2184,9 +2184,11 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
   let description = [{
     `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
     by the logical kernels named by `boundary`. Every participant executes the
-    same dynamic boundary instances in the same order. Prior DFB, compute, and
-    data-movement work completes before the runtime installs the next epoch's
-    DFB interface configuration; following work begins after installation.
+    same zero-or-one dynamic boundary instance per dispatch and launch node and
+    executes boundary sites in the same order. Every boundary in one module
+    declares the same participant set. Prior DFB, compute, and data-movement
+    work completes before the runtime installs the next epoch's DFB interface
+    configuration; following work begins after installation.
 
     The source operation does not name physical DFB indices or enumerate the
     interfaces that change. Allocation analysis derives the configuration for
@@ -2194,9 +2196,9 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     physical index, storage, and interface configuration across the boundary;
     reassignment requires a complete protocol and synchronization proof.
 
-    Runtime execution is currently supported only on Blackhole. Its shared-L1
-    atomic operations and five participating worker RISCs implement the
-    boundary synchronization protocol.
+    Runtime execution is currently supported only on Blackhole. Shared-L1
+    synchronization state coordinates DFB interface changes across the
+    participating kernels.
   }];
   let arguments = (ins TTL_DFBReconfigurationAttr:$boundary);
   let assemblyFormat = "$boundary attr-dict";

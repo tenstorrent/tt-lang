@@ -105,8 +105,8 @@ ttl-set-compute-kernel-config      (ModuleOp) Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations       (FuncOp) Copy DFB indices to tile ops
 ttl-verify-dfb-spsc                (Module) Verify producer/consumer uniqueness
-ttl-validate-cb-budget             (Module) Validate static DFB and reset storage
-convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
+ttl-validate-cb-budget             (Module) Validate target-aligned DFB and fixed state
+convert-ttl-to-ttkernel            (Module) Lower and validate exact combined L1 use
 ttkernel-insert-inits              (Module) Insert hardware init calls
 ```
 
@@ -122,6 +122,11 @@ finalization. Guard verification uses the read-only logical identity analysis,
 which assigns temporary IDs to compiler-created DFBs without modifying IR.
 Schedule verification uses exact transfer provenance and does not depend on DFB
 allocation.
+Transport formation records a conservative PipeNet L1 reservation before
+physical index assignment. Finalization may use that reservation to select a
+lower-byte valid coloring. The budget pass validates finalized DFB, reset, and
+reconfiguration allocations. Conversion validates the exact combined
+allocation after PipeNet resource planning.
 
 ### Per-core descriptor allocation
 
@@ -266,6 +271,66 @@ or complete NoC commands issued by another core or a non-participating RISC.
 Every producer must issue its required transfers before its local boundary
 occurrence; the participating data movement RISC then completes its own
 outstanding commands. Runtime lowering is currently restricted to Blackhole.
+
+## Synchronized configuration epochs
+
+A `DFBReconfiguration` declares one compute kernel and two data-movement
+kernels that execute one worker-local configuration boundary. Every boundary
+site executes zero or one dynamic instance per dispatch and launch node. All
+sites in one module declare the same participant set, and every active
+participant executes the same boundary instances in the same dynamic order.
+Structured conditional execution is supported only when the participant
+conditions are equivalent. Runtime execution is restricted to Blackhole.
+
+Concurrent-kernel liveness builds a happens-before graph for each launch node
+and orders reconfiguration boundaries independently of their numeric ordinals.
+An ordinal identifies a boundary; it does not define execution order. Every
+launch node must prove the same strict boundary order. Unknown execution or
+ordering remains conservative.
+
+A complete reserve/push/wait/pop lifecycle can end before a boundary and a new
+lifecycle can begin afterward. An incomplete transaction, unread payload, or
+other live protocol state may cross only when the logical DFB retains the same
+physical index, storage, and interface configuration. Such a lifecycle remains
+active in every crossed allocation epoch. A lifecycle beginning under a
+conditional boundary must use the same condition so an inactive boundary
+cannot leave a stale descriptor for unconditional following work.
+
+The allocation conflict graph permits two lifecycle epochs to share a physical
+index only when their per-node active epochs are disjoint and their static
+element type and tile descriptor are compatible. Reconfiguration can change
+outer DFB geometry, block count, and storage. Tensor-backed ranges are checked
+against the complete set of descriptors installed initially and after each
+boundary, in proven execution order.
+
+Finalization emits the initial descriptor for every physical index and one
+entry configuration for every lifecycle that begins at a boundary. Live
+continuations have no entry update, so their FIFO pointers, occupancy, and
+payload are preserved. The runtime plan records boundary order explicitly and
+does not infer it by sorting ordinals.
+
+Each boundary owns a per-core configuration tensor containing 64 four-word DFB
+interface records, two update masks, synchronization state, and padding. The
+runtime supplies its address to every participating kernel. The synchronization
+protocol completes prior DFB, compute, and data-movement work before any
+interface owner applies a masked update, then prevents following work until all
+updates complete. Configuration tensors, PipeNet scratch, computed-address
+backing, and GlobalSemaphore objects remain owned by the operation's serialized
+runtime-resource cache. Compatible calls reuse one generation. Incompatible
+replacement and owner destruction synchronize the device before releasing it;
+failed synchronization retains ownership.
+
+Per-core L1 accounting uses target allocation quanta rather than logical byte
+counts. It includes one aligned maximum allocation per non-tensor-backed
+physical DFB index, allocator-rounded reset state, one aligned configuration
+tensor per boundary, aligned PipeNet scratch, and one allocation quantum per
+GlobalSemaphore. Transport formation uses a conservative upper bound that
+includes scalar, grouped, residual, and record-selected callback resources.
+Finalization minimizes weighted physical DFB allocation when authoritative
+capacity requires it and may also do so for the conservative PipeNet
+reservation. The budget pass checks finalized DFB plus fixed state; conversion
+performs the authoritative combined check from the exact PipeNet plan. Every
+pass uses the same resolved target budget or `l1-budget-override`.
 
 ## DFB Lifecycle
 

@@ -1,3 +1,4 @@
+// Summary: Verifies direct conversion rejects unsupported target architectures.
 // RUN: ttlang-opt %s --verify-diagnostics --convert-ttl-to-ttkernel
 
 module attributes {

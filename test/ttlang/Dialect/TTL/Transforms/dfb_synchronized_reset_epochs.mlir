@@ -1,4 +1,4 @@
-// Tests synchronized dataflow-buffer reset epochs.
+// Summary: Tests synchronized dataflow-buffer reset epochs.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s
 
 // A collective reset terminates a producer-only lifecycle and orders the next

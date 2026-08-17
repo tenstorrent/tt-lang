@@ -1,3 +1,4 @@
+// Summary: Verifies conditional boundary entry controls following DFB reuse.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">

@@ -126,14 +126,16 @@ def TTLFormPipeTransports
 
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
-    bytes. Selection counts the widened intermediate DFB types, a conservative
-    receiver-published address table, required transport scratch,
-    synchronized-reset scratch, global semaphores, and DFB reconfiguration
-    state against the same L1 budget used by `ttl-validate-cb-budget`.
-    `group-size = 1` disables grouping but still validates the combined
-    allocation. A larger value is an upper bound; the pass selects a smaller
-    group when required by the loop trip count or L1 capacity. Ineligible loops
-    retain scalar transfer IR.
+    bytes. Selection uses a conservative upper bound for target-aligned DFB
+    allocation, synchronized-reset state, receiver-published address storage,
+    transport scratch, GlobalSemaphore counters, record-selected callback
+    resources, and DFB reconfiguration state. `group-size = 1` disables grouping
+    and records the same reservation for physical DFB allocation. A larger value
+    is an upper bound; the pass selects a smaller group when the loop trip count
+    or conservative L1 bound requires it. Ineligible loops retain scalar
+    transfer IR. After PipeNet lowering chooses exact resources,
+    `convert-ttl-to-ttkernel` validates the authoritative combined per-core
+    allocation.
 
     A module containing PipeNet protocol operations must assign `dfb_id` to
     every user-declared DFB before physical allocation.
@@ -144,7 +146,7 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the combined DFB and scratch L1 budget in bytes for "
+           "Override the combined per-core L1 budget in bytes for "
            "transport selection.">
   ];
 
@@ -340,14 +342,14 @@ def TTLConvertTTLToTTKernel
     default; the global-only option preserves all local semaphore ids for
     application use.
 
-    The pass validates finalized DFB backing plus the exact PipeNet and
-    synchronized-reset scratch allocation against the selected per-core L1
-    budget before lowering the operations.
+    The pass validates the authoritative per-core L1 footprint before lowering:
+    target-aligned finalized DFB allocations, synchronized-reset state,
+    reconfiguration tensors, PipeNet scratch, and GlobalSemaphore allocations.
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
-    conservative endpoint-contained launch-node domains and single-block event
-    regions required by protocol planning.
+    exact endpoint-contained launch-node domains and single-block event regions
+    required by protocol planning.
     A module containing PipeNet protocol operations must assign `dfb_id` to
     every user-declared DFB before physical allocation.
   }];
@@ -1199,8 +1201,8 @@ def TTLFinalizeDFBIndices
            "Maximum states examined by exact DFB allocation before reporting "
            "an inconclusive result.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used by DFB allocation. "
-           "0 selects the target budget.">
+           "Override the per-core L1 budget used by DFB allocation and the "
+           "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }
 
@@ -1209,37 +1211,41 @@ def TTLValidateCBBudget
   let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. Sums the maximum static backing-store size for
-    every physical DFB index, allocator-rounded synchronized-reset state, and
-    one fixed-size configuration tensor for every synchronized reconfiguration
-    boundary, then compares the result against a per-core L1 budget.
+    `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
+    static backing-store size per physical DFB index, allocator-rounded
+    synchronized-reset state, and one target-aligned configuration tensor per
+    synchronized reconfiguration boundary, then compares the result against a
+    per-core L1 budget. Tensor-backed DFB storage is excluded because the tensor
+    allocator owns that allocation.
 
     For each `BindCBOp`, the pass computes:
-      cb_bytes = total_elements * tile_size_bytes
+      dfb_payload_bytes = total_elements * tile_size_bytes
+      dfb_allocation_bytes = align_to_target_quantum(dfb_payload_bytes)
 
     When the same `cb_index` appears in multiple functions (e.g. compute
-    and data-movement kernels sharing a CB slot), only the largest
-    allocation for that index is counted.
+    and data-movement kernels sharing a DFB slot), only the largest allocation
+    for that index is counted.
 
-    On overflow the pass emits an error with a per-CB breakdown and a
+    On overflow the pass emits an error with a per-DFB breakdown and a
     hint to reduce block shapes or block counts.
 
     L1 budget is taken from the module's TTCore system descriptor and
     default device when present (`ChipDescAttr::getUsableL1Size()` for the
     selected chip). When the module has no system descriptor, the pass uses
-    the same static per-core CB region limit as Wormhole and Blackhole
+    the same static per-core DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    This is a static DFB and fixed-state check. Pipe transport formation and
-    final conversion validate the same backing together with PipeNet, reset,
-    semaphore, and reconfiguration resources. These checks do not model kernel
-    binaries, stacks, or unrelated runtime allocations.
+    This is a static DFB and fixed-state check. After exact PipeNet planning,
+    `convert-ttl-to-ttkernel` validates the same finalized DFB, reset, and
+    reconfiguration footprint together with target-aligned PipeNet scratch and
+    one target allocation quantum per GlobalSemaphore. Neither check models
+    kernel binaries, stacks, or unrelated runtime allocations.
   }];
 
   let options = [
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override L1 DFB budget (bytes). 0 means auto-detect from "
-           "device attributes or use architecture default.">
+           "Override the per-core L1 budget used for finalized DFB and "
+           "fixed-state validation. 0 selects the target budget.">
   ];
 }
 
