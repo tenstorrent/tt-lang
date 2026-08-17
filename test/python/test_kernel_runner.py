@@ -4208,6 +4208,7 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
         "ttnn",
         SimpleNamespace(
             BufferType=SimpleNamespace(L1=l1_buffer_type),
+            get_allocator_base_address=lambda _device, _buffer_type: 0x2000,
             _ttnn=SimpleNamespace(reports=reports),
         ),
     )

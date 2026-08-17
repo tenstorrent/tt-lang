@@ -184,9 +184,9 @@ def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
     Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
-    TT-Metal allocates tensors from high L1 addresses and static DFBs from
-    ``address_at_first_l1_cb_buffer``. The usable interval therefore ends at
-    the lowest live tensor page address, not at the total allocated byte count.
+    TT-Metal allocates tensors from high L1 addresses and static DFBs from the
+    configured L1 allocator base. The usable interval therefore ends at the
+    lowest live tensor page address, not at the total allocated byte count.
 
     ``get_buffer_pages`` is called on the original device rather than on
     per-coordinate submeshes because ``create_submesh`` produces a new
@@ -202,7 +202,9 @@ def get_min_remaining_l1_for_device(device):
         raise RuntimeError("ttnn is not available")
 
     device_info = ttnn._ttnn.reports.get_device_info(device)
-    static_dfb_base_address = device_info.address_at_first_l1_cb_buffer
+    static_dfb_base_address = ttnn.get_allocator_base_address(
+        device, ttnn.BufferType.L1
+    )
     minimum_remaining_bytes = device_info.cb_limit
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type == ttnn.BufferType.L1:
@@ -222,7 +224,9 @@ def _get_remaining_l1_by_core_for_device(
         raise RuntimeError("ttnn is not available")
 
     device_info = ttnn._ttnn.reports.get_device_info(device)
-    static_dfb_base_address = device_info.address_at_first_l1_cb_buffer
+    static_dfb_base_address = ttnn.get_allocator_base_address(
+        device, ttnn.BufferType.L1
+    )
     remaining_bytes = {core: device_info.cb_limit for core in cores}
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         core = (page.core_x, page.core_y)
