@@ -254,9 +254,10 @@ class _FakeTTNN:
         def __init__(self, tile_shape):
             self.tile_shape = tuple(tile_shape)
 
-        def get_tile_size(self, _data_format):
+        def get_tile_size(self, data_format):
             tile_height, tile_width = self.tile_shape
-            return tile_height * tile_width * 2
+            element_size = 4 if "float32" in str(data_format).lower() else 2
+            return tile_height * tile_width * element_size
 
     class TileDescriptor:
         def __init__(self, tile):
@@ -278,6 +279,11 @@ class _FakeTTNN:
 
         def set_buffer_from_cb(self, backing_desc):
             self.backing_desc = backing_desc
+
+    class TensorBackedCBDescriptor(dict):
+        def __init__(self, **values):
+            super().__init__(values)
+            self.format_descriptors = []
 
     class CoreCoord:
         def __init__(self, x, y):
@@ -304,13 +310,13 @@ class _FakeTTNN:
     def cb_descriptor_from_sharded_tensor(
         cb_index, tensor, total_size, core_ranges, address_offset=0
     ):
-        return {
-            "cb_index": cb_index,
-            "tensor": tensor,
-            "address_offset": address_offset,
-            "total_size": total_size,
-            "core_ranges": core_ranges,
-        }
+        return _FakeTTNN.TensorBackedCBDescriptor(
+            cb_index=cb_index,
+            tensor=tensor,
+            address_offset=address_offset,
+            total_size=total_size,
+            core_ranges=core_ranges,
+        )
 
     @staticmethod
     def get_optimal_worker_cores_for_sharded_tensor(_tensor):
@@ -3127,6 +3133,55 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
         for core_range in descriptor["core_ranges"].ranges
     ]
     assert selected == [(0, 0), (1, 0)]
+
+
+@pytest.mark.parametrize(
+    ("data_format", "page_size"),
+    [("bfloat16", 2048), ("float32", 4096)],
+    ids=["bf16", "fp32"],
+)
+def test_build_cb_descriptors_applies_physical_row_page_view(
+    monkeypatch, data_format, page_size
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 8192
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype(data_format)
+    tensor = _FakeTensor(
+        object(),
+        dtype=expected_dtype,
+        tile_shape=(1, 32),
+        shard_shape=(1, 1024),
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        data_format,
+        1,
+        page_size,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_size=page_size,
+            ),
+        ),
+    )
+
+    descriptor = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )[0]
+
+    assert descriptor["tensor"] is tensor
+    assert len(descriptor.format_descriptors) == 1
+    format_descriptor = descriptor.format_descriptors[0]
+    assert format_descriptor.page_size == page_size
+    assert format_descriptor.tile.tile.tile_shape == (32, 32)
 
 
 def test_build_cb_descriptors_rejects_range_past_shard_boundary(monkeypatch):

@@ -231,6 +231,71 @@ def _assert_dtype_aware_allclose(actual, expected, torch_dtype):
         assert_allclose(actual.float(), expected.float(), rtol=5e-3, atol=1e-4)
 
 
+def _to_compact_height_sharded(torch_tensor, device):
+    """Create one compact 1x32-tiled row in one worker's L1."""
+    tensor_rows, tensor_columns = torch_tensor.shape[-2:]
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(0, 0),
+                    ttnn.CoreCoord(0, 0),
+                )
+            }
+        ),
+        (tensor_rows, tensor_columns),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    ttnn_dtype = ttnn.bfloat16 if torch_tensor.dtype == torch.bfloat16 else ttnn.float32
+    return ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn_dtype,
+        layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile((1, 32)),
+        device=device,
+        memory_config=memory_config,
+    )
+
+
+def _make_tensor_backed_physical_view_copy(tile_height, page_count):
+    @ttl.operation(grid=(1, 1))
+    def physical_view_copy(input_tensor, output_tensor):
+        input_dfb = ttl.make_tensor_backed_dfb(
+            input_tensor,
+            shape=(1, page_count),
+            tile=(tile_height, 32),
+        )
+        output_dfb = ttl.make_tensor_backed_dfb(
+            output_tensor,
+            shape=(1, page_count),
+            tile=(tile_height, 32),
+        )
+
+        @ttl.compute()
+        def compute_copy():
+            with (
+                input_dfb.wait() as input_block,
+                output_dfb.reserve() as output_block,
+            ):
+                output_block.store(input_block)
+
+        @ttl.datamovement()
+        def publish_input():
+            input_dfb.publish()
+
+        @ttl.datamovement()
+        def consume_output():
+            with output_dfb.wait():
+                pass
+
+    return physical_view_copy
+
+
 @ttl.operation(grid=(1, 1))
 def _replace_waited_tensor_backed_state(state, output):
     state_dfb = ttl.make_tensor_backed_dfb(state, shape=(1, 1), block_count=1)
@@ -285,6 +350,31 @@ def test_dfb_storage_eltwise_mul(
 
     actual = ttnn.to_torch(out)
     _assert_dtype_aware_allclose(actual, expected, torch_dtype)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
+)
+@pytest.mark.parametrize("tile_height", [16, 32], ids=["16x32", "32x32"])
+def test_tensor_backed_physical_row_page_view(device, torch_dtype, tile_height):
+    """Consecutive compact row pages form exact physical compute pages."""
+    page_count = 3
+    tensor_columns = tile_height * 32 * page_count
+    input_torch = (
+        torch.arange(tensor_columns, dtype=torch.float32)
+        .reshape(1, tensor_columns)
+        .to(torch_dtype)
+    )
+    input_tensor = _to_compact_height_sharded(input_torch, device)
+    output_tensor = _to_compact_height_sharded(torch.zeros_like(input_torch), device)
+
+    _make_tensor_backed_physical_view_copy(tile_height, page_count)(
+        input_tensor, output_tensor
+    )
+
+    actual = ttnn.to_torch(output_tensor).reshape(1, tensor_columns)
+    _assert_dtype_aware_allclose(actual, input_torch, torch_dtype)
 
 
 @pytest.mark.requires_device
