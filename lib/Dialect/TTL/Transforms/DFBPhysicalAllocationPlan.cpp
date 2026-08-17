@@ -145,6 +145,50 @@ static bool haveCompatibleCursorRuns(const DFBPerNodeLifetime &before,
          cursorRunsCanRepeat(before.terminalReadCursorRuns, physicalTileCount);
 }
 
+static SmallVector<std::optional<int64_t>>
+getActiveConfigurationEpochs(const DFBLogicalLifecycle &logicalDFB) {
+  SmallVector<std::optional<int64_t>> epochs;
+  for (const DFBPerNodeLifetime &lifetime : logicalDFB.nodeLifetimes) {
+    for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
+      if (!llvm::is_contained(epochs, epoch.entryReconfigurationOrdinal)) {
+        epochs.push_back(epoch.entryReconfigurationOrdinal);
+      }
+    }
+  }
+  for (const DFBPerNodeLifetime &lifetime : logicalDFB.possibleNodeLifetimes) {
+    for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
+      if (!llvm::is_contained(epochs, epoch.entryReconfigurationOrdinal)) {
+        epochs.push_back(epoch.entryReconfigurationOrdinal);
+      }
+    }
+  }
+  return epochs;
+}
+
+static bool haveDisjointConfigurationEpochs(const DFBLogicalLifecycle &lhs,
+                                            const DFBLogicalLifecycle &rhs) {
+  SmallVector<std::optional<int64_t>> lhsEpochs =
+      getActiveConfigurationEpochs(lhs);
+  SmallVector<std::optional<int64_t>> rhsEpochs =
+      getActiveConfigurationEpochs(rhs);
+  return !lhsEpochs.empty() && !rhsEpochs.empty() &&
+         llvm::none_of(lhsEpochs, [&](std::optional<int64_t> lhsEpoch) {
+           return llvm::is_contained(rhsEpochs, lhsEpoch);
+         });
+}
+
+static bool haveDisjointConfigurationEpochs(const DFBPerNodeLifetime &lhs,
+                                            const DFBPerNodeLifetime &rhs) {
+  return !lhs.epochs.empty() && !rhs.epochs.empty() &&
+         llvm::none_of(lhs.epochs, [&](const DFBLifecycleEpoch &lhsEpoch) {
+           return llvm::any_of(rhs.epochs,
+                               [&](const DFBLifecycleEpoch &rhsEpoch) {
+                                 return lhsEpoch.entryReconfigurationOrdinal ==
+                                        rhsEpoch.entryReconfigurationOrdinal;
+                               });
+         });
+}
+
 } // namespace
 
 class DFBPhysicalConflictModelBuilder {
@@ -272,7 +316,11 @@ private:
         liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
     const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
-    if (requireExactDescriptor && lhs.type != rhs.type) {
+    auto lhsType = cast<CircularBufferType>(lhs.type);
+    auto rhsType = cast<CircularBufferType>(rhs.type);
+    if (lhsType.getElementType() != rhsType.getElementType() ||
+        (requireExactDescriptor && lhs.type != rhs.type &&
+         !haveDisjointConfigurationEpochs(lhs, rhs))) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::DescriptorMismatch, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
@@ -320,18 +368,27 @@ private:
           (!lhsLifetime->mayBeActive || !rhsLifetime->mayBeActive)) {
         continue;
       }
-      if (lhs.tensorBacking != rhs.tensorBacking) {
-        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                    DFBConflictReason::StorageMismatch, node,
-                    lhs.declarations.front(), rhs.declarations.front());
-        continue;
-      }
       if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
           !rhsLifetime->quiescence.proven()) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      if (haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime)) {
+        continue;
+      }
+      if (requireExactDescriptor && lhs.type != rhs.type) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::DescriptorMismatch, node,
+                    lhs.declarations.front(), rhs.declarations.front());
+        continue;
+      }
+      if (lhs.tensorBacking != rhs.tensorBacking) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::StorageMismatch, node,
+                    lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
       bool lhsBeforeRhs =
@@ -493,7 +550,7 @@ static FailureOr<AllocationGroupCursorState> advanceAllocationGroupMemberCursor(
     }
     return nextOffset;
   };
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     if (failed(advanceRuns(lifetime.writeCursorRuns,
                            cursorState.writePointerOffset)) ||
         failed(advanceRuns(lifetime.readCursorRuns,
@@ -501,7 +558,7 @@ static FailureOr<AllocationGroupCursorState> advanceAllocationGroupMemberCursor(
       return failure();
     }
   } else {
-    for (const DFBLifecycleEpoch &epoch : lifetime.resetEpochs) {
+    for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
       if (failed(advanceRuns(epoch.writeCursorRuns,
                              cursorState.writePointerOffset)) ||
           failed(advanceRuns(epoch.readCursorRuns,
@@ -1436,42 +1493,17 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
 /// Builds the dense runtime descriptor table without modifying IR.
 static FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+                 const DFBConcurrentKernelLivenessAnalysis &liveness,
                  DFBAnalysisFailure &analysisFailure) {
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
-    auto [existingIt, inserted] =
-        uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
-    if (inserted || existingIt->second->type == assignment.type) {
-      continue;
-    }
-    const DFBPhysicalIndexAssignment *existing = existingIt->second;
-    auto existingType = cast<CircularBufferType>(existing->type);
-    auto assignmentType = cast<CircularBufferType>(assignment.type);
-    if (!existing->allocationGroup ||
-        existing->allocationGroup != assignment.allocationGroup ||
-        existingType.getElementType() != assignmentType.getElementType() ||
-        existing->tensorBacking || assignment.tensorBacking) {
-      BindCBOp declaration = assignment.declarations.front();
-      std::string message;
-      llvm::raw_string_ostream messageStream(message);
-      messageStream << "physical DFB index " << assignment.physicalIndex
-                    << " has inconsistent CircularBufferType values "
-                    << existingIt->second->type << " and " << assignment.type;
-      analysisFailure.set(declaration, messageStream.str());
-      return failure();
-    }
-    std::string failureReason;
-    FailureOr<uint64_t> existingBytes =
-        getDFBAllocationSizeBytes(existingType, failureReason);
-    FailureOr<uint64_t> assignmentBytes =
-        getDFBAllocationSizeBytes(assignmentType, failureReason);
-    if (failed(existingBytes) || failed(assignmentBytes)) {
-      analysisFailure.set(assignment.declarations.front(), failureReason);
-      return failure();
-    }
-    if (*assignmentBytes > *existingBytes) {
-      existingIt->second = &assignment;
-    }
+    uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
+  }
+
+  DenseMap<int64_t, const DFBLogicalLifecycle *> lifecycleByLogicalId;
+  for (const DFBLogicalLifecycle &logicalDFB :
+       liveness.getLogicalDFBLifecycles()) {
+    lifecycleByLogicalId.try_emplace(logicalDFB.logicalId, &logicalDFB);
   }
 
   SmallVector<std::pair<int32_t, const DFBPhysicalIndexAssignment *>> sorted(
@@ -1494,81 +1526,193 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                           messageStream.str());
       return failure();
     }
-    auto dfbType = cast<CircularBufferType>(assignment->type);
-    FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
-    FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
-    if (failed(pageSizeBytes)) {
-      setInvalidDFBPageSizeFailure(dfbType, assignment->declarations.front(),
-                                   analysisFailure);
-      return failure();
-    }
-    if (failed(pagesPerBlock) ||
-        *pagesPerBlock > std::numeric_limits<int32_t>::max() ||
-        dfbType.getBlockCount() > std::numeric_limits<int32_t>::max()) {
-      analysisFailure.set(assignment->declarations.front(),
-                          "DFB dimensions do not fit runtime metadata");
-      return failure();
-    }
-    if (*pageSizeBytes > std::numeric_limits<int32_t>::max()) {
-      analysisFailure.set(assignment->declarations.front(),
-                          "DFB page size does not fit runtime metadata");
-      return failure();
-    }
-    DFBPhysicalAllocationDescriptor descriptor{
-        physicalIndex,
-        static_cast<int32_t>(*pagesPerBlock),
-        dfbType.getElementType(),
-        static_cast<int32_t>(*pageSizeBytes),
-        static_cast<int32_t>(dfbType.getBlockCount()),
-        LaunchNodeDomain{},
-        {}};
-
-    for (const DFBPhysicalIndexAssignment &candidate : assignments) {
-      if (candidate.physicalIndex == physicalIndex) {
-        descriptor.allocationDomain =
-            descriptor.allocationDomain.unionWith(candidate.launchDomain);
+    DFBPhysicalAllocationDescriptor descriptor;
+    descriptor.physicalIndex = physicalIndex;
+    descriptor.allocationDomain = LaunchNodeDomain{};
+    SmallVector<const DFBPhysicalIndexAssignment *>
+        configurationRepresentatives;
+    auto addConfiguration =
+        [&](const DFBPhysicalIndexAssignment &candidate,
+            std::optional<int64_t> entryReconfigurationOrdinal,
+            LaunchNodeDomain activeDomain) -> LogicalResult {
+      auto dfbType = cast<CircularBufferType>(candidate.type);
+      FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+      FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+      if (failed(pageSizeBytes)) {
+        setInvalidDFBPageSizeFailure(dfbType, candidate.declarations.front(),
+                                     analysisFailure);
+        return failure();
       }
-    }
+      if (failed(pagesPerBlock) ||
+          *pagesPerBlock > std::numeric_limits<int32_t>::max() ||
+          dfbType.getBlockCount() > std::numeric_limits<int32_t>::max()) {
+        analysisFailure.set(candidate.declarations.front(),
+                            "DFB dimensions do not fit runtime metadata");
+        return failure();
+      }
+      if (*pageSizeBytes > std::numeric_limits<int32_t>::max()) {
+        analysisFailure.set(candidate.declarations.front(),
+                            "DFB page size does not fit runtime metadata");
+        return failure();
+      }
 
-    bool hasTensorBacking = llvm::any_of(
-        assignments, [&](const DFBPhysicalIndexAssignment &candidate) {
-          return candidate.physicalIndex == physicalIndex &&
-                 static_cast<bool>(candidate.tensorBacking);
-        });
-    if (hasTensorBacking) {
-      for (const DFBPhysicalIndexAssignment &candidate : assignments) {
-        if (candidate.physicalIndex != physicalIndex) {
-          continue;
+      int32_t numTiles = static_cast<int32_t>(*pagesPerBlock);
+      int32_t pageSize = static_cast<int32_t>(*pageSizeBytes);
+      int32_t blockCount = static_cast<int32_t>(dfbType.getBlockCount());
+      auto configurationIt = llvm::find_if(
+          descriptor.epochConfigurations,
+          [&](const DFBConfigurationEpochDescriptor &configuration) {
+            return configuration.entryReconfigurationOrdinal ==
+                   entryReconfigurationOrdinal;
+          });
+      if (configurationIt == descriptor.epochConfigurations.end()) {
+        descriptor.epochConfigurations.push_back({entryReconfigurationOrdinal,
+                                                  numTiles,
+                                                  dfbType.getElementType(),
+                                                  pageSize,
+                                                  blockCount,
+                                                  {}});
+        configurationRepresentatives.push_back(&candidate);
+        configurationIt = std::prev(descriptor.epochConfigurations.end());
+      } else if (configurationIt->numTiles != numTiles ||
+                 configurationIt->elementType != dfbType.getElementType() ||
+                 configurationIt->pageSize != pageSize ||
+                 configurationIt->blockCount != blockCount) {
+        unsigned configurationIndex =
+            configurationIt - descriptor.epochConfigurations.begin();
+        const DFBPhysicalIndexAssignment *representative =
+            configurationRepresentatives[configurationIndex];
+        auto representativeType =
+            cast<CircularBufferType>(representative->type);
+        bool compatibleAllocationGroupEnvelope =
+            representative->allocationGroup &&
+            representative->allocationGroup == candidate.allocationGroup &&
+            representativeType.getElementType() == dfbType.getElementType() &&
+            !representative->tensorBacking && !candidate.tensorBacking;
+        if (!compatibleAllocationGroupEnvelope) {
+          analysisFailure.set(
+              candidate.declarations.front(),
+              "one physical DFB has inconsistent configurations in one epoch");
+          return failure();
         }
-        // TODO(#813): Represent empty and unknown launch domains without
-        // selecting scratch storage.
-        if (!candidate.launchDomain.known ||
-            candidate.launchDomain.nodes.empty()) {
+        std::string failureReason;
+        FailureOr<uint64_t> representativeBytes =
+            getDFBAllocationSizeBytes(representativeType, failureReason);
+        FailureOr<uint64_t> candidateBytes =
+            getDFBAllocationSizeBytes(dfbType, failureReason);
+        if (failed(representativeBytes) || failed(candidateBytes)) {
+          analysisFailure.set(candidate.declarations.front(), failureReason);
+          return failure();
+        }
+        if (*candidateBytes > *representativeBytes) {
+          configurationIt->numTiles = numTiles;
+          configurationIt->elementType = dfbType.getElementType();
+          configurationIt->pageSize = pageSize;
+          configurationIt->blockCount = blockCount;
+          configurationRepresentatives[configurationIndex] = &candidate;
+        }
+      }
+
+      if (!activeDomain.known || activeDomain.nodes.empty()) {
+        if (candidate.tensorBacking) {
           analysisFailure.set(
               candidate.declarations.front(),
               "tensor-backed physical DFB requires an exact non-empty "
               "launch-node domain");
           return failure();
         }
-        auto segmentIt = llvm::find_if(
-            descriptor.storageSegments,
-            [&](const DFBPhysicalStorageSegment &segment) {
-              return segment.tensorBacking == candidate.tensorBacking;
-            });
-        if (segmentIt == descriptor.storageSegments.end()) {
-          descriptor.storageSegments.push_back(
-              {LaunchNodeDomain{}, candidate.tensorBacking});
-          segmentIt = std::prev(descriptor.storageSegments.end());
-        }
-        segmentIt->launchDomain =
-            segmentIt->launchDomain.unionWith(candidate.launchDomain);
+        return success();
       }
-      llvm::sort(descriptor.storageSegments,
+      auto segmentIt = llvm::find_if(
+          configurationIt->storageSegments,
+          [&](const DFBPhysicalStorageSegment &segment) {
+            return segment.tensorBacking == candidate.tensorBacking;
+          });
+      if (segmentIt == configurationIt->storageSegments.end()) {
+        configurationIt->storageSegments.push_back(
+            {LaunchNodeDomain{}, candidate.tensorBacking});
+        segmentIt = std::prev(configurationIt->storageSegments.end());
+      }
+      segmentIt->launchDomain = segmentIt->launchDomain.unionWith(activeDomain);
+      return success();
+    };
+
+    for (const DFBPhysicalIndexAssignment &candidate : assignments) {
+      if (candidate.physicalIndex != physicalIndex) {
+        continue;
+      }
+      descriptor.allocationDomain =
+          descriptor.allocationDomain.unionWith(candidate.launchDomain);
+      const DFBLogicalLifecycle *lifecycle =
+          lifecycleByLogicalId.lookup(candidate.logicalId);
+      assert(lifecycle && "every assignment must have a logical lifecycle");
+      bool addedConfigurationEpoch = false;
+      auto addLifetimeEpochs = [&](const DFBPerNodeLifetime &lifetime) {
+        for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
+          LaunchNodeDomain nodeDomain;
+          nodeDomain.nodes.insert(lifetime.node);
+          if (failed(addConfiguration(
+                  candidate, epoch.entryReconfigurationOrdinal, nodeDomain))) {
+            return failure();
+          }
+          addedConfigurationEpoch = true;
+        }
+        return success();
+      };
+      for (const DFBPerNodeLifetime &lifetime : lifecycle->nodeLifetimes) {
+        if (failed(addLifetimeEpochs(lifetime))) {
+          return failure();
+        }
+      }
+      for (const DFBPerNodeLifetime &lifetime :
+           lifecycle->possibleNodeLifetimes) {
+        if (!lifetime.mayBeActive || failed(addLifetimeEpochs(lifetime))) {
+          if (lifetime.mayBeActive) {
+            return failure();
+          }
+        }
+      }
+      if (!addedConfigurationEpoch &&
+          failed(addConfiguration(candidate, std::nullopt,
+                                  candidate.launchDomain))) {
+        return failure();
+      }
+    }
+
+    llvm::sort(descriptor.epochConfigurations,
+               [](const DFBConfigurationEpochDescriptor &lhs,
+                  const DFBConfigurationEpochDescriptor &rhs) {
+                 if (!lhs.entryReconfigurationOrdinal) {
+                   return rhs.entryReconfigurationOrdinal.has_value();
+                 }
+                 return rhs.entryReconfigurationOrdinal &&
+                        *lhs.entryReconfigurationOrdinal <
+                            *rhs.entryReconfigurationOrdinal;
+               });
+    assert(!descriptor.epochConfigurations.empty() &&
+           "every physical DFB must have one configuration");
+    for (DFBConfigurationEpochDescriptor &configuration :
+         descriptor.epochConfigurations) {
+      llvm::sort(configuration.storageSegments,
                  [](const DFBPhysicalStorageSegment &lhs,
                     const DFBPhysicalStorageSegment &rhs) {
                    return *lhs.launchDomain.nodes.begin() <
                           *rhs.launchDomain.nodes.begin();
                  });
+    }
+    const DFBConfigurationEpochDescriptor &initialConfiguration =
+        descriptor.epochConfigurations.front();
+    descriptor.numTiles = initialConfiguration.numTiles;
+    descriptor.elementType = initialConfiguration.elementType;
+    descriptor.pageSize = initialConfiguration.pageSize;
+    descriptor.blockCount = initialConfiguration.blockCount;
+    bool hasTensorBacking =
+        llvm::any_of(initialConfiguration.storageSegments,
+                     [](const DFBPhysicalStorageSegment &segment) {
+                       return static_cast<bool>(segment.tensorBacking);
+                     });
+    if (hasTensorBacking) {
+      descriptor.storageSegments = initialConfiguration.storageSegments;
     }
     descriptors.push_back(std::move(descriptor));
   }
@@ -1706,7 +1850,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   }
 
   FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>> descriptors =
-      buildDescriptors(plan.assignments, analysisFailure);
+      buildDescriptors(plan.assignments, liveness, analysisFailure);
   if (failed(descriptors)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);

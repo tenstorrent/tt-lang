@@ -43,6 +43,16 @@ struct DFBPhysicalStorageSegment {
   TensorBackingAttr tensorBacking;
 };
 
+/// Runtime configuration for one physical DFB during one configuration epoch.
+struct DFBConfigurationEpochDescriptor {
+  std::optional<int64_t> entryReconfigurationOrdinal;
+  int32_t numTiles = 0;
+  Type elementType;
+  int32_t pageSize = 0;
+  int32_t blockCount = 0;
+  SmallVector<DFBPhysicalStorageSegment> storageSegments;
+};
+
 /// Runtime allocation descriptor for one physical DFB.
 struct DFBPhysicalAllocationDescriptor {
   int32_t physicalIndex = 0;
@@ -54,6 +64,7 @@ struct DFBPhysicalAllocationDescriptor {
   /// conservative whole-grid runtime allocation.
   LaunchNodeDomain allocationDomain = LaunchNodeDomain::unknown();
   SmallVector<DFBPhysicalStorageSegment> storageSegments;
+  SmallVector<DFBConfigurationEpochDescriptor> epochConfigurations;
 };
 
 /// Final base CTA index for one kernel.
