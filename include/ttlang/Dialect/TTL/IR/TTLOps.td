@@ -1969,6 +1969,10 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     each epoch from logical DFB lifetimes. Live protocol state retains its
     physical index, storage, and interface configuration across the boundary;
     reassignment requires a complete protocol and synchronization proof.
+
+    Runtime execution is currently supported only on Blackhole. Its shared-L1
+    atomic operations and five participating worker RISCs implement the
+    boundary synchronization protocol.
   }];
   let arguments = (ins TTL_DFBReconfigurationAttr:$boundary);
   let assemblyFormat = "$boundary attr-dict";

@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "DFBAllocationLimits.h"
 #include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -206,6 +207,10 @@ struct TTLFinalizeDFBIndicesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    if (failed(validateDFBReconfigurationTarget(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
         getAnalysis<DFBLogicalIdentityAnalysis>();
     if (!logicalIdentityAnalysis.succeeded()) {

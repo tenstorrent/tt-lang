@@ -29,6 +29,9 @@ FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
 /// boundaries, or failure when the total is not representable.
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
 
+/// Verifies that the selected target implements DFB reconfiguration.
+LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
+
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:
