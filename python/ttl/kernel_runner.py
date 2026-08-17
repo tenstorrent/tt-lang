@@ -2192,6 +2192,7 @@ def build_dfb_reconfiguration_runtime_resources(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+    _validate_dfb_reconfiguration_plan(tensors, plan)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
     scratch_bytes_by_index = {}
@@ -3095,6 +3096,51 @@ def _build_dfb_descriptors(
     return [plan.descriptor for plan in descriptor_plans]
 
 
+def _validate_dfb_reconfiguration_plan(
+    tensors: List[Any], plan: DFBReconfigurationPlan
+) -> None:
+    """Validate every configuration before allocating runtime resources."""
+    boundary_ordinals = plan.boundary_ordinals
+    if not boundary_ordinals:
+        raise ValueError("DFB reconfiguration plan must contain a boundary")
+    if tuple(sorted(set(boundary_ordinals))) != boundary_ordinals:
+        raise ValueError(
+            "DFB reconfiguration boundary ordinals must be strictly increasing"
+        )
+
+    configurations_by_entry = {None: []}
+    configurations_by_entry.update({ordinal: [] for ordinal in boundary_ordinals})
+    for dfb_index, epochs in enumerate(plan.dfb_epochs):
+        if not epochs:
+            raise ValueError(
+                f"DFB reconfiguration plan has no configurations for DFB[{dfb_index}]"
+            )
+        seen_entries = set()
+        for epoch in epochs:
+            entry_ordinal = epoch.entry_reconfiguration_ordinal
+            if entry_ordinal in seen_entries:
+                raise ValueError(
+                    f"DFB[{dfb_index}] has duplicate reconfiguration epoch "
+                    f"{entry_ordinal}"
+                )
+            if (
+                entry_ordinal is not None
+                and entry_ordinal not in configurations_by_entry
+            ):
+                raise ValueError(
+                    f"DFB[{dfb_index}] configuration entry {entry_ordinal} "
+                    "is not a reconfiguration boundary"
+                )
+            seen_entries.add(entry_ordinal)
+            config = epoch.config
+            _get_dfb_allocation(config)
+            _validate_physical_dfb_config(config, dfb_index)
+            configurations_by_entry[entry_ordinal].append(config)
+
+    for configurations in configurations_by_entry.values():
+        _validate_tensor_backing_aliases(tensors, configurations)
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -3256,27 +3302,42 @@ def build_cb_descriptors(
                 cb_desc.set_buffer_from_cb(backing_desc)
                 cb_descriptors.append(cb_desc)
             continue
-
         if not config.storage_segments:
-            cb_descriptors.append(
-                ttnn.CBDescriptor(
+            descriptor = ttnn.CBDescriptor(
+                total_size=allocation.total_size,
+                core_ranges=core_ranges,
+                format_descriptors=[cb_format],
+            )
+            backing_tensor = backing_tensors.get(cb_index)
+            if backing_tensor is not None:
+                backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                    cb_index,
+                    backing_tensor,
                     total_size=allocation.total_size,
                     core_ranges=core_ranges,
-                    format_descriptors=[cb_format],
                 )
-            )
+                descriptor.set_buffer_from_cb(backing_descriptor)
+            cb_descriptors.append(descriptor)
             continue
 
         for segment in config.storage_segments:
             segment_core_ranges = _make_node_core_ranges(segment.nodes)
             if not segment.is_tensor_backed:
-                cb_descriptors.append(
-                    ttnn.CBDescriptor(
+                descriptor = ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=segment_core_ranges,
+                    format_descriptors=[cb_format],
+                )
+                backing_tensor = backing_tensors.get(cb_index)
+                if backing_tensor is not None:
+                    backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                        cb_index,
+                        backing_tensor,
                         total_size=allocation.total_size,
                         core_ranges=segment_core_ranges,
-                        format_descriptors=[cb_format],
                     )
-                )
+                    descriptor.set_buffer_from_cb(backing_descriptor)
+                cb_descriptors.append(descriptor)
                 continue
 
             tensor_index = segment.tensor_index
@@ -4044,9 +4105,7 @@ def _append_physical_dfb_config_source(
         for segment in config.storage_segments:
             lines.append(f"{indent}        DFBStorageSegment(")
             lines.append(f"{indent}            nodes={segment.nodes!r},")
-            lines.append(
-                f"{indent}            tensor_index={segment.tensor_index!r},"
-            )
+            lines.append(f"{indent}            tensor_index={segment.tensor_index!r},")
             lines.append(f"{indent}            byte_offset={segment.byte_offset},")
             lines.append(f"{indent}            byte_size={segment.byte_size!r},")
             lines.append(f"{indent}        ),")
