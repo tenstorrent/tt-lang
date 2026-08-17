@@ -2472,7 +2472,7 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
 static std::optional<PipeComputedAddressInfo>
 getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
   const ReceiverDFBInfo &receiverInfo = receiverEndpoint.receiverDFBInfo;
-  if (!receiverInfo.hasStaticTileOffset) {
+  if (receiverInfo.isTensorBacked || !receiverInfo.hasStaticTileOffset) {
     return std::nullopt;
   }
   if (!llvm::isa<ttcore::TileType>(receiverInfo.dfbType.getElementType())) {
