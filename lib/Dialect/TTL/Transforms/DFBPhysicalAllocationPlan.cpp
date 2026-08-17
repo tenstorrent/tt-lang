@@ -248,21 +248,41 @@ getAllocationGroupEpochEvidence(const AllocationGroupNodeEpoch &epoch,
       .operation;
 }
 
+static void appendActiveConfigurationEpochs(
+    const DFBLifecycleEpoch &lifecycleEpoch,
+    SmallVectorImpl<std::optional<int64_t>> &configurationEpochs) {
+  ArrayRef<std::optional<int64_t>> activeEpochs =
+      lifecycleEpoch.activeConfigurationEpochs;
+  if (activeEpochs.empty()) {
+    activeEpochs = ArrayRef(lifecycleEpoch.entryReconfigurationOrdinal);
+  }
+  for (std::optional<int64_t> activeEpoch : activeEpochs) {
+    if (!llvm::is_contained(configurationEpochs, activeEpoch)) {
+      configurationEpochs.push_back(activeEpoch);
+    }
+  }
+}
+
+static SmallVector<std::optional<int64_t>>
+getActiveConfigurationEpochs(const DFBPerNodeLifetime &lifetime) {
+  SmallVector<std::optional<int64_t>> configurationEpochs;
+  for (const DFBLifecycleEpoch &lifecycleEpoch : lifetime.epochs) {
+    appendActiveConfigurationEpochs(lifecycleEpoch, configurationEpochs);
+  }
+  return configurationEpochs;
+}
+
 static SmallVector<std::optional<int64_t>>
 getActiveConfigurationEpochs(const DFBLogicalLifecycle &logicalDFB) {
   SmallVector<std::optional<int64_t>> epochs;
   for (const DFBPerNodeLifetime &lifetime : logicalDFB.nodeLifetimes) {
     for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
-      if (!llvm::is_contained(epochs, epoch.entryReconfigurationOrdinal)) {
-        epochs.push_back(epoch.entryReconfigurationOrdinal);
-      }
+      appendActiveConfigurationEpochs(epoch, epochs);
     }
   }
   for (const DFBPerNodeLifetime &lifetime : logicalDFB.possibleNodeLifetimes) {
     for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
-      if (!llvm::is_contained(epochs, epoch.entryReconfigurationOrdinal)) {
-        epochs.push_back(epoch.entryReconfigurationOrdinal);
-      }
+      appendActiveConfigurationEpochs(epoch, epochs);
     }
   }
   return epochs;
@@ -282,13 +302,13 @@ static bool haveDisjointConfigurationEpochs(const DFBLogicalLifecycle &lhs,
 
 static bool haveDisjointConfigurationEpochs(const DFBPerNodeLifetime &lhs,
                                             const DFBPerNodeLifetime &rhs) {
-  return !lhs.epochs.empty() && !rhs.epochs.empty() &&
-         llvm::none_of(lhs.epochs, [&](const DFBLifecycleEpoch &lhsEpoch) {
-           return llvm::any_of(rhs.epochs,
-                               [&](const DFBLifecycleEpoch &rhsEpoch) {
-                                 return lhsEpoch.entryReconfigurationOrdinal ==
-                                        rhsEpoch.entryReconfigurationOrdinal;
-                               });
+  SmallVector<std::optional<int64_t>> lhsEpochs =
+      getActiveConfigurationEpochs(lhs);
+  SmallVector<std::optional<int64_t>> rhsEpochs =
+      getActiveConfigurationEpochs(rhs);
+  return !lhsEpochs.empty() && !rhsEpochs.empty() &&
+         llvm::none_of(lhsEpochs, [&](std::optional<int64_t> lhsEpoch) {
+           return llvm::is_contained(rhsEpochs, lhsEpoch);
          });
 }
 

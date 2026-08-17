@@ -4150,10 +4150,9 @@ struct OrderedLifecycleBoundary {
   }
 };
 
-// Partitions accesses by lifecycle boundaries and proves every resulting epoch
-// independently. A reset may terminate a producer protocol by discarding unread
-// blocks. Reconfiguration requires a complete protocol before installing
-// canonical state for the following configuration epoch.
+// Proves complete protocol intervals between lifecycle boundaries. A reset may
+// discard unread blocks. An incomplete protocol crosses reconfiguration
+// unchanged and remains active in every configuration epoch that it spans.
 static DFBLifecycleCompletionProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, unsigned logicalIndex,
     LaunchNodeCoord node, SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
@@ -4287,28 +4286,53 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
                 access.operation};
       }
-      if (boundary.isConditional()) {
-        auto runIt = accessRuns.find(&access);
-        if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
-            !proveEquivalentConditionalExecutionAtLaunchNodes(
-                access.operation, node, boundary.getEvidenceOperation(), node,
-                domainState)) {
-          return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-                  access.operation};
-        }
-      }
       epochIndex += afterBoundary;
     }
     epochAccesses[epochIndex].push_back(&access);
   }
 
+  SmallVector<Operation *> conditionalBoundaryMismatches(boundaries.size(),
+                                                         nullptr);
+  for (auto [boundaryIndex, boundary] : llvm::enumerate(boundaries)) {
+    if (!boundary.isConditional()) {
+      continue;
+    }
+    for (ArrayRef<const DFBAccessOccurrence *> accesses : epochAccesses) {
+      for (const DFBAccessOccurrence *access : accesses) {
+        auto runIt = accessRuns.find(access);
+        if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
+            !proveEquivalentConditionalExecutionAtLaunchNodes(
+                access->operation, node, boundary.getEvidenceOperation(), node,
+                domainState)) {
+          conditionalBoundaryMismatches[boundaryIndex] = access->operation;
+          break;
+        }
+      }
+      if (conditionalBoundaryMismatches[boundaryIndex]) {
+        break;
+      }
+    }
+    if (boundary.reset && conditionalBoundaryMismatches[boundaryIndex]) {
+      return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+              conditionalBoundaryMismatches[boundaryIndex]};
+    }
+  }
+
   bool hasActiveEpoch = false;
-  for (auto [epochIndex, accesses] : llvm::enumerate(epochAccesses)) {
-    if (accesses.empty()) {
+  SmallVector<const DFBAccessOccurrence *> lifecycleAccesses;
+  std::optional<unsigned> firstBoundaryInterval;
+  for (auto [boundaryInterval, intervalAccesses] :
+       llvm::enumerate(epochAccesses)) {
+    if (!intervalAccesses.empty() && !firstBoundaryInterval) {
+      firstBoundaryInterval = boundaryInterval;
+    }
+    llvm::append_range(lifecycleAccesses, intervalAccesses);
+    if (lifecycleAccesses.empty()) {
       continue;
     }
     const OrderedLifecycleBoundary *terminalBoundary =
-        epochIndex < boundaries.size() ? &boundaries[epochIndex] : nullptr;
+        boundaryInterval < boundaries.size() ? &boundaries[boundaryInterval]
+                                             : nullptr;
     bool resetTerminated = terminalBoundary && terminalBoundary->reset;
     SmallVector<DFBPerNodeLifetime, 0> epochLifetimes;
     SmallVector<DFBPerNodeLifetimeDiagnostics, 0> epochDiagnostics;
@@ -4316,7 +4340,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         logicalDFB, node, epochLifetimes,
         diagnostics ? &epochDiagnostics : nullptr, graph, structuralOrder,
         operationEvents, accessEvents, executionCounts, accessRuns, domainState,
-        includeUnknownDomains, accesses,
+        includeUnknownDomains, lifecycleAccesses,
         /*hasCanonicalResetTerminator=*/resetTerminated);
     assert(epochLifetimes.size() == 1 &&
            "one selected epoch must produce one protocol lifetime");
@@ -4326,12 +4350,23 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const DFBPerNodeLifetimeDiagnostics *epochDiagnostic =
         diagnostics ? &epochDiagnostics.front() : nullptr;
     epochLifetime.completionProof = proof;
+    Operation *conditionalMismatch =
+        terminalBoundary ? conditionalBoundaryMismatches[boundaryInterval]
+                         : nullptr;
+    if (terminalBoundary && terminalBoundary->reconfiguration &&
+        (!proof.proven() || conditionalMismatch)) {
+      continue;
+    }
     if (!proof.proven()) {
       return proof;
     }
+    if (conditionalMismatch) {
+      return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+              conditionalMismatch};
+    }
 
     DFBLifecycleEpoch epoch;
-    for (const DFBAccessOccurrence *access : accesses) {
+    for (const DFBAccessOccurrence *access : lifecycleAccesses) {
       epoch.accessOccurrenceIndices.push_back(
           static_cast<unsigned>(access - logicalDFB.accesses.data()));
     }
@@ -4342,13 +4377,24 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
     epoch.completionProof = proof;
     epoch.inspectionOnly = epochLifetime.inspectionOnly;
-    for (unsigned boundaryIndex = 0; boundaryIndex < epochIndex;
+    assert(firstBoundaryInterval &&
+           "active lifecycle must have a first boundary interval");
+    for (unsigned boundaryIndex = 0; boundaryIndex < *firstBoundaryInterval;
          ++boundaryIndex) {
       if (const ValidatedDFBReconfiguration *entryReconfiguration =
               boundaries[boundaryIndex].reconfiguration) {
         epoch.entryReconfigurationOrdinal =
             entryReconfiguration->boundary.getOrdinal();
       }
+    }
+    epoch.activeConfigurationEpochs.push_back(
+        epoch.entryReconfigurationOrdinal);
+    for (unsigned boundaryIndex = *firstBoundaryInterval;
+         boundaryIndex < boundaryInterval; ++boundaryIndex) {
+      assert(!boundaries[boundaryIndex].reset &&
+             "a DFB lifecycle cannot cross a synchronized reset");
+      epoch.activeConfigurationEpochs.push_back(
+          boundaries[boundaryIndex].reconfiguration->boundary.getOrdinal());
     }
     if (terminalBoundary) {
       if (terminalBoundary->reset) {
@@ -4403,6 +4449,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     lifetime.inspectionOnly =
         lifetime.inspectionOnly && epochLifetime.inspectionOnly;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
+    lifecycleAccesses.clear();
+    firstBoundaryInterval.reset();
   }
 
   if (!hasActiveEpoch) {
