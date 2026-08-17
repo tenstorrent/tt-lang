@@ -1302,7 +1302,8 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
     std::uint64_t exactColoringSearchStateLimit,
     DFBAnalysisFailure &analysisFailure,
     ArrayRef<uint64_t> allocationBytesByLogicalIndex,
-    std::optional<uint64_t> allocationByteLimit) {
+    std::optional<uint64_t> allocationByteLimit,
+    std::optional<uint64_t> minimumSearchTriggerBytes) {
   SmallVector<unsigned> logicalIndices(candidateIndices.begin(),
                                        candidateIndices.end());
 
@@ -1367,8 +1368,8 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
     }
   }
 
-  if (allocationByteLimit && !exactSearchLimitReached &&
-      colorCount <= availableIndices) {
+  if ((allocationByteLimit || minimumSearchTriggerBytes) &&
+      !exactSearchLimitReached && colorCount <= availableIndices) {
     SmallVector<uint64_t> vertexWeights(allocationVertexCount, 0);
     for (auto [candidateIndex, logicalIndex] :
          llvm::enumerate(logicalIndices)) {
@@ -1393,7 +1394,30 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
       }
       allocationBytes = *updatedBytes;
     }
-    if (allocationBytes > *allocationByteLimit) {
+    if (minimumSearchTriggerBytes &&
+        allocationBytes > *minimumSearchTriggerBytes) {
+      uint64_t remainingSearchStates =
+          exactSearchStateCount >= exactColoringSearchStateLimit
+              ? 0
+              : exactColoringSearchStateLimit - exactSearchStateCount;
+      ExactInterferenceGraphWeightColoring minimum =
+          colorInterferenceGraphMinimumWeightExactly(
+              interferenceGraph, vertexWeights, availableIndices,
+              selectedColors, remainingSearchStates);
+      exactSearchStateCount += minimum.exploredStateCount;
+      if (minimum.isOptimal()) {
+        selectedColors = std::move(minimum.colors);
+        colorCount = minimum.colorCount;
+        minimumProven = false;
+      } else if (minimum.status ==
+                 ExactInterferenceGraphWeightStatus::SearchLimitReached) {
+        exactSearchLimitReached = true;
+      } else {
+        analysisFailure.set(moduleOp,
+                            "DFB allocation size is not representable");
+        return failure();
+      }
+    } else if (allocationByteLimit && allocationBytes > *allocationByteLimit) {
       uint64_t remainingSearchStates =
           exactSearchStateCount >= exactColoringSearchStateLimit
               ? 0
@@ -1528,7 +1552,8 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     DFBAnalysisFailure &analysisFailure,
     std::uint64_t exactColoringSearchStateLimit,
     ArrayRef<uint64_t> allocationBytesByLogicalIndex,
-    std::optional<uint64_t> allocationByteLimit) {
+    std::optional<uint64_t> allocationByteLimit,
+    std::optional<uint64_t> minimumSearchTriggerBytes) {
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
       liveness.getLogicalDFBLifecycles();
   DenseMap<int64_t, int32_t> compactedUserIndices =
@@ -1594,10 +1619,16 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
   }
   std::optional<uint64_t> compilerAllocationByteLimit;
   if (allocationByteLimit) {
-    compilerAllocationByteLimit =
-        *fixedUserBytes > *allocationByteLimit
+    compilerAllocationByteLimit = *fixedUserBytes > *allocationByteLimit
+                                      ? 0
+                                      : *allocationByteLimit - *fixedUserBytes;
+  }
+  std::optional<uint64_t> compilerMinimumSearchTriggerBytes;
+  if (minimumSearchTriggerBytes) {
+    compilerMinimumSearchTriggerBytes =
+        *fixedUserBytes > *minimumSearchTriggerBytes
             ? 0
-            : *allocationByteLimit - *fixedUserBytes;
+            : *minimumSearchTriggerBytes - *fixedUserBytes;
   }
 
   unsigned availableCompilerIndices =
@@ -1609,7 +1640,7 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
           moduleOp, compilerLogicalIndices, firstCompilerIndex, conflictModel,
           logicalDFBs, availableCompilerIndices, exactColoringSearchStateLimit,
           analysisFailure, allocationBytesByLogicalIndex,
-          compilerAllocationByteLimit);
+          compilerAllocationByteLimit, compilerMinimumSearchTriggerBytes);
   if (failed(compilerAssignment)) {
     return failure();
   }
@@ -1702,14 +1733,16 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
 
 /// Assigns every logical DFB together so user and compiler-created lifetimes
 /// may share physical indices under the same conflict model.
-static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
-    ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
-    const DFBPhysicalConflictModel &conflictModel,
-    const TargetDFBIndexCapacity &targetCapacity,
-    DFBAnalysisFailure &analysisFailure,
-    std::uint64_t exactColoringSearchStateLimit,
-    ArrayRef<uint64_t> allocationBytesByLogicalIndex,
-    std::optional<uint64_t> allocationByteLimit) {
+static FailureOr<PhysicalAllocationCandidate>
+computeReuseAllocation(ModuleOp moduleOp,
+                       const DFBConcurrentKernelLivenessAnalysis &liveness,
+                       const DFBPhysicalConflictModel &conflictModel,
+                       const TargetDFBIndexCapacity &targetCapacity,
+                       DFBAnalysisFailure &analysisFailure,
+                       std::uint64_t exactColoringSearchStateLimit,
+                       ArrayRef<uint64_t> allocationBytesByLogicalIndex,
+                       std::optional<uint64_t> allocationByteLimit,
+                       std::optional<uint64_t> minimumSearchTriggerBytes) {
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
       liveness.getLogicalDFBLifecycles();
   SmallVector<unsigned> logicalIndices =
@@ -1720,7 +1753,7 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
           moduleOp, logicalIndices, /*firstPhysicalIndex=*/0, conflictModel,
           logicalDFBs, targetMaxDFBIndices, exactColoringSearchStateLimit,
           analysisFailure, allocationBytesByLogicalIndex,
-          allocationByteLimit);
+          allocationByteLimit, minimumSearchTriggerBytes);
   if (failed(assignment)) {
     return failure();
   }
@@ -1806,7 +1839,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     std::optional<uint64_t> l1BudgetOverride,
     DFBAnalysisFailure &analysisFailure,
     llvm::function_ref<FailureOr<PhysicalAllocationCandidate>(
-        std::optional<uint64_t>)>
+        std::optional<uint64_t>, std::optional<uint64_t>)>
         computeAllocation) {
   std::string allocationSizeFailureReason;
   FailureOr<uint64_t> resetStateBytes =
@@ -1843,22 +1876,26 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     return failure();
   }
   uint64_t dfbBudgetBytes = l1BudgetBytes - *fixedStateBytes;
-  uint64_t provisionalDFBBudgetBytes = dfbBudgetBytes;
-  if (auto pipeReservation = moduleOp->getAttrOfType<IntegerAttr>(
+  std::optional<uint64_t> minimumSearchTriggerBytes;
+  if (auto reservation = moduleOp->getAttrOfType<IntegerAttr>(
           kPipeConservativeL1BytesAttrName)) {
-    if (pipeReservation.getValue().isNegative()) {
+    if (reservation.getValue().isNegative()) {
       analysisFailure.set(moduleOp,
                           "conservative PipeNet L1 reservation is negative");
       return failure();
     }
-    uint64_t pipeBytes = pipeReservation.getValue().getZExtValue();
-    provisionalDFBBudgetBytes = pipeBytes > provisionalDFBBudgetBytes
-                                    ? 0
-                                    : provisionalDFBBudgetBytes - pipeBytes;
+    uint64_t reservationBytes = reservation.getValue().getZExtValue();
+    if (reservationBytes != 0) {
+      std::optional<uint64_t> fixedBytes = llvm::checkedAddUnsigned(
+          *fixedStateBytes, reservationBytes);
+      minimumSearchTriggerBytes =
+          !fixedBytes || *fixedBytes > l1BudgetBytes
+              ? std::optional<uint64_t>(0)
+              : std::optional<uint64_t>(l1BudgetBytes - *fixedBytes);
+    }
   }
-
   FailureOr<PhysicalAllocationCandidate> allocation =
-      computeAllocation(provisionalDFBBudgetBytes);
+      computeAllocation(dfbBudgetBytes, minimumSearchTriggerBytes);
   if (failed(allocation)) {
     return failure();
   }
@@ -1869,22 +1906,6 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     return failure();
   }
 
-  // A search against the conservative PipeNet threshold may be infeasible or
-  // inconclusive even when another assignment fits the authoritative budget.
-  // Retry that less restrictive query before reporting an L1 failure.
-  if (*allocationBytes > dfbBudgetBytes &&
-      provisionalDFBBudgetBytes < dfbBudgetBytes) {
-    allocation = computeAllocation(dfbBudgetBytes);
-    if (failed(allocation)) {
-      return failure();
-    }
-    allocationBytes = computeAllocationBytes(moduleOp, allocation->assignments,
-                                             allocationSizeFailureReason);
-    if (failed(allocationBytes)) {
-      analysisFailure.set(moduleOp, allocationSizeFailureReason);
-      return failure();
-    }
-  }
   if (allocation->exactSearchLimitReached &&
       *allocationBytes > dfbBudgetBytes) {
     setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
@@ -2107,20 +2128,19 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       }
     }
 
-    llvm::sort(descriptor.epochConfigurations,
-               [&](const DFBConfigurationEpochDescriptor &lhs,
-                   const DFBConfigurationEpochDescriptor &rhs) {
-                 if (!lhs.entryReconfigurationOrdinal) {
-                   return rhs.entryReconfigurationOrdinal.has_value();
-                 }
-                 if (!rhs.entryReconfigurationOrdinal) {
-                   return false;
-                 }
-                 return reconfigurationOrder.lookup(
-                            *lhs.entryReconfigurationOrdinal) <
-                        reconfigurationOrder.lookup(
-                            *rhs.entryReconfigurationOrdinal);
-               });
+    llvm::sort(
+        descriptor.epochConfigurations,
+        [&](const DFBConfigurationEpochDescriptor &lhs,
+            const DFBConfigurationEpochDescriptor &rhs) {
+          if (!lhs.entryReconfigurationOrdinal) {
+            return rhs.entryReconfigurationOrdinal.has_value();
+          }
+          if (!rhs.entryReconfigurationOrdinal) {
+            return false;
+          }
+          return reconfigurationOrder.lookup(*lhs.entryReconfigurationOrdinal) <
+                 reconfigurationOrder.lookup(*rhs.entryReconfigurationOrdinal);
+        });
     assert(!descriptor.epochConfigurations.empty() &&
            "every physical DFB must have one configuration");
     for (DFBConfigurationEpochDescriptor &configuration :
@@ -2280,18 +2300,22 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     allocationBytesByLogicalIndex.push_back(*allocationBytes);
   }
 
-  auto computeAllocation = [&](std::optional<uint64_t> allocationByteLimit)
+  auto computeAllocation =
+      [&](std::optional<uint64_t> allocationByteLimit,
+          std::optional<uint64_t> minimumSearchTriggerBytes)
       -> FailureOr<PhysicalAllocationCandidate> {
     if (reuseUserDFBs) {
       return computeReuseAllocation(
           moduleOp, liveness, plan.conflictModel, *targetCapacity,
           analysisFailure, exactColoringSearchStateLimit,
-          allocationBytesByLogicalIndex, allocationByteLimit);
+          allocationBytesByLogicalIndex, allocationByteLimit,
+          minimumSearchTriggerBytes);
     }
     return computeDistinctUserAllocation(
         moduleOp, liveness, plan.conflictModel, *targetCapacity,
         analysisFailure, exactColoringSearchStateLimit,
-        allocationBytesByLogicalIndex, allocationByteLimit);
+        allocationBytesByLogicalIndex, allocationByteLimit,
+        minimumSearchTriggerBytes);
   };
   FailureOr<PhysicalAllocationCandidate> allocation = computeAllocationWithinL1(
       moduleOp, exactColoringSearchStateLimit, l1BudgetOverride,
