@@ -2215,6 +2215,10 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
     return op->emitError(
         "could not resolve pipe receiver logical DFB identity");
   }
+  BindCBOp receiverDeclaration = getDFBDeclaration(dstDFB);
+  if (!receiverDeclaration) {
+    return op->emitError("could not trace pipe receiver to a DFB declaration");
+  }
 
   bool hasStaticTileOffset = true;
   int64_t staticTileOffset = 0;
@@ -2234,9 +2238,15 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
     return failure();
   }
   ReceiverDFBInfo receiverInfo{
-      *maybeDFBIndex,          *maybeDFBId,      dfbType,
-      hasStaticTileOffset,     staticTileOffset, *slotSpanBlocks,
-      dfbType.getBlockCount(), op->getLoc()};
+      *maybeDFBIndex,
+      *maybeDFBId,
+      dfbType,
+      static_cast<bool>(receiverDeclaration.getTensorBackingAttr()),
+      hasStaticTileOffset,
+      staticTileOffset,
+      *slotSpanBlocks,
+      dfbType.getBlockCount(),
+      op->getLoc()};
   bool inserted = receiverDFBByPost.insert({op, receiverInfo}).second;
   assert(inserted && "receiver post visited more than once");
   return success();
