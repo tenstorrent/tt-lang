@@ -2794,17 +2794,14 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                             accessRuns, node, domainState);
     graph.computeReachability();
 
-    SmallVector<const ValidatedDFBReconfiguration *>
-        orderedReconfigurations;
+    SmallVector<const ValidatedDFBReconfiguration *> orderedReconfigurations;
     orderedReconfigurations.reserve(validatedReconfigurations.size());
     for (const ValidatedDFBReconfiguration &reconfiguration :
          validatedReconfigurations) {
       orderedReconfigurations.push_back(&reconfiguration);
     }
-    for (auto [lhsIndex, lhs] :
-         llvm::enumerate(orderedReconfigurations)) {
-      for (auto [rhsIndex, rhs] :
-           llvm::enumerate(orderedReconfigurations)) {
+    for (auto [lhsIndex, lhs] : llvm::enumerate(orderedReconfigurations)) {
+      for (auto [rhsIndex, rhs] : llvm::enumerate(orderedReconfigurations)) {
         if (lhsIndex >= rhsIndex) {
           continue;
         }
@@ -2832,9 +2829,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       return graph.strictlyPrecedes(lhsEvents.completion, rhsEvents.entry);
     });
     for (auto adjacent : llvm::zip(orderedReconfigurations,
-                                  llvm::drop_begin(orderedReconfigurations))) {
-      int64_t beforeOrdinal =
-          std::get<0>(adjacent)->boundary.getOrdinal();
+                                   llvm::drop_begin(orderedReconfigurations))) {
+      int64_t beforeOrdinal = std::get<0>(adjacent)->boundary.getOrdinal();
       int64_t afterOrdinal = std::get<1>(adjacent)->boundary.getOrdinal();
       reconfigurationSuccessors[beforeOrdinal].insert(afterOrdinal);
     }
@@ -2954,8 +2950,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     int64_t ordinal = readyReconfigurations.pop_back_val();
     reconfigurationBoundaryOrdinals.push_back(ordinal);
     for (int64_t successor : reconfigurationSuccessors[ordinal]) {
-      unsigned &predecessorCount =
-          reconfigurationPredecessorCount[successor];
+      unsigned &predecessorCount = reconfigurationPredecessorCount[successor];
       assert(predecessorCount > 0 && "boundary predecessor count underflow");
       --predecessorCount;
       if (predecessorCount == 0) {
@@ -2966,8 +2961,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
   if (reconfigurationBoundaryOrdinals.size() !=
       declaredReconfigurationOrdinals.size()) {
-    int64_t cyclicOrdinal = *llvm::find_if(
-        declaredReconfigurationOrdinals, [&](int64_t ordinal) {
+    int64_t cyclicOrdinal =
+        *llvm::find_if(declaredReconfigurationOrdinals, [&](int64_t ordinal) {
           return reconfigurationPredecessorCount.lookup(ordinal) != 0;
         });
     errorOperation = reconfigurationEvidence.lookup(cyclicOrdinal);
