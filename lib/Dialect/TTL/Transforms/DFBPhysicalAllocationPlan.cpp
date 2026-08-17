@@ -1411,7 +1411,9 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
         minimumProven = false;
       } else if (minimum.status ==
                  ExactInterferenceGraphWeightStatus::SearchLimitReached) {
-        exactSearchLimitReached = true;
+        if (allocationByteLimit && allocationBytes > *allocationByteLimit) {
+          exactSearchLimitReached = true;
+        }
       } else {
         analysisFailure.set(moduleOp,
                             "DFB allocation size is not representable");
@@ -2208,13 +2210,11 @@ validateTensorBackingRanges(ArrayRef<DFBPhysicalIndexAssignment> assignments,
             "launch node");
         return failure();
       }
-      if (lhs.physicalIndex != rhs.physicalIndex) {
-        analysisFailure.set(
-            rhs.declarations.front(),
-            "identical tensor-backed DFB ranges require one proven shared "
-            "physical index on a shared launch node");
-        return failure();
-      }
+      analysisFailure.set(
+          rhs.declarations.front(),
+          "identical tensor-backed DFB ranges require one proven shared "
+          "physical index on a shared launch node");
+      return failure();
     }
   }
   return success();
