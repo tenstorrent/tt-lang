@@ -1288,6 +1288,11 @@ def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
                 claim=interval.claim,
                 route_indices=tuple(interval.route_indices),
                 interfering_intervals=tuple(interval.interfering_intervals),
+                launch_nodes=(
+                    None
+                    if interval.launch_nodes is None
+                    else tuple(tuple(node) for node in interval.launch_nodes)
+                ),
             )
         )
     return tuple(intervals)

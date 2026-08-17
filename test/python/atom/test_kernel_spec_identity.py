@@ -149,6 +149,88 @@ def test_external_fabric_manager_can_select_pipe_source_kernel(monkeypatch):
     assert interval.claim == manager.identity
 
 
+def test_scoped_external_managers_retain_conditional_launch_domain(monkeypatch):
+    """Sequential coordinator calls can reuse one physical manager."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    pre_manager = ttl.FabricManagerClaim("pre", kernel=ttl.PIPE_SOURCE_KERNEL)
+    post_manager = ttl.FabricManagerClaim("post", kernel=ttl.PIPE_SOURCE_KERNEL)
+
+    @ttl.operation(grid=(3, 2))
+    def conditional_managers(inp):
+        core_x, core_y = ttl.node(dims=2)
+        if core_x == 1:
+            if core_y == 0:
+                ttl.call_extern_func(
+                    HEADER,
+                    "pre",
+                    kernel=ttl.PIPE_SOURCE_KERNEL,
+                    fabric_manager_effects=(pre_manager.scoped(),),
+                )
+                ttl.call_extern_func(
+                    HEADER,
+                    "post",
+                    kernel=ttl.PIPE_SOURCE_KERNEL,
+                    fabric_manager_effects=(post_manager.scoped(),),
+                )
+
+    conditional_managers(
+        ttnn.from_torch(
+            torch.zeros((32, 32), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+    )
+
+    selected_spec = next(
+        spec
+        for spec in _kernel_specs(_compiled_kernel(conditional_managers))
+        if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
+    )
+    assert len(selected_spec.fabric_manager_intervals) == 2
+    intervals_by_claim = {
+        interval.claim: interval for interval in selected_spec.fabric_manager_intervals
+    }
+    assert set(intervals_by_claim) == {pre_manager.identity, post_manager.identity}
+    assert all(
+        interval.launch_nodes == ((1, 0),) and interval.interfering_intervals == ()
+        for interval in intervals_by_claim.values()
+    )
+
+
+def test_scoped_external_manager_retains_empty_launch_domain(monkeypatch):
+    """An unreachable scoped call must not acquire on the full kernel range."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    manager = ttl.FabricManagerClaim("empty", kernel=ttl.PIPE_SOURCE_KERNEL)
+
+    @ttl.operation(grid=(3, 2))
+    def unreachable_manager(inp):
+        core_x, core_y = ttl.node(dims=2)
+        if core_x == 99:
+            if core_y == 99:
+                ttl.call_extern_func(
+                    HEADER,
+                    "unreachable",
+                    kernel=ttl.PIPE_SOURCE_KERNEL,
+                    fabric_manager_effects=(manager.scoped(),),
+                )
+
+    unreachable_manager(
+        ttnn.from_torch(
+            torch.zeros((32, 32), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+    )
+
+    selected_spec = next(
+        spec
+        for spec in _kernel_specs(_compiled_kernel(unreachable_manager))
+        if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
+    )
+    assert len(selected_spec.fabric_manager_intervals) == 1
+    assert selected_spec.fabric_manager_intervals[0].launch_nodes == ()
+
+
 def test_composed_fabric_manager_lifetime_reaches_selected_kernel(monkeypatch):
     """Composed acquire, use, and release produce one ownership interval."""
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")

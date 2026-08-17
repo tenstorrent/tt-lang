@@ -228,14 +228,18 @@ def TTL_FabricManagerIntervalAttr
     Identifies one generated or external manager ownership interval in a
     logical kernel. Generated intervals reference the function's fabric route
     indices. External intervals reference an operation-local claim. The
-    interference list contains interval identities whose lifetimes may overlap.
+    optional launch-node list records the exact nodes that execute an external
+    interval. An absent list uses the enclosing kernel descriptor; a present
+    empty list means no node executes the interval. The interference list
+    contains interval identities whose lifetimes may overlap.
   }];
   let parameters = (ins
     "StringAttr":$identity,
     "FabricManagerIntervalKind":$kind,
     OptionalParameter<"StringAttr">:$claim,
     "DenseI64ArrayAttr":$routeIndices,
-    ArrayRefParameter<"StringAttr">:$interferingIntervals
+    ArrayRefParameter<"StringAttr">:$interferingIntervals,
+    OptionalParameter<"DenseI64ArrayAttr">:$launchNodes
   );
   let assemblyFormat = "`<` struct(params) `>`";
 }

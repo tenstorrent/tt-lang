@@ -62,6 +62,13 @@ enum class PipeDFBIndexMode {
   Finalized,
 };
 
+/// Controls whether launch-node domains are required when the module contains
+/// no pipe-transfer protocol operations.
+enum class PipeGraphLaunchDomainMode {
+  WhenPipesPresent,
+  Required,
+};
+
 //===----------------------------------------------------------------------===//
 // Pipe Graph: Tracks static transfers, receiver endpoints, logical receiver
 // DFB lifecycles, physical allocation, and endpoint address sequences.
@@ -467,7 +474,8 @@ public:
   static FailureOr<PipeGraph>
   build(ModuleOp mod, const PipeTransferIndex &transferIndex,
         const PipeForeachLoweringInfo &foreachLoweringInfo,
-        PipeDFBIndexMode dfbIndexMode);
+        PipeDFBIndexMode dfbIndexMode,
+        PipeGraphLaunchDomainMode launchDomainMode);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }

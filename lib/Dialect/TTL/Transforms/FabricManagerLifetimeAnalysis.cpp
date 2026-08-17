@@ -25,9 +25,11 @@ appendClaimEffect(OpaqueCallOp call, FabricManagerEffectAttr effect,
     return call.emitError("fabric manager effects require an enclosing logical "
                           "kernel function");
   }
-  if (call->getBlock() != &function.getBody().front()) {
+  if (call->getBlock() != &function.getBody().front() &&
+      effect.getKind() != FabricManagerEffectKind::Scoped) {
     return call.emitError("fabric manager effects must be in the logical "
-                          "kernel's straight-line entry block");
+                          "kernel's straight-line entry block unless the "
+                          "effect is scoped");
   }
   if (claimEffects.function && claimEffects.function != function) {
     return call.emitError("fabric manager claim '")

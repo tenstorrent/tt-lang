@@ -2473,7 +2473,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       PipeGraph::build(mod, transferIndex, foreachLoweringInfo,
                        mod->hasAttr(kDFBAllocationsAttrName)
                            ? PipeDFBIndexMode::Finalized
-                           : PipeDFBIndexMode::DeclaredPhysical);
+                           : PipeDFBIndexMode::DeclaredPhysical,
+                       externalManagerIntervals->empty()
+                           ? PipeGraphLaunchDomainMode::WhenPipesPresent
+                           : PipeGraphLaunchDomainMode::Required);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }

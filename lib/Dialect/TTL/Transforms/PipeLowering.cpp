@@ -411,7 +411,19 @@ static bool intervalRoutesEqual(const FabricManagerIntervalPlan &lhs,
          });
 }
 
-static void planGeneratedFabricManagerOwnership(
+static bool
+externalManagerIntervalsAreSequential(const FabricManagerIntervalPlan &lhs,
+                                      const FabricManagerIntervalPlan &rhs) {
+  if (lhs.kind != FabricManagerIntervalKind::External ||
+      rhs.kind != FabricManagerIntervalKind::External ||
+      lhs.function != rhs.function ||
+      lhs.releaseBoundary->getBlock() != rhs.acquireBoundary->getBlock()) {
+    return false;
+  }
+  return lhs.releaseBoundary->isBeforeInBlock(rhs.acquireBoundary);
+}
+
+static void planFabricManagerOwnership(
     FabricRoutePlan &plan, const PipeGraph &pipeGraph,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps,
     bool enableLocalOwnership) {
@@ -553,6 +565,14 @@ static void planGeneratedFabricManagerOwnership(
               ownershipGroupByManager[rhsIndex]) {
         continue;
       }
+      if (externalManagerIntervalsAreSequential(
+              plan.managerIntervals[lhsIndex],
+              plan.managerIntervals[rhsIndex]) ||
+          externalManagerIntervalsAreSequential(
+              plan.managerIntervals[rhsIndex],
+              plan.managerIntervals[lhsIndex])) {
+        continue;
+      }
       plan.managerIntervals[lhsIndex].interferingIntervals.push_back(rhsIndex);
       plan.managerIntervals[rhsIndex].interferingIntervals.push_back(lhsIndex);
     }
@@ -690,17 +710,33 @@ LogicalResult buildFabricRoutePlan(
         getIntervalTransferNodes(operations, pipeGraph),
         scope,
         scope,
-        {}});
+        {},
+        std::nullopt});
     plan.runtimeIntervals.push_back(FabricRuntimeIntervalPlan{
         managerIntervalIndex, scope, std::move(operations), std::nullopt, false,
         0, 0});
   }
 
-  for (const ExternalFabricManagerInterval &externalInterval :
+  for (ExternalFabricManagerInterval externalInterval :
        externalManagerIntervals) {
+    LaunchNodeDomain launchDomain =
+        pipeGraph.getOperationLaunchDomain(externalInterval.acquire);
+    if (!launchDomain.known) {
+      externalInterval.acquire.emitError(
+          "cannot prove the exact launch-node domain for external fabric "
+          "manager claim '")
+          << externalInterval.claim.getValue() << "'";
+      result = failure();
+      continue;
+    }
     StringAttr identity = StringAttr::get(
         module.getContext(),
         (Twine("external.") + externalInterval.claim.getValue()).str());
+    std::optional<SmallVector<LaunchNodeCoord>> launchNodes;
+    if (externalInterval.acquire->getBlock() !=
+        &externalInterval.function.getBody().front()) {
+      launchNodes.emplace(launchDomain.nodes.begin(), launchDomain.nodes.end());
+    }
     plan.managerIntervals.push_back(
         FabricManagerIntervalPlan{identity,
                                   FabricManagerIntervalKind::External,
@@ -711,11 +747,12 @@ LogicalResult buildFabricRoutePlan(
                                   {},
                                   externalInterval.acquire,
                                   externalInterval.release,
-                                  {}});
+                                  {},
+                                  std::move(launchNodes)});
   }
 
-  planGeneratedFabricManagerOwnership(plan, pipeGraph, generatedControlOps,
-                                      enableLocalManagerOwnership);
+  planFabricManagerOwnership(plan, pipeGraph, generatedControlOps,
+                             enableLocalManagerOwnership);
   return result;
 }
 
@@ -761,11 +798,22 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
     }
     SmallVector<int64_t> routeIndices(interval.routeIndices.begin(),
                                       interval.routeIndices.end());
+    DenseI64ArrayAttr launchNodes;
+    if (interval.launchNodes) {
+      SmallVector<int64_t> nodeCoordinates;
+      nodeCoordinates.reserve(2 * interval.launchNodes->size());
+      for (LaunchNodeCoord node : *interval.launchNodes) {
+        nodeCoordinates.push_back(node.x);
+        nodeCoordinates.push_back(node.y);
+      }
+      launchNodes = builder.getDenseI64ArrayAttr(nodeCoordinates);
+    }
     intervalsByFunction[interval.function].push_back(
         FabricManagerIntervalAttr::get(
             mod.getContext(), interval.identity, interval.kind,
             interval.claim.value_or(StringAttr()),
-            builder.getDenseI64ArrayAttr(routeIndices), interferingIntervals));
+            builder.getDenseI64ArrayAttr(routeIndices), interferingIntervals,
+            launchNodes));
   }
   for (auto &[function, intervals] : intervalsByFunction) {
     function->setAttr(kFabricManagerIntervalsAttrName,
