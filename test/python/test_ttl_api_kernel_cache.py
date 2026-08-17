@@ -338,8 +338,11 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     events = []
 
     class LifetimeOwner:
+        def __init__(self, name):
+            self.name = name
+
         def __del__(self):
-            events.append("release")
+            events.append(f"release:{self.name}")
 
     class ResourceCompiledKernel:
         all_source_lines = {}
@@ -350,7 +353,10 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
         def __call__(self, *_runtime_args):
             self.runtime_resource_cache.compatibility_key = ("resources",)
             self.runtime_resource_cache.device = "device"
-            self.runtime_resource_cache.pipe_resources = LifetimeOwner()
+            self.runtime_resource_cache.pipe_resources = LifetimeOwner("pipe")
+            self.runtime_resource_cache.reconfiguration_resources = LifetimeOwner(
+                "reconfiguration"
+            )
             return None
 
     def compile_kernel(
@@ -402,7 +408,11 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     gc.collect()
 
     assert wrapper_reference() is None
-    assert events == ["synchronize:device", "release"]
+    assert events == [
+        "synchronize:device",
+        "release:pipe",
+        "release:reconfiguration",
+    ]
 
 
 def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypatch):
