@@ -32,3 +32,8 @@ inline typename ScalarResult<BitWidth>::Type
 scalar_result_from_coordinate(Coordinate) {
   return 1;
 }
+
+template <std::int32_t Value>
+inline std::int32_t scalar_result_constant() {
+  return Value;
+}

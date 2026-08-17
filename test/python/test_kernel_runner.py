@@ -2419,6 +2419,81 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     )
 
 
+def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    next_scratch_address = 0x8000
+    scratch_addresses = []
+    host_configurations = []
+
+    def allocate_scratch(_core_ranges, _num_bytes, allocation_device):
+        nonlocal next_scratch_address
+        tensor = _FakeTensor(allocation_device, address=next_scratch_address)
+        scratch_addresses.append(next_scratch_address)
+        next_scratch_address += 0x1000
+        return tensor
+
+    def allocate_configuration(host_configuration, *_args, **_kwargs):
+        host_configurations.append(host_configuration.clone())
+        return _FakeTensor(device, address=0x40000)
+
+    fake_ttnn.from_torch = allocate_configuration
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    initial_configs = tuple(
+        PhysicalDFBConfig(dfb_index, 1, "bfloat16", 1, 2048, (32, 32))
+        for dfb_index in range(33)
+    )
+    next_config = PhysicalDFBConfig(32, 2, "bfloat16", 3, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=tuple(
+            (
+                (DFBConfigurationEpoch(None, config),)
+                if config.dfb_index < 32
+                else (
+                    DFBConfigurationEpoch(None, config),
+                    DFBConfigurationEpoch(7, next_config),
+                )
+            )
+            for config in initial_configs
+        ),
+    )
+
+    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[_FakeTensor(device)],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
+    )
+
+    assert len(scratch_addresses) == 33
+    assert len(host_configurations) == 1
+    encoded = host_configurations[0][0]
+    assert int(encoded[256]) == 0
+    assert int(encoded[257]) == 1
+    assert tuple(int(value) for value in encoded[128:132]) == (
+        scratch_addresses[32],
+        12288,
+        6,
+        2048,
+    )
+
+
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     monkeypatch,
 ):
