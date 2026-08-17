@@ -1811,6 +1811,59 @@ class TTLGenericCompiler(TTCompilerBase):
         dfb = self._resolve_dfb_value(node.args[0], "dfb_effects")
         return _ExternalDFBEffect(effect_kinds[effect_name], dfb, num_tiles)
 
+    def _is_dfb_effect_repeat(self, node):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            return False
+        effect_owner = node.func.value
+        is_qualified_owner = (
+            isinstance(effect_owner, ast.Attribute)
+            and effect_owner.attr == "DFBEffect"
+            and isinstance(effect_owner.value, ast.Name)
+            and effect_owner.value.id == "ttl"
+        )
+        is_direct_owner = (
+            isinstance(effect_owner, ast.Name) and effect_owner.id == "DFBEffect"
+        )
+        return (is_qualified_owner or is_direct_owner) and node.func.attr == "repeat"
+
+    def _resolve_dfb_effect_sequence(self, node):
+        """Resolve and flatten a literal ordered DFB-effect sequence."""
+        if not isinstance(node, ast.List):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_effects and "
+                "ttl.DFBEffect.repeat() effects must be lists",
+            )
+
+        resolved_effects = []
+        for element in node.elts:
+            if not self._is_dfb_effect_repeat(element):
+                resolved_effects.append(self._resolve_dfb_effect(element))
+                continue
+
+            if len(element.args) != 2 or element.keywords:
+                self._raise_error(
+                    element,
+                    "ttl.DFBEffect.repeat() requires count and effects arguments",
+                )
+            repeat_count = self._resolve_static_int(
+                element.args[0], "effect repeat count"
+            )
+            if repeat_count < 0:
+                self._raise_error(
+                    element.args[0],
+                    "ttl.DFBEffect.repeat() count must be nonnegative",
+                )
+            repeated_effects = self._resolve_dfb_effect_sequence(element.args[1])
+            if not repeated_effects:
+                self._raise_error(
+                    element.args[1],
+                    "ttl.DFBEffect.repeat() effects must not be empty",
+                )
+            resolved_effects.extend(repeated_effects * repeat_count)
+
+        return resolved_effects
+
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
         if len(node.args) != 1 or node.keywords:
@@ -1966,14 +2019,7 @@ class TTLGenericCompiler(TTCompilerBase):
         resolved_dfb_effects = []
         if "dfb_effects" in kw_map:
             effects_node = kw_map["dfb_effects"]
-            if not isinstance(effects_node, ast.List):
-                self._raise_error(
-                    effects_node,
-                    "ttl.call_extern_func() dfb_effects must be a list",
-                )
-            resolved_dfb_effects = [
-                self._resolve_dfb_effect(element) for element in effects_node.elts
-            ]
+            resolved_dfb_effects = self._resolve_dfb_effect_sequence(effects_node)
 
         unknown_dfb_access = False
         if "unknown_dfb_access" in kw_map:

@@ -206,6 +206,23 @@ ttl.call_extern_func(
 ```
 
 The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
+`ttl.DFBEffect.repeat(count, effects)` repeats a literal ordered effect list a
+nonnegative, statically resolvable number of times. The frontend expands the
+repeat before creating IR, so downstream analyses receive the same flat effect
+sequence as an explicitly written list:
+
+```python
+dfb_effects=[
+    ttl.DFBEffect.repeat(
+        transaction_count,
+        [
+            ttl.DFBEffect.wait(source, tiles=tiles_per_transaction),
+            ttl.DFBEffect.pop(source, tiles=tiles_per_transaction),
+        ],
+    ),
+]
+```
+
 Every listed action occurs on every execution of the call, and list order is
 execution order. Conditional actions must use TTL control flow around both the
 matching acquisition and a call with an unconditional summary, execute

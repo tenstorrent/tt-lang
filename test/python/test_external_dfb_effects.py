@@ -45,12 +45,17 @@ def external_effect_operation(lhs, rhs, result):
             ttl.dfb_descriptor(result_dfb),
         ],
         dfb_effects=[
-            ttl.DFBEffect.reserve(result_dfb, tiles=1),
-            ttl.DFBEffect.wait(lhs_dfb, tiles=1),
-            ttl.DFBEffect.wait(rhs_dfb, tiles=1),
-            ttl.DFBEffect.pop(lhs_dfb, tiles=1),
-            ttl.DFBEffect.pop(rhs_dfb, tiles=1),
-            ttl.DFBEffect.push(result_dfb, tiles=1),
+            ttl.DFBEffect.repeat(
+                1,
+                [
+                    ttl.DFBEffect.reserve(result_dfb, tiles=1),
+                    ttl.DFBEffect.wait(lhs_dfb, tiles=1),
+                    ttl.DFBEffect.wait(rhs_dfb, tiles=1),
+                    ttl.DFBEffect.pop(lhs_dfb, tiles=1),
+                    ttl.DFBEffect.pop(rhs_dfb, tiles=1),
+                    ttl.DFBEffect.push(result_dfb, tiles=1),
+                ],
+            )
         ],
         kernel=ttl.KernelKind.COMPUTE,
     )
