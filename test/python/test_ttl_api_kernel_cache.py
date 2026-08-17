@@ -550,6 +550,33 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
     ]
 
 
+def test_runtime_resource_finalizer_retains_owners_when_warning_fails(monkeypatch):
+    runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resources",), device="device", pipe_resources=object()
+    )
+
+    def interrupt_synchronization(_device):
+        raise KeyboardInterrupt()
+
+    def fail_warning(*_args, **_kwargs):
+        raise RuntimeError("warning")
+
+    fake_ttnn = type(
+        "FakeTTNN",
+        (),
+        {"synchronize_device": staticmethod(interrupt_synchronization)},
+    )()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(kernel_runner.warnings, "warn", fail_warning)
+
+    kernel_runner.finalize_runtime_resource_cache(runtime_resource_cache)
+
+    assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
+    kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    fake_ttnn.synchronize_device = lambda _device: None
+    kernel_runner.release_cached_runtime_resources(runtime_resource_cache)
+
+
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
     grid_widths = iter((1, 2, 1))
