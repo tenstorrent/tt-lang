@@ -3,17 +3,23 @@
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
+// RUN: FileCheck %s --check-prefix=NO-ATOMICS --input-file=%t.cpp
 
-// CHECK: FORCE_INLINE void synchronizeParticipants(
-// CHECK: __atomic_fetch_or(&synchronizationState[0], arrivalBit, __ATOMIC_RELEASE);
-// CHECK: releaseBit) == 0
-// CHECK: __atomic_fetch_and(&synchronizationState[0], ~arrivalBit, __ATOMIC_RELEASE);
-// CHECK: releaseBit) != 0
-// CHECK: __atomic_fetch_or(&synchronizationState[0], releaseBit, __ATOMIC_RELEASE);
-// CHECK: allArrivalBits) != 0
-// CHECK: __atomic_store_n(&synchronizationState[0], 0, __ATOMIC_RELEASE);
+// CHECK: constexpr uint32_t participantCount = 3;
+// CHECK: constexpr uint32_t completionMarker = 0xD1FB;
+// CHECK: FORCE_INLINE void drainComputeEngine() {
+// CHECK: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+// CHECK-NEXT: TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+// CHECK-NEXT: sync_regfile_write(completionGpr);
+// CHECK: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// CHECK: storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+// CHECK: while (!participantsHaveState(synchronizationState, entryComplete)) {
 // CHECK: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-// CHECK-NEXT: synchronizeParticipants(&synchronizationState[1]);
+// CHECK: storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+// CHECK: while (!participantsHaveState(synchronizationState, exitComplete)) {
+// CHECK: dfb_reconfiguration_detail::enter(synchronizationState);
+// CHECK: dfb_reconfiguration_detail::exit(synchronizationState);
+// NO-ATOMICS-NOT: __atomic_
 
 module attributes {
   ttl.target_arch = #ttcore.arch<blackhole>,

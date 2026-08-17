@@ -255,11 +255,17 @@ does not infer it by sorting ordinals.
 
 Each boundary owns a per-core configuration tensor containing 64 four-word DFB
 interface records, two update masks, synchronization state, and padding. The
-runtime supplies its address to every participating kernel. The synchronization
-protocol completes prior DFB, compute, and data-movement work before any
-interface owner applies a masked update, then prevents following work until all
-updates complete. Configuration tensors, PipeNet scratch, computed-address
-backing, and GlobalSemaphore objects remain owned by the operation's serialized
+runtime supplies its address to every participating kernel. DM1 coordinates
+DM0, UNPACK, and PACK through separate shared-L1 state words. UNPACK and PACK
+publish entry only after a hardware completion marker proves their prior engine
+work retired. MATH does not access DFB interfaces and does not wait in shared
+L1; normal compute dependencies order it against UNPACK and PACK. The exit
+handshake prevents any interface owner from beginning following DFB work until
+all masked updates complete. Independent math and SFPU work may overlap the
+boundary.
+
+Configuration tensors, PipeNet scratch, computed-address backing, and
+GlobalSemaphore objects remain owned by the operation's serialized
 runtime-resource cache. Compatible calls reuse one generation. Incompatible
 replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.

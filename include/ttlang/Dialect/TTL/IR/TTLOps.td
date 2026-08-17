@@ -2042,9 +2042,10 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     by the logical kernels named by `boundary`. Every participant executes the
     same zero-or-one dynamic boundary instance per dispatch and launch node and
     executes boundary sites in the same order. Every boundary in one module
-    declares the same participant set. Prior DFB, compute, and data-movement
-    work completes before the runtime installs the next epoch's DFB interface
-    configuration; following work begins after installation.
+    declares the same participant set. DFB-interface work ordered before the
+    boundary completes before the runtime installs the next epoch's
+    configuration. DFB-interface work ordered after the boundary begins after
+    installation. Independent math and SFPU work may overlap the boundary.
 
     The source operation does not name physical DFB indices or enumerate the
     interfaces that change. Allocation analysis derives the configuration for
