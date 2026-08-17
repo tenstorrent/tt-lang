@@ -908,15 +908,21 @@ def TTLFinalizeDFBIndices
     later analyses can distinguish DFBs that share one hardware slot.
 
     With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
-    including declarations shared across kernels. Reuse requires exact
-    `CircularBufferType` equality, equal transaction tile counts that divide
-    the DFB capacity, and identical read- and write-pointer processors on each
-    launch node. These requirements preserve hardware counter and ring-pointer
-    state. One unresolved structured condition is supported when every active
-    DFB access belongs to one reserve, push, wait, and pop transaction
-    controlled by equivalent `scf.if` or `affine.if` frames. Branch polarity,
-    nesting, and control values must match. Within one kernel function, ordinary
-    SSA equality can establish equivalence. Separately evaluated `scf.if`
+    including declarations shared across kernels. Within one configuration
+    epoch, reuse requires exact `CircularBufferType` equality, equal transaction
+    tile counts that divide the DFB capacity, and identical read- and
+    write-pointer processors on each launch node. These requirements preserve
+    hardware counter and ring-pointer state. Logical DFBs active only in
+    disjoint synchronized configuration epochs may share a physical index with
+    different geometry or storage. A DFB with live protocol state crosses a
+    reconfiguration unchanged and remains active in every epoch it spans, so
+    its physical index cannot be reassigned at those boundaries.
+
+    One unresolved structured condition is supported when every active DFB
+    access belongs to one reserve, push, wait, and pop transaction controlled
+    by equivalent `scf.if` or `affine.if` frames. Branch polarity, nesting, and
+    control values must match. Within one kernel function, ordinary SSA
+    equality can establish equivalence. Separately evaluated `scf.if`
     conditions can match across logical kernels when every unresolved frame is
     a structurally equal expression rooted in the same typed dispatch-condition
     identities at the same launch coordinate. Untyped evaluations, mixed typed
@@ -965,9 +971,10 @@ def TTLFinalizeDFBIndices
     and typed conflicts before allocation succeeds or fails. The report includes
     logical descriptors, access domains, protocol effects, exact execution
     counts, transaction sizes, pointer owners, lifetime frontiers, and conflict
-    evidence. Lifetime frontiers use access-occurrence indices that map to the
-    report's numbered access records. For an unknown launch-node domain, it
-    separately labels a conservative per-node analysis that treats unknown
+    evidence. Lifecycle epochs identify every configuration in which live state
+    must be retained. Lifetime frontiers use access-occurrence indices that map
+    to the report's numbered access records. For an unknown launch-node domain,
+    it separately labels a conservative per-node analysis that treats unknown
     accesses as possible while preserving exact-zero inactivity. It may
     establish conditional boundedness only for one complete transaction whose
     active accesses share one structured at-most-once condition on every
@@ -1016,12 +1023,13 @@ def TTLFinalizeDFBIndices
 
 def TTLValidateCBBudget
     : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
-  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
-    circular buffer declared in the module and compares against a per-core
-    L1 budget.
+    `convert-ttl-to-ttkernel`. Sums the maximum static backing-store size for
+    every physical DFB index and one fixed-size configuration tensor for every
+    synchronized reconfiguration boundary, then compares the result against a
+    per-core L1 budget.
 
     For each `BindCBOp`, the pass computes:
       cb_bytes = total_elements * tile_size_bytes
@@ -1039,8 +1047,9 @@ def TTLValidateCBBudget
     the same static per-core CB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    This is a static "CB region vs budget" check. It does not model
-    other L1 consumers (kernel binaries, stack, runtime buffers).
+    Pipe transport formation separately validates its scratch allocation
+    together with DFB backing and reconfiguration state. These checks do not
+    model kernel binaries, stacks, or unrelated runtime allocations.
   }];
 
   let options = [
