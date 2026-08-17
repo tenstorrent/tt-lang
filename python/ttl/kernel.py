@@ -269,9 +269,10 @@ def _encode_identity_capture(
 
 
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
-    # Local import avoids the dfb_reset -> kernel import cycle during module
-    # initialization while retaining a typed resource check.
+    # Local imports avoid resource-declaration import cycles during module
+    # initialization while retaining typed resource checks.
     from .dfb_reset import DFBReset
+    from .dfb_reconfiguration import DFBReconfiguration
 
     function_id = id(function)
     if function_id in active_functions:
@@ -292,6 +293,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
         encoded_captures = []
         condition_ordinals = {}
         reset_ordinals = {}
+        reconfiguration_ordinals = {}
         kernel_capture_names = {
             id(value): name
             for name, value in nonlocal_captures.items()
@@ -330,6 +332,34 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     participant_tokens.append(f"kernel:{participant_name}")
                 encoded = (
                     f"dfb-reset:{ordinal}:{value.scope.name}:"
+                    + ",".join(sorted(participant_tokens))
+                ).encode("utf-8")
+            elif isinstance(value, DFBReconfiguration):
+                boundary_identity = id(value)
+                ordinal = reconfiguration_ordinals.setdefault(
+                    boundary_identity, len(reconfiguration_ordinals)
+                )
+                participant_tokens = []
+                for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
+                    if participant._implicit_role is not None:
+                        participant_tokens.append(
+                            "role:"
+                            f"{participant.kind.name}:"
+                            f"{participant._implicit_role}"
+                        )
+                        continue
+                    participant_name = kernel_capture_names.get(id(participant))
+                    if participant_name is None:
+                        raise TypeError(
+                            "DFBReconfiguration participant Kernel must be "
+                            "captured by the enclosing @ttl.operation"
+                        )
+                    participant_tokens.append(f"kernel:{participant_name}")
+                encoded = (
+                    f"dfb-reconfiguration:{ordinal}:"
                     + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")
             else:

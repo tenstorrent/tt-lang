@@ -26,6 +26,7 @@ SliceAttr = ir.SliceAttr
 LogicalKernelAttr = ir.LogicalKernelAttr
 DispatchConditionAttr = ir.DispatchConditionAttr
 SynchronizedDFBResetAttr = ir.SynchronizedDFBResetAttr
+DFBReconfigurationAttr = ir.DFBReconfigurationAttr
 DFBProtocolEffectAttr = ir.DFBProtocolEffectAttr
 TensorBackingAttr = ir.TensorBackingAttr
 PipeRecordAttr = ir.PipeRecordAttr

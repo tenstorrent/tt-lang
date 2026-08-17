@@ -32,6 +32,7 @@ from .runtime_resources import (
 )
 from .condition import DispatchCondition
 from .dfb_reset import DFBReset, DFBResetScope
+from .dfb_reconfiguration import DFBReconfiguration
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -48,6 +49,7 @@ from .operators import (
     matmul,
     node,
     raw_addr,
+    reconfigure_dfbs,
 )
 
 # Math operations namespace
@@ -65,6 +67,7 @@ __all__ = [
     "DispatchCondition",
     "DFBReset",
     "DFBResetScope",
+    "DFBReconfiguration",
     "ScalarType",
     "compute",
     "datamovement",
@@ -80,5 +83,6 @@ __all__ = [
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
+    "reconfigure_dfbs",
     "math",
 ]
