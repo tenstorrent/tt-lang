@@ -25,6 +25,10 @@ namespace mlir::tt::ttl {
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                                               std::string &failureReason);
 
+/// Returns the per-node L1 bytes reserved for all unique reconfiguration
+/// boundaries, or failure when the total is not representable.
+FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
+
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:

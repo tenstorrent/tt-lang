@@ -34,6 +34,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "ttl-validate-cb-budget"
@@ -109,7 +110,16 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    if (footprint.empty()) {
+    FailureOr<uint64_t> reconfigurationStateBytes =
+        getDFBReconfigurationStateBytes(moduleOp);
+    if (failed(reconfigurationStateBytes)) {
+      moduleOp.emitOpError()
+          << "DFB reconfiguration state size is not representable";
+      signalPassFailure();
+      return;
+    }
+
+    if (footprint.empty() && *reconfigurationStateBytes == 0) {
       return;
     }
 
@@ -120,7 +130,17 @@ struct TTLValidateCBBudgetPass
       signalPassFailure();
       return;
     }
-    uint64_t totalBytes = *maybeTotalBytes;
+    uint64_t dfbAllocationBytes = *maybeTotalBytes;
+    std::optional<uint64_t> maybeTotalBytesWithReconfiguration =
+        llvm::checkedAddUnsigned(dfbAllocationBytes,
+                                 *reconfigurationStateBytes);
+    if (!maybeTotalBytesWithReconfiguration) {
+      moduleOp.emitOpError()
+          << "total DFB allocation size is not representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    uint64_t totalBytes = *maybeTotalBytesWithReconfiguration;
     SmallVector<int64_t> sortedIndices = footprint.getSortedPhysicalIndices();
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
@@ -136,12 +156,19 @@ struct TTLValidateCBBudgetPass
           diag << " (compiler-allocated)";
         }
       }
+      if (*reconfigurationStateBytes > 0) {
+        diag << "\n  reconfiguration state: " << *reconfigurationStateBytes
+             << " bytes";
+      }
       std::string percentage =
           formatDFBUsagePercentage(totalBytes, budgetBytes);
       diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
            << percentage << " percent)";
-      diag << "\n  hint: reduce DFB block shapes or block_count, or reduce "
+      diag << "\n  hint: reduce DFB block shapes or block_count, reduce "
               "compiler-inserted buffers (fusion splits)";
+      if (*reconfigurationStateBytes > 0) {
+        diag << ", or reduce reconfiguration boundaries";
+      }
     };
 
     // Anchor diagnostics on the bind for the largest per-index allocation so
@@ -161,11 +188,24 @@ struct TTLValidateCBBudgetPass
     };
 
     if (totalBytes > budgetBytes) {
-      BindCBOp reportAt = bindForLargestAllocation();
-      auto diag = reportAt.emitOpError()
-                  << "total circular buffer allocation (" << totalBytes
-                  << " bytes) exceeds L1 budget (" << budgetBytes << " bytes)";
-      emitBreakdown(diag);
+      if (footprint.empty()) {
+        auto diag = moduleOp.emitOpError()
+                    << "total reconfiguration state (" << totalBytes
+                    << " bytes) exceeds L1 budget (" << budgetBytes
+                    << " bytes)";
+        emitBreakdown(diag);
+      } else {
+        BindCBOp reportAt = bindForLargestAllocation();
+        auto diag = reportAt.emitOpError();
+        if (*reconfigurationStateBytes == 0) {
+          diag << "total circular buffer allocation (" << totalBytes;
+        } else {
+          diag << "total DFB allocation and reconfiguration state ("
+               << totalBytes;
+        }
+        diag << " bytes) exceeds L1 budget (" << budgetBytes << " bytes)";
+        emitBreakdown(diag);
+      }
       signalPassFailure();
       return;
     }

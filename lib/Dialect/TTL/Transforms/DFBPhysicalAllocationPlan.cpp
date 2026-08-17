@@ -23,6 +23,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -695,6 +696,24 @@ computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   return footprint.getTotalBytes();
 }
 
+static FailureOr<uint64_t>
+computeRequiredL1Bytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+                       uint64_t reconfigurationStateBytes,
+                       std::string &failureReason) {
+  FailureOr<uint64_t> allocationBytes =
+      computeAllocationBytes(assignments, failureReason);
+  if (failed(allocationBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> requiredBytes =
+      llvm::checkedAddUnsigned(*allocationBytes, reconfigurationStateBytes);
+  if (!requiredBytes) {
+    failureReason = "DFB allocation size is not representable";
+    return failure();
+  }
+  return *requiredBytes;
+}
+
 /// Recomputes an assignment with the minimum physical-index count only when a
 /// valid first-fit assignment exceeds the L1 budget. Both user-reuse policies
 /// therefore share identical search and diagnostic behavior.
@@ -710,21 +729,30 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   }
 
   std::string allocationSizeFailureReason;
-  FailureOr<uint64_t> allocationBytes = computeAllocationBytes(
-      allocation->assignments, allocationSizeFailureReason);
-  if (failed(allocationBytes)) {
+  FailureOr<uint64_t> reconfigurationStateBytes =
+      getDFBReconfigurationStateBytes(moduleOp);
+  if (failed(reconfigurationStateBytes)) {
+    analysisFailure.set(moduleOp,
+                        "DFB reconfiguration state size is not representable");
+    return failure();
+  }
+  FailureOr<uint64_t> requiredL1Bytes = computeRequiredL1Bytes(
+      allocation->assignments, *reconfigurationStateBytes,
+      allocationSizeFailureReason);
+  if (failed(requiredL1Bytes)) {
     analysisFailure.set(moduleOp, allocationSizeFailureReason);
     return failure();
   }
   uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp);
-  if (*allocationBytes > l1BudgetBytes && !allocation->minimumProven) {
+  if (*requiredL1Bytes > l1BudgetBytes && !allocation->minimumProven) {
     allocation = computeAllocation(/*requireMinimum=*/true);
     if (failed(allocation)) {
       return failure();
     }
-    allocationBytes = computeAllocationBytes(allocation->assignments,
+    requiredL1Bytes = computeRequiredL1Bytes(allocation->assignments,
+                                             *reconfigurationStateBytes,
                                              allocationSizeFailureReason);
-    if (failed(allocationBytes)) {
+    if (failed(requiredL1Bytes)) {
       analysisFailure.set(moduleOp, allocationSizeFailureReason);
       return failure();
     }
@@ -736,10 +764,14 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
                                "the target L1 budget", analysisFailure);
     return failure();
   }
-  if (*allocationBytes > l1BudgetBytes) {
+  if (*requiredL1Bytes > l1BudgetBytes) {
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB allocation requires " << *allocationBytes
+    messageStream << "DFB allocation";
+    if (*reconfigurationStateBytes > 0) {
+      messageStream << " plus reconfiguration state";
+    }
+    messageStream << " requires " << *requiredL1Bytes
                   << " L1 bytes but the target supports " << l1BudgetBytes;
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();

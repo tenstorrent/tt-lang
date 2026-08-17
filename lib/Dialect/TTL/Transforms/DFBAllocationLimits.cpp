@@ -11,6 +11,7 @@
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -24,6 +25,8 @@ namespace mlir::tt::ttl {
 namespace {
 
 constexpr uint64_t kFallbackUsableL1Bytes = static_cast<uint64_t>(1432 * 1024);
+constexpr uint64_t kDFBReconfigurationWordsPerCore = 264;
+constexpr uint64_t kDFBReconfigurationWordBytes = 4;
 
 std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
@@ -45,6 +48,20 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 }
 
 } // namespace
+
+FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
+  llvm::DenseSet<int64_t> boundaryOrdinals;
+  module.walk([&](DFBReconfigurationOp reconfiguration) {
+    boundaryOrdinals.insert(reconfiguration.getBoundary().getOrdinal());
+  });
+  std::optional<uint64_t> stateBytes = llvm::checkedMulUnsigned(
+      static_cast<uint64_t>(boundaryOrdinals.size()),
+      kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes);
+  if (!stateBytes) {
+    return failure();
+  }
+  return *stateBytes;
+}
 
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                                               std::string &failureReason) {
