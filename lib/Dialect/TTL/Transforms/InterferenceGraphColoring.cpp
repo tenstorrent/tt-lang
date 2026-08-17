@@ -239,6 +239,132 @@ private:
   ExactColoringSearchBudget &searchBudget;
 };
 
+/// Searches color assignments while tracking the maximum allocation assigned
+/// to each color. Colors remain interchangeable, so only one unused color must
+/// be considered at each state.
+class WeightLimitSearch {
+public:
+  WeightLimitSearch(const InterferenceGraph &graph,
+                    llvm::ArrayRef<std::uint64_t> vertexWeights,
+                    unsigned colorLimit, std::uint64_t weightLimit,
+                    ExactColoringSearchBudget &searchBudget)
+      : graph(graph), vertexWeights(vertexWeights.begin(), vertexWeights.end()),
+        colorLimit(colorLimit), weightLimit(weightLimit),
+        colors(graph.size(), kUnassigned), colorWeights(colorLimit),
+        searchBudget(searchBudget) {
+    assert(vertexWeights.size() == graph.size());
+  }
+
+  FixedColorCountSearchResult solve() {
+    FixedColorCountSearchStatus status =
+        assign(/*assignedCount=*/0, /*usedColorCount=*/0,
+               /*currentWeight=*/0);
+    if (status != FixedColorCountSearchStatus::Feasible) {
+      return {status, {}};
+    }
+    return {status, colors};
+  }
+
+private:
+  static constexpr unsigned kUnassigned = std::numeric_limits<unsigned>::max();
+
+  unsigned selectVertex() const {
+    unsigned selected = kUnassigned;
+    unsigned selectedSaturation = 0;
+    unsigned selectedDegree = 0;
+    std::uint64_t selectedWeight = 0;
+    for (unsigned vertex = 0; vertex < graph.size(); ++vertex) {
+      if (colors[vertex] != kUnassigned) {
+        continue;
+      }
+      llvm::BitVector neighborColors(colorLimit);
+      for (int neighbor = graph.getNeighbors(vertex).find_first(); neighbor >= 0;
+           neighbor = graph.getNeighbors(vertex).find_next(neighbor)) {
+        unsigned neighborVertex = static_cast<unsigned>(neighbor);
+        if (colors[neighborVertex] != kUnassigned) {
+          neighborColors.set(colors[neighborVertex]);
+        }
+      }
+      unsigned saturation = neighborColors.count();
+      unsigned degree = graph.degree(vertex);
+      std::uint64_t weight = vertexWeights[vertex];
+      if (selected == kUnassigned || saturation > selectedSaturation ||
+          (saturation == selectedSaturation &&
+           (degree > selectedDegree ||
+            (degree == selectedDegree &&
+             (weight > selectedWeight ||
+              (weight == selectedWeight && vertex < selected)))))) {
+        selected = vertex;
+        selectedSaturation = saturation;
+        selectedDegree = degree;
+        selectedWeight = weight;
+      }
+    }
+    assert(selected != kUnassigned && "search must select an uncolored vertex");
+    return selected;
+  }
+
+  bool canUseColor(unsigned vertex, unsigned color) const {
+    for (int neighbor = graph.getNeighbors(vertex).find_first(); neighbor >= 0;
+         neighbor = graph.getNeighbors(vertex).find_next(neighbor)) {
+      if (colors[static_cast<unsigned>(neighbor)] == color) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  FixedColorCountSearchStatus assign(unsigned assignedCount,
+                                     unsigned usedColorCount,
+                                     std::uint64_t currentWeight) {
+    if (!searchBudget.consumeState()) {
+      return FixedColorCountSearchStatus::SearchLimitReached;
+    }
+    if (assignedCount == graph.size()) {
+      return FixedColorCountSearchStatus::Feasible;
+    }
+
+    unsigned vertex = selectVertex();
+    unsigned candidateColorCount = std::min(colorLimit, usedColorCount + 1);
+    for (unsigned color = 0; color < candidateColorCount; ++color) {
+      if (!canUseColor(vertex, color)) {
+        continue;
+      }
+      std::uint64_t previousColorWeight = colorWeights[color];
+      std::uint64_t updatedColorWeight =
+          std::max(previousColorWeight, vertexWeights[vertex]);
+      std::uint64_t addedWeight = updatedColorWeight - previousColorWeight;
+      if (addedWeight > weightLimit - currentWeight) {
+        continue;
+      }
+
+      colors[vertex] = color;
+      colorWeights[color] = updatedColorWeight;
+      unsigned nextUsedColorCount = std::max(usedColorCount, color + 1);
+      FixedColorCountSearchStatus status =
+          assign(assignedCount + 1, nextUsedColorCount,
+                 currentWeight + addedWeight);
+      if (status == FixedColorCountSearchStatus::Feasible) {
+        return status;
+      }
+      colors[vertex] = kUnassigned;
+      colorWeights[color] = previousColorWeight;
+      if (status == FixedColorCountSearchStatus::SearchLimitReached) {
+        return status;
+      }
+    }
+    return FixedColorCountSearchStatus::Infeasible;
+  }
+
+  const InterferenceGraph &graph;
+  llvm::SmallVector<std::uint64_t> vertexWeights;
+  unsigned colorLimit = 0;
+  std::uint64_t weightLimit = 0;
+  llvm::SmallVector<unsigned> colors;
+  llvm::SmallVector<std::uint64_t> colorWeights;
+  ExactColoringSearchBudget &searchBudget;
+};
+
 } // namespace
 
 InterferenceGraphColoringBounds
@@ -304,6 +430,42 @@ colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
   }
   result.status = InterferenceGraphColorLimitStatus::Feasible;
   result.exploredStateCount = searchBudget.getExploredStateCount();
+  return result;
+}
+
+InterferenceGraphWeightLimitResult
+colorInterferenceGraphWithinWeightLimitExactly(
+    const InterferenceGraph &graph,
+    llvm::ArrayRef<std::uint64_t> vertexWeights, unsigned colorLimit,
+    std::uint64_t weightLimit, std::uint64_t searchStateLimit) {
+  assert(vertexWeights.size() == graph.size());
+  InterferenceGraphWeightLimitResult result;
+  if (graph.size() == 0) {
+    result.status = InterferenceGraphColorLimitStatus::Feasible;
+    return result;
+  }
+  if (colorLimit == 0) {
+    return result;
+  }
+
+  ExactColoringSearchBudget searchBudget(searchStateLimit);
+  WeightLimitSearch search(graph, vertexWeights, colorLimit, weightLimit,
+                           searchBudget);
+  FixedColorCountSearchResult searchResult = search.solve();
+  result.exploredStateCount = searchBudget.getExploredStateCount();
+  if (searchResult.status == FixedColorCountSearchStatus::SearchLimitReached) {
+    result.status = InterferenceGraphColorLimitStatus::SearchLimitReached;
+    return result;
+  }
+  if (searchResult.status == FixedColorCountSearchStatus::Infeasible) {
+    return result;
+  }
+
+  result.status = InterferenceGraphColorLimitStatus::Feasible;
+  result.colors = std::move(searchResult.colors);
+  for (unsigned color : result.colors) {
+    result.colorCount = std::max(result.colorCount, color + 1);
+  }
   return result;
 }
 
