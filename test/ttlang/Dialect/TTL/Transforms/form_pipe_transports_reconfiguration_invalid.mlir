@@ -1,4 +1,5 @@
-// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25663})'
+// Verifies the final combined L1 check after grouping and DFB allocation.
+// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25663},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=25663},convert-ttl-to-ttkernel{pipe-computed-addresses=false l1-budget-override=25663})'
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
@@ -10,7 +11,7 @@
 
 // DFB storage (24576), Pipe scratch (32), and boundary state (1056) each fit
 // when checked separately, but their combined 25664-byte allocation does not.
-// expected-error @below {{combined DFB, pipe scratch, and reconfiguration state requires 25664 L1 bytes but the budget is 25663 (DFB=24576, pipe scratch=32, reconfiguration state=1056)}}
+// expected-error @below {{combined DFB, PipeNet, and reconfiguration resources require 25664 L1 bytes but the budget is 25663 (DFB=24576, pipe scratch=32, global semaphores=0, reconfiguration state=1056)}}
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @writer(
       %input: tensor<1x12x!ttcore.tile<32x32, f32>, #layout>,

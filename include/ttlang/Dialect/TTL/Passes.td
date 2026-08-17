@@ -240,7 +240,10 @@ def TTLConvertTTLToTTKernel
            "bool", "false",
            "Allocate all compiler-managed PipeNet synchronization counters "
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
-           "available to the application.">
+           "available to the application.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the combined finalized DFB, PipeNet, and "
+           "reconfiguration L1 budget in bytes.">
   ];
 
   let dependentDialects = [

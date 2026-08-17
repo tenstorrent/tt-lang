@@ -2192,11 +2192,10 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 //===----------------------------------------------------------------------===//
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
-static LogicalResult
-lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                      TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName, bool pipeComputedAddresses,
-                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly) {
+static LogicalResult lowerTTLOpsToTTKernel(
+    ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
+    StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
+    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2291,6 +2290,24 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
+  FailureOr<DFBAllocationFootprint> allocationFootprint =
+      getDFBAllocationFootprint(mod);
+  if (failed(allocationFootprint)) {
+    mod.emitOpError("failed to compute finalized DFB allocation sizes");
+    return failure();
+  }
+  const PipeResourceRequirements &resourceRequirements =
+      pipeModulePlan.getResourceRequirements();
+  if (resourceRequirements.sramScratchBytes < 0 ||
+      failed(validateCombinedDFBResourceL1Bytes(
+          mod, *allocationFootprint,
+          static_cast<uint64_t>(resourceRequirements.sramScratchBytes),
+          resourceRequirements.globalSemaphoreCount, l1BudgetOverride))) {
+    if (resourceRequirements.sramScratchBytes < 0) {
+      mod.emitOpError("PipeNet scratch allocation is negative");
+    }
+    return failure();
+  }
   applyPipeModuleAttributes(mod, pipeModulePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
@@ -2646,9 +2663,12 @@ struct TTLConvertTTLToTTKernelPass
     expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
-    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
-                                     pipeComputedAddresses, pipeCapacitySync,
-                                     pipeGlobalSemaphoresOnly))) {
+    if (failed(lowerTTLOpsToTTKernel(
+            mod, ctx, typeConverter, getName(), pipeComputedAddresses,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            l1BudgetOverride == 0
+                ? std::nullopt
+                : std::optional<uint64_t>(l1BudgetOverride)))) {
       signalPassFailure();
       return;
     }

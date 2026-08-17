@@ -5,14 +5,15 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24608' | FileCheck %s --check-prefix=NOFIT
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57376' | FileCheck %s --check-prefix=EXACT-FIT
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57375' | FileCheck %s --check-prefix=BELOW-FIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57472' | FileCheck %s --check-prefix=EXACT-FIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57471' | FileCheck %s --check-prefix=BELOW-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4 l1-budget-override=98304' | FileCheck %s --check-prefix=ADDRESS-BUDGET
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=PAGES
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4},convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=RESIDUAL
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=GROUPED-WRITE
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=FINALIZED
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline | FileCheck %s --check-prefix=PIPELINE
 
 #layout = #ttl.layout<
@@ -121,6 +122,12 @@
 // PIPELINE: ttkernel.noc_async_write_one_packet_with_state
 // PIPELINE: ttkernel.noc_async_atomic_barrier
 
+// Finalization consumes the conservative planning reservation. Only exact
+// resource metadata remains in the emitted module.
+// FINALIZED: module attributes
+// FINALIZED-NOT: ttl.pipe_conservative_l1_bytes
+// FINALIZED-LABEL: func.func @point_to_point
+
 // An explicit upper bound produces two groups of four and a two-transfer
 // scalar residual. The grouped and scalar loops use distinct transfer values.
 // BOUND-LABEL: func.func @point_to_point
@@ -164,8 +171,8 @@
 // NOFIT: scf.for
 // NOFIT: ttl.pipe_transfer.send
 
-// A group whose final DFB and scratch allocations exactly equal the L1 budget
-// remains eligible.
+// A group whose final DFB, scratch, and global-counter allocations exactly
+// equal the L1 budget remains eligible.
 // EXACT-FIT-LABEL: func.func @point_to_point
 // EXACT-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6} {dfb_id = 0 : index}
 // EXACT-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4} {dfb_id = 1 : index}

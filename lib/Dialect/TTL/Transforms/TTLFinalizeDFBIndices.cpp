@@ -226,9 +226,8 @@ struct TTLFinalizeDFBIndicesPass
     }
     DFBPhysicalAllocationPlanner allocationPlanner(
         moduleOp, reuseUserDFBs, exactColoringSearchStateLimit,
-        l1BudgetOverride == 0
-            ? std::nullopt
-            : std::optional<std::uint64_t>(l1BudgetOverride),
+        l1BudgetOverride == 0 ? std::nullopt
+                              : std::optional<std::uint64_t>(l1BudgetOverride),
         *staticConfigurationConflicts, getAnalysisManager());
     if (!allocationPlanner.succeeded()) {
       Operation *errorOperation = allocationPlanner.getErrorOperation();
@@ -247,6 +246,7 @@ struct TTLFinalizeDFBIndicesPass
 
     OpBuilder builder(moduleOp.getContext());
     applyPhysicalAllocationPlan(moduleOp, builder, allocationPlan);
+    moduleOp->removeAttr(kPipeConservativeL1BytesAttrName);
   }
 };
 

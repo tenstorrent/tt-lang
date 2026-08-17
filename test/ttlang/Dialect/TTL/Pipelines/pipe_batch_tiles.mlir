@@ -5,7 +5,9 @@
 
 // The default leaves group selection to ttl-form-pipe-transports.
 // AUTO: ttl-form-pipe-transports{group-size=0 l1-budget-override=0}
+// AUTO: ttl-finalize-dfb-indices{{.*}}l1-budget-override=0
 // AUTO: ttl-validate-cb-budget{l1-budget-override=0}
+// AUTO: convert-ttl-to-ttkernel{{.*}}l1-budget-override=0
 
 // A pipeline bound is forwarded to ttl-form-pipe-transports.
 // BOUND: ttl-form-pipe-transports{group-size=4 l1-budget-override=0}
@@ -13,6 +15,8 @@
 // The L1 override applies to both transport selection and final DFB
 // validation.
 // BUDGET: ttl-form-pipe-transports{group-size=0 l1-budget-override=98304}
+// BUDGET: ttl-finalize-dfb-indices{{.*}}l1-budget-override=98304
 // BUDGET: ttl-validate-cb-budget{l1-budget-override=98304}
+// BUDGET: convert-ttl-to-ttkernel{{.*}}l1-budget-override=98304
 
 module {}

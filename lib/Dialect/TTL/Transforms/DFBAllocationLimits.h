@@ -20,6 +20,8 @@
 
 namespace mlir::tt::ttl {
 
+class DFBLogicalIdentityAnalysis;
+
 /// Returns the per-node L1 bytes occupied by one physical DFB descriptor.
 /// On failure, `failureReason` describes the invalid allocation type.
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
@@ -32,10 +34,10 @@ FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
 /// Verifies that the selected target implements DFB reconfiguration.
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
 
-/// Per-node L1 footprint aggregated by unique physical DFB index.
+/// Per-node L1 footprint aggregated by allocation identity.
 class DFBAllocationFootprint {
 public:
-  /// Adds one assignment and returns true when it increases the index size.
+  /// Adds one assignment and returns true when it increases its identity size.
   /// On failure, `failureReason` describes the invalid allocation type.
   FailureOr<bool> add(int64_t physicalIndex, CircularBufferType type,
                       std::string &failureReason);
@@ -55,6 +57,21 @@ private:
 
 /// Returns the per-node DFB footprint of all declarations in `module`.
 FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
+
+/// Returns a conservative footprint that assigns each logical DFB separate
+/// storage. Tensor-backed declarations do not allocate additional L1.
+FailureOr<DFBAllocationFootprint>
+getLogicalDFBAllocationFootprint(ModuleOp module,
+                                 const DFBLogicalIdentityAnalysis &identities);
+
+/// Returns the per-core L1 allocation reserved for GlobalSemaphore objects.
+FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(int64_t semaphoreCount);
+
+/// Validates the exact finalized DFB, PipeNet, and reconfiguration allocation.
+LogicalResult validateCombinedDFBResourceL1Bytes(
+    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
+    uint64_t pipeScratchBytes, int64_t globalSemaphoreCount,
+    std::optional<uint64_t> overrideBytes = std::nullopt);
 
 /// Returns the target's usable per-node L1 bytes or the supported fallback.
 uint64_t
