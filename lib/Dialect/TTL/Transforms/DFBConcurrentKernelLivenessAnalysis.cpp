@@ -4325,6 +4325,20 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   StructuralOperationOrder structuralOrder(module);
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
+  SmallVector<int64_t> declaredReconfigurationOrdinals;
+  DenseMap<int64_t, unsigned> reconfigurationDeclarationOrder;
+  DenseMap<int64_t, DenseSet<int64_t>> reconfigurationSuccessors;
+  DenseMap<int64_t, Operation *> reconfigurationEvidence;
+  for (const DFBReconfigurationOccurrence &occurrence :
+       reconfigurationOccurrences) {
+    int64_t ordinal = occurrence.boundary.getOrdinal();
+    if (!reconfigurationDeclarationOrder.contains(ordinal)) {
+      reconfigurationDeclarationOrder[ordinal] =
+          declaredReconfigurationOrdinals.size();
+      declaredReconfigurationOrdinals.push_back(ordinal);
+      reconfigurationEvidence[ordinal] = occurrence.operation;
+    }
+  }
   orderedBeforeByNode.reserve(launchNodes.size());
   conditionallyOrderedBeforeByNode.reserve(launchNodes.size());
   inconsistentOrderByNode.reserve(launchNodes.size());
@@ -4415,6 +4429,51 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addProtocolSynchronizationEdges(
         logicalDFBs, graph, operationEvents, accessEvents, executionCounts,
         accessRuns, node, domainState, /*includeUnknownDomains=*/false);
+
+    SmallVector<const ValidatedDFBReconfiguration *>
+        orderedReconfigurations;
+    orderedReconfigurations.reserve(validatedReconfigurations.size());
+    for (const ValidatedDFBReconfiguration &reconfiguration :
+         validatedReconfigurations) {
+      orderedReconfigurations.push_back(&reconfiguration);
+    }
+    for (auto [lhsIndex, lhs] :
+         llvm::enumerate(orderedReconfigurations)) {
+      for (auto [rhsIndex, rhs] :
+           llvm::enumerate(orderedReconfigurations)) {
+        if (lhsIndex >= rhsIndex) {
+          continue;
+        }
+        const EventPair &lhsEvents =
+            reconfigurationBoundaryEvents.lookup(lhs->boundary);
+        const EventPair &rhsEvents =
+            reconfigurationBoundaryEvents.lookup(rhs->boundary);
+        bool lhsBeforeRhs =
+            graph.strictlyPrecedes(lhsEvents.completion, rhsEvents.entry);
+        bool rhsBeforeLhs =
+            graph.strictlyPrecedes(rhsEvents.completion, lhsEvents.entry);
+        if (lhsBeforeRhs == rhsBeforeLhs) {
+          errorOperation = rhs->participantOperations.front();
+          errorMessage =
+              "DFB reconfiguration boundary execution order is not proved";
+          return;
+        }
+      }
+    }
+    llvm::sort(orderedReconfigurations, [&](const auto *lhs, const auto *rhs) {
+      const EventPair &lhsEvents =
+          reconfigurationBoundaryEvents.lookup(lhs->boundary);
+      const EventPair &rhsEvents =
+          reconfigurationBoundaryEvents.lookup(rhs->boundary);
+      return graph.strictlyPrecedes(lhsEvents.completion, rhsEvents.entry);
+    });
+    for (auto adjacent : llvm::zip(orderedReconfigurations,
+                                  llvm::drop_begin(orderedReconfigurations))) {
+      int64_t beforeOrdinal =
+          std::get<0>(adjacent)->boundary.getOrdinal();
+      int64_t afterOrdinal = std::get<1>(adjacent)->boundary.getOrdinal();
+      reconfigurationSuccessors[beforeOrdinal].insert(afterOrdinal);
+    }
 
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
       if (!knownLaunchNodeDomainContains(logicalDFB.launchDomain, node)) {
@@ -4552,6 +4611,56 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
          inconsistentOrderByNode.size() == launchNodes.size() &&
          conditionallyInconsistentOrderByNode.size() == launchNodes.size() &&
          "per-node order relations must cover the launch grid");
+
+  DenseMap<int64_t, unsigned> reconfigurationPredecessorCount;
+  for (int64_t ordinal : declaredReconfigurationOrdinals) {
+    reconfigurationPredecessorCount[ordinal] = 0;
+  }
+  for (const auto &[beforeOrdinal, successors] : reconfigurationSuccessors) {
+    (void)beforeOrdinal;
+    for (int64_t successor : successors) {
+      ++reconfigurationPredecessorCount[successor];
+    }
+  }
+  SmallVector<int64_t> readyReconfigurations;
+  for (int64_t ordinal : declaredReconfigurationOrdinals) {
+    if (reconfigurationPredecessorCount.lookup(ordinal) == 0) {
+      readyReconfigurations.push_back(ordinal);
+    }
+  }
+  auto sortReadyReconfigurations = [&] {
+    llvm::sort(readyReconfigurations, [&](int64_t lhs, int64_t rhs) {
+      return reconfigurationDeclarationOrder.lookup(lhs) >
+             reconfigurationDeclarationOrder.lookup(rhs);
+    });
+  };
+  sortReadyReconfigurations();
+  while (!readyReconfigurations.empty()) {
+    int64_t ordinal = readyReconfigurations.pop_back_val();
+    reconfigurationBoundaryOrdinals.push_back(ordinal);
+    for (int64_t successor : reconfigurationSuccessors[ordinal]) {
+      unsigned &predecessorCount =
+          reconfigurationPredecessorCount[successor];
+      assert(predecessorCount > 0 && "boundary predecessor count underflow");
+      --predecessorCount;
+      if (predecessorCount == 0) {
+        readyReconfigurations.push_back(successor);
+      }
+    }
+    sortReadyReconfigurations();
+  }
+  if (reconfigurationBoundaryOrdinals.size() !=
+      declaredReconfigurationOrdinals.size()) {
+    int64_t cyclicOrdinal = *llvm::find_if(
+        declaredReconfigurationOrdinals, [&](int64_t ordinal) {
+          return reconfigurationPredecessorCount.lookup(ordinal) != 0;
+        });
+    errorOperation = reconfigurationEvidence.lookup(cyclicOrdinal);
+    errorMessage =
+        "DFB reconfiguration boundaries execute in different orders across "
+        "launch nodes";
+    return;
+  }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     logicalDFB.bounded = logicalDFB.launchDomain.known &&

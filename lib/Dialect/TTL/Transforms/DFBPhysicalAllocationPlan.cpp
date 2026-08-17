@@ -1617,6 +1617,11 @@ static FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                  const DFBConcurrentKernelLivenessAnalysis &liveness,
                  DFBAnalysisFailure &analysisFailure) {
+  DenseMap<int64_t, unsigned> reconfigurationOrder;
+  for (auto [position, ordinal] :
+       llvm::enumerate(liveness.getReconfigurationBoundaryOrdinals())) {
+    reconfigurationOrder[ordinal] = position;
+  }
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
@@ -1802,14 +1807,18 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     }
 
     llvm::sort(descriptor.epochConfigurations,
-               [](const DFBConfigurationEpochDescriptor &lhs,
-                  const DFBConfigurationEpochDescriptor &rhs) {
+               [&](const DFBConfigurationEpochDescriptor &lhs,
+                   const DFBConfigurationEpochDescriptor &rhs) {
                  if (!lhs.entryReconfigurationOrdinal) {
                    return rhs.entryReconfigurationOrdinal.has_value();
                  }
-                 return rhs.entryReconfigurationOrdinal &&
-                        *lhs.entryReconfigurationOrdinal <
-                            *rhs.entryReconfigurationOrdinal;
+                 if (!rhs.entryReconfigurationOrdinal) {
+                   return false;
+                 }
+                 return reconfigurationOrder.lookup(
+                            *lhs.entryReconfigurationOrdinal) <
+                        reconfigurationOrder.lookup(
+                            *rhs.entryReconfigurationOrdinal);
                });
     assert(!descriptor.epochConfigurations.empty() &&
            "every physical DFB must have one configuration");
@@ -1923,6 +1932,9 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
   DFBAnalysisFailure analysisFailure;
+  plan.reconfigurationBoundaryOrdinals.assign(
+      liveness.getReconfigurationBoundaryOrdinals().begin(),
+      liveness.getReconfigurationBoundaryOrdinals().end());
   if (!reuseUserDFBs &&
       hasAllocationGroups(liveness.getLogicalDFBLifecycles())) {
     auto groupedDFB =
