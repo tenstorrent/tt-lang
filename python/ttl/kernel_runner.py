@@ -948,6 +948,36 @@ def attach_runtime_resource_finalizer(owner, runtime_resource_cache):
     return resource_finalizer
 
 
+def _retain_unsynchronized_runtime_resources(
+    device,
+    pipe_resources: PipeRuntimeResources,
+    reconfiguration_resources: DFBReconfigurationRuntimeResources,
+) -> None:
+    """Retain one uncached generation when device completion is unknown."""
+    retained_cache = KernelRuntimeResourceCache(
+        compatibility_key=("uncached-unsynchronized",),
+        device=device,
+        pipe_resources=pipe_resources,
+        reconfiguration_resources=reconfiguration_resources,
+    )
+    _RETAINED_RUNTIME_RESOURCE_CACHES.append(retained_cache)
+
+
+def _synchronize_or_retain_runtime_resources(
+    device,
+    pipe_resources: PipeRuntimeResources,
+    reconfiguration_resources: DFBReconfigurationRuntimeResources,
+) -> None:
+    """Synchronize one uncached generation or retain all of its owners."""
+    try:
+        ttnn.synchronize_device(device)
+    except BaseException:
+        _retain_unsynchronized_runtime_resources(
+            device, pipe_resources, reconfiguration_resources
+        )
+        raise
+
+
 _DFB_RECONFIGURATION_WORDS_PER_CORE = 264
 _DFB_RECONFIGURATION_LOW_MASK_WORD = 256
 _DFB_RECONFIGURATION_HIGH_MASK_WORD = 257
@@ -2402,16 +2432,29 @@ def _run_kernel_on_device_impl(
             resource_device = device if device is not None else _first_device(tensors)
     try:
         result = ttnn.generic_op(io_tensors, program)
-    except BaseException:
+    except BaseException as dispatch_error:
         if synchronize_uncached_resources:
             try:
-                ttnn.synchronize_device(resource_device)
-            except BaseException:
-                # Preserve the dispatch failure; synchronization is cleanup.
-                pass
+                _synchronize_or_retain_runtime_resources(
+                    resource_device,
+                    pipe_runtime_resources,
+                    reconfiguration_resources,
+                )
+            except BaseException as synchronization_error:
+                try:
+                    dispatch_error.add_note(
+                        "device synchronization also failed: "
+                        f"{synchronization_error}"
+                    )
+                except BaseException:
+                    pass
         raise
     if synchronize_uncached_resources:
-        ttnn.synchronize_device(resource_device)
+        _synchronize_or_retain_runtime_resources(
+            resource_device,
+            pipe_runtime_resources,
+            reconfiguration_resources,
+        )
     if resource_plan is not None and runtime_resource_lifetime_commit is not None:
         runtime_resource_lifetime_commit(resource_plan.lifetimes)
     return result

@@ -2218,11 +2218,15 @@ def test_run_kernel_synchronizes_uncached_runtime_resources(monkeypatch):
     assert synchronize_index < release_index
 
 
-def test_run_kernel_synchronizes_uncached_resources_after_dispatch_error(
+def test_run_kernel_retains_uncached_resources_when_error_cleanup_cannot_synchronize(
     monkeypatch,
 ):
     fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained_caches = []
+    monkeypatch.setattr(
+        kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
+    )
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
     )
@@ -2238,7 +2242,7 @@ def test_run_kernel_synchronizes_uncached_resources_after_dispatch_error(
 
     fake_ttnn.generic_op = failing_generic_op
     fake_ttnn.synchronize_device = failing_synchronize
-    with pytest.raises(RuntimeError, match="dispatch failed"):
+    with pytest.raises(RuntimeError, match="dispatch failed") as error:
         kernel_runner.run_kernel_on_device(
             kernel_specs=[],
             tensors=[_FakeTensor(device)],
@@ -2249,8 +2253,68 @@ def test_run_kernel_synchronizes_uncached_resources_after_dispatch_error(
 
     dispatch_index = fake_ttnn.events.index(("dispatch", device))
     synchronize_index = fake_ttnn.events.index(("synchronize", device))
-    release_index = fake_ttnn.events.index(("release", 0))
-    assert dispatch_index < synchronize_index < release_index
+    assert dispatch_index < synchronize_index
+    assert "device synchronization also failed: synchronization failed" in str(
+        error.value.__notes__
+    )
+    assert fake_ttnn.semaphore_refs[0]() is not None
+    assert len(retained_caches) == 1
+    error.value.__traceback__ = None
+    del error
+
+    fake_ttnn.synchronize_device = lambda cleanup_device: fake_ttnn.events.append(
+        ("synchronize", cleanup_device)
+    )
+    kernel_runner.release_cached_runtime_resources(retained_caches.pop())
+    assert fake_ttnn.semaphore_refs[0]() is None
+
+
+def test_run_kernel_retains_uncached_resources_after_synchronization_error(
+    monkeypatch,
+):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained_caches = []
+    monkeypatch.setattr(
+        kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    def successful_generic_op(_tensors, program):
+        fake_ttnn.events.append(("dispatch", device))
+        return program
+
+    def failing_synchronize(_device):
+        fake_ttnn.events.append(("synchronize", device))
+        raise ValueError("synchronization failed")
+
+    fake_ttnn.generic_op = successful_generic_op
+    fake_ttnn.synchronize_device = failing_synchronize
+    with pytest.raises(ValueError, match="synchronization failed"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+        )
+
+    dispatch_index = next(
+        index for index, event in enumerate(fake_ttnn.events) if event[0] == "dispatch"
+    )
+    synchronize_index = fake_ttnn.events.index(("synchronize", device))
+    assert dispatch_index < synchronize_index
+    assert fake_ttnn.semaphore_refs[0]() is not None
+    assert len(retained_caches) == 1
+
+    fake_ttnn.synchronize_device = lambda cleanup_device: fake_ttnn.events.append(
+        ("synchronize", cleanup_device)
+    )
+    kernel_runner.release_cached_runtime_resources(retained_caches.pop())
+    assert fake_ttnn.semaphore_refs[0]() is None
 
 
 def test_run_kernel_synchronizes_before_replacing_resource_variants(
