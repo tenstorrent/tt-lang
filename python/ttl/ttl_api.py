@@ -868,7 +868,6 @@ class CompiledTTNNKernel:
             self._runtime_resource_finalizer = attach_runtime_resource_finalizer(
                 self, self._runtime_resource_cache
             )
-        self._dfb_reconfiguration_resource_cache = []
         self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
@@ -923,9 +922,6 @@ class CompiledTTNNKernel:
             operation_name=self.operation_name,
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
-            dfb_reconfiguration_resource_cache=(
-                self._dfb_reconfiguration_resource_cache
-            ),
         )
 
 
