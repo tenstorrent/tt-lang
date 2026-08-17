@@ -4,10 +4,14 @@
 
 """Unit tests for @ttl.operation cache and program-hash behavior."""
 
+import functools
 import itertools
+import threading
 
 import pytest
 
+import ttl.atom as atom_module
+import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
 
 
@@ -255,6 +259,76 @@ def test_operation_cache_separates_tensor_config_changes(monkeypatch):
     assert len(compile_calls) == 8
     assert len(program_hashes) == 8
 
+    runtime_caches = {
+        id(call["compile_options"]["runtime_resource_cache"]) for call in compile_calls
+    }
+    assert len(runtime_caches) == 1
+
+
+def test_operation_cache_compilation_is_single_flight(monkeypatch):
+    compile_started = threading.Event()
+    release_compile = threading.Event()
+    first_dispatch_started = threading.Event()
+    release_first_dispatch = threading.Event()
+    compilation_count = 0
+    dispatches = []
+
+    class SerializedCompiledKernel:
+        all_source_lines = {}
+
+        def __init__(self, runtime_resource_cache):
+            self.runtime_resource_cache = runtime_resource_cache
+
+        def __call__(self, *runtime_args):
+            with self.runtime_resource_cache.lock:
+                dispatches.append(runtime_args)
+                if len(dispatches) == 1:
+                    first_dispatch_started.set()
+                    assert release_first_dispatch.wait(timeout=5)
+            return len(dispatches)
+
+    def compile_kernel(*_args, runtime_resource_cache, **_kwargs):
+        nonlocal compilation_count
+        compilation_count += 1
+        compile_started.set()
+        assert release_compile.wait(timeout=5)
+        return SerializedCompiledKernel(runtime_resource_cache)
+
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    monkeypatch.setattr(ttl_api, "_compile_kernel", compile_kernel)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    first_invocation_started = threading.Event()
+    second_invocation_started = threading.Event()
+
+    def invoke(invocation_started):
+        invocation_started.set()
+        copy_kernel(_FakeTensor(), _FakeTensor())
+
+    first_thread = threading.Thread(target=invoke, args=(first_invocation_started,))
+    second_thread = threading.Thread(target=invoke, args=(second_invocation_started,))
+    first_thread.start()
+    assert compile_started.wait(timeout=5)
+    second_thread.start()
+    assert second_invocation_started.wait(timeout=5)
+    release_compile.set()
+    assert first_dispatch_started.wait(timeout=5)
+    assert compilation_count == 1
+    assert len(dispatches) == 1
+    release_first_dispatch.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert compilation_count == 1
+    assert len(dispatches) == 2
+
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
@@ -330,8 +404,106 @@ def test_operation_cache_reuses_device_derived_l1_budget(monkeypatch):
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
 
 
+def test_operation_cache_releases_resources_before_implicit_budget(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    synchronize_events = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        type(
+            "FakeTTNN",
+            (),
+            {
+                "synchronize_device": staticmethod(
+                    lambda device: synchronize_events.append(device)
+                )
+            },
+        )(),
+    )
+    resource_cache = None
+    budget_call_count = 0
+
+    def resolve_budget(_runtime_args, _compiler_options):
+        nonlocal budget_call_count
+        budget_call_count += 1
+        if budget_call_count == 2:
+            assert synchronize_events == ["device"]
+            assert resource_cache.compatibility_key is None
+            assert resource_cache.pipe_resources is None
+            assert resource_cache.reconfiguration_resources is None
+        return 98304
+
+    monkeypatch.setattr(ttl_api, "_resolve_l1_budget", resolve_budget)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(_FakeTensor(), _FakeTensor())
+    resource_cache = compile_calls[0]["compile_options"]["runtime_resource_cache"]
+    resource_cache.compatibility_key = ("variant-a",)
+    resource_cache.device = "device"
+    resource_cache.pipe_resources = object()
+    resource_cache.reconfiguration_resources = object()
+
+    copy_kernel(
+        _FakeTensor(dtype="ttnn.float32"),
+        _FakeTensor(dtype="ttnn.float32"),
+    )
+
+    assert len(compile_calls) == 2
+    assert budget_call_count == 2
+
+
+def test_unified_operation_cache_forwards_runtime_resources(monkeypatch):
+    compile_calls = []
+
+    def compile_atom(*args, **kwargs):
+        compile_calls.append((args, kwargs))
+        return _RecordingCompiledKernel(args[7])
+
+    monkeypatch.setattr(atom_module, "_compile_atom", compile_atom)
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    decorator_options = {
+        "num_outs": 1,
+        "memory_space": "L1",
+        "tiled": True,
+        "fp32_dest_acc_en": None,
+        "dst_full_sync_en": None,
+        "math_fidelity": None,
+    }
+
+    def operation(input_tensor, output_tensor):
+        pass
+
+    compile_callback = functools.partial(
+        atom_module._compile_unified_operation, object(), decorator_options
+    )
+    wrapper = ttl_api._make_operation_wrapper(
+        operation,
+        compile_callback,
+        grid=(1, 1),
+        fp32_dest_acc_en=None,
+        dst_full_sync_en=None,
+        math_fidelity=None,
+        options=None,
+    )
+    first_result = wrapper(_FakeTensor(), _FakeTensor())
+    second_result = wrapper(_FakeTensor(), _FakeTensor())
+
+    assert first_result == second_result
+    assert len(compile_calls) == 1
+    assert isinstance(
+        compile_calls[0][1]["runtime_resource_cache"],
+        kernel_runner.KernelRuntimeResourceCache,
+    )
+
+
 def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
+    monkeypatch.setattr(ttl_api, "id", lambda _device: 1, raising=False)
     budgets = iter((98304, 73760))
     monkeypatch.setattr(
         ttl_api,

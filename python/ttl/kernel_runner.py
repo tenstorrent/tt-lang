@@ -894,6 +894,28 @@ class KernelRuntimeResourceCache:
     reconfiguration_resources: Optional[DFBReconfigurationRuntimeResources] = None
 
 
+def _release_cached_runtime_resources_impl(
+    cache: KernelRuntimeResourceCache,
+) -> None:
+    if cache.compatibility_key is None:
+        return
+    if cache.device is not None:
+        _ensure_ttnn()
+        if ttnn is None:
+            raise RuntimeError("ttnn is not available")
+        ttnn.synchronize_device(cache.device)
+    cache.compatibility_key = None
+    cache.device = None
+    cache.pipe_resources = None
+    cache.reconfiguration_resources = None
+
+
+def release_cached_runtime_resources(cache: KernelRuntimeResourceCache) -> None:
+    """Synchronize and release one operation's persistent L1 resources."""
+    with cache.lock:
+        _release_cached_runtime_resources_impl(cache)
+
+
 _DFB_RECONFIGURATION_WORDS_PER_CORE = 264
 _DFB_RECONFIGURATION_LOW_MASK_WORD = 256
 _DFB_RECONFIGURATION_HIGH_MASK_WORD = 257
@@ -1637,12 +1659,7 @@ def _get_cached_runtime_resources_impl(
         return cache.pipe_resources, cache.reconfiguration_resources
 
     if cache is not None and cache.compatibility_key is not None:
-        if cache.device is not None:
-            ttnn.synchronize_device(cache.device)
-        cache.compatibility_key = None
-        cache.device = None
-        cache.pipe_resources = None
-        cache.reconfiguration_resources = None
+        _release_cached_runtime_resources_impl(cache)
 
     pipe_resources = build_pipe_runtime_resources(
         tensors=tensors,

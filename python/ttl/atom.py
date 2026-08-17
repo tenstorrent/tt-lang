@@ -546,6 +546,7 @@ def _compile_atom(
     compiler_options: CompilerOptions,
     l1_budget_override: int,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache=None,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -671,6 +672,7 @@ def _compile_atom(
         compiler_options=compiler_options,
         program_hash=program_hash,
         l1_budget_override=l1_budget_override,
+        runtime_resource_cache=runtime_resource_cache,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
         logical_kernels=thread_logical_kernels,
@@ -689,6 +691,7 @@ def _compile_unified_operation(
     target_arch,
     compiler_options,
     l1_budget_override,
+    runtime_resource_cache,
 ):
     return _compile_atom(
         spec,
@@ -706,6 +709,7 @@ def _compile_unified_operation(
         compiler_options=compiler_options,
         l1_budget_override=l1_budget_override,
         runtime_resource_factory=decorator_options["runtime_resource_factory"],
+        runtime_resource_cache=runtime_resource_cache,
     )
 
 
