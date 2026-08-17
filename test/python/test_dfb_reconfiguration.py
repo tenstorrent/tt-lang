@@ -4,6 +4,8 @@
 
 """Runtime coverage for synchronized multi-epoch DFB configuration."""
 
+import os
+
 import pytest
 import torch
 
@@ -11,10 +13,17 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
 from ttl import ttl_api  # noqa: E402
-from ttlang_test_utils import to_dram, to_l1  # noqa: E402
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
+
+SCALAR_RESULT_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "scalar_result_op.hpp"
+)
+DFB_RECONFIGURATION_TEST_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "dfb_reconfiguration_test_helpers.hpp"
+)
 
 
 def _make_reconfiguration_operation(data_format, grid_cols):
@@ -190,6 +199,252 @@ def _make_conditional_reconfiguration_operation(data_format, enabled_column):
                     ttl.copy(source, output_tensor[0, node_x]).wait()
 
     return conditional_reconfiguration_operation
+
+
+def _make_dispatch_condition_reconfiguration_operation(data_format, active_value):
+    active = ttl.DispatchCondition(ttl.ScalarType.I32)
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def dispatch_condition_reconfiguration_operation(input_tensor, output_tensor):
+        source_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            is_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_predicate",
+                template_args=[active_value],
+                condition_result=active,
+            )
+            if is_active:
+                ttl.reconfigure_dfbs(boundary)
+                with source_dfb.wait() as source:
+                    with result_dfb.reserve() as result:
+                        result.store(source)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            is_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_predicate",
+                template_args=[active_value],
+                condition_result=active,
+            )
+            if is_active:
+                ttl.reconfigure_dfbs(boundary)
+                with source_dfb.reserve() as destination:
+                    ttl.copy(input_tensor[0, 0], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            is_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_predicate",
+                template_args=[active_value],
+                condition_result=active,
+            )
+            if is_active:
+                ttl.reconfigure_dfbs(boundary)
+                with result_dfb.wait() as source:
+                    ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return dispatch_condition_reconfiguration_operation
+
+
+def _make_high_index_reconfiguration_operation(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def high_index_reconfiguration_operation(input_tensor, output_tensor):
+        padding_dfb_00 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_01 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_02 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_03 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_04 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_05 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_06 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_07 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_08 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_09 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_10 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_11 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_12 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_13 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_14 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_15 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_16 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_17 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_18 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_19 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_20 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_21 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_22 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_23 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_24 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_25 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_26 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_27 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_28 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_29 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_30 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        padding_dfb_31 = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        source_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.call_extern_func(
+                DFB_RECONFIGURATION_TEST_HEADER,
+                "retain_dfb_liveness",
+                template_args=[
+                    ttl.dfb_descriptor(padding_dfb_00),
+                    ttl.dfb_descriptor(padding_dfb_01),
+                    ttl.dfb_descriptor(padding_dfb_02),
+                    ttl.dfb_descriptor(padding_dfb_03),
+                    ttl.dfb_descriptor(padding_dfb_04),
+                    ttl.dfb_descriptor(padding_dfb_05),
+                    ttl.dfb_descriptor(padding_dfb_06),
+                    ttl.dfb_descriptor(padding_dfb_07),
+                    ttl.dfb_descriptor(padding_dfb_08),
+                    ttl.dfb_descriptor(padding_dfb_09),
+                    ttl.dfb_descriptor(padding_dfb_10),
+                    ttl.dfb_descriptor(padding_dfb_11),
+                    ttl.dfb_descriptor(padding_dfb_12),
+                    ttl.dfb_descriptor(padding_dfb_13),
+                    ttl.dfb_descriptor(padding_dfb_14),
+                    ttl.dfb_descriptor(padding_dfb_15),
+                    ttl.dfb_descriptor(padding_dfb_16),
+                    ttl.dfb_descriptor(padding_dfb_17),
+                    ttl.dfb_descriptor(padding_dfb_18),
+                    ttl.dfb_descriptor(padding_dfb_19),
+                    ttl.dfb_descriptor(padding_dfb_20),
+                    ttl.dfb_descriptor(padding_dfb_21),
+                    ttl.dfb_descriptor(padding_dfb_22),
+                    ttl.dfb_descriptor(padding_dfb_23),
+                    ttl.dfb_descriptor(padding_dfb_24),
+                    ttl.dfb_descriptor(padding_dfb_25),
+                    ttl.dfb_descriptor(padding_dfb_26),
+                    ttl.dfb_descriptor(padding_dfb_27),
+                    ttl.dfb_descriptor(padding_dfb_28),
+                    ttl.dfb_descriptor(padding_dfb_29),
+                    ttl.dfb_descriptor(padding_dfb_30),
+                    ttl.dfb_descriptor(padding_dfb_31),
+                ],
+                dfb_accesses=[
+                    ttl.DFBAccess.inspect(padding_dfb_00),
+                    ttl.DFBAccess.inspect(padding_dfb_01),
+                    ttl.DFBAccess.inspect(padding_dfb_02),
+                    ttl.DFBAccess.inspect(padding_dfb_03),
+                    ttl.DFBAccess.inspect(padding_dfb_04),
+                    ttl.DFBAccess.inspect(padding_dfb_05),
+                    ttl.DFBAccess.inspect(padding_dfb_06),
+                    ttl.DFBAccess.inspect(padding_dfb_07),
+                    ttl.DFBAccess.inspect(padding_dfb_08),
+                    ttl.DFBAccess.inspect(padding_dfb_09),
+                    ttl.DFBAccess.inspect(padding_dfb_10),
+                    ttl.DFBAccess.inspect(padding_dfb_11),
+                    ttl.DFBAccess.inspect(padding_dfb_12),
+                    ttl.DFBAccess.inspect(padding_dfb_13),
+                    ttl.DFBAccess.inspect(padding_dfb_14),
+                    ttl.DFBAccess.inspect(padding_dfb_15),
+                    ttl.DFBAccess.inspect(padding_dfb_16),
+                    ttl.DFBAccess.inspect(padding_dfb_17),
+                    ttl.DFBAccess.inspect(padding_dfb_18),
+                    ttl.DFBAccess.inspect(padding_dfb_19),
+                    ttl.DFBAccess.inspect(padding_dfb_20),
+                    ttl.DFBAccess.inspect(padding_dfb_21),
+                    ttl.DFBAccess.inspect(padding_dfb_22),
+                    ttl.DFBAccess.inspect(padding_dfb_23),
+                    ttl.DFBAccess.inspect(padding_dfb_24),
+                    ttl.DFBAccess.inspect(padding_dfb_25),
+                    ttl.DFBAccess.inspect(padding_dfb_26),
+                    ttl.DFBAccess.inspect(padding_dfb_27),
+                    ttl.DFBAccess.inspect(padding_dfb_28),
+                    ttl.DFBAccess.inspect(padding_dfb_29),
+                    ttl.DFBAccess.inspect(padding_dfb_30),
+                    ttl.DFBAccess.inspect(padding_dfb_31),
+                ],
+            )
+            ttl.reconfigure_dfbs(boundary)
+            with source_dfb.wait() as source:
+                with result_dfb.reserve() as result:
+                    result.store(source)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            ttl.reconfigure_dfbs(boundary)
+            with source_dfb.reserve() as destination:
+                ttl.copy(input_tensor[0, 0], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.reconfigure_dfbs(boundary)
+            with result_dfb.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return high_index_reconfiguration_operation
+
+
+def _make_tensor_backed_reconfiguration_operation(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def tensor_backed_reconfiguration_operation(
+        tensor_backed_input,
+        tensor_backed_output,
+        scratch_input,
+        scratch_output,
+    ):
+        tensor_backed_source = ttl.make_tensor_backed_dfb(
+            tensor_backed_input, shape=(1, 1)
+        )
+        tensor_backed_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        scratch_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+        scratch_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            with tensor_backed_source.wait() as source:
+                with tensor_backed_result.reserve() as result:
+                    result.store(source)
+            ttl.reconfigure_dfbs(boundary)
+            with scratch_source.wait() as source:
+                with scratch_result.reserve() as result:
+                    result.store(source)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            tensor_backed_source.publish()
+            ttl.reconfigure_dfbs(boundary)
+            with scratch_source.reserve() as destination:
+                ttl.copy(scratch_input[0, 0], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with tensor_backed_result.wait() as source:
+                ttl.copy(source, tensor_backed_output[0, 0]).wait()
+            ttl.reconfigure_dfbs(boundary)
+            with scratch_result.wait() as source:
+                ttl.copy(source, scratch_output[0, 0]).wait()
+
+    return tensor_backed_reconfiguration_operation
 
 
 def _assert_output(actual, expected, dtype):
@@ -384,3 +639,118 @@ def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
         :, column_start : column_start + 32
     ]
     _assert_output(output, expected, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_dispatch_condition_reconfiguration_executes_active_and_inactive(
+    device,
+    dtype,
+    to_device,
+    monkeypatch,
+    tmp_path,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    for active_value in (1, 0):
+        operation = _make_dispatch_condition_reconfiguration_operation(
+            data_format, active_value
+        )
+        mlir_file = tmp_path / f"dispatch_condition_{active_value}.mlir"
+        monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
+        for invocation in range(2):
+            input_host = (
+                torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
+                + invocation * 7
+            ).to(dtype)
+            output = to_device(torch.zeros_like(input_host), device)
+            operation(
+                to_device(input_host, device),
+                output,
+                options="--ttl-reuse-user-dfbs",
+            )
+            expected = input_host if active_value else torch.zeros_like(input_host)
+            _assert_output(output, expected, dtype)
+
+        final_mlir = mlir_file.read_text()
+        assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
+        assert final_mlir.count("scalar_predicate") == 3
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_reconfiguration_executes_with_physical_indices_above_31(
+    device,
+    dtype,
+    to_device,
+    monkeypatch,
+    tmp_path,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires the Blackhole 64-index DFB capacity")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_high_index_reconfiguration_operation(data_format)
+    mlir_file = tmp_path / "high_index_reconfiguration.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
+    input_host = torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32).to(dtype)
+    output = to_device(torch.zeros_like(input_host), device)
+    operation(
+        to_device(input_host, device),
+        output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    final_mlir = mlir_file.read_text()
+    assert "dfb_index = 32 : i32" in final_mlir
+    assert "dfb_index = 33 : i32" in final_mlir
+    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
+    _assert_output(output, input_host, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_reconfiguration_switches_tensor_backed_storage_and_cached_execution(
+    device,
+    dtype,
+    to_device,
+    monkeypatch,
+    tmp_path,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_tensor_backed_reconfiguration_operation(data_format)
+    mlir_file = tmp_path / "tensor_backed_reconfiguration.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
+
+    for invocation in range(2):
+        tensor_backed_host = (
+            torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32) + invocation * 3
+        ).to(dtype)
+        scratch_host = (
+            torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
+            + invocation * 5
+            + 11
+        ).to(dtype)
+        tensor_backed_output = to_device(torch.zeros_like(tensor_backed_host), device)
+        scratch_output = to_device(torch.zeros_like(scratch_host), device)
+        operation(
+            to_l1_sharded(tensor_backed_host, device, layout="height"),
+            tensor_backed_output,
+            to_device(scratch_host, device),
+            scratch_output,
+            options="--ttl-reuse-user-dfbs",
+        )
+        _assert_output(tensor_backed_output, tensor_backed_host, dtype)
+        _assert_output(scratch_output, scratch_host, dtype)
+
+    final_mlir = mlir_file.read_text()
+    allocation_metadata = final_mlir.partition("ttl.dfb_reconfiguration_plan")[0]
+    assert allocation_metadata.count("dfb_index = ") == 2
+    assert "tensor_index = 0" in final_mlir
+    assert final_mlir.count("entry_reconfiguration = 0 : i64") == 2
+    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
