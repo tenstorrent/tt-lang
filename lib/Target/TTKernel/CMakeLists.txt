@@ -14,6 +14,7 @@ set(LLK_HEADERS
   experimental_constant_table
   experimental_coord_translation
   experimental_dfb_reset
+  experimental_dfb_reconfiguration
   experimental_fabric_topology_info
   experimental_fabric_1d_routing
   experimental_fabric_2d_routing
