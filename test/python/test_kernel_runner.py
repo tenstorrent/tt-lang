@@ -5069,13 +5069,37 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     # non-backing DFBs are still charged.
     with pytest.raises(
         ValueError,
-        match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+        match="Total DFB allocation \\(1344 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[_FakeTensor(object())],
             cb_configs=cb_configs,
             core_ranges=_FakeCoreRanges(),
             pipe_computed_address_backing_tensors={},
+        )
+
+
+def test_build_cb_descriptors_aligns_blackhole_subtile_allocations(monkeypatch):
+    class BlackholeDevice:
+        def arch(self):
+            return "blackhole"
+
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 100
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Total DFB allocation \\(128 bytes\\) exceeds L1 budget \\(100 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(BlackholeDevice())],
+            cb_configs=[
+                PhysicalDFBConfig(0, 1, "bfloat4_b", 1, 24, (1, 16)),
+                PhysicalDFBConfig(1, 1, "bfloat4_b", 1, 24, (1, 16)),
+            ],
+            core_ranges=_FakeCoreRanges(),
         )
 
 
@@ -5357,6 +5381,41 @@ def test_allocation_nodes_compute_dfb_budget_per_core(monkeypatch):
         (0, 0),
         (1, 0),
     }
+
+
+def test_allocation_nodes_align_blackhole_dfb_budget_per_core(monkeypatch):
+    class BlackholeDevice:
+        def arch(self):
+            return "blackhole"
+
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_get_remaining_l1_by_core_for_device",
+        lambda _device, cores: {core: 100 for core in cores},
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (0, 0))
+
+    with pytest.raises(
+        ValueError,
+        match="Per-core DFB allocation on core \\(0, 0\\) \\(128 bytes\\) exceeds",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(BlackholeDevice())],
+            cb_configs=[
+                PhysicalDFBConfig(
+                    index,
+                    1,
+                    "bfloat4_b",
+                    1,
+                    24,
+                    (1, 16),
+                    allocation_nodes=((0, 0),),
+                )
+                for index in range(2)
+            ],
+            core_ranges=full_grid,
+        )
 
 
 def test_specialized_dfb_descriptors_allow_sparse_physical_indices(monkeypatch):
@@ -6261,7 +6320,7 @@ def test_build_cb_descriptors_charges_mixed_storage_once(monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match="Total circular buffer allocation \\(2048 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+        match="Total DFB allocation \\(2048 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
