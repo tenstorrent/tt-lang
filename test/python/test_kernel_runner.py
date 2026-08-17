@@ -486,6 +486,7 @@ def test_cached_resources_reuse_equivalent_device_wrapper(monkeypatch):
             scratch_tensors=[],
             global_semaphores=[],
             computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
             computed_address_base_addresses={},
             extra_common_runtime_args=[],
             expected_extra_common_runtime_args=0,
@@ -548,6 +549,7 @@ def test_cached_scratch_budget_uses_reported_allocation_pages(
             scratch_tensors=[object()],
             global_semaphores=[],
             computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
             computed_address_base_addresses={},
             extra_common_runtime_args=[scratch_address],
             expected_extra_common_runtime_args=1,
@@ -603,6 +605,7 @@ def test_cached_global_semaphore_budget_uses_reported_allocation_pages(monkeypat
             scratch_tensors=[],
             global_semaphores=[object()],
             computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
             computed_address_base_addresses={},
             extra_common_runtime_args=[semaphore_address],
             expected_extra_common_runtime_args=1,
@@ -2694,6 +2697,7 @@ def test_run_kernel_releases_cached_resources_before_resource_free_invocation(
             scratch_tensors=[object()],
             global_semaphores=[],
             computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
             computed_address_base_addresses={},
             extra_common_runtime_args=[],
             expected_extra_common_runtime_args=0,
@@ -2737,6 +2741,7 @@ def test_cached_dispatch_failure_discards_reset_state(monkeypatch):
             scratch_tensors=[scratch],
             global_semaphores=[],
             computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
             computed_address_base_addresses={},
             extra_common_runtime_args=[0x1000],
             expected_extra_common_runtime_args=1,
@@ -2823,6 +2828,7 @@ def test_cached_pipe_resources_distinguish_reset_initialization(monkeypatch):
             scratch_tensors=[object()],
             global_semaphores=[],
             computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
             computed_address_base_addresses={},
             extra_common_runtime_args=[0x1000],
             expected_extra_common_runtime_args=1,
@@ -3116,13 +3122,37 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     # non-backing DFBs are still charged.
     with pytest.raises(
         ValueError,
-        match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+        match="Total DFB allocation \\(1344 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[_FakeTensor(object())],
             cb_configs=cb_configs,
             core_ranges=_FakeCoreRanges(),
             pipe_computed_address_backing_tensors={},
+        )
+
+
+def test_build_cb_descriptors_aligns_blackhole_subtile_allocations(monkeypatch):
+    class BlackholeDevice:
+        def arch(self):
+            return "blackhole"
+
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 100
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Total DFB allocation \\(128 bytes\\) exceeds L1 budget \\(100 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(BlackholeDevice())],
+            cb_configs=[
+                PhysicalDFBConfig(0, 1, "bfloat4_b", 1, 24, (1, 16)),
+                PhysicalDFBConfig(1, 1, "bfloat4_b", 1, 24, (1, 16)),
+            ],
+            core_ranges=_FakeCoreRanges(),
         )
 
 
@@ -3298,6 +3328,34 @@ def test_specialized_dfb_budget_is_computed_per_core(monkeypatch):
         (0, frozenset({(0, 0)})),
         (1, frozenset({(1, 0)})),
     }
+
+
+def test_specialized_dfb_budget_aligns_blackhole_allocations(monkeypatch):
+    class BlackholeDevice:
+        def arch(self):
+            return "blackhole"
+
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_get_remaining_l1_by_core_for_device",
+        lambda _device, _cores: {(0, 0): 100},
+    )
+    grid = _FakeExplicitCoreRanges((0, 0), (0, 0))
+
+    with pytest.raises(
+        ValueError,
+        match=r"core \(0, 0\).*128 bytes.*L1 budget \(100 bytes\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(BlackholeDevice())],
+            cb_configs=[
+                PhysicalDFBConfig(index, 1, "bfloat4_b", 1, 24, (1, 16))
+                for index in range(2)
+            ],
+            core_ranges=grid,
+            kernel_specs=[_specialized_spec(grid, [0, 1])],
+        )
 
 
 def test_specialized_dfb_budget_uses_each_cores_remaining_l1(monkeypatch):
@@ -3787,7 +3845,7 @@ def test_build_cb_descriptors_charges_mixed_storage_once(monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match="Total circular buffer allocation \\(2048 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+        match="Total DFB allocation \\(2048 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
