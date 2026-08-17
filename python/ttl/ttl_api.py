@@ -1468,6 +1468,7 @@ def _compile_ttnn_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         )
 
     return compiled_kernel
