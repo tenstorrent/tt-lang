@@ -21,8 +21,9 @@ class DFBReconfiguration:
     Every participant executes the same dynamic boundary instances in the same
     order. Each boundary executes zero or one dynamic instance per dispatch and
     launch node, and every boundary declared by one operation uses the same
-    participant set. Prior DFB, compute, and data-movement work completes before
-    the next epoch's compiler-derived DFB configuration is installed.
+    participant set. DFB-interface work ordered before the boundary completes
+    before the next epoch's compiler-derived configuration is installed.
+    Independent math and SFPU work may overlap the boundary.
     """
 
     participants: tuple[KernelSelector, ...]
