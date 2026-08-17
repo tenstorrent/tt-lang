@@ -227,6 +227,9 @@ struct TTLFinalizeDFBIndicesPass
     }
     DFBPhysicalAllocationPlanner allocationPlanner(
         moduleOp, reuseUserDFBs, exactColoringSearchStateLimit,
+        l1BudgetOverride == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>(l1BudgetOverride),
         *staticConfigurationConflicts, getAnalysisManager());
     if (!allocationPlanner.succeeded()) {
       Operation *errorOperation = allocationPlanner.getErrorOperation();

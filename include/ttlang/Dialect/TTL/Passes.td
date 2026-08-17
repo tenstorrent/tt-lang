@@ -959,8 +959,9 @@ def TTLFinalizeDFBIndices
     Exhaustive assignment search can grow exponentially, so it runs only when
     first-fit prevents acceptance and the pairwise-conflict lower bound does
     not already prove failure. The physical-index check asks directly whether
-    an assignment fits the available indices. Minimum physical-index-count
-    search runs only when an otherwise valid assignment exceeds the L1 budget.
+    an assignment fits the available indices. When first-fit exceeds the L1
+    budget, weighted search asks whether another assignment fits using the sum
+    of the maximum DFB allocation assigned to each physical index.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
     allocation diagnostic; it does not report that hardware capacity was
@@ -1017,7 +1018,9 @@ def TTLFinalizeDFBIndices
     Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
            "uint64_t", "1000000",
            "Maximum states examined by exact DFB allocation before reporting "
-           "an inconclusive result.">
+           "an inconclusive result.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the per-core L1 budget used by DFB allocation.">
   ];
 }
 

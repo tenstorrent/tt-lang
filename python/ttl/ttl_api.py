@@ -2515,7 +2515,8 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
-            f"exact-coloring-search-limit={exact_coloring_search_limit}"
+            f"exact-coloring-search-limit={exact_coloring_search_limit} "
+            f"l1-budget-override={l1_budget_override}"
             "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",

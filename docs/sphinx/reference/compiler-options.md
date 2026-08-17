@@ -156,7 +156,7 @@ The pipeline runs these passes in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds exhaustive fixed-limit and minimum physical-index-count queries
+- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -200,10 +200,11 @@ allocation table.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `reuse-user-dfbs` | bool | `true` | Reuse a physical index when concurrent-kernel liveness proves that two compatible logical DFB lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing and apply the same lifetime proof only to compiler-created DFBs. |
-| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search is used only when order-dependent first-fit prevents acceptance. Reaching the limit fails with an inconclusive-search diagnostic rather than a false capacity diagnostic. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search is used only when order-dependent first-fit prevents acceptance by the index or weighted L1 limit. Reaching the limit fails with an inconclusive-search diagnostic rather than a false capacity diagnostic. |
+| `l1-budget-override` | uint32 | `0` (target default) | Override the target per-core L1 budget used by physical DFB allocation. |
 
 ```bash
-ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false exact-coloring-search-limit=1000000})'
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false exact-coloring-search-limit=1000000 l1-budget-override=0})'
 ```
 
 #### `ttl-set-compute-kernel-config`

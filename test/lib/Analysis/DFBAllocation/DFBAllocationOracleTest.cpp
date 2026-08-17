@@ -29,6 +29,7 @@ using mlir::tt::ttl::ExactInterferenceGraphColoringStatus;
 using mlir::tt::ttl::InterferenceGraph;
 using mlir::tt::ttl::InterferenceGraphColorLimitResult;
 using mlir::tt::ttl::InterferenceGraphColorLimitStatus;
+using mlir::tt::ttl::InterferenceGraphWeightLimitResult;
 
 constexpr uint64_t kUnlimitedSearchStates =
     std::numeric_limits<uint64_t>::max();
@@ -418,6 +419,37 @@ static bool verifyFixedLimitAvoidsMinimumSearch() {
   return true;
 }
 
+/// Verifies that disconnected epoch components coordinate color permutations
+/// to minimize the combined maximum allocation per physical index.
+static bool verifyWeightedColoringAcrossComponents() {
+  InterferenceGraph graph(4);
+  graph.addInterference(0, 1);
+  graph.addInterference(2, 3);
+  constexpr std::uint64_t weights[] = {100, 1, 1, 100};
+  InterferenceGraphWeightLimitResult exactFit =
+      mlir::tt::ttl::colorInterferenceGraphWithinWeightLimitExactly(
+          graph, weights, /*colorLimit=*/2, /*weightLimit=*/101,
+          kUnlimitedSearchStates);
+  InterferenceGraphWeightLimitResult belowFit =
+      mlir::tt::ttl::colorInterferenceGraphWithinWeightLimitExactly(
+          graph, weights, /*colorLimit=*/2, /*weightLimit=*/100,
+          kUnlimitedSearchStates);
+  InterferenceGraphWeightLimitResult limited =
+      mlir::tt::ttl::colorInterferenceGraphWithinWeightLimitExactly(
+          graph, weights, /*colorLimit=*/2, /*weightLimit=*/101,
+          /*searchStateLimit=*/1);
+  if (!exactFit.isFeasible() || exactFit.colorCount != 2 ||
+      exactFit.colors[0] != exactFit.colors[3] ||
+      exactFit.colors[1] != exactFit.colors[2] ||
+      belowFit.status != InterferenceGraphColorLimitStatus::Infeasible ||
+      limited.status !=
+          InterferenceGraphColorLimitStatus::SearchLimitReached) {
+    llvm::errs() << "weighted coloring witness mismatch\n";
+    return false;
+  }
+  return true;
+}
+
 /// Exhaustively measures the assignment-count penalty of uniform assignment
 /// relative to per-node and two-group contracts.
 static bool compareAssignmentContracts() {
@@ -481,6 +513,7 @@ int main() {
                  verifyGreedyCapacityReproducer() &&
                  verifySearchLimitOutcome() &&
                  verifyFixedLimitAvoidsMinimumSearch() &&
+                 verifyWeightedColoringAcrossComponents() &&
                  verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0

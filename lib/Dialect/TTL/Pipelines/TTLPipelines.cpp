@@ -44,6 +44,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
     finalizeOptions.exactColoringSearchStateLimit =
         options.exactColoringSearchStateLimit;
+    finalizeOptions.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
   }
   {

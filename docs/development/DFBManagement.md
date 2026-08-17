@@ -1668,13 +1668,14 @@ index and L1 limits; proving a smaller assignment would not change compilation.
 Backtracking can grow exponentially, so exact search is reserved for cases
 where first-fit prevents acceptance. A physical-index failure asks one direct
 question at the available index count instead of proving the minimum. A valid
-assignment that exceeds L1 requires a minimum physical-index-count search
-because a different sharing assignment may use less physical storage. Each
-exact query examines at most `exact-coloring-search-limit` deterministic states,
-which defaults to 1,000,000, to bound compile time. Reaching the limit reports
-that feasibility was not proved and identifies the option that increases the
-limit; it never reports a proved capacity failure. The planner completes every
-diagnostic-producing validation before `TTLFinalizeDFBIndices` changes any
+assignment that exceeds L1 requires weighted search because equal index counts
+can have different sums of the maximum allocation assigned to each physical
+index. Each exact query examines at most `exact-coloring-search-limit`
+deterministic states, which defaults to 1,000,000, to bound compile time.
+Reaching the limit reports that feasibility was not proved and identifies the
+option that increases the limit; it never reports a proved capacity failure.
+The planner completes every diagnostic-producing validation before
+`TTLFinalizeDFBIndices` changes any
 `dfb_id`, `cb_index`, kernel attribute, or module attribute. The finalizer only
 materializes the validated plan.
 
