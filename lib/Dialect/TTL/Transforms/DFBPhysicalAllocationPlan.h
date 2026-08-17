@@ -141,6 +141,11 @@ public:
   /// Returns the size of the dense physical-index range.
   int32_t getPhysicalDFBCount() const { return physicalDFBCount; }
 
+  /// Returns boundary identifiers in proved dynamic execution order.
+  ArrayRef<int64_t> getReconfigurationBoundaryOrdinals() const {
+    return reconfigurationBoundaryOrdinals;
+  }
+
   /// Returns the complete typed conflict relation used for allocation.
   const DFBPhysicalConflictModel &getConflictModel() const {
     return conflictModel;
@@ -152,6 +157,7 @@ private:
   SmallVector<DFBPhysicalIndexAssignment> assignments;
   SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
   SmallVector<DFBKernelBaseIndexAssignment> kernelBaseIndices;
+  SmallVector<int64_t> reconfigurationBoundaryOrdinals;
   DFBPhysicalConflictModel conflictModel;
   int32_t physicalDFBCount = 0;
 };

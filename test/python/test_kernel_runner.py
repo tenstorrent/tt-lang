@@ -2797,6 +2797,91 @@ def test_reconfiguration_rejects_staggered_tensor_aliases(monkeypatch):
         )
 
 
+def test_reconfiguration_validates_aliases_in_execution_order(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    initial_first_config = PhysicalDFBConfig(
+        0, 1, "bfloat16", 1, 2048, (32, 32)
+    )
+    final_second_config = PhysicalDFBConfig(
+        1, 1, "bfloat16", 1, 2048, (32, 32)
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(1, 0),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial_first_config),
+                DFBConfigurationEpoch(
+                    1, _tensor_backing_config(0, nodes=((0, 0),))
+                ),
+            ),
+            (
+                DFBConfigurationEpoch(
+                    None, _tensor_backing_config(1, nodes=((0, 0),))
+                ),
+                DFBConfigurationEpoch(0, final_second_config),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="require one physical DFB index"):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=tensors,
+            core_ranges=_FakeCoreRanges(),
+            plan=plan,
+        )
+
+
+def test_reconfiguration_retains_unmodified_node_aliases(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    initial_second_config = PhysicalDFBConfig(
+        1, 1, "bfloat16", 1, 2048, (32, 32)
+    )
+    first_node_scratch_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(
+                    None,
+                    _tensor_backing_config(0, nodes=((0, 0), (1, 0))),
+                ),
+                DFBConfigurationEpoch(7, first_node_scratch_config),
+            ),
+            (
+                DFBConfigurationEpoch(None, initial_second_config),
+                DFBConfigurationEpoch(
+                    7, _tensor_backing_config(1, nodes=((1, 0),))
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="require one physical DFB index"):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=tensors,
+            core_ranges=_FakeCoreRanges(),
+            plan=plan,
+        )
+
+
 def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
 

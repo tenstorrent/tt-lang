@@ -206,6 +206,11 @@ public:
 
   ArrayRef<LaunchNodeCoord> getLaunchNodes() const { return launchNodes; }
 
+  /// Returns reconfiguration boundary identifiers in proved execution order.
+  ArrayRef<int64_t> getReconfigurationBoundaryOrdinals() const {
+    return reconfigurationBoundaryOrdinals;
+  }
+
   /// Returns true when one indexed lifetime ends before another on `node`.
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
@@ -220,6 +225,7 @@ private:
 
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
+  SmallVector<int64_t> reconfigurationBoundaryOrdinals;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
