@@ -5,8 +5,10 @@
 """Unit tests for @ttl.operation cache and program-hash behavior."""
 
 import functools
+import gc
 import itertools
 import threading
+import weakref
 
 import pytest
 
@@ -328,6 +330,161 @@ def test_operation_cache_compilation_is_single_flight(monkeypatch):
     assert not second_thread.is_alive()
     assert compilation_count == 1
     assert len(dispatches) == 2
+
+
+def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
+    events = []
+
+    class LifetimeOwner:
+        def __init__(self, name):
+            self.name = name
+
+        def __del__(self):
+            events.append(f"release:{self.name}")
+
+    class ResourceCompiledKernel:
+        all_source_lines = {}
+
+        def __init__(self, runtime_resource_cache):
+            self.runtime_resource_cache = runtime_resource_cache
+
+        def __call__(self, *_runtime_args):
+            self.runtime_resource_cache.compatibility_key = ("resources",)
+            self.runtime_resource_cache.device = "device"
+            self.runtime_resource_cache.pipe_resources = LifetimeOwner("pipe")
+            self.runtime_resource_cache.reconfiguration_resources = LifetimeOwner(
+                "reconfiguration"
+            )
+            return None
+
+    def compile_kernel(
+        _runtime_args,
+        _runtime_kwargs,
+        _resolved_grid,
+        _program_hash,
+        _target_arch,
+        _compiler_options,
+        _l1_budget_override,
+        runtime_resource_cache,
+    ):
+        return ResourceCompiledKernel(runtime_resource_cache)
+
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    monkeypatch.setattr(ttl_api, "_resolve_l1_budget", lambda *_args: 98304)
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        type(
+            "FakeTTNN",
+            (),
+            {
+                "synchronize_device": staticmethod(
+                    lambda device: events.append(f"synchronize:{device}")
+                )
+            },
+        )(),
+    )
+
+    def operation(input_tensor, output_tensor):
+        pass
+
+    wrapper = ttl_api._make_operation_wrapper(
+        operation,
+        compile_kernel,
+        grid=(1, 1),
+        fp32_dest_acc_en=None,
+        dst_full_sync_en=None,
+        math_fidelity=None,
+        options=None,
+    )
+    wrapper(_FakeTensor(), _FakeTensor())
+    wrapper_reference = weakref.ref(wrapper)
+
+    del wrapper
+    gc.collect()
+
+    assert wrapper_reference() is None
+    assert events == [
+        "synchronize:device",
+        "release:pipe",
+        "release:reconfiguration",
+    ]
+
+
+def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypatch):
+    events = []
+
+    class LifetimeOwner:
+        def __del__(self):
+            events.append("release")
+
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        type(
+            "FakeTTNN",
+            (),
+            {
+                "synchronize_device": staticmethod(
+                    lambda device: events.append(f"synchronize:{device}")
+                )
+            },
+        )(),
+    )
+    compiled_kernel = ttl_api.CompiledTTNNKernel(
+        kernel_paths=[],
+        kernel_configs=[],
+        kernel_arg_specs=[],
+        num_tensors=0,
+        core_ranges=None,
+        kernel_tensor_indices=[],
+    )
+    compiled_kernel._runtime_resource_cache.compatibility_key = ("resources",)
+    compiled_kernel._runtime_resource_cache.device = "device"
+    compiled_kernel._runtime_resource_cache.pipe_resources = LifetimeOwner()
+    compiled_reference = weakref.ref(compiled_kernel)
+
+    del compiled_kernel
+    gc.collect()
+
+    assert compiled_reference() is None
+    assert events == ["synchronize:device", "release"]
+
+
+def test_runtime_resource_finalizer_retains_owners_when_sync_fails(monkeypatch):
+    events = []
+
+    class LifetimeOwner:
+        def __del__(self):
+            events.append("release")
+
+    def fail_synchronization(_device):
+        events.append("synchronize")
+        raise RuntimeError("device synchronization failed")
+
+    fake_ttnn = type(
+        "FakeTTNN", (), {"synchronize_device": staticmethod(fail_synchronization)}
+    )()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resources",),
+        device="device",
+        pipe_resources=LifetimeOwner(),
+    )
+
+    with pytest.warns(RuntimeWarning, match="device synchronization failed"):
+        ttl_api._finalize_runtime_resource_cache(runtime_resource_cache)
+
+    assert events == ["synchronize"]
+    assert runtime_resource_cache in ttl_api._RETAINED_RUNTIME_RESOURCE_CACHES
+    assert runtime_resource_cache.pipe_resources is not None
+
+    fake_ttnn.synchronize_device = lambda _device: events.append("cleanup-sync")
+    ttl_api._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    kernel_runner.release_cached_runtime_resources(runtime_resource_cache)
+    assert events == ["synchronize", "cleanup-sync", "release"]
 
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
