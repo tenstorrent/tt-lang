@@ -19,11 +19,11 @@
 // IR-SAME: entry_reconfiguration = 1 : i64
 
 // DEBUG: DFB logical_id=0 bounded=1
-// DEBUG: entry_reconfiguration=initial,terminal_reset=none,terminal_reconfiguration=0
+// DEBUG: entry_reconfiguration=initial,active_configurations=[initial],terminal_reset=none,terminal_reconfiguration=0
 // DEBUG: DFB logical_id=1 bounded=1
-// DEBUG: entry_reconfiguration=0,terminal_reset=none,terminal_reconfiguration=1
+// DEBUG: entry_reconfiguration=0,active_configurations=[0],terminal_reset=none,terminal_reconfiguration=1
 // DEBUG: DFB logical_id=2 bounded=1
-// DEBUG: entry_reconfiguration=1,terminal_reset=none,terminal_reconfiguration=none
+// DEBUG: entry_reconfiguration=1,active_configurations=[1],terminal_reset=none,terminal_reconfiguration=none
 // DEBUG: Total DFB count: 1
 // DEBUG: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
 // DEBUG: DFB assignment: logical DFB 1 -> physical index 0 (bounded)

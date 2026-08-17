@@ -154,6 +154,8 @@ struct DFBLifecycleEpoch {
   SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  /// Configuration epochs in which storage retains this lifecycle's state.
+  SmallVector<std::optional<int64_t>> activeConfigurationEpochs;
   std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
   std::optional<int64_t> terminalReconfigurationOrdinal;

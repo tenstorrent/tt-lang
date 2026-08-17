@@ -250,6 +250,17 @@ static void printLifecycleEpochs(llvm::raw_ostream &output,
         } else {
           output << "initial";
         }
+        output << ",active_configurations=[";
+        llvm::interleaveComma(
+            epoch.activeConfigurationEpochs, output,
+            [&](std::optional<int64_t> reconfigurationOrdinal) {
+              if (reconfigurationOrdinal) {
+                output << *reconfigurationOrdinal;
+              } else {
+                output << "initial";
+              }
+            });
+        output << ']';
         output << ",terminal_reset=";
         if (epoch.terminalResetOrdinal) {
           output << *epoch.terminalResetOrdinal;
@@ -281,6 +292,8 @@ static bool hasEqualLifecycleEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.readCursorRuns == rhsEpoch.readCursorRuns &&
                lhsEpoch.writePointerOwner == rhsEpoch.writePointerOwner &&
                lhsEpoch.readPointerOwner == rhsEpoch.readPointerOwner &&
+               lhsEpoch.activeConfigurationEpochs ==
+                   rhsEpoch.activeConfigurationEpochs &&
                lhsEpoch.entryReconfigurationOrdinal ==
                    rhsEpoch.entryReconfigurationOrdinal &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
