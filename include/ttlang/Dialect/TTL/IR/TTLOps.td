@@ -1966,8 +1966,9 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
 
     The source operation does not name physical DFB indices or enumerate the
     interfaces that change. Allocation analysis derives the configuration for
-    each epoch from logical DFB lifetimes and rejects any reuse that lacks a
-    complete protocol or synchronization proof.
+    each epoch from logical DFB lifetimes. Live protocol state retains its
+    physical index, storage, and interface configuration across the boundary;
+    reassignment requires a complete protocol and synchronization proof.
   }];
   let arguments = (ins TTL_DFBReconfigurationAttr:$boundary);
   let assemblyFormat = "$boundary attr-dict";
