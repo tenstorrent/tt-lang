@@ -637,7 +637,7 @@ def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
     monkeypatch.setattr(
         ttl_api,
         "_resolve_l1_budget",
-        lambda runtime_args, compiler_options: next(budgets),
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
     )
 
     @ttl_api.operation(grid=(1, 1))
