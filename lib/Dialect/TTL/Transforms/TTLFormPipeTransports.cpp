@@ -406,12 +406,97 @@ getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
   return totalBytes;
 }
 
+static FailureOr<uint64_t>
+getConservativePipeScratchBytes(ModuleOp sourceModule) {
+  OwningOpRef<ModuleOp> planningModule(sourceModule.clone());
+  ModuleOp module = *planningModule;
+  ValueOriginAnalysis preExpansionAnalysis(module);
+  if (failed(verifyTransferProvenance(module, preExpansionAnalysis)) ||
+      failed(expandStaticPipeTransfers(module, preExpansionAnalysis))) {
+    return failure();
+  }
+
+  ValueOriginAnalysis analysis(module);
+  if (failed(verifyTransferProvenance(module, analysis))) {
+    return failure();
+  }
+  FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransferIndex =
+      PipeTransferIndex::create(module, analysis);
+  if (failed(maybeTransferIndex)) {
+    return failure();
+  }
+  const PipeTransferIndex &transferIndex = **maybeTransferIndex;
+  PipeForeachLoweringInfo foreachLoweringInfo;
+  FailureOr<PipeGraph> maybePipeGraph =
+      PipeGraph::build(module, transferIndex, foreachLoweringInfo);
+  if (failed(maybePipeGraph)) {
+    return failure();
+  }
+
+  PipeResourcePlan resourcePlan;
+  if (failed(buildPipeResourcePlan(
+          module, transferIndex, *maybePipeGraph, resourcePlan,
+          /*enableComputedAddresses=*/false,
+          PipeCounterAllocationPolicy::LocalThenGlobal,
+          /*synchronizationSelection=*/nullptr))) {
+    return failure();
+  }
+  assert(resourcePlan.sramScratch.bytes >= 0 &&
+         "pipe scratch allocation must be non-negative");
+  return static_cast<uint64_t>(resourcePlan.sramScratch.bytes);
+}
+
+static FailureOr<uint64_t>
+getCombinedL1Bytes(const DFBAllocationFootprint &allocationFootprint,
+                   uint64_t pipeScratchBytes,
+                   uint64_t reconfigurationStateBytes) {
+  FailureOr<uint64_t> allocationBytes = allocationFootprint.getTotalBytes();
+  if (failed(allocationBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> allocationAndScratch =
+      llvm::checkedAddUnsigned(*allocationBytes, pipeScratchBytes);
+  if (!allocationAndScratch) {
+    return failure();
+  }
+  std::optional<uint64_t> requiredBytes = llvm::checkedAddUnsigned(
+      *allocationAndScratch, reconfigurationStateBytes);
+  if (!requiredBytes) {
+    return failure();
+  }
+  return *requiredBytes;
+}
+
+static LogicalResult validateCombinedL1Bytes(
+    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
+    uint64_t pipeScratchBytes, uint64_t reconfigurationStateBytes,
+    uint64_t budgetBytes) {
+  FailureOr<uint64_t> allocationBytes = allocationFootprint.getTotalBytes();
+  FailureOr<uint64_t> requiredBytes = getCombinedL1Bytes(
+      allocationFootprint, pipeScratchBytes, reconfigurationStateBytes);
+  if (failed(allocationBytes) || failed(requiredBytes)) {
+    module.emitOpError("combined L1 allocation size is not representable");
+    return failure();
+  }
+  if (*requiredBytes <= budgetBytes) {
+    return success();
+  }
+  module.emitOpError()
+      << "combined DFB, pipe scratch, and reconfiguration state requires "
+      << *requiredBytes << " L1 bytes but the budget is " << budgetBytes
+      << " (DFB=" << *allocationBytes << ", pipe scratch="
+      << pipeScratchBytes
+      << ", reconfiguration state=" << reconfigurationStateBytes << ")";
+  return failure();
+}
+
 /// Compute storage and synchronization facts for one `(R, K)` choice.
 static std::optional<PipeTransportGrouping>
 evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
                  int64_t destinationDepth,
                  const DFBAllocationFootprint &allocationFootprint,
-                 uint64_t existingScratchBytes, uint64_t budgetBytes) {
+                 uint64_t existingScratchBytes,
+                 uint64_t reconfigurationStateBytes, uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -485,10 +570,15 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
       succeeded(totalBytes) && allScratchBytes
           ? llvm::checkedAddUnsigned(*totalBytes, *allScratchBytes)
           : std::nullopt;
-  if (!allocationAndScratchBytes || *allocationAndScratchBytes > budgetBytes) {
+  std::optional<uint64_t> requiredBytes =
+      allocationAndScratchBytes
+          ? llvm::checkedAddUnsigned(*allocationAndScratchBytes,
+                                     reconfigurationStateBytes)
+          : std::nullopt;
+  if (!requiredBytes || *requiredBytes > budgetBytes) {
     return std::nullopt;
   }
-  grouping.allocationBytes = *allocationAndScratchBytes;
+  grouping.allocationBytes = *requiredBytes;
   return grouping;
 }
 
@@ -556,7 +646,8 @@ static std::optional<PipeTransportGrouping>
 selectGrouping(PipeTransportLoopCandidate &candidate,
                int64_t requestedGroupSize,
                const DFBAllocationFootprint &allocationFootprint,
-               uint64_t existingScratchBytes, uint64_t budgetBytes) {
+               uint64_t existingScratchBytes,
+               uint64_t reconfigurationStateBytes, uint64_t budgetBytes) {
   int64_t upperBound =
       requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
   std::optional<int64_t> maybeUpperBound =
@@ -573,7 +664,7 @@ selectGrouping(PipeTransportLoopCandidate &candidate,
         getMinimumDestinationDepth(candidate, groupSize, requireOverlap);
     std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
         candidate, groupSize, destinationDepth, allocationFootprint,
-        existingScratchBytes, budgetBytes);
+        existingScratchBytes, reconfigurationStateBytes, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }
@@ -735,6 +826,37 @@ struct TTLFormPipeTransportsPass
       signalPassFailure();
       return;
     }
+    FailureOr<DFBAllocationFootprint> initialAllocationFootprint =
+        getDFBAllocationFootprint(module);
+    if (failed(initialAllocationFootprint)) {
+      module.emitOpError("failed to compute DFB allocation sizes");
+      signalPassFailure();
+      return;
+    }
+    FailureOr<uint64_t> reconfigurationStateBytes =
+        getDFBReconfigurationStateBytes(module);
+    if (failed(reconfigurationStateBytes)) {
+      module.emitOpError(
+          "DFB reconfiguration state size is not representable");
+      signalPassFailure();
+      return;
+    }
+    FailureOr<uint64_t> conservativeScratchBytes =
+        getConservativePipeScratchBytes(module);
+    if (failed(conservativeScratchBytes)) {
+      signalPassFailure();
+      return;
+    }
+    std::optional<uint64_t> overrideBytes =
+        l1BudgetOverride == 0 ? std::nullopt
+                              : std::optional<uint64_t>(l1BudgetOverride);
+    uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
+    if (failed(validateCombinedL1Bytes(
+            module, *initialAllocationFootprint, *conservativeScratchBytes,
+            *reconfigurationStateBytes, budgetBytes))) {
+      signalPassFailure();
+      return;
+    }
     if (groupSize == 1) {
       return;
     }
@@ -770,20 +892,6 @@ struct TTLFormPipeTransportsPass
     }
     PipeGraph &pipeGraph = *maybePipeGraph;
 
-    // All-published planning bounds address-table storage independently of the
-    // address and counter-storage options selected by the conversion pass.
-    PipeResourcePlan conservativeResourcePlan;
-    if (failed(buildPipeResourcePlan(
-            module, transferIndex, pipeGraph, conservativeResourcePlan,
-            /*enableComputedAddresses=*/false,
-            PipeCounterAllocationPolicy::LocalThenGlobal,
-            /*synchronizationSelection=*/nullptr))) {
-      signalPassFailure();
-      return;
-    }
-    assert(conservativeResourcePlan.sramScratch.bytes >= 0 &&
-           "pipe scratch allocation must be non-negative");
-
     llvm::MapVector<Operation *, SmallVector<const PipeTransferNode *>>
         transfersByLoop;
     for (const PipeTransferNode &transfer : pipeGraph.getPipeTransferNodes()) {
@@ -808,8 +916,7 @@ struct TTLFormPipeTransportsPass
     }
 
     IRRewriter rewriter(module.getContext());
-    uint64_t selectedScratchBytes =
-        static_cast<uint64_t>(conservativeResourcePlan.sramScratch.bytes);
+    uint64_t selectedScratchBytes = *conservativeScratchBytes;
     for (PipeTransportLoopCandidate &candidate : candidates) {
       FailureOr<DFBAllocationFootprint> allocationFootprint =
           getDFBAllocationFootprint(module);
@@ -818,13 +925,10 @@ struct TTLFormPipeTransportsPass
         signalPassFailure();
         return;
       }
-      std::optional<uint64_t> overrideBytes =
-          l1BudgetOverride == 0 ? std::nullopt
-                                : std::optional<uint64_t>(l1BudgetOverride);
-      uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
       std::optional<PipeTransportGrouping> grouping =
           selectGrouping(candidate, groupSize, *allocationFootprint,
-                         selectedScratchBytes, budgetBytes);
+                         selectedScratchBytes, *reconfigurationStateBytes,
+                         budgetBytes);
       if (!grouping) {
         debugReject(candidate.loop,
                     "no group with R > 1 fits the L1 DFB budget");
@@ -848,6 +952,18 @@ struct TTLFormPipeTransportsPass
              "selected scratch allocation exceeds uint64_t");
       selectedScratchBytes = *nextScratchBytes;
       applyGrouping(candidate, *grouping, rewriter);
+    }
+
+    FailureOr<DFBAllocationFootprint> finalAllocationFootprint =
+        getDFBAllocationFootprint(module);
+    if (failed(finalAllocationFootprint) ||
+        failed(validateCombinedL1Bytes(
+            module, *finalAllocationFootprint, selectedScratchBytes,
+            *reconfigurationStateBytes, budgetBytes))) {
+      if (failed(finalAllocationFootprint)) {
+        module.emitOpError("failed to compute final DFB allocation sizes");
+      }
+      signalPassFailure();
     }
   }
 };

@@ -4,7 +4,7 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4' | FileCheck %s --check-prefix=BOUND
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24608' | FileCheck %s --check-prefix=NOFIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57376' | FileCheck %s --check-prefix=EXACT-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57375' | FileCheck %s --check-prefix=BELOW-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
@@ -155,7 +155,8 @@
 // DISABLED-NOT: num_tiles
 // DISABLED: ttl.copy %[[SRC]], %{{.*}}
 
-// A budget that fits only the original allocations retains scalar transfers.
+// A budget that fits only the original allocations and scalar Pipe scratch
+// retains scalar transfers.
 // NOFIT-LABEL: func.func @point_to_point
 // NOFIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5} {dfb_id = 0 : index}
 // NOFIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1} {dfb_id = 1 : index}
