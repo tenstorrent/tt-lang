@@ -46,6 +46,7 @@ def _ensure_ttnn():
 
 
 from .dataflow_buffer import (
+    DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
     _validate_tensor_backed_dfb_range,
@@ -1484,6 +1485,20 @@ def plan_program_runtime_resources(
             tuple(normalized_fabric_connections),
         ),
     )
+@dataclass
+class DFBReconfigurationRuntimeResources:
+    """Host allocations referenced by synchronized DFB reconfiguration."""
+
+    scratch_tensors: Dict[int, Any]
+    configuration_tensors: List[Any]
+    configuration_runtime_args: Dict[Tuple[int, int], List[int]]
+    device: Optional[Any] = None
+
+
+_DFB_RECONFIGURATION_WORDS_PER_CORE = 264
+_DFB_RECONFIGURATION_LOW_MASK_WORD = 256
+_DFB_RECONFIGURATION_HIGH_MASK_WORD = 257
+_DFB_RECONFIGURATION_MAX_INDICES = 64
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -1520,6 +1535,7 @@ def build_kernel_descriptors(
     expected_extra_common_runtime_args: Optional[int] = None,
     device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
+    dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -1545,6 +1561,8 @@ def build_kernel_descriptors(
             runtime arguments for device-domain dispatch.
         descriptor_resource_plans: Immutable caller resource plans aligned with
             kernel_specs.
+        dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
+            in finalized boundary order.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -1566,6 +1584,7 @@ def build_kernel_descriptors(
     cb_indices = list(range(num_cbs))
     computed_address_base_addresses = pipe_computed_address_base_addresses or {}
     extra_args = list(extra_common_runtime_args or [])
+    reconfiguration_args = dict(dfb_reconfiguration_runtime_args or {})
     if (
         expected_extra_common_runtime_args is not None
         and len(extra_args) != expected_extra_common_runtime_args
@@ -1617,7 +1636,6 @@ def build_kernel_descriptors(
         kernel_ranges = (
             spec.core_ranges if spec.core_ranges is not None else core_ranges
         )
-
         runtime_args = []
         defines = []
         if descriptor_resource_plans is not None:
@@ -1639,13 +1657,46 @@ def build_kernel_descriptors(
             ]
             defines = list(descriptor_resource_plan.defines)
 
+        if reconfiguration_args:
+            portable_args_by_core = {
+                (int(core.x), int(core.y)): list(values)
+                for core, values in runtime_args
+            }
+            prefix_lengths = {len(values) for values in reconfiguration_args.values()}
+            if len(prefix_lengths) != 1:
+                raise RuntimeError(
+                    "DFB reconfiguration runtime argument vectors must have "
+                    "one uniform boundary count"
+                )
+            portable_arg_base = next(iter(prefix_lengths))
+            portable_arg_base_define = "TTLANG_PORTABLE_RUNTIME_ARG_BASE"
+            if any(name == portable_arg_base_define for name, _ in defines):
+                raise ValueError(
+                    f"kernel descriptor {kernel_spec_index} reserves define "
+                    f"{portable_arg_base_define}"
+                )
+            defines.append((portable_arg_base_define, str(portable_arg_base)))
+            combined_runtime_args = ttnn.RuntimeArgs()
+            for core in ttnn.corerange_to_cores(kernel_ranges, row_wise=True):
+                core_key = (int(core.x), int(core.y))
+                if core_key not in reconfiguration_args:
+                    raise RuntimeError(
+                        "missing DFB reconfiguration runtime arguments for "
+                        f"core {core_key}"
+                    )
+                combined_runtime_args[core.x][core.y] = [
+                    *reconfiguration_args[core_key],
+                    *portable_args_by_core.get(core_key, ()),
+                ]
+            runtime_args = combined_runtime_args
+
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
             defines=defines,
-            runtime_args=runtime_args,
             common_runtime_args=common_runtime_args,
+            runtime_args=runtime_args,
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
         )
@@ -1740,6 +1791,24 @@ def _allocate_l1_sharded_storage_tensor(
         device=device,
         memory_config=memory_config,
     )
+
+
+def _l1_buffer_addresses_by_core(
+    tensor: Any, device: Any
+) -> Dict[Tuple[int, int], int]:
+    """Return each shard's physical L1 base indexed by logical core."""
+    buffer_address = int(tensor.buffer_address())
+    addresses = {}
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if (
+            page.buffer_type != ttnn.BufferType.L1
+            or int(page.address) != buffer_address
+        ):
+            continue
+        core = (int(page.core_x), int(page.core_y))
+        page_address = int(page.page_address)
+        addresses[core] = min(addresses.get(core, page_address), page_address)
+    return addresses
 
 
 def build_pipe_sram_scratch_tensors(
@@ -2104,6 +2173,216 @@ def get_cached_runtime_resources(
         return _get_cached_runtime_resources_impl(None, **arguments)
     with cache.lock:
         return _get_cached_runtime_resources_impl(cache, **arguments)
+
+
+def build_dfb_reconfiguration_runtime_resources(
+    tensors: List[Any],
+    core_ranges: Any,
+    plan: Optional[DFBReconfigurationPlan],
+    existing_backing_tensors: Optional[Dict[int, Any]] = None,
+    existing_resources: Optional[DFBReconfigurationRuntimeResources] = None,
+    device: Optional[Any] = None,
+) -> DFBReconfigurationRuntimeResources:
+    """Allocate scratch storage and one shared L1 configuration per boundary."""
+    if plan is None:
+        return DFBReconfigurationRuntimeResources({}, [], {}, device)
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    resource_device = device if device is not None else _first_device(tensors)
+    reusable_backing_tensors = dict(existing_backing_tensors or {})
+    scratch_bytes_by_index = {}
+    for dfb_index, epochs in enumerate(plan.dfb_epochs):
+        scratch_bytes = 0
+        for epoch in epochs:
+            config = epoch.config
+            allocation = _get_dfb_allocation(config)
+            if not config.storage_segments or any(
+                not segment.is_tensor_backed for segment in config.storage_segments
+            ):
+                scratch_bytes = max(scratch_bytes, allocation.total_size)
+        if scratch_bytes > 0:
+            scratch_bytes_by_index[dfb_index] = scratch_bytes
+
+    can_reuse_resources = (
+        existing_resources is not None
+        and existing_resources.device == resource_device
+        and not reusable_backing_tensors
+        and set(existing_resources.scratch_tensors) == set(scratch_bytes_by_index)
+    )
+    scratch_tensors = (
+        dict(existing_resources.scratch_tensors) if can_reuse_resources else {}
+    )
+    for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
+        if dfb_index in scratch_tensors:
+            continue
+        existing_tensor = reusable_backing_tensors.get(dfb_index)
+        if existing_tensor is not None:
+            initial_size = _get_dfb_allocation(
+                plan.dfb_epochs[dfb_index][0].config
+            ).total_size
+            if scratch_bytes > initial_size:
+                raise ValueError(
+                    f"DFB[{dfb_index}] PipeNet backing is smaller than its "
+                    "reconfiguration scratch requirement"
+                )
+            scratch_tensors[dfb_index] = existing_tensor
+            continue
+        scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
+            core_ranges, scratch_bytes, resource_device
+        )
+
+    all_cores = ttnn.corerange_to_cores(core_ranges, row_wise=True)
+    core_keys = [(int(core.x), int(core.y)) for core in all_cores]
+    core_rows = {core: row for row, core in enumerate(core_keys)}
+    if len(plan.dfb_epochs) > _DFB_RECONFIGURATION_MAX_INDICES:
+        raise ValueError(
+            "DFB reconfiguration supports at most "
+            f"{_DFB_RECONFIGURATION_MAX_INDICES} physical indices"
+        )
+
+    configuration_runtime_args = {core: [] for core in core_keys}
+    configuration_tensors = []
+    tensor_addresses_by_core = {}
+    scratch_addresses_by_index = {
+        dfb_index: _l1_buffer_addresses_by_core(tensor, resource_device)
+        for dfb_index, tensor in scratch_tensors.items()
+    }
+    import torch
+
+    for boundary_ordinal in plan.boundary_ordinals:
+        host_configuration = torch.zeros(
+            (len(core_keys), _DFB_RECONFIGURATION_WORDS_PER_CORE),
+            dtype=torch.uint32,
+        )
+        for dfb_index, epochs in enumerate(plan.dfb_epochs):
+            matching_epoch = next(
+                (
+                    epoch
+                    for epoch in epochs
+                    if epoch.entry_reconfiguration_ordinal == boundary_ordinal
+                ),
+                None,
+            )
+            if matching_epoch is None:
+                continue
+            config = matching_epoch.config
+            allocation = _get_dfb_allocation(config)
+            segments = config.storage_segments or (
+                DFBStorageSegment(nodes=tuple(core_keys)),
+            )
+            records_by_core = {}
+            for segment in segments:
+                if segment.is_tensor_backed:
+                    tensor_index = segment.tensor_index
+                    assert tensor_index is not None
+                    if tensor_index < 0 or tensor_index >= len(tensors):
+                        raise ValueError(
+                            f"DFB[{dfb_index}] references invalid tensor "
+                            f"index {tensor_index}"
+                        )
+                    tensor = tensors[tensor_index]
+                    if tensor_index not in tensor_addresses_by_core:
+                        tensor_addresses_by_core[tensor_index] = (
+                            _l1_buffer_addresses_by_core(tensor, resource_device)
+                        )
+                    addresses_by_core = tensor_addresses_by_core[tensor_index]
+                else:
+                    scratch_tensor = scratch_tensors.get(dfb_index)
+                    if scratch_tensor is None:
+                        raise ValueError(
+                            f"DFB[{dfb_index}] configuration requires scratch storage"
+                        )
+                    addresses_by_core = scratch_addresses_by_index[dfb_index]
+                for node in segment.nodes:
+                    if node not in core_rows:
+                        raise ValueError(
+                            f"DFB[{dfb_index}] configuration references launch "
+                            f"node {node} outside the kernel grid"
+                        )
+                    if node not in addresses_by_core:
+                        raise RuntimeError(
+                            f"DFB[{dfb_index}] storage has no L1 address for "
+                            f"launch node {node}"
+                        )
+                    address = addresses_by_core[node] + int(segment.byte_offset)
+                    records_by_core[node] = (
+                        address,
+                        allocation.total_size,
+                        allocation.num_tiles * allocation.block_count,
+                        allocation.page_size,
+                    )
+
+            mask_word = (
+                _DFB_RECONFIGURATION_LOW_MASK_WORD
+                if dfb_index < 32
+                else _DFB_RECONFIGURATION_HIGH_MASK_WORD
+            )
+            mask_bit = 1 << (dfb_index % 32)
+            configuration_offset = dfb_index * 4
+            for core in core_keys:
+                record = records_by_core.get(core)
+                if record is None:
+                    continue
+                row = core_rows[core]
+                host_configuration[row, mask_word] = (
+                    int(host_configuration[row, mask_word]) | mask_bit
+                )
+                for record_offset, value in enumerate(record):
+                    host_configuration[row, configuration_offset + record_offset] = (
+                        value
+                    )
+
+        num_devices = (
+            resource_device.get_num_devices()
+            if hasattr(resource_device, "get_num_devices")
+            else 1
+        )
+        mesh_mapper = (
+            ttnn.ReplicateTensorToMesh(resource_device) if num_devices > 1 else None
+        )
+        shard_spec = ttnn.ShardSpec(
+            core_ranges,
+            (1, _DFB_RECONFIGURATION_WORDS_PER_CORE),
+            ttnn.ShardOrientation.ROW_MAJOR,
+        )
+        memory_config = ttnn.MemoryConfig(
+            ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+            ttnn.BufferType.L1,
+            shard_spec,
+        )
+        configuration_tensor = ttnn.from_torch(
+            host_configuration,
+            dtype=ttnn.uint32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=resource_device,
+            memory_config=memory_config,
+            **({"mesh_mapper": mesh_mapper} if mesh_mapper is not None else {}),
+        )
+        configuration_tensors.append(configuration_tensor)
+        configuration_addresses_by_core = _l1_buffer_addresses_by_core(
+            configuration_tensor, resource_device
+        )
+        missing_configuration_cores = [
+            core for core in core_keys if core not in configuration_addresses_by_core
+        ]
+        if missing_configuration_cores:
+            raise RuntimeError(
+                "DFB reconfiguration storage has no L1 address for launch "
+                f"nodes {missing_configuration_cores}"
+            )
+        for core in core_keys:
+            configuration_runtime_args[core].append(
+                configuration_addresses_by_core[core]
+            )
+
+    return DFBReconfigurationRuntimeResources(
+        scratch_tensors=scratch_tensors,
+        configuration_tensors=configuration_tensors,
+        configuration_runtime_args=configuration_runtime_args,
+        device=resource_device,
+    )
 
 
 def build_pipe_sync_semaphore_descriptors(
@@ -2820,6 +3099,7 @@ def build_cb_descriptors(
     core_ranges: Any,
     pipe_computed_address_backing_tensors: Optional[Dict[int, Any]] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
+    dfb_reconfiguration_scratch_tensors: Optional[Dict[int, Any]] = None,
 ) -> List[Any]:
     """
     Build circular buffer descriptors for ttnn.generic_op.
@@ -2833,6 +3113,8 @@ def build_cb_descriptors(
         pipe_computed_address_backing_tensors: Hidden L1 backing tensors for DFBs whose
             receiver base is passed as a common runtime argument.
         kernel_specs: Final per-kernel launch ranges and surviving DFB-use sets.
+        dfb_reconfiguration_scratch_tensors: Maximum-capacity scratch storage
+            retained across configuration epochs.
 
     Returns:
         List of ttnn.CBDescriptor objects. A configuration with storage
@@ -2842,7 +3124,22 @@ def build_cb_descriptors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    backing_tensors = pipe_computed_address_backing_tensors or {}
+    backing_tensors = dict(pipe_computed_address_backing_tensors or {})
+    for dfb_index, tensor in (dfb_reconfiguration_scratch_tensors or {}).items():
+        if dfb_index < 0 or dfb_index >= len(cb_configs):
+            raise ValueError(
+                f"reconfiguration scratch references invalid DFB index {dfb_index}"
+            )
+        config = cb_configs[dfb_index]
+        initial_uses_scratch = not config.storage_segments or any(
+            not segment.is_tensor_backed for segment in config.storage_segments
+        )
+        if not initial_uses_scratch:
+            continue
+        existing = backing_tensors.get(dfb_index)
+        if existing is not None and existing is not tensor:
+            raise ValueError(f"DFB[{dfb_index}] has conflicting hidden backing tensors")
+        backing_tensors[dfb_index] = tensor
     invalid_backing_indices = sorted(
         set(backing_tensors).difference(range(len(cb_configs)))
     )
@@ -2929,24 +3226,33 @@ def build_cb_descriptors(
         config = cb_configs[cb_index]
         cb_format = _cb_format_descriptor(cb_index, allocation)
         if cb_index in backing_tensors:
-            if config.storage_segments:
+            if any(segment.is_tensor_backed for segment in config.storage_segments):
                 raise ValueError(
-                    f"DFB[{cb_index}] cannot combine PipeNet computed-address "
-                    "storage with finalized storage segments"
+                    f"DFB[{cb_index}] cannot combine hidden scratch with "
+                    "tensor-backed storage"
                 )
-            cb_desc = ttnn.CBDescriptor(
-                total_size=allocation.total_size,
-                core_ranges=core_ranges,
-                format_descriptors=[cb_format],
+            scratch_core_ranges = (
+                [
+                    _make_node_core_ranges(segment.nodes)
+                    for segment in config.storage_segments
+                ]
+                if config.storage_segments
+                else [core_ranges]
             )
-            backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
-                cb_index,
-                backing_tensors[cb_index],
-                total_size=allocation.total_size,
-                core_ranges=core_ranges,
-            )
-            cb_desc.set_buffer_from_cb(backing_desc)
-            cb_descriptors.append(cb_desc)
+            for scratch_ranges in scratch_core_ranges:
+                cb_desc = ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=scratch_ranges,
+                    format_descriptors=[cb_format],
+                )
+                backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
+                    cb_index,
+                    backing_tensors[cb_index],
+                    total_size=allocation.total_size,
+                    core_ranges=scratch_ranges,
+                )
+                cb_desc.set_buffer_from_cb(backing_desc)
+                cb_descriptors.append(cb_desc)
             continue
 
         if not config.storage_segments:
@@ -2991,6 +3297,8 @@ def build_generic_op_io_tensors(
     tensors: List[Any],
     pipe_sram_scratch_tensors: List[Any],
     pipe_computed_address_dfb_tensors: Optional[Dict[int, Any]] = None,
+    dfb_reconfiguration_scratch_tensors: Optional[Dict[int, Any]] = None,
+    dfb_reconfiguration_configuration_tensors: Optional[List[Any]] = None,
 ) -> List[Any]:
     """Return io_tensors with the user-visible output in the final position."""
     if not tensors:
@@ -3000,8 +3308,20 @@ def build_generic_op_io_tensors(
         pipe_computed_address_dfb_tensors[dfb_index]
         for dfb_index in sorted(pipe_computed_address_dfb_tensors or {})
     ]
+    reconfiguration_scratch_tensors = [
+        dfb_reconfiguration_scratch_tensors[dfb_index]
+        for dfb_index in sorted(dfb_reconfiguration_scratch_tensors or {})
+        if all(
+            dfb_reconfiguration_scratch_tensors[dfb_index] is not tensor
+            for tensor in computed_address_dfb_tensors
+        )
+    ]
     io_tensors = (
-        list(pipe_sram_scratch_tensors) + computed_address_dfb_tensors + list(tensors)
+        list(pipe_sram_scratch_tensors)
+        + computed_address_dfb_tensors
+        + reconfiguration_scratch_tensors
+        + list(dfb_reconfiguration_configuration_tensors or [])
+        + list(tensors)
     )
     if len(io_tensors) < 2:
         io_tensors = [io_tensors[-1]] + io_tensors
@@ -3136,6 +3456,7 @@ def _run_kernel_on_device_impl(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     program_hash: Optional[int] = None,
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
@@ -3151,6 +3472,9 @@ def _run_kernel_on_device_impl(
     operation_name: str = "<anonymous>",
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
+    dfb_reconfiguration_resource_cache: Optional[
+        List[DFBReconfigurationRuntimeResources]
+    ] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -3165,6 +3489,7 @@ def _run_kernel_on_device_impl(
             in each KernelSpec.
         cb_configs: Finalized physical DFB configurations, in physical-index
             order.
+        dfb_reconfiguration_plan: Optional finalized configuration epochs.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache.
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
@@ -3196,6 +3521,8 @@ def _run_kernel_on_device_impl(
             declarative runtime resources.
         device: Optional explicit resource device. Defaults to the first input
             tensor's device.
+        dfb_reconfiguration_resource_cache: Optional one-element list owning
+            persistent scratch tensors and cached resource metadata.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -3283,6 +3610,19 @@ def _run_kernel_on_device_impl(
     )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
+    reconfiguration_resources = build_dfb_reconfiguration_runtime_resources(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        plan=dfb_reconfiguration_plan,
+        existing_backing_tensors=(pipe_runtime_resources.computed_address_dfb_tensors),
+        existing_resources=(
+            dfb_reconfiguration_resource_cache[0]
+            if dfb_reconfiguration_resource_cache
+            else None
+        ),
+    )
+    if dfb_reconfiguration_resource_cache is not None:
+        dfb_reconfiguration_resource_cache[:] = [reconfiguration_resources]
 
     # Build CB descriptors.
     cb_descriptors = build_cb_descriptors(
@@ -3293,6 +3633,7 @@ def _run_kernel_on_device_impl(
             pipe_runtime_resources.computed_address_dfb_tensors
         ),
         kernel_specs=kernel_specs,
+        dfb_reconfiguration_scratch_tensors=(reconfiguration_resources.scratch_tensors),
     )
 
     if resource_plan is not None:
@@ -3326,6 +3667,9 @@ def _run_kernel_on_device_impl(
             device_coordinates=device_coordinates,
             descriptor_resource_plans=(
                 resource_plan.kernel_descriptors if resource_plan is not None else None
+            ),
+            dfb_reconfiguration_runtime_args=(
+                reconfiguration_resources.configuration_runtime_args
             ),
         )
         program_descriptor = build_program_descriptor(
@@ -3416,6 +3760,10 @@ def _run_kernel_on_device_impl(
         pipe_sram_scratch_tensors=pipe_runtime_resources.scratch_tensors,
         pipe_computed_address_dfb_tensors=(
             pipe_runtime_resources.computed_address_dfb_tensors
+        ),
+        dfb_reconfiguration_scratch_tensors=(reconfiguration_resources.scratch_tensors),
+        dfb_reconfiguration_configuration_tensors=(
+            reconfiguration_resources.configuration_tensors
         ),
     )
 
