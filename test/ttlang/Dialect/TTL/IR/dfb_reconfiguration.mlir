@@ -1,3 +1,4 @@
+// Summary: Verifies DFB reconfiguration operation parsing and printing.
 // RUN: ttlang-opt %s | FileCheck %s
 
 // CHECK-LABEL: func.func @boundary

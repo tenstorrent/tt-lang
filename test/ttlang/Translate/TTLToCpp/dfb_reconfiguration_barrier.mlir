@@ -1,4 +1,4 @@
-// Verifies that reconfiguration emits entry and exit participant barriers.
+// Verifies that generated C++ contains reconfiguration entry and exit barriers.
 // RUN: ttlang-opt --convert-ttl-to-ttkernel %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir

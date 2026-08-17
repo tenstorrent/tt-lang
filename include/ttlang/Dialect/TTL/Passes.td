@@ -126,14 +126,16 @@ def TTLFormPipeTransports
 
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
-    bytes. Selection counts the widened intermediate DFB types, a conservative
-    receiver-published address table, required transport scratch, and
-    synchronized-reset scratch, and DFB reconfiguration state against the same
-    per-core L1 budget used by `ttl-validate-cb-budget`. `group-size = 1`
-    disables grouping but still validates the combined allocation. A larger
-    value is an upper bound; the pass selects a smaller group when required by
-    the loop trip count or L1 capacity. Ineligible loops retain scalar transfer
-    IR.
+    bytes. Selection uses a target-aligned DFB allocation and a conservative
+    upper bound for PipeNet address storage, scratch, GlobalSemaphore counters,
+    record-selected callback resources, synchronized-reset scratch, and DFB
+    reconfiguration state. `group-size = 1` disables grouping but still
+    validates the combined allocation and records the conservative reservation
+    for physical DFB allocation. A larger value is an upper bound; the pass
+    selects a smaller group when the loop trip count or L1 capacity requires
+    it. Ineligible loops retain scalar transfer IR. After PipeNet lowering
+    chooses exact resources, `convert-ttl-to-ttkernel` validates the
+    authoritative combined per-core allocation.
   }];
 
   let options = [
@@ -141,7 +143,7 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the combined DFB and scratch L1 budget in bytes for "
+           "Override the combined per-core L1 budget in bytes for "
            "transport selection.">
   ];
 
@@ -292,7 +294,10 @@ def TTLConvertTTLToTTKernel
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     exact launch-node domains, and single-block event regions required by
-    protocol planning.
+    protocol planning. After planning, this pass validates the authoritative
+    per-core L1 footprint: target-aligned finalized DFB allocations,
+    synchronized-reset state, reconfiguration tensors, PipeNet scratch, and
+    GlobalSemaphore allocations.
   }];
 
   let options = [
@@ -1070,10 +1075,11 @@ def TTLFinalizeDFBIndices
     an assignment fits the available indices. When first-fit exceeds the
     DFB-plus-fixed-state L1 budget, or the provisional threshold after a
     conservative PipeNet reservation, weighted search asks whether another
-    assignment fits using the sum of the maximum allocation assigned to each
-    physical index. The reservation triggers search but cannot make finalization
-    reject an assignment that satisfies the authoritative budget. Conversion
-    validates the finalized allocation against exact PipeNet resources.
+    assignment fits using the sum of the target-aligned maximum allocation
+    assigned to each physical index. The reservation triggers search but cannot
+    make finalization reject an assignment that satisfies the authoritative
+    budget. Conversion validates the finalized allocation against exact PipeNet
+    resources.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
     allocation diagnostic only when acceptance requires the search result. A
@@ -1146,8 +1152,8 @@ def TTLFinalizeDFBIndices
            "Maximum states examined by exact DFB allocation before reporting "
            "an inconclusive result.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used by DFB allocation. "
-           "0 selects the target budget.">
+           "Override the per-core L1 budget used by DFB allocation and "
+           "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }
 
@@ -1156,25 +1162,27 @@ def TTLValidateCBBudget
   let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. Sums the maximum static backing-store size for
-    every physical DFB index, allocator-rounded synchronized-reset state, and
-    one fixed-size configuration tensor for every synchronized reconfiguration
-    boundary, then compares the result against a per-core L1 budget.
+    `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
+    static backing-store size per physical DFB index, allocator-rounded
+    synchronized-reset state, and one target-aligned configuration tensor per
+    synchronized reconfiguration boundary. Tensor-backed DFB storage is
+    excluded because the tensor allocator owns that allocation.
 
     For each `BindCBOp`, the pass computes:
-      cb_bytes = total_elements * tile_size_bytes
+      dfb_payload_bytes = total_elements * tile_size_bytes
+      dfb_allocation_bytes = align_to_target_quantum(dfb_payload_bytes)
 
     When the same `cb_index` appears in multiple functions (e.g. compute
-    and data-movement kernels sharing a CB slot), only the largest
-    allocation for that index is counted.
+    and data-movement kernels sharing a DFB slot), only the largest allocation
+    for that index is counted.
 
-    On overflow the pass emits an error with a per-CB breakdown and a
+    On overflow the pass emits an error with a per-DFB breakdown and a
     hint to reduce block shapes or block counts.
 
     L1 budget is taken from the module's TTCore system descriptor and
     default device when present (`ChipDescAttr::getUsableL1Size()` for the
     selected chip). When the module has no system descriptor, the pass uses
-    the same static per-core CB region limit as Wormhole and Blackhole
+    the same static per-core DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
     This is a static DFB and fixed-state check. Pipe transport formation and

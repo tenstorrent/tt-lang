@@ -1,4 +1,4 @@
-// Verifies target-aligned subtile DFB and reconfiguration-state accounting.
+// Summary: Verifies aligned subtile DFB and reconfiguration-state accounting.
 // RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=1215})'
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
