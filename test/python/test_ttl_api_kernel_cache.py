@@ -496,6 +496,38 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
     assert events == ["synchronize", "cleanup-sync", "release"]
 
 
+def test_runtime_resource_finalizer_retains_owners_when_warning_fails(monkeypatch):
+    runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resources",), device="device", pipe_resources=object()
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        type(
+            "FakeTTNN",
+            (),
+            {
+                "synchronize_device": staticmethod(
+                    lambda _device: (_ for _ in ()).throw(KeyboardInterrupt())
+                )
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        kernel_runner.warnings,
+        "warn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("warning")),
+    )
+
+    kernel_runner.finalize_runtime_resource_cache(runtime_resource_cache)
+
+    assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
+    kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    runtime_resource_cache.compatibility_key = None
+    runtime_resource_cache.device = None
+    runtime_resource_cache.pipe_resources = None
+
+
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
     grid_widths = iter((1, 2, 1))
