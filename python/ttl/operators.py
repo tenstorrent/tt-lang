@@ -30,6 +30,12 @@ from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
 from .scalar import ScalarType
 from .dfb_reset import DFBReset
+from .dfb_reconfiguration import DFBReconfiguration
+
+
+def reconfigure_dfbs(boundary: DFBReconfiguration) -> None:
+    """Enter the next compiler-derived worker-local DFB configuration epoch."""
+    raise RuntimeError("ttl.reconfigure_dfbs() is valid only in a compiled kernel")
 
 
 def call_extern_func(
