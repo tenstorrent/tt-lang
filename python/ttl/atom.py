@@ -356,9 +356,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         operation_identity = (
             f"{operation_identity}[dispatch_conditions={topology_digest}]"
         )
-    reset_kernels = dict(logical_kernels)
-    reset_kernels.update(captured_logical_kernels)
-    reset_topology = _dfb_reset_topology(dfb_resets, reset_kernels)
+    synchronization_kernels = dict(logical_kernels)
+    synchronization_kernels.update(captured_logical_kernels)
+    reset_topology = _dfb_reset_topology(dfb_resets, synchronization_kernels)
     if reset_topology:
         encoded_reset_topology = ";".join(
             f"{ordinal}:{scope.name}:"
@@ -373,7 +373,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         ).hexdigest()[:16]
         operation_identity = f"{operation_identity}[dfb_resets={reset_topology_digest}]"
     reconfiguration_topology = _dfb_reconfiguration_topology(
-        dfb_reconfigurations, reset_kernels
+        dfb_reconfigurations, synchronization_kernels
     )
     if reconfiguration_topology:
         encoded_reconfiguration_topology = ";".join(
