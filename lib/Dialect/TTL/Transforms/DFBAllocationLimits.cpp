@@ -29,9 +29,7 @@ namespace {
 constexpr uint64_t kFallbackUsableL1Bytes = static_cast<uint64_t>(1432 * 1024);
 constexpr uint64_t kDFBReconfigurationWordsPerCore = 264;
 constexpr uint64_t kDFBReconfigurationWordBytes = 4;
-// TT-Metal may select its hybrid allocator at runtime. Its L1 allocation
-// quantum is the 32-byte DRAM alignment rather than the 16-byte NOC alignment.
-constexpr uint64_t kGlobalSemaphoreL1AllocationBytes = 32;
+constexpr uint64_t kGlobalSemaphorePayloadBytes = 4;
 
 std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
@@ -53,6 +51,25 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 }
 
 } // namespace
+
+FailureOr<uint64_t> getL1AllocationSizeBytes(ModuleOp module,
+                                             uint64_t payloadBytes) {
+  if (payloadBytes == 0) {
+    return 0;
+  }
+  std::string failureReason;
+  FailureOr<uint64_t> allocationQuantum =
+      resolveTargetL1AllocationQuantumBytes(module, failureReason);
+  if (failed(allocationQuantum) || *allocationQuantum == 0) {
+    return failure();
+  }
+  std::optional<uint64_t> roundedNumerator =
+      llvm::checkedAddUnsigned(payloadBytes, *allocationQuantum - 1);
+  if (!roundedNumerator) {
+    return failure();
+  }
+  return (*roundedNumerator / *allocationQuantum) * *allocationQuantum;
+}
 
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
   DFBReconfigurationOp firstBoundary;
@@ -85,9 +102,13 @@ FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
   module.walk([&](DFBReconfigurationOp reconfiguration) {
     boundaryOrdinals.insert(reconfiguration.getBoundary().getOrdinal());
   });
+  FailureOr<uint64_t> allocationBytes = getL1AllocationSizeBytes(
+      module, kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes);
+  if (failed(allocationBytes)) {
+    return failure();
+  }
   std::optional<uint64_t> stateBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(boundaryOrdinals.size()),
-      kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes);
+      static_cast<uint64_t>(boundaryOrdinals.size()), *allocationBytes);
   if (!stateBytes) {
     return failure();
   }
@@ -138,11 +159,29 @@ FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
   return *allocationBytes;
 }
 
-FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
+FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
+                                                CircularBufferType type,
+                                                std::string &failureReason) {
+  FailureOr<uint64_t> payloadBytes =
+      getDFBAllocationSizeBytes(type, failureReason);
+  if (failed(payloadBytes)) {
+    return failure();
+  }
+  FailureOr<uint64_t> allocationBytes =
+      getL1AllocationSizeBytes(module, *payloadBytes);
+  if (failed(allocationBytes)) {
+    failureReason = "DFB L1 allocation size is not representable";
+    return failure();
+  }
+  return *allocationBytes;
+}
+
+FailureOr<bool> DFBAllocationFootprint::add(ModuleOp module,
+                                            int64_t physicalIndex,
                                             CircularBufferType type,
                                             std::string &failureReason) {
   FailureOr<uint64_t> allocationBytes =
-      getDFBAllocationSizeBytes(type, failureReason);
+      getDFBL1AllocationSizeBytes(module, type, failureReason);
   if (failed(allocationBytes)) {
     return failure();
   }
@@ -219,7 +258,7 @@ FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
     }
     std::string failureReason;
     FailureOr<bool> increased = footprint.add(
-        bindOp.getCbIndex().getSExtValue(),
+        module, bindOp.getCbIndex().getSExtValue(),
         cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
     return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
   });
@@ -239,7 +278,7 @@ getLogicalDFBAllocationFootprint(ModuleOp module,
     }
     std::string failureReason;
     FailureOr<bool> increased = footprint.add(
-        identities.getLogicalId(bindOp),
+        module, identities.getLogicalId(bindOp),
         cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
     return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
   });
@@ -249,12 +288,18 @@ getLogicalDFBAllocationFootprint(ModuleOp module,
   return footprint;
 }
 
-FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(int64_t semaphoreCount) {
+FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(ModuleOp module,
+                                              int64_t semaphoreCount) {
   if (semaphoreCount < 0) {
     return failure();
   }
+  FailureOr<uint64_t> semaphoreAllocationBytes =
+      getL1AllocationSizeBytes(module, kGlobalSemaphorePayloadBytes);
+  if (failed(semaphoreAllocationBytes)) {
+    return failure();
+  }
   std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(semaphoreCount), kGlobalSemaphoreL1AllocationBytes);
+      static_cast<uint64_t>(semaphoreCount), *semaphoreAllocationBytes);
   if (!allocationBytes) {
     return failure();
   }
@@ -269,14 +314,16 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
   FailureOr<uint64_t> reconfigurationBytes =
       getDFBReconfigurationStateBytes(module);
   FailureOr<uint64_t> globalSemaphoreBytes =
-      getGlobalSemaphoreL1Bytes(globalSemaphoreCount);
+      getGlobalSemaphoreL1Bytes(module, globalSemaphoreCount);
+  FailureOr<uint64_t> pipeScratchAllocationBytes =
+      getL1AllocationSizeBytes(module, pipeScratchBytes);
   if (failed(dfbBytes) || failed(reconfigurationBytes) ||
-      failed(globalSemaphoreBytes)) {
+      failed(globalSemaphoreBytes) || failed(pipeScratchAllocationBytes)) {
     module.emitOpError("combined L1 allocation size is not representable");
     return failure();
   }
   std::optional<uint64_t> requiredBytes =
-      llvm::checkedAddUnsigned(*dfbBytes, pipeScratchBytes);
+      llvm::checkedAddUnsigned(*dfbBytes, *pipeScratchAllocationBytes);
   if (requiredBytes) {
     requiredBytes =
         llvm::checkedAddUnsigned(*requiredBytes, *globalSemaphoreBytes);
@@ -296,7 +343,8 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
   module.emitOpError()
       << "combined DFB, PipeNet, and reconfiguration resources require "
       << *requiredBytes << " L1 bytes but the budget is " << budgetBytes
-      << " (DFB=" << *dfbBytes << ", pipe scratch=" << pipeScratchBytes
+      << " (DFB=" << *dfbBytes
+      << ", pipe scratch=" << *pipeScratchAllocationBytes
       << ", global semaphores=" << *globalSemaphoreBytes
       << ", reconfiguration state=" << *reconfigurationBytes << ")";
   return failure();

@@ -1,8 +1,11 @@
 // Verifies that exact PipeNet L1 validation includes GlobalSemaphore storage.
-// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true l1-budget-override=12351})'
+// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true l1-budget-override=12415})'
 
-// expected-error @below {{combined DFB, PipeNet, and reconfiguration resources require 12352 L1 bytes but the budget is 12351 (DFB=12288, pipe scratch=0, global semaphores=64, reconfiguration state=0)}}
-module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+// expected-error @below {{combined DFB, PipeNet, and reconfiguration resources require 12416 L1 bytes but the budget is 12415 (DFB=12288, pipe scratch=0, global semaphores=128, reconfiguration state=0)}}
+module attributes {
+  ttl.launch_grid = array<i64: 2, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
   func.func @global_semaphore_l1_budget()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 2}

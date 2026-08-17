@@ -27,6 +27,15 @@ class DFBLogicalIdentityAnalysis;
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                                               std::string &failureReason);
 
+/// Rounds one runtime allocation to the target's maximum L1 quantum.
+FailureOr<uint64_t> getL1AllocationSizeBytes(ModuleOp module,
+                                             uint64_t payloadBytes);
+
+/// Returns the target-aligned L1 allocation for one physical DFB descriptor.
+FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
+                                                CircularBufferType type,
+                                                std::string &failureReason);
+
 /// Returns the per-node L1 bytes reserved for all unique reconfiguration
 /// boundaries, or failure when the total is not representable.
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
@@ -39,8 +48,8 @@ class DFBAllocationFootprint {
 public:
   /// Adds one assignment and returns true when it increases its identity size.
   /// On failure, `failureReason` describes the invalid allocation type.
-  FailureOr<bool> add(int64_t physicalIndex, CircularBufferType type,
-                      std::string &failureReason);
+  FailureOr<bool> add(ModuleOp module, int64_t physicalIndex,
+                      CircularBufferType type, std::string &failureReason);
 
   bool empty() const { return maxBytesByIndex.empty(); }
   /// Returns the total allocation size, or failure when the sum overflows.
@@ -65,7 +74,8 @@ getLogicalDFBAllocationFootprint(ModuleOp module,
                                  const DFBLogicalIdentityAnalysis &identities);
 
 /// Returns the per-core L1 allocation reserved for GlobalSemaphore objects.
-FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(int64_t semaphoreCount);
+FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(ModuleOp module,
+                                              int64_t semaphoreCount);
 
 /// Validates the exact finalized DFB, PipeNet, and reconfiguration allocation.
 LogicalResult validateCombinedDFBResourceL1Bytes(

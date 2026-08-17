@@ -94,7 +94,7 @@ struct TTLValidateCBBudgetPass
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
       std::string failureReason;
       FailureOr<bool> increased =
-          footprint.add(physicalIndex, cbType, failureReason);
+          footprint.add(moduleOp, physicalIndex, cbType, failureReason);
       if (failed(increased)) {
         bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();
@@ -198,7 +198,7 @@ struct TTLValidateCBBudgetPass
         BindCBOp reportAt = bindForLargestAllocation();
         auto diag = reportAt.emitOpError();
         if (*reconfigurationStateBytes == 0) {
-          diag << "total circular buffer allocation (" << totalBytes;
+          diag << "total DFB allocation (" << totalBytes;
         } else {
           diag << "total DFB allocation and reconfiguration state ("
                << totalBytes;

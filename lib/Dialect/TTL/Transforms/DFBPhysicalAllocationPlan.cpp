@@ -601,8 +601,8 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     if (!logicalDFB.tensorBacking) {
       std::string failureReason;
       if (failed(fixedUserFootprint.add(
-              *logicalPhysicalIndex, cast<CircularBufferType>(logicalDFB.type),
-              failureReason))) {
+              moduleOp, *logicalPhysicalIndex,
+              cast<CircularBufferType>(logicalDFB.type), failureReason))) {
         analysisFailure.set(logicalDFB.declarations.front(), failureReason);
         return failure();
       }
@@ -809,14 +809,15 @@ static void setInvalidDFBPageSizeFailure(CircularBufferType dfbType,
 
 /// Returns the L1 bytes required by the unique physical assignments.
 static FailureOr<uint64_t>
-computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+computeAllocationBytes(ModuleOp module,
+                       ArrayRef<DFBPhysicalIndexAssignment> assignments,
                        std::string &failureReason) {
   DFBAllocationFootprint footprint;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     if (assignment.tensorBacking) {
       continue;
     }
-    if (failed(footprint.add(assignment.physicalIndex,
+    if (failed(footprint.add(module, assignment.physicalIndex,
                              cast<CircularBufferType>(assignment.type),
                              failureReason))) {
       return failure();
@@ -825,12 +826,11 @@ computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   return footprint.getTotalBytes();
 }
 
-static FailureOr<uint64_t>
-computeRequiredL1Bytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
-                       uint64_t reconfigurationStateBytes,
-                       std::string &failureReason) {
+static FailureOr<uint64_t> computeRequiredL1Bytes(
+    ModuleOp module, ArrayRef<DFBPhysicalIndexAssignment> assignments,
+    uint64_t reconfigurationStateBytes, std::string &failureReason) {
   FailureOr<uint64_t> allocationBytes =
-      computeAllocationBytes(assignments, failureReason);
+      computeAllocationBytes(module, assignments, failureReason);
   if (failed(allocationBytes)) {
     return failure();
   }
@@ -890,7 +890,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     return failure();
   }
   FailureOr<uint64_t> requiredL1Bytes = computeRequiredL1Bytes(
-      allocation->assignments, *reconfigurationStateBytes,
+      moduleOp, allocation->assignments, *reconfigurationStateBytes,
       allocationSizeFailureReason);
   if (failed(requiredL1Bytes)) {
     analysisFailure.set(moduleOp, allocationSizeFailureReason);
@@ -1218,8 +1218,9 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
       continue;
     }
     std::string allocationFailureReason;
-    FailureOr<uint64_t> allocationBytes = getDFBAllocationSizeBytes(
-        cast<CircularBufferType>(logicalDFB.type), allocationFailureReason);
+    FailureOr<uint64_t> allocationBytes = getDFBL1AllocationSizeBytes(
+        moduleOp, cast<CircularBufferType>(logicalDFB.type),
+        allocationFailureReason);
     if (failed(allocationBytes)) {
       errorOperation = logicalDFB.declarations.front();
       errorMessage = std::move(allocationFailureReason);
