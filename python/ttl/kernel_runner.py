@@ -188,14 +188,10 @@ def get_min_remaining_l1_for_device(device):
     configured L1 allocator base. The usable interval therefore ends at the
     lowest live tensor page address, not at the total allocated byte count.
 
-    ``get_buffer_pages`` is called on the original device rather than on
-    per-coordinate submeshes because ``create_submesh`` produces a new
-    device view that does not inherit buffer tracking from the parent.
-    For mesh devices this reports allocations for the first physical
-    device, which is representative because tt-lang distributes tensors
-    uniformly across the mesh. If individual physical devices need tracking,
-    ttnn.reports.get_buffer_pages would have to report allocations on the
-    parent mesh instead of the first device within the mesh.
+    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator.
+    TT-Lang's multi-device tensors and runtime resources use common L1
+    addresses across their mesh, so its lowest live page is also a safe lower
+    bound for every physical device.
     """
     _ensure_ttnn()
     if ttnn is None:
@@ -215,10 +211,15 @@ def get_min_remaining_l1_for_device(device):
     return minimum_remaining_bytes
 
 
+def _contains_multiple_physical_devices(device) -> bool:
+    get_num_devices = getattr(device, "get_num_devices", None)
+    return get_num_devices is not None and int(get_num_devices()) > 1
+
+
 def _get_remaining_l1_by_core_for_device(
     device, cores: set[tuple[int, int]]
 ) -> dict[tuple[int, int], int]:
-    """Return each requested logical core's remaining static-CB budget."""
+    """Return safe static-DFB budgets for the requested logical cores."""
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
@@ -228,13 +229,26 @@ def _get_remaining_l1_by_core_for_device(
         device, ttnn.BufferType.L1
     )
     remaining_bytes = {core: device_info.cb_limit for core in cores}
+    minimum_remaining_bytes = device_info.cb_limit
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type != ttnn.BufferType.L1:
+            continue
+        page_remaining_bytes = max(0, page.page_address - static_dfb_base_address)
+        minimum_remaining_bytes = min(minimum_remaining_bytes, page_remaining_bytes)
         core = (page.core_x, page.core_y)
-        if page.buffer_type == ttnn.BufferType.L1 and core in remaining_bytes:
-            remaining_bytes[core] = min(
-                remaining_bytes[core],
-                max(0, page.page_address - static_dfb_base_address),
-            )
+        if core in remaining_bytes:
+            remaining_bytes[core] = min(remaining_bytes[core], page_remaining_bytes)
+
+    # TTNN reports one physical allocator for a MeshDevice, while the same
+    # logical program executes on devices with potentially different harvested
+    # worker mappings. Common tensor and runtime-resource addresses make the
+    # reference allocator's lowest live page a conservative bound for every
+    # worker.
+    if _contains_multiple_physical_devices(device):
+        remaining_bytes = {
+            core: min(core_remaining_bytes, minimum_remaining_bytes)
+            for core, core_remaining_bytes in remaining_bytes.items()
+        }
     return remaining_bytes
 
 
