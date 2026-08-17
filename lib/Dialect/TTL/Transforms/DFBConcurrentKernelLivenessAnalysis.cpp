@@ -3589,6 +3589,25 @@ struct OrderedLifecycleBoundary {
   }
 };
 
+static Operation *findConditionalExecutionMismatch(
+    const OrderedLifecycleBoundary &boundary,
+    ArrayRef<const DFBAccessOccurrence *> accesses, LaunchNodeCoord node,
+    const AccessRuns &accessRuns, const LaunchNodeDomainState &domainState) {
+  if (!boundary.isConditional()) {
+    return nullptr;
+  }
+  for (const DFBAccessOccurrence *access : accesses) {
+    auto runIt = accessRuns.find(access);
+    if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
+        !proveEquivalentConditionalExecutionAtLaunchNodes(
+            access->operation, node, boundary.getEvidenceOperation(), node,
+            domainState)) {
+      return access->operation;
+    }
+  }
+  return nullptr;
+}
+
 // Proves complete protocol intervals between lifecycle boundaries. A reset may
 // discard unread blocks. An incomplete protocol crosses reconfiguration
 // unchanged and remains active in every configuration epoch that it spans.
@@ -3714,30 +3733,21 @@ static DFBQuiescenceProof computePerNodeLifetime(
     epochAccesses[epochIndex].push_back(&access);
   }
 
-  SmallVector<Operation *> conditionalBoundaryMismatches(boundaries.size(),
-                                                         nullptr);
-  for (auto [boundaryIndex, boundary] : llvm::enumerate(boundaries)) {
-    if (!boundary.isConditional()) {
+  for (const OrderedLifecycleBoundary &boundary : boundaries) {
+    if (!boundary.reset) {
       continue;
     }
+    Operation *conditionalMismatch = nullptr;
     for (ArrayRef<const DFBAccessOccurrence *> accesses : epochAccesses) {
-      for (const DFBAccessOccurrence *access : accesses) {
-        auto runIt = accessRuns.find(access);
-        if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
-            !proveEquivalentConditionalExecutionAtLaunchNodes(
-                access->operation, node, boundary.getEvidenceOperation(), node,
-                domainState)) {
-          conditionalBoundaryMismatches[boundaryIndex] = access->operation;
-          break;
-        }
-      }
-      if (conditionalBoundaryMismatches[boundaryIndex]) {
+      conditionalMismatch = findConditionalExecutionMismatch(
+          boundary, accesses, node, accessRuns, domainState);
+      if (conditionalMismatch) {
         break;
       }
     }
-    if (boundary.reset && conditionalBoundaryMismatches[boundaryIndex]) {
+    if (conditionalMismatch) {
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-              conditionalBoundaryMismatches[boundaryIndex]};
+              conditionalMismatch};
     }
   }
 
@@ -3773,19 +3783,12 @@ static DFBQuiescenceProof computePerNodeLifetime(
     const DFBPerNodeLifetimeDiagnostics *epochDiagnostic =
         diagnostics ? &epochDiagnostics.front() : nullptr;
     epochLifetime.quiescence = proof;
-    Operation *conditionalMismatch =
-        terminalBoundary ? conditionalBoundaryMismatches[boundaryInterval]
-                         : nullptr;
     if (terminalBoundary && terminalBoundary->reconfiguration &&
-        (!proof.proven() || conditionalMismatch)) {
+        !proof.proven()) {
       continue;
     }
     if (!proof.proven()) {
       return proof;
-    }
-    if (conditionalMismatch) {
-      return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-              conditionalMismatch};
     }
 
     DFBLifecycleEpoch epoch;
@@ -3803,12 +3806,22 @@ static DFBQuiescenceProof computePerNodeLifetime(
     epoch.terminalCompletionEvents = epochLifetime.terminalCompletionEvents;
     assert(firstBoundaryInterval &&
            "active lifecycle must have a first boundary interval");
+    const OrderedLifecycleBoundary *entryBoundary = nullptr;
     for (unsigned boundaryIndex = 0; boundaryIndex < *firstBoundaryInterval;
          ++boundaryIndex) {
       if (const ValidatedDFBReconfiguration *entryReconfiguration =
               boundaries[boundaryIndex].reconfiguration) {
         epoch.entryReconfigurationOrdinal =
             entryReconfiguration->boundary.getOrdinal();
+        entryBoundary = &boundaries[boundaryIndex];
+      }
+    }
+    if (entryBoundary) {
+      if (Operation *conditionalMismatch = findConditionalExecutionMismatch(
+              *entryBoundary, lifecycleAccesses, node, accessRuns,
+              domainState)) {
+        return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
+                conditionalMismatch};
       }
     }
     epoch.activeConfigurationEpochs.push_back(
