@@ -1764,6 +1764,76 @@ def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
         )
 
 
+def test_reconfiguration_replaces_cached_resources_without_l1_overlap(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type(
+        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0}
+    )
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    pipe_backing = _FakeTensor(device, address=0x8000)
+    cached_owned_scratch = _FakeTensor(device, address=0x9000)
+    cached_pipe_backing = _FakeTensor(device, address=0xA000)
+    cached_configuration = _FakeTensor(device, address=0xB000)
+    cached_resources = kernel_runner.DFBReconfigurationRuntimeResources(
+        scratch_tensors={0: cached_pipe_backing, 1: cached_owned_scratch},
+        configuration_tensors=[cached_configuration],
+        configuration_runtime_args={(0, 0): [0xB000]},
+        device=device,
+        scratch_allocation_bytes={0: 2048, 1: 2048},
+        borrowed_scratch_indices={0},
+    )
+    initial_configs = [
+        PhysicalDFBConfig(dfb_index, 1, "bfloat16", 1, 2048, (32, 32))
+        for dfb_index in range(2)
+    ]
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=tuple(
+            (
+                DFBConfigurationEpoch(None, config),
+                DFBConfigurationEpoch(7, config),
+            )
+            for config in initial_configs
+        ),
+    )
+
+    def allocate_configuration(*_args, **_kwargs):
+        assert cached_resources.scratch_tensors == {}
+        assert cached_resources.configuration_tensors == []
+        assert cached_resources.configuration_runtime_args == {}
+        return _FakeTensor(device, address=0xC000)
+
+    fake_ttnn.from_torch = allocate_configuration
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[_FakeTensor(device)],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
+        existing_backing_tensors={0: pipe_backing},
+        existing_backing_allocation_bytes={0: 2048},
+        existing_resources=cached_resources,
+    )
+
+    assert resources.scratch_tensors == {
+        0: pipe_backing,
+        1: cached_owned_scratch,
+    }
+    assert resources.scratch_allocation_bytes == {0: 2048, 1: 2048}
+    assert resources.borrowed_scratch_indices == {0}
+
+
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(

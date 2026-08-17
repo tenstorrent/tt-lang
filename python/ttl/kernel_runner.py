@@ -849,6 +849,8 @@ class DFBReconfigurationRuntimeResources:
     configuration_tensors: List[Any]
     configuration_runtime_args: Dict[Tuple[int, int], List[int]]
     device: Optional[Any] = None
+    scratch_allocation_bytes: Dict[int, int] = field(default_factory=dict)
+    borrowed_scratch_indices: set[int] = field(default_factory=set)
 
 
 _DFB_RECONFIGURATION_WORDS_PER_CORE = 264
@@ -1330,18 +1332,12 @@ def build_dfb_reconfiguration_runtime_resources(
         if scratch_bytes > 0:
             scratch_bytes_by_index[dfb_index] = scratch_bytes
 
-    can_reuse_resources = (
+    cached_resources_match_device = (
         existing_resources is not None
         and existing_resources.device == resource_device
-        and not reusable_backing_tensors
-        and set(existing_resources.scratch_tensors) == set(scratch_bytes_by_index)
     )
-    scratch_tensors = (
-        dict(existing_resources.scratch_tensors) if can_reuse_resources else {}
-    )
+    scratch_tensors = {}
     for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
-        if dfb_index in scratch_tensors:
-            continue
         existing_tensor = reusable_backing_tensors.get(dfb_index)
         if existing_tensor is not None:
             backing_allocation_bytes = reusable_backing_allocation_bytes[dfb_index]
@@ -1352,9 +1348,17 @@ def build_dfb_reconfiguration_runtime_resources(
                 )
             scratch_tensors[dfb_index] = existing_tensor
             continue
-        scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
-            core_ranges, scratch_bytes, resource_device
-        )
+        if cached_resources_match_device:
+            cached_tensor = existing_resources.scratch_tensors.get(dfb_index)
+            cached_allocation_bytes = existing_resources.scratch_allocation_bytes.get(
+                dfb_index
+            )
+            if (
+                cached_tensor is not None
+                and cached_allocation_bytes is not None
+                and cached_allocation_bytes >= scratch_bytes
+            ):
+                scratch_tensors[dfb_index] = cached_tensor
 
     all_cores = ttnn.corerange_to_cores(core_ranges, row_wise=True)
     core_keys = [(int(core.x), int(core.y)) for core in all_cores]
@@ -1365,6 +1369,31 @@ def build_dfb_reconfiguration_runtime_resources(
             f"{_DFB_RECONFIGURATION_MAX_INDICES} physical indices"
         )
 
+    import torch
+
+    host_configurations = {
+        boundary_ordinal: torch.zeros(
+            (len(core_keys), _DFB_RECONFIGURATION_WORDS_PER_CORE),
+            dtype=torch.uint32,
+        )
+        for boundary_ordinal in plan.boundary_ordinals
+    }
+
+    # Cached calls must release superseded device allocations before requesting
+    # replacements because both generations consume the same per-core L1.
+    if existing_resources is not None:
+        existing_resources.scratch_tensors.clear()
+        existing_resources.scratch_allocation_bytes.clear()
+        existing_resources.configuration_tensors.clear()
+        existing_resources.configuration_runtime_args.clear()
+
+    for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
+        if dfb_index in scratch_tensors:
+            continue
+        scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
+            core_ranges, scratch_bytes, resource_device
+        )
+
     configuration_runtime_args = {core: [] for core in core_keys}
     configuration_tensors = []
     tensor_addresses_by_core = {}
@@ -1372,13 +1401,9 @@ def build_dfb_reconfiguration_runtime_resources(
         dfb_index: _l1_buffer_addresses_by_core(tensor, resource_device)
         for dfb_index, tensor in scratch_tensors.items()
     }
-    import torch
 
     for boundary_ordinal in plan.boundary_ordinals:
-        host_configuration = torch.zeros(
-            (len(core_keys), _DFB_RECONFIGURATION_WORDS_PER_CORE),
-            dtype=torch.uint32,
-        )
+        host_configuration = host_configurations[boundary_ordinal]
         for dfb_index, epochs in enumerate(plan.dfb_epochs):
             matching_epoch = next(
                 (
@@ -1505,6 +1530,10 @@ def build_dfb_reconfiguration_runtime_resources(
         configuration_tensors=configuration_tensors,
         configuration_runtime_args=configuration_runtime_args,
         device=resource_device,
+        scratch_allocation_bytes=scratch_bytes_by_index,
+        borrowed_scratch_indices=(
+            set(scratch_tensors).intersection(reusable_backing_tensors)
+        ),
     )
 
 
@@ -2027,6 +2056,21 @@ def run_kernel_on_device(
     grid_cols = grid_size.x
     grid_rows = grid_size.y
 
+    cached_reconfiguration_resources = (
+        dfb_reconfiguration_resource_cache[0]
+        if dfb_reconfiguration_resource_cache
+        else None
+    )
+    if cached_reconfiguration_resources is not None:
+        cached_reconfiguration_resources.configuration_tensors.clear()
+        cached_reconfiguration_resources.configuration_runtime_args.clear()
+        for dfb_index in cached_reconfiguration_resources.borrowed_scratch_indices:
+            cached_reconfiguration_resources.scratch_tensors.pop(dfb_index, None)
+            cached_reconfiguration_resources.scratch_allocation_bytes.pop(
+                dfb_index, None
+            )
+        cached_reconfiguration_resources.borrowed_scratch_indices.clear()
+
     pipe_runtime_resources = build_pipe_runtime_resources(
         tensors=tensors,
         core_ranges=core_ranges,
@@ -2052,11 +2096,7 @@ def run_kernel_on_device(
         existing_backing_allocation_bytes=(
             pipe_runtime_resources.computed_address_dfb_allocation_bytes
         ),
-        existing_resources=(
-            dfb_reconfiguration_resource_cache[0]
-            if dfb_reconfiguration_resource_cache
-            else None
-        ),
+        existing_resources=cached_reconfiguration_resources,
     )
     if dfb_reconfiguration_resource_cache is not None:
         dfb_reconfiguration_resource_cache[:] = [reconfiguration_resources]
