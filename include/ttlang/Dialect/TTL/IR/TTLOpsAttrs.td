@@ -90,7 +90,9 @@ def TTL_DFBReconfigurationAttr
   let description = [{
     Identifies one worker-local DFB configuration-epoch boundary site and
     the complete set of logical kernels that participate on each active worker.
-    Every participant executes the same boundary instances in the same order.
+    Every site executes zero or one dynamic instance per dispatch and launch
+    node. Every participant executes the same instances in the same order, and
+    every boundary site in one module declares the same participant set.
     Before any participant continues, all participating kernels have completed
     prior DFB, compute, and data-movement work and the runtime has installed the
     next epoch's DFB interface configuration.

@@ -1,4 +1,4 @@
-// Verifies weighted epoch allocation under authoritative and planning budgets.
+// Summary: Verifies weighted epoch allocation under authoritative and planning budgets.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=300000})' | FileCheck %s --check-prefix=WEIGHTED
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=500000})' | FileCheck %s --check-prefix=WEIGHTED
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=500000 exact-coloring-search-limit=1})' | FileCheck %s --check-prefix=LIMIT

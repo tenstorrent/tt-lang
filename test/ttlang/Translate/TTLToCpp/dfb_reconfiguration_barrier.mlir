@@ -1,3 +1,4 @@
+// Summary: Verifies generated C++ contains the DFB reconfiguration protocol.
 // RUN: ttlang-opt --convert-ttl-to-ttkernel %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir

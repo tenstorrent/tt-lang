@@ -1,4 +1,4 @@
-// Verifies the final combined L1 check after grouping and DFB allocation.
+// Summary: Verifies the final combined L1 check after grouping and DFB allocation.
 // RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25727},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=25727},convert-ttl-to-ttkernel{pipe-computed-addresses=false l1-budget-override=25727})'
 
 #layout = #ttl.layout<

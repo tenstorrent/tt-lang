@@ -1,4 +1,4 @@
-// Verifies BFP subtiles use target-aligned physical DFB allocation sizes.
+// Summary: Verifies BFP subtiles use target-aligned physical DFB allocations.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=255})'
 
 // The 32-, 24-, and 80-byte payloads occupy 64, 64, and 128 L1 bytes.

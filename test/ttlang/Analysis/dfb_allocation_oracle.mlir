@@ -1,4 +1,4 @@
-// Tests minimum and fixed-limit DFB index assignment against an independent
+// Summary: Tests minimum and fixed-limit DFB index assignment against an independent
 // exhaustive oracle and compares uniform, per-node, and hybrid contracts.
 // RUN: ttlang-dfb-allocation-oracle-test | FileCheck %s
 

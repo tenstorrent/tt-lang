@@ -1,3 +1,4 @@
+// Summary: Verifies DFB reconfiguration lowering to a runtime interface call.
 // RUN: ttlang-opt --convert-ttl-to-ttkernel %s | FileCheck %s
 
 // CHECK-LABEL: func.func @boundary

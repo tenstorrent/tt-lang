@@ -1,4 +1,4 @@
-// Verifies that DFB budget validation includes reconfiguration state.
+// Summary: Verifies DFB budget validation includes reconfiguration state.
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=3000})'
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">

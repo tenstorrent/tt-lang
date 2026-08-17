@@ -1,4 +1,4 @@
-// Verifies that exact PipeNet L1 validation includes GlobalSemaphore storage.
+// Summary: Verifies exact PipeNet L1 validation includes GlobalSemaphore storage.
 // RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true l1-budget-override=12415})'
 
 // expected-error @below {{combined DFB, PipeNet, and reconfiguration resources require 12416 L1 bytes but the budget is 12415 (DFB=12288, pipe scratch=0, global semaphores=128, reconfiguration state=0)}}

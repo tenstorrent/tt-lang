@@ -1,3 +1,4 @@
+// Summary: Verifies reconfiguration finalization rejects unsupported targets.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
