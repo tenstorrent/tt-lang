@@ -228,6 +228,7 @@ class PipeRuntimeResources:
     scratch_tensors: List[Any]
     global_semaphores: List[Any]
     computed_address_dfb_tensors: Dict[int, Any]
+    computed_address_dfb_allocation_bytes: Dict[int, int]
     computed_address_base_addresses: Dict[int, int]
     extra_common_runtime_args: List[int]
     expected_extra_common_runtime_args: int
@@ -1143,12 +1144,53 @@ def build_pipe_global_semaphores(
     return semaphores, addresses
 
 
+def _get_pipe_computed_address_dfb_allocation_bytes(
+    cb_configs: List[PhysicalDFBConfig],
+    dfb_indices: List[int],
+    plan: Optional[DFBReconfigurationPlan],
+) -> Dict[int, int]:
+    """Return maximum compiler-managed storage required by each receiver DFB."""
+    if plan is not None and len(plan.dfb_epochs) != len(cb_configs):
+        raise ValueError(
+            "DFB reconfiguration plan must describe every physical DFB config"
+        )
+
+    allocation_bytes_by_index = {}
+    for dfb_index in dfb_indices:
+        if dfb_index < 0 or dfb_index >= len(cb_configs):
+            raise ValueError(
+                f"computed-address receiver DFB index {dfb_index} is invalid"
+            )
+        configurations = [cb_configs[dfb_index]]
+        if plan is not None:
+            configurations.extend(epoch.config for epoch in plan.dfb_epochs[dfb_index])
+
+        max_allocation_bytes = 0
+        for config in configurations:
+            _validate_physical_dfb_config(config, dfb_index)
+            if config.storage_segments and all(
+                segment.is_tensor_backed for segment in config.storage_segments
+            ):
+                continue
+            max_allocation_bytes = max(
+                max_allocation_bytes, _get_dfb_allocation(config).total_size
+            )
+        if max_allocation_bytes == 0:
+            raise ValueError(
+                f"computed-address receiver DFB[{dfb_index}] has no "
+                "compiler-managed storage"
+            )
+        allocation_bytes_by_index[dfb_index] = max_allocation_bytes
+    return allocation_bytes_by_index
+
+
 def build_pipe_computed_address_dfb_tensors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> Dict[int, Any]:
     """Allocate hidden L1 backing tensors for computed pipe receiver DFBs."""
     dfb_indices = sorted(set(pipe_computed_address_dfb_indices or []))
@@ -1160,17 +1202,13 @@ def build_pipe_computed_address_dfb_tensors(
         raise RuntimeError("ttnn is not available")
 
     device = device if device is not None else _first_device(tensors)
+    allocation_bytes_by_index = _get_pipe_computed_address_dfb_allocation_bytes(
+        cb_configs, dfb_indices, dfb_reconfiguration_plan
+    )
     backing_tensors = {}
     for dfb_index in dfb_indices:
-        if dfb_index < 0 or dfb_index >= len(cb_configs):
-            raise ValueError(
-                f"computed-address receiver DFB index {dfb_index} is invalid"
-            )
-        config = cb_configs[dfb_index]
-        allocation = _get_dfb_allocation(config)
-        _validate_physical_dfb_config(config, dfb_index)
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
-            core_ranges, allocation.total_size, device
+            core_ranges, allocation_bytes_by_index[dfb_index], device
         )
     return backing_tensors
 
@@ -1183,6 +1221,7 @@ def build_pipe_runtime_resources(
     num_pipe_global_semaphores: int = 0,
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> PipeRuntimeResources:
     """Allocate pipe resources and build their appended common runtime args."""
     computed_address_dfb_indices = list(pipe_computed_address_dfb_indices or [])
@@ -1195,17 +1234,26 @@ def build_pipe_runtime_resources(
         resource_device = _first_device(tensors)
 
     computed_address_dfb_tensors = {}
+    computed_address_dfb_allocation_bytes = {}
     if computed_address_dfb_indices:
         if cb_configs is None:
             raise ValueError(
                 "computed-address receiver DFB base allocation requires DFB configs"
             )
+        computed_address_dfb_allocation_bytes = (
+            _get_pipe_computed_address_dfb_allocation_bytes(
+                cb_configs,
+                sorted(set(computed_address_dfb_indices)),
+                dfb_reconfiguration_plan,
+            )
+        )
         computed_address_dfb_tensors = build_pipe_computed_address_dfb_tensors(
             tensors=tensors,
             cb_configs=cb_configs,
             core_ranges=core_ranges,
             pipe_computed_address_dfb_indices=computed_address_dfb_indices,
             device=resource_device,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         )
 
     scratch_tensors = build_pipe_sram_scratch_tensors(
@@ -1237,6 +1285,7 @@ def build_pipe_runtime_resources(
         scratch_tensors=scratch_tensors,
         global_semaphores=global_semaphores,
         computed_address_dfb_tensors=computed_address_dfb_tensors,
+        computed_address_dfb_allocation_bytes=(computed_address_dfb_allocation_bytes),
         computed_address_base_addresses=computed_address_base_addresses,
         extra_common_runtime_args=extra_common_runtime_args,
         expected_extra_common_runtime_args=expected_extra_common_runtime_args,
@@ -1248,6 +1297,7 @@ def build_dfb_reconfiguration_runtime_resources(
     core_ranges: Any,
     plan: Optional[DFBReconfigurationPlan],
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
+    existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     existing_resources: Optional[DFBReconfigurationRuntimeResources] = None,
     device: Optional[Any] = None,
 ) -> DFBReconfigurationRuntimeResources:
@@ -1261,6 +1311,12 @@ def build_dfb_reconfiguration_runtime_resources(
     _validate_dfb_reconfiguration_plan(tensors, plan)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
+    reusable_backing_allocation_bytes = dict(existing_backing_allocation_bytes or {})
+    if set(reusable_backing_tensors) != set(reusable_backing_allocation_bytes):
+        raise ValueError(
+            "existing DFB backing tensors and allocation sizes must use the "
+            "same physical indices"
+        )
     scratch_bytes_by_index = {}
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
         scratch_bytes = 0
@@ -1288,10 +1344,8 @@ def build_dfb_reconfiguration_runtime_resources(
             continue
         existing_tensor = reusable_backing_tensors.get(dfb_index)
         if existing_tensor is not None:
-            initial_size = _get_dfb_allocation(
-                plan.dfb_epochs[dfb_index][0].config
-            ).total_size
-            if scratch_bytes > initial_size:
+            backing_allocation_bytes = reusable_backing_allocation_bytes[dfb_index]
+            if scratch_bytes > backing_allocation_bytes:
                 raise ValueError(
                     f"DFB[{dfb_index}] PipeNet backing is smaller than its "
                     "reconfiguration scratch requirement"
@@ -1986,6 +2040,7 @@ def run_kernel_on_device(
                 for dfb_index in spec.pipe_computed_address_dfb_indices
             }
         ),
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
@@ -1994,6 +2049,9 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
         plan=dfb_reconfiguration_plan,
         existing_backing_tensors=(pipe_runtime_resources.computed_address_dfb_tensors),
+        existing_backing_allocation_bytes=(
+            pipe_runtime_resources.computed_address_dfb_allocation_bytes
+        ),
         existing_resources=(
             dfb_reconfiguration_resource_cache[0]
             if dfb_reconfiguration_resource_cache
