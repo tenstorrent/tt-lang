@@ -174,7 +174,7 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
                             std::uint64_t physicalTileCount,
                             std::uint64_t initialOffset = 0);
 
-/// Access lifetime and queue state proved between synchronized resets.
+/// Access lifetime and queue state proved between lifecycle boundaries.
 struct DFBLifecycleEpoch {
   std::uint64_t executionCount = 1;
   SmallVector<unsigned> accessOccurrenceIndices;
@@ -187,7 +187,9 @@ struct DFBLifecycleEpoch {
   std::optional<DFBPointerOwner> readPointerOwner;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
+  std::optional<int64_t> terminalReconfigurationOrdinal;
   bool inspectionOnly = false;
   bool terminalStateCanonical = false;
   DFBLifecycleCompletionProof completionProof;
@@ -234,7 +236,7 @@ struct DFBPerNodeLifetime {
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   bool inspectionOnly = false;
   bool terminalStateCanonical = false;
-  SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
+  SmallVector<DFBLifecycleEpoch, 0> epochs;
   DFBLifecycleCompletionProof completionProof;
 };
 

@@ -155,6 +155,68 @@ SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
       participants);
 }
 
+llvm::LogicalResult DFBReconfigurationAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  if (ordinal < 0) {
+    return emitError() << "DFB reconfiguration ordinal must be nonnegative";
+  }
+  if (participants.empty()) {
+    return emitError()
+           << "DFB reconfiguration requires at least one participant";
+  }
+  unsigned computeParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::Compute;
+      });
+  unsigned dataMovementParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::DataMovement;
+      });
+  if (computeParticipants != 1 || dataMovementParticipants != 2 ||
+      participants.size() != 3) {
+    return emitError()
+           << "DFB reconfiguration requires one compute and two data "
+              "movement participants";
+  }
+  llvm::DenseSet<Attribute> uniqueParticipants;
+  for (LogicalKernelAttr participant : participants) {
+    if (!uniqueParticipants.insert(participant).second) {
+      return emitError() << "DFB reconfiguration participants must be distinct";
+    }
+  }
+  auto participantKey = [](LogicalKernelAttr participant) {
+    int identityKind = 0;
+    if (participant.getIdentity()) {
+      identityKind = participant.getRole() ? 1 : 2;
+    }
+    auto valueOrEmpty = [](StringAttr value) {
+      return value ? value.getValue() : StringRef();
+    };
+    return std::make_tuple(static_cast<unsigned>(participant.getKind()),
+                           identityKind,
+                           valueOrEmpty(participant.getIdentity()),
+                           valueOrEmpty(participant.getOperation()),
+                           valueOrEmpty(participant.getRole()));
+  };
+  if (!std::is_sorted(participants.begin(), participants.end(),
+                      [&](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
+                        return participantKey(lhs) < participantKey(rhs);
+                      })) {
+    return emitError()
+           << "DFB reconfiguration participants must use canonical order";
+  }
+  return success();
+}
+
+DFBReconfigurationAttr DFBReconfigurationAttr::getCheckedInstance(
+    Location location, MLIRContext *context, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  return DFBReconfigurationAttr::getChecked(
+      [location]() { return emitError(location); }, context, ordinal,
+      participants);
+}
+
 void TTLDialect::registerAttributes() {
   addAttributes<
 #define GET_ATTRDEF_LIST

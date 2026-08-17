@@ -2031,6 +2031,29 @@ def TTL_ResetAllDFBsOp
 }
 
 //===----------------------------------------------------------------------===//
+// Dataflow-buffer reconfiguration boundary
+//===----------------------------------------------------------------------===//
+
+def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Enter the next worker-local DFB configuration epoch";
+  let description = [{
+    `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
+    by the logical kernels named by `boundary`. Every participant executes the
+    same dynamic boundary instances in the same order. Prior DFB, compute, and
+    data-movement work completes before the runtime installs the next epoch's
+    DFB interface configuration; following work begins after installation.
+
+    The source operation does not name physical DFB indices or enumerate the
+    interfaces that change. Allocation analysis derives the configuration for
+    each epoch from logical DFB lifetimes and rejects any reuse that lacks a
+    complete protocol or synchronization proof.
+  }];
+  let arguments = (ins TTL_DFBReconfigurationAttr:$boundary);
+  let assemblyFormat = "$boundary attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 
