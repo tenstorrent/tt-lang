@@ -1814,15 +1814,15 @@ non-DFB argument index.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
 Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
-and `block_count`. When the compiler proves the exact union of launch nodes
-that access the physical index, the descriptor also contains
-`allocation_nodes`. An empty array records an unreachable allocation. Omitting
-the field retains conservative whole-grid allocation when the node domain is
-unknown. This metadata controls storage residency independently from optional
-per-core executable specialization. The planner computes `page_size` with
-`ttcore::getElementSizeBytes()` on the finalized element type, so subtile
-dimensions affect the physical allocation without requiring runtime device
-initialization.
+and `block_count`. When the compiler proves an exact domain or a conservative
+upper bound for the launch nodes that access the physical index, the descriptor
+also contains `allocation_nodes`. An empty array records an unreachable
+allocation. Omitting the field retains conservative whole-grid allocation when
+no finite node bound is available. This metadata controls storage residency
+independently from optional per-core executable specialization. The planner
+computes `page_size` with `ttcore::getElementSizeBytes()` on the finalized
+element type, so subtile dimensions affect the physical allocation without
+requiring runtime device initialization.
 
 ```text
 buildRuntimeDescriptors(assignments):
@@ -1840,7 +1840,7 @@ buildRuntimeDescriptors(assignments):
           element_type = type.elementType,
           page_size = byteSize(type.elementType),
           block_count = type.blockCount,
-          allocation_nodes = exactUnionOrUnknown(launchDomains(index))}
+          allocation_nodes = conservativeUpperBound(launchDomains(index))}
 ```
 
 Every finalized declaration contributes to the table. Exact-type reuse keeps

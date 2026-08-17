@@ -40,6 +40,9 @@ SYNCHRONIZED_RESET_HEADER = os.path.join(
 INSPECT_DFB_ACCESS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "inspect_dfb_access.hpp"
 )
+NODE_SCOPED_REMOTE_DFB_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "node_scoped_remote_dfb.hpp"
+)
 
 
 def _count_final_dfb_allocations(final_mlir_path):
@@ -346,6 +349,155 @@ def _make_node_scoped_allocation_kernel(data_format):
                 ttl.copy(output_block, output_tensor[0, node_x]).wait()
 
     return node_scoped_allocation_kernel
+
+
+def _make_expression_node_scoped_allocation_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(2, 1))
+    def expression_node_scoped_allocation_kernel(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_node_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, node_y = ttl.node(dims=2)
+            selected_coordinate = node_y
+            if node_x == 1:
+                selected_coordinate = node_x
+            second_node = not (selected_coordinate == 0)
+            with input_dfb.wait() as input_block:
+                with output_dfb.reserve() as output_block:
+                    if second_node:
+                        with second_node_scratch_dfb.reserve() as scratch_output:
+                            scratch_output.store(input_block)
+                        with second_node_scratch_dfb.wait() as scratch_input:
+                            output_block.store(scratch_input)
+                    else:
+                        output_block.store(input_block)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _ = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, node_x], input_block).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _ = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, node_x]).wait()
+
+    return expression_node_scoped_allocation_kernel
+
+
+def _make_bounded_node_scoped_allocation_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(2, 1))
+    def bounded_node_scoped_allocation_kernel(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_node_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, _ = ttl.node(dims=2)
+            with input_dfb.wait() as input_block:
+                with output_dfb.reserve() as output_block:
+                    if node_x == 0:
+                        runtime_active = ttl.call_extern_func(
+                            SCALAR_RESULT_HEADER,
+                            "scalar_result",
+                            template_args=[32],
+                            result_type=ttl.ScalarType.I32,
+                        )
+                        if runtime_active:
+                            with first_node_scratch_dfb.reserve() as scratch_output:
+                                scratch_output.store(input_block)
+                            with first_node_scratch_dfb.wait() as scratch_input:
+                                output_block.store(scratch_input)
+                        else:
+                            output_block.store(input_block)
+                    else:
+                        output_block.store(input_block)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _ = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, node_x], input_block).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _ = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, node_x]).wait()
+
+    return bounded_node_scoped_allocation_kernel
+
+
+def _make_node_scoped_remote_dfb_kernel(data_format, semaphore):
+    semaphore_address = int(ttnn.get_global_semaphore_address(semaphore))
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    sender_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    receiver_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(2, 1))
+    def node_scoped_remote_dfb_kernel(input_tensor, output_tensor):
+        first_node_padding = ttl.make_dfb(
+            data_format, shape=(1, 1), block_count=2
+        )
+        source_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        remote_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            pass
+
+        @ttl.datamovement(kernel=sender_kernel)
+        def send():
+            node_x, _ = ttl.node(dims=2)
+            if node_x == 0:
+                with first_node_padding.reserve() as padding_block:
+                    ttl.copy(input_tensor[0, 0], padding_block).wait()
+                with first_node_padding.wait():
+                    pass
+                with source_dfb.reserve() as source_block:
+                    ttl.copy(input_tensor[0, 0], source_block).wait()
+                ttl.call_extern_func(
+                    NODE_SCOPED_REMOTE_DFB_HEADER,
+                    "ttl_send_to_remote_dfb",
+                    func_args=[source_dfb, remote_dfb, semaphore_address],
+                    dfb_effects=[
+                        ttl.DFBEffect.wait(source_dfb, tiles=1),
+                        ttl.DFBEffect.pop(source_dfb, tiles=1),
+                    ],
+                    dfb_accesses=[ttl.DFBAccess.inspect(remote_dfb)],
+                )
+
+        @ttl.datamovement(kernel=receiver_kernel)
+        def receive():
+            node_x, _ = ttl.node(dims=2)
+            if node_x == 1:
+                ttl.call_extern_func(
+                    NODE_SCOPED_REMOTE_DFB_HEADER,
+                    "ttl_receive_remote_dfb",
+                    func_args=[remote_dfb, semaphore_address],
+                    dfb_effects=[
+                        ttl.DFBEffect.reserve(remote_dfb, tiles=1),
+                        ttl.DFBEffect.push(remote_dfb, tiles=1),
+                    ],
+                )
+                with remote_dfb.wait() as remote_block:
+                    ttl.copy(remote_block, output_tensor[0, 0]).wait()
+
+    return node_scoped_remote_dfb_kernel
 
 
 def _make_repeated_transaction_kernel(data_format):
@@ -1303,6 +1455,18 @@ _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16"
 _exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
 _node_scoped_bf16_allocation_kernel = _make_node_scoped_allocation_kernel("bf16")
 _node_scoped_f32_allocation_kernel = _make_node_scoped_allocation_kernel("float32")
+_expression_node_scoped_bf16_allocation_kernel = (
+    _make_expression_node_scoped_allocation_kernel("bf16")
+)
+_expression_node_scoped_f32_allocation_kernel = (
+    _make_expression_node_scoped_allocation_kernel("float32")
+)
+_bounded_node_scoped_bf16_allocation_kernel = (
+    _make_bounded_node_scoped_allocation_kernel("bf16")
+)
+_bounded_node_scoped_f32_allocation_kernel = (
+    _make_bounded_node_scoped_allocation_kernel("float32")
+)
 _repeated_bf16_transaction_kernel = _make_repeated_transaction_kernel("bf16")
 _repeated_f32_transaction_kernel = _make_repeated_transaction_kernel("float32")
 _cumulative_bf16_queue_state_kernel = _make_cumulative_queue_state_kernel("bf16")
@@ -1543,12 +1707,47 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("operation", "dtype", "allocation_nodes"),
     [
-        (_node_scoped_bf16_allocation_kernel, torch.bfloat16),
-        (_node_scoped_f32_allocation_kernel, torch.float32),
+        (
+            _node_scoped_bf16_allocation_kernel,
+            torch.bfloat16,
+            "allocation_nodes = [[0, 0]]",
+        ),
+        (
+            _node_scoped_f32_allocation_kernel,
+            torch.float32,
+            "allocation_nodes = [[0, 0]]",
+        ),
+        (
+            _expression_node_scoped_bf16_allocation_kernel,
+            torch.bfloat16,
+            "allocation_nodes = [[1, 0]]",
+        ),
+        (
+            _expression_node_scoped_f32_allocation_kernel,
+            torch.float32,
+            "allocation_nodes = [[1, 0]]",
+        ),
+        (
+            _bounded_node_scoped_bf16_allocation_kernel,
+            torch.bfloat16,
+            "allocation_nodes = [[0, 0]]",
+        ),
+        (
+            _bounded_node_scoped_f32_allocation_kernel,
+            torch.float32,
+            "allocation_nodes = [[0, 0]]",
+        ),
     ],
-    ids=["bf16", "f32"],
+    ids=[
+        "direct-bf16",
+        "direct-f32",
+        "expression-bf16",
+        "expression-f32",
+        "bounded-bf16",
+        "bounded-f32",
+    ],
 )
 @pytest.mark.parametrize(
     ("memory_config", "to_device"),
@@ -1556,7 +1755,14 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
     ids=["dram", "l1"],
 )
 def test_node_scoped_dfb_allocation_without_kernel_specialization(
-    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+    device,
+    operation,
+    dtype,
+    allocation_nodes,
+    memory_config,
+    to_device,
+    monkeypatch,
+    tmp_path,
 ):
     element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
         TILE, 2 * TILE
@@ -1570,7 +1776,42 @@ def test_node_scoped_dfb_allocation_without_kernel_specialization(
     operation(input_tensor, output_tensor, options="--no-ttl-specialize-cores")
 
     final_mlir = final_mlir_path.read_text()
-    assert re.search(r"\{allocation_nodes = \[\[0, 0\]\], block_count", final_mlir)
+    assert final_mlir.count(allocation_nodes) == 1
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("data_format", "dtype"),
+    [("bf16", torch.bfloat16), ("float32", torch.float32)],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_node_scoped_allocations_preserve_remote_dfb_address(
+    device, data_format, dtype, memory_config, to_device
+):
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 0))]
+    )
+    semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
+    operation = _make_node_scoped_remote_dfb_kernel(data_format, semaphore)
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(
+        TILE, TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor, options="--no-ttl-specialize-cores")
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()

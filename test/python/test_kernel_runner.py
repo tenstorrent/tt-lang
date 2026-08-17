@@ -3896,6 +3896,46 @@ def test_allocation_nodes_scope_unspecialized_cb_descriptor(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
+def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
 def test_empty_allocation_nodes_omit_cb_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))

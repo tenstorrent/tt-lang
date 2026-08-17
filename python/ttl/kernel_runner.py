@@ -2020,7 +2020,7 @@ def _build_partitioned_cb_descriptors(
     backing_tensors: Dict[int, Any],
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
 ) -> List[Any]:
-    """Build descriptors on disjoint core partitions after CB-use filtering."""
+    """Build descriptors by physical DFB storage source after use filtering."""
     all_cores = sorted({core for placement in placements for core in placement})
     bytes_by_core = {core: 0 for core in all_cores}
     for cb_index, placement in enumerate(placements):
@@ -2059,25 +2059,20 @@ def _build_partitioned_cb_descriptors(
             + "\n  hint: reduce DFB shapes or block_count."
         )
 
-    # Every descriptor uses one of these disjoint partitions. Equal ranges
-    # share TT-Metal's allocation cursor; disjoint ranges cannot overlap.
-    cores_by_signature: Dict[
-        Tuple[Optional[Tuple[str, Optional[int]]], ...],
-        set[Tuple[int, int]],
-    ] = {}
-    for core in all_cores:
-        signature = tuple(placement.get(core) for placement in placements)
-        cores_by_signature.setdefault(signature, set()).add(core)
-
     descriptors = []
-    for signature, partition_cores in cores_by_signature.items():
-        partition_ranges = _make_node_core_ranges(tuple(sorted(partition_cores)))
-        for cb_index, source in enumerate(signature):
-            if source is None:
-                continue
+    for cb_index, placement in enumerate(placements):
+        # TT-Metal assigns a static DFB address per descriptor. Keep every core
+        # using that DFB in one descriptor so local pointers remain valid peers.
+        cores_by_source: Dict[
+            Tuple[str, Optional[int]], set[Tuple[int, int]]
+        ] = {}
+        for core, source in placement.items():
+            cores_by_source.setdefault(source, set()).add(core)
+        for source, source_cores in cores_by_source.items():
             kind, segment_index = source
             allocation = allocations[cb_index]
             cb_format = _cb_format_descriptor(cb_index, allocation)
+            source_ranges = _make_node_core_ranges(tuple(sorted(source_cores)))
             if kind == "tensor":
                 assert segment_index is not None
                 segment = cb_configs[cb_index].storage_segments[segment_index]
@@ -2089,14 +2084,14 @@ def _build_partitioned_cb_descriptors(
                         tensors[tensor_index],
                         address_offset=segment.byte_offset,
                         total_size=allocation.total_size,
-                        core_ranges=partition_ranges,
+                        core_ranges=source_ranges,
                     )
                 )
                 continue
 
             descriptor = ttnn.CBDescriptor(
                 total_size=allocation.total_size,
-                core_ranges=partition_ranges,
+                core_ranges=source_ranges,
                 format_descriptors=[cb_format],
             )
             if kind == "computed":
@@ -2104,7 +2099,7 @@ def _build_partitioned_cb_descriptors(
                     cb_index,
                     backing_tensors[cb_index],
                     total_size=allocation.total_size,
-                    core_ranges=partition_ranges,
+                    core_ranges=source_ranges,
                 )
                 descriptor.set_buffer_from_cb(backing_descriptor)
             descriptors.append(descriptor)

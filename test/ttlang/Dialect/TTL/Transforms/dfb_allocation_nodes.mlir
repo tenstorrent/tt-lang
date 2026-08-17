@@ -2,11 +2,11 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s
 
 // The first DFB is accessed only on core (0, 0), the second is unreachable on
-// the launch grid, and the third has a runtime-dependent domain. Exact domains
-// are serialized, including the empty domain; the unresolved domain omits
-// allocation_nodes so the runtime allocates it conservatively.
+// the launch grid, and the third executes conditionally on core (0, 0). Exact
+// domains are serialized, including the empty domain. A bounded unknown domain
+// serializes its conservative upper bound.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {allocation_nodes = [], block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}], ttl.launch_grid = array<i64: 2, 1>}
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {allocation_nodes = [], block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}], ttl.launch_grid = array<i64: 2, 1>}
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @allocation_nodes(%runtime_offset: index)
@@ -40,10 +40,12 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
           {header = "effects.hpp"}
           : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
     }
-    scf.if %runtime_condition {
-      ttl.opaque_call "runtime_access" (%runtime_dependent)
-          {header = "effects.hpp"}
-          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    scf.if %on_first_node {
+      scf.if %runtime_condition {
+        ttl.opaque_call "runtime_access" (%runtime_dependent)
+            {header = "effects.hpp"}
+            : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+      }
     }
     return
   }

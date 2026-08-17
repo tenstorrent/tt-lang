@@ -81,6 +81,11 @@ class DFBEffect:
     """Ordered synchronous DFB actions performed by an external call."""
 
     @staticmethod
+    def repeat(count: int, effects):
+        """Repeat an ordered DFB-effect sequence a static nonnegative count."""
+        raise RuntimeError("ttl.DFBEffect.repeat() is valid only in a compiled kernel")
+
+    @staticmethod
     def reserve(dfb, *, tiles: int):
         raise RuntimeError("ttl.DFBEffect.reserve() is valid only in a compiled kernel")
 

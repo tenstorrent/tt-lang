@@ -25,6 +25,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <set>
 #include <string>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
@@ -37,10 +38,9 @@ namespace mlir::tt::ttl {
 namespace {
 
 static ArrayAttr buildLaunchNodeArray(OpBuilder &builder,
-                                      const LaunchNodeDomain &domain) {
-  assert(domain.known && "runtime metadata requires an exact launch domain");
+                                      const std::set<LaunchNodeCoord> &nodes) {
   SmallVector<Attribute> nodeAttributes;
-  for (LaunchNodeCoord node : domain.nodes) {
+  for (LaunchNodeCoord node : nodes) {
     nodeAttributes.push_back(
         builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
                               builder.getI64IntegerAttr(node.y)}));
@@ -129,17 +129,19 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
         "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
-    if (descriptor.allocationDomain.known) {
+    if (const std::set<LaunchNodeCoord> *allocationNodes =
+            descriptor.allocationDomain.getUpperBoundNodes()) {
       entryAttributes.push_back(builder.getNamedAttr(
-          "allocation_nodes",
-          buildLaunchNodeArray(builder, descriptor.allocationDomain)));
+          "allocation_nodes", buildLaunchNodeArray(builder, *allocationNodes)));
     }
     SmallVector<Attribute> storageSegmentAttributes;
     for (const DFBPhysicalStorageSegment &segment :
          descriptor.storageSegments) {
+      assert(segment.launchDomain.known &&
+             "runtime storage segment requires an exact launch domain");
       SmallVector<NamedAttribute> segmentAttributes;
       segmentAttributes.push_back(builder.getNamedAttr(
-          "nodes", buildLaunchNodeArray(builder, segment.launchDomain)));
+          "nodes", buildLaunchNodeArray(builder, segment.launchDomain.nodes)));
       if (segment.tensorBacking) {
         segmentAttributes.push_back(
             builder.getNamedAttr("tensor_backing", segment.tensorBacking));

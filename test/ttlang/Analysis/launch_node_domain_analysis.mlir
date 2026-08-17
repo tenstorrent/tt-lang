@@ -8,6 +8,7 @@
 // CHECK-NEXT: x_nonzero = {(1,0), (1,1)}
 // CHECK-NEXT: joined = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: empty = {}
+// CHECK-NEXT: selected_nonzero = {(1,0), (1,1)}
 // CHECK-NEXT: bounded_unknown = <unknown> within {(0,0), (0,1)}
 // CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
@@ -32,6 +33,17 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
     %is_outside_grid = arith.cmpi eq, %core_x, %c3 : index
     scf.if %is_outside_grid {
       "test.observe"() {test.label = "empty"} : () -> ()
+    }
+
+    %selected_coordinate = scf.if %is_x_zero -> (index) {
+      scf.yield %c0 : index
+    } else {
+      scf.yield %core_x : index
+    }
+    %selected_is_zero = arith.cmpi eq, %selected_coordinate, %c0 : index
+    %selected_is_nonzero = emitc.logical_not %selected_is_zero : i1
+    scf.if %selected_is_nonzero {
+      "test.observe"() {test.label = "selected_nonzero"} : () -> ()
     }
 
     %runtime_coordinate = arith.addi %core_y, %runtime : index

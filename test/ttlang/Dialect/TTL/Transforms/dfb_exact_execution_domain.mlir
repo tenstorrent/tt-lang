@@ -364,7 +364,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // Exact inactivity does not override CircularBufferType compatibility.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{allocation_nodes = [], block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32
+// REUSE: module attributes {ttl.dfb_allocations = [{allocation_nodes = [], block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 1 : i32
 // REUSE-LABEL: func.func @descriptor_mismatch
 // REUSE: %[[INACTIVE_NARROW:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 20 : index}
 // REUSE-NEXT: %[[UNKNOWN_WIDE:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 21 : index}
