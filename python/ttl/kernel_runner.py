@@ -21,7 +21,7 @@ import os
 import threading
 import warnings
 import weakref
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -2112,7 +2112,7 @@ def _validate_tensor_backed_dfb_binding(
 
 
 def _validate_tensor_backing_aliases(
-    tensors: List[Any], cb_configs: List[PhysicalDFBConfig]
+    tensors: List[Any], cb_configs: Iterable[PhysicalDFBConfig]
 ) -> None:
     """Reject overlapping tensor storage not represented by one physical DFB."""
     bindings = []
@@ -2344,8 +2344,8 @@ def _validate_dfb_reconfiguration_plan(
             "DFB reconfiguration boundary ordinals must be strictly increasing"
         )
 
-    configurations_by_entry = {None: []}
-    configurations_by_entry.update({ordinal: [] for ordinal in boundary_ordinals})
+    configurations_by_entry = {None: {}}
+    configurations_by_entry.update({ordinal: {} for ordinal in boundary_ordinals})
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
         if not epochs:
             raise ValueError(
@@ -2371,10 +2371,13 @@ def _validate_dfb_reconfiguration_plan(
             config = epoch.config
             _get_dfb_allocation(config)
             _validate_physical_dfb_config(config, dfb_index)
-            configurations_by_entry[entry_ordinal].append(config)
+            configurations_by_entry[entry_ordinal][dfb_index] = config
 
-    for configurations in configurations_by_entry.values():
-        _validate_tensor_backing_aliases(tensors, configurations)
+    current_configurations = configurations_by_entry[None].copy()
+    _validate_tensor_backing_aliases(tensors, current_configurations.values())
+    for boundary_ordinal in boundary_ordinals:
+        current_configurations.update(configurations_by_entry[boundary_ordinal])
+        _validate_tensor_backing_aliases(tensors, current_configurations.values())
 
 
 def build_cb_descriptors(
