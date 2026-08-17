@@ -84,6 +84,42 @@ def TTL_SynchronizedDFBResetAttr
   }];
 }
 
+def TTL_DFBReconfigurationAttr
+    : TTL_Attr<"DFBReconfiguration", "dfb_reconfiguration"> {
+  let summary = "Worker-local synchronized DFB configuration-epoch boundary";
+  let description = [{
+    Identifies one worker-local DFB configuration-epoch boundary site and
+    the complete set of logical kernels that participate on each active worker.
+    Every participant executes the same boundary instances in the same order.
+    Before any participant continues, all participating kernels have completed
+    prior DFB, compute, and data-movement work and the runtime has installed the
+    next epoch's DFB interface configuration.
+
+    This attribute identifies synchronization only. Source programs retain
+    logical DFB identities across boundaries; physical indices and epoch
+    configurations are compiler-owned. A DFB with live payload or incomplete
+    protocol state cannot cross the boundary unless its physical index,
+    storage, and complete interface configuration remain unchanged.
+
+    The ordinal is module-local and has no runtime meaning. Equal attributes
+    reference the same boundary site. Distinct ordinals identify distinct
+    boundary sites. Participant order is canonical and otherwise
+    semantically insignificant.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
+  );
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
+  let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    static DFBReconfigurationAttr getCheckedInstance(
+        ::mlir::Location location, ::mlir::MLIRContext *context,
+        int64_t ordinal,
+        ::llvm::ArrayRef<LogicalKernelAttr> participants);
+  }];
+}
+
 def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   let summary = "Slice specification for core range";
   let parameters = (ins

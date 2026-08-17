@@ -96,7 +96,31 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
                               builder.getI32IntegerAttr(baseIndex.baseIndex));
   }
 
+  auto buildStorageSegmentAttributes =
+      [&](ArrayRef<DFBPhysicalStorageSegment> storageSegments) {
+        SmallVector<Attribute> storageSegmentAttributes;
+        for (const DFBPhysicalStorageSegment &segment : storageSegments) {
+          SmallVector<Attribute> nodeAttributes;
+          for (LaunchNodeCoord node : segment.launchDomain.nodes) {
+            nodeAttributes.push_back(
+                builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
+                                      builder.getI64IntegerAttr(node.y)}));
+          }
+          SmallVector<NamedAttribute> segmentAttributes;
+          segmentAttributes.push_back(builder.getNamedAttr(
+              "nodes", builder.getArrayAttr(nodeAttributes)));
+          if (segment.tensorBacking) {
+            segmentAttributes.push_back(
+                builder.getNamedAttr("tensor_backing", segment.tensorBacking));
+          }
+          storageSegmentAttributes.push_back(
+              builder.getDictionaryAttr(segmentAttributes));
+        }
+        return builder.getArrayAttr(storageSegmentAttributes);
+      };
+
   SmallVector<Attribute> descriptorAttributes;
+  SmallVector<Attribute> reconfigurationPlanAttributes;
   for (const DFBPhysicalAllocationDescriptor &descriptor :
        allocationPlan.getDescriptors()) {
     SmallVector<NamedAttribute> entryAttributes;
@@ -110,34 +134,70 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
         "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
-    SmallVector<Attribute> storageSegmentAttributes;
-    for (const DFBPhysicalStorageSegment &segment :
-         descriptor.storageSegments) {
-      SmallVector<Attribute> nodeAttributes;
-      for (LaunchNodeCoord node : segment.launchDomain.nodes) {
-        nodeAttributes.push_back(
-            builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
-                                  builder.getI64IntegerAttr(node.y)}));
-      }
-      SmallVector<NamedAttribute> segmentAttributes;
-      segmentAttributes.push_back(
-          builder.getNamedAttr("nodes", builder.getArrayAttr(nodeAttributes)));
-      if (segment.tensorBacking) {
-        segmentAttributes.push_back(
-            builder.getNamedAttr("tensor_backing", segment.tensorBacking));
-      }
-      storageSegmentAttributes.push_back(
-          builder.getDictionaryAttr(segmentAttributes));
-    }
-    if (!storageSegmentAttributes.empty()) {
+    if (!descriptor.storageSegments.empty()) {
       entryAttributes.push_back(builder.getNamedAttr(
-          "storage_segments", builder.getArrayAttr(storageSegmentAttributes)));
+          "storage_segments",
+          buildStorageSegmentAttributes(descriptor.storageSegments)));
     }
     descriptorAttributes.push_back(
         DictionaryAttr::get(context, entryAttributes));
+
+    SmallVector<Attribute> configurationAttributes;
+    for (const DFBConfigurationEpochDescriptor &configuration :
+         descriptor.epochConfigurations) {
+      SmallVector<NamedAttribute> configurationEntry;
+      if (configuration.entryReconfigurationOrdinal) {
+        configurationEntry.push_back(builder.getNamedAttr(
+            "entry_reconfiguration",
+            builder.getI64IntegerAttr(
+                *configuration.entryReconfigurationOrdinal)));
+      }
+      configurationEntry.push_back(builder.getNamedAttr(
+          "num_tiles", builder.getI32IntegerAttr(configuration.numTiles)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "element_type", TypeAttr::get(configuration.elementType)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "page_size", builder.getI32IntegerAttr(configuration.pageSize)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "block_count", builder.getI32IntegerAttr(configuration.blockCount)));
+      if (!configuration.storageSegments.empty()) {
+        configurationEntry.push_back(builder.getNamedAttr(
+            "storage_segments",
+            buildStorageSegmentAttributes(configuration.storageSegments)));
+      }
+      configurationAttributes.push_back(
+          builder.getDictionaryAttr(configurationEntry));
+    }
+    reconfigurationPlanAttributes.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr(
+            "dfb_index", builder.getI32IntegerAttr(descriptor.physicalIndex)),
+        builder.getNamedAttr("configurations",
+                             builder.getArrayAttr(configurationAttributes)),
+    }));
   }
   moduleOp->setAttr(kDFBAllocationsAttrName,
                     ArrayAttr::get(context, descriptorAttributes));
+  SmallVector<int64_t> boundaryOrdinals;
+  moduleOp.walk([&](DFBReconfigurationOp reconfiguration) {
+    int64_t ordinal = reconfiguration.getBoundary().getOrdinal();
+    if (!llvm::is_contained(boundaryOrdinals, ordinal)) {
+      boundaryOrdinals.push_back(ordinal);
+    }
+  });
+  llvm::sort(boundaryOrdinals);
+  if (!boundaryOrdinals.empty()) {
+    moduleOp->setAttr(
+        kDFBReconfigurationPlanAttrName,
+        builder.getDictionaryAttr({
+            builder.getNamedAttr(
+                "boundary_ordinals",
+                builder.getDenseI64ArrayAttr(boundaryOrdinals)),
+            builder.getNamedAttr(
+                "dfbs", builder.getArrayAttr(reconfigurationPlanAttributes)),
+        }));
+  } else {
+    moduleOp->removeAttr(kDFBReconfigurationPlanAttrName);
+  }
 }
 
 struct TTLFinalizeDFBIndicesPass

@@ -141,6 +141,10 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 /// Module attribute containing one runtime descriptor per physical DFB index.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
+/// Module attribute containing physical DFB configuration-epoch metadata.
+constexpr llvm::StringLiteral
+    kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");

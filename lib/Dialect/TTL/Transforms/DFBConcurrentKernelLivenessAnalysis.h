@@ -111,13 +111,15 @@ struct DFBTransactionRun {
   }
 };
 
-/// Protocol state proved for one access interval between synchronized resets.
+/// Protocol state proved for one access interval between lifecycle boundaries.
 struct DFBLifecycleEpoch {
   SmallVector<unsigned> accessOccurrenceIndices;
   SmallVector<DFBTransactionRun> transactionRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
+  std::optional<int64_t> terminalReconfigurationOrdinal;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
 };
@@ -155,7 +157,7 @@ struct DFBPerNodeLifetime {
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   bool terminalStateCanonical = false;
-  SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
+  SmallVector<DFBLifecycleEpoch, 0> epochs;
   DFBQuiescenceProof quiescence;
 };
 
