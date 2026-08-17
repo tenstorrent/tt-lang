@@ -1700,10 +1700,11 @@ computeAllocationBytes(ModuleOp moduleOp,
 }
 
 /// Recomputes an assignment with the minimum physical-index count when a valid
-/// first-fit assignment exceeds either the authoritative DFB-plus-reset budget
-/// or the provisional threshold after a conservative PipeNet reservation. The
-/// reservation only triggers search; finalization rejects against the
-/// authoritative budget, and conversion validates exact PipeNet resources.
+/// first-fit assignment exceeds either the authoritative DFB-plus-fixed-state
+/// budget or the provisional threshold after a conservative PipeNet
+/// reservation. The reservation only triggers search; finalization rejects
+/// against the authoritative budget, and conversion validates exact PipeNet
+/// resources.
 static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
     std::optional<uint64_t> l1BudgetOverride,
@@ -1730,16 +1731,33 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
                         "failed to compute synchronized-reset scratch size");
     return failure();
   }
+  FailureOr<uint64_t> reconfigurationStateBytes =
+      getDFBReconfigurationStateAllocationBytes(moduleOp);
+  if (failed(reconfigurationStateBytes)) {
+    analysisFailure.set(moduleOp,
+                        "failed to compute DFB reconfiguration state size");
+    return failure();
+  }
+  std::optional<uint64_t> fixedStateBytes = llvm::checkedAddUnsigned(
+      *resetStateBytes, *reconfigurationStateBytes);
+  if (!fixedStateBytes) {
+    analysisFailure.set(moduleOp,
+                        "combined DFB fixed-state size is not representable");
+    return failure();
+  }
   uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp, l1BudgetOverride);
-  if (*resetStateBytes > l1BudgetBytes) {
+  if (*fixedStateBytes > l1BudgetBytes) {
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "synchronized-reset scratch requires " << *resetStateBytes
-                  << " L1 bytes but the budget is " << l1BudgetBytes;
+    messageStream << "DFB fixed state requires " << *fixedStateBytes
+                  << " L1 bytes but the budget is " << l1BudgetBytes
+                  << " (reset scratch=" << *resetStateBytes
+                  << ", reconfiguration state=" << *reconfigurationStateBytes
+                  << ")";
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();
   }
-  uint64_t dfbBudgetBytes = l1BudgetBytes - *resetStateBytes;
+  uint64_t dfbBudgetBytes = l1BudgetBytes - *fixedStateBytes;
   uint64_t minimumSearchTriggerBytes = dfbBudgetBytes;
   if (auto pipeReservation = moduleOp->getAttrOfType<IntegerAttr>(
           kPipeConservativeL1BytesAttrName)) {
@@ -1776,18 +1794,21 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   }
   if (*allocationBytes > dfbBudgetBytes) {
     std::optional<uint64_t> combinedBytes =
-        llvm::checkedAddUnsigned(*allocationBytes, *resetStateBytes);
+        llvm::checkedAddUnsigned(*allocationBytes, *fixedStateBytes);
     if (!combinedBytes) {
-      analysisFailure.set(
-          moduleOp, "combined DFB and reset allocation is not representable");
+      analysisFailure.set(moduleOp,
+                          "combined DFB and fixed-state allocation is not "
+                          "representable");
       return failure();
     }
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB and synchronized-reset allocation requires "
+    messageStream << "DFB and fixed-state allocation requires "
                   << *combinedBytes << " L1 bytes but the budget is "
                   << l1BudgetBytes << " (DFB=" << *allocationBytes
-                  << ", reset scratch=" << *resetStateBytes << ")";
+                  << ", reset scratch=" << *resetStateBytes
+                  << ", reconfiguration state=" << *reconfigurationStateBytes
+                  << ")";
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();
   }
