@@ -12,9 +12,12 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Location.h"
 
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
+
+#include <array>
 
 namespace nb = nanobind;
 using namespace mlir;
@@ -177,14 +180,34 @@ void populateTTLModule(nb::module_ &m) {
                                                  routeIndices.end());
                    })
       .def_prop_ro(
-          "interfering_intervals", [](FabricManagerIntervalAttr attribute) {
+          "interfering_intervals",
+          [](FabricManagerIntervalAttr attribute) {
             std::vector<std::string> identities;
             identities.reserve(attribute.getInterferingIntervals().size());
             for (StringAttr identity : attribute.getInterferingIntervals()) {
               identities.push_back(identity.getValue().str());
             }
             return identities;
-          });
+          })
+      .def_prop_ro("launch_nodes",
+                   [](FabricManagerIntervalAttr attribute)
+                       -> std::optional<std::vector<std::array<int64_t, 2>>> {
+                     DenseI64ArrayAttr launchNodes = attribute.getLaunchNodes();
+                     if (!launchNodes) {
+                       return std::nullopt;
+                     }
+                     ArrayRef<int64_t> coordinates = launchNodes.asArrayRef();
+                     assert(coordinates.size() % 2 == 0 &&
+                            "launch-node coordinates must contain x/y pairs");
+                     std::vector<std::array<int64_t, 2>> nodes;
+                     nodes.reserve(coordinates.size() / 2);
+                     for (std::size_t index = 0; index < coordinates.size();
+                          index += 2) {
+                       nodes.push_back(
+                           {coordinates[index], coordinates[index + 1]});
+                     }
+                     return nodes;
+                   });
 
   //===--------------------------------------------------------------------===//
   // Device-domain attributes

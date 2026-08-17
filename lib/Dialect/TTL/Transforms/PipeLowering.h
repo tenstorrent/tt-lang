@@ -71,6 +71,7 @@ struct FabricManagerIntervalPlan {
   Operation *acquireBoundary;
   Operation *releaseBoundary;
   SmallVector<std::size_t> interferingIntervals;
+  std::optional<SmallVector<LaunchNodeCoord>> launchNodes;
 };
 
 /// Fabric routes and transfer associations derived before PipeNet lowering.

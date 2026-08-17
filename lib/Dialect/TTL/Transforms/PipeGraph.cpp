@@ -95,6 +95,11 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
       return failure();
     }
   }
+  return success();
+}
+
+static LogicalResult collectDFBLifecycles(ModuleOp mod,
+                                          PipeGraphAnalysisState &state) {
   for (func::FuncOp function : mod.getOps<func::FuncOp>()) {
     PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>> lifecycleResult =
         DFBAcquireReleaseIndex::create(function);
@@ -2240,7 +2245,8 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
 FailureOr<PipeGraph>
 PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
                  const PipeForeachLoweringInfo &foreachLoweringInfo,
-                 PipeDFBIndexMode dfbIndexMode) {
+                 PipeDFBIndexMode dfbIndexMode,
+                 PipeGraphLaunchDomainMode launchDomainMode) {
   PipeGraph graph;
   PipeGraphAnalysisState analysisState;
   WalkResult protocolSearch = mod.walk([&](Operation *operation) {
@@ -2249,7 +2255,18 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
                ? WalkResult::interrupt()
                : WalkResult::advance();
   });
+  if (!protocolSearch.wasInterrupted() &&
+      launchDomainMode == PipeGraphLaunchDomainMode::WhenPipesPresent) {
+    return std::move(graph);
+  }
+  analysisState.pipeRecordIfThenDomains = foreachLoweringInfo.ifThenDomains;
   if (!protocolSearch.wasInterrupted()) {
+    if (failed(collectLaunchNodeDomains(mod, analysisState))) {
+      return failure();
+    }
+    graph.hasAnalyzedLaunchGrid = analysisState.hasLaunchGrid;
+    graph.operationLaunchDomains =
+        std::move(analysisState.operationLaunchDomains);
     return std::move(graph);
   }
   analysisState.dfbLogicalIdentities =
@@ -2267,7 +2284,6 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
   analysisState.pipeRecordControlOps.insert(
       foreachLoweringInfo.controlOps.begin(),
       foreachLoweringInfo.controlOps.end());
-  analysisState.pipeRecordIfThenDomains = foreachLoweringInfo.ifThenDomains;
   analysisState.pipeRecordLoops = foreachLoweringInfo.recordLoops;
 
   for (PipeTransferPostOp postOp : analysisState.receiverPosts) {
@@ -2279,6 +2295,9 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
     }
   }
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
+    return failure();
+  }
+  if (failed(collectDFBLifecycles(mod, analysisState))) {
     return failure();
   }
 

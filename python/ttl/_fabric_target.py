@@ -36,6 +36,7 @@ class FabricManagerIntervalSpec:
     claim: Optional[str]
     route_indices: Tuple[int, ...]
     interfering_intervals: Tuple[str, ...]
+    launch_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
 
 
 @dataclass(frozen=True)
@@ -822,14 +823,38 @@ def build_fabric_target_binding_plan(
                 "to one manager interval"
             )
         interval_identity = next(iter(interval_identities))
-        expected_external_nodes.setdefault(interval_identity, set()).update(
-            (node_x, node_y)
-            for kernel_index, _ in interval_matches
-            for node_y in range(grid_rows)
-            for node_x in range(grid_cols)
-            if program_descriptor.kernels[kernel_index].core_ranges.contains(
-                ttnn_api.CoreCoord(node_x, node_y)
+        descriptor_nodes = set()
+        explicit_launch_domains = set()
+        for kernel_index, interval in interval_matches:
+            descriptor_nodes.update(
+                (node_x, node_y)
+                for node_y in range(grid_rows)
+                for node_x in range(grid_cols)
+                if program_descriptor.kernels[kernel_index].core_ranges.contains(
+                    ttnn_api.CoreCoord(node_x, node_y)
+                )
             )
+            if interval.launch_nodes is not None:
+                explicit_launch_domains.add(frozenset(interval.launch_nodes))
+        if len(explicit_launch_domains) > 1:
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} has "
+                "inconsistent launch-node domains across kernel descriptors"
+            )
+        interval_nodes = (
+            descriptor_nodes
+            if not explicit_launch_domains
+            else set(next(iter(explicit_launch_domains)))
+        )
+        outside_nodes = interval_nodes - descriptor_nodes
+        if outside_nodes:
+            raise ValueError(
+                f"external fabric interval {interval_identity!r} has launch "
+                "nodes outside its kernel descriptors: "
+                f"{tuple(sorted(outside_nodes))}"
+            )
+        expected_external_nodes.setdefault(interval_identity, set()).update(
+            interval_nodes
         )
         for requirement in binding.connections:
             local_device = tuple(
@@ -933,7 +958,7 @@ def build_fabric_target_binding_plan(
             extra_nodes = tuple(sorted(provided_nodes - expected_nodes))
             raise ValueError(
                 f"external fabric interval {interval_identity!r} does not "
-                f"cover its kernel range; missing nodes {missing_nodes}, "
+                f"cover its launch-node domain; missing nodes {missing_nodes}, "
                 f"extra nodes {extra_nodes}"
             )
 

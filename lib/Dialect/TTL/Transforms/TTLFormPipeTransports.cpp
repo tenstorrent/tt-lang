@@ -764,7 +764,8 @@ struct TTLFormPipeTransportsPass
     PipeForeachLoweringInfo foreachLoweringInfo;
     FailureOr<PipeGraph> maybePipeGraph =
         PipeGraph::build(module, transferIndex, foreachLoweringInfo,
-                         PipeDFBIndexMode::Provisional);
+                         PipeDFBIndexMode::Provisional,
+                         PipeGraphLaunchDomainMode::WhenPipesPresent);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;

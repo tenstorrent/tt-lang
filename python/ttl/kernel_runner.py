@@ -2464,7 +2464,7 @@ def _fabric_manager_intervals_to_source(kernel_specs: List[KernelSpec]) -> str:
             f"{interval.identity!r}, "
             f"FabricManagerIntervalKind({interval.kind.value!r}), "
             f"{interval.claim!r}, {interval.route_indices!r}, "
-            f"{interval.interfering_intervals!r})"
+            f"{interval.interfering_intervals!r}, {interval.launch_nodes!r})"
             for interval in spec.fabric_manager_intervals
         ]
         suffix = "," if interval_sources else ""
