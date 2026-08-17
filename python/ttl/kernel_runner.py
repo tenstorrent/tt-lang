@@ -119,6 +119,37 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     )
 
 
+def _detect_device_arch(device) -> Optional[str]:
+    """Return a normalized architecture string from a TTNN device if present."""
+    for attribute_name in (
+        "arch",
+        "architecture",
+        "chip_type",
+        "device_type",
+        "_arch",
+        "_architecture",
+    ):
+        try:
+            architecture = getattr(device, attribute_name)
+        except Exception:
+            continue
+        if callable(architecture):
+            try:
+                architecture = architecture()
+            except Exception:
+                continue
+        return str(architecture).lower().rsplit(".", maxsplit=1)[-1]
+    return None
+
+
+def _get_l1_allocation_quantum_bytes(device) -> int:
+    """Return the largest L1 allocation quantum supported for the target."""
+    architecture = _detect_device_arch(device)
+    if architecture == "wormhole_b0":
+        return 32
+    return 64
+
+
 def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
@@ -1964,27 +1995,7 @@ def build_cb_descriptors(
 
     _validate_tensor_backing_aliases(tensors, cb_configs)
 
-    # Compute sizes first so overflow is diagnosed before creating descriptors.
-    allocations = []
-    static_cb_bytes = 0
-    static_allocation_summaries = []
-    for physical_index, config in enumerate(cb_configs):
-        allocation = _get_dfb_allocation(config)
-        _validate_physical_dfb_config(config, physical_index)
-        allocation_summary = (
-            f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
-            f"block_count={allocation.block_count} "
-            f"format={config.data_format} tile={allocation.tile} -> "
-            f"{allocation.total_size} bytes"
-        )
-        allocations.append(allocation)
-        has_static_storage = not config.storage_segments or any(
-            not segment.is_tensor_backed for segment in config.storage_segments
-        )
-        if physical_index not in backing_tensors and has_static_storage:
-            static_cb_bytes += allocation.total_size
-            static_allocation_summaries.append(allocation_summary)
-
+    device = None
     remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
     for tensor in tensors:
         if tensor is not None and hasattr(tensor, "device"):
@@ -1993,6 +2004,29 @@ def build_cb_descriptors(
                 continue
             remaining_bytes = get_min_remaining_l1_for_device(device)
             break
+    allocation_quantum_bytes = _get_l1_allocation_quantum_bytes(device)
+
+    # Compute sizes first so overflow is diagnosed before creating descriptors.
+    allocations = []
+    static_cb_bytes = 0
+    static_allocation_summaries = []
+    for physical_index, config in enumerate(cb_configs):
+        allocation = _get_dfb_allocation(config)
+        _validate_physical_dfb_config(config, physical_index)
+        allocation_size = _align_up(allocation.total_size, allocation_quantum_bytes)
+        allocation_summary = (
+            f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
+            f"block_count={allocation.block_count} "
+            f"format={config.data_format} tile={allocation.tile} -> "
+            f"{allocation_size} bytes"
+        )
+        allocations.append(allocation)
+        has_static_storage = not config.storage_segments or any(
+            not segment.is_tensor_backed for segment in config.storage_segments
+        )
+        if physical_index not in backing_tensors and has_static_storage:
+            static_cb_bytes += allocation_size
+            static_allocation_summaries.append(allocation_summary)
 
     # Must stay aligned with MLIR ttl-validate-cb-budget and the finalized DFB
     # page-size metadata. Computed-address backing tensors are allocated
@@ -2001,9 +2035,9 @@ def build_cb_descriptors(
     if static_cb_bytes > remaining_bytes:
         breakdown = "\n".join(static_allocation_summaries)
         raise ValueError(
-            "Total circular buffer allocation ("
+            "Total DFB allocation ("
             f"{static_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
-            "This checks static CB backing store only (not all L1 on core).\n"
+            "This checks static DFB backing store only (not all L1 on core).\n"
             + breakdown
             + "\n  hint: reduce DFB shapes or block_count."
         )
