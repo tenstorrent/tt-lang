@@ -37,3 +37,8 @@ template <bool Value>
 inline std::int32_t scalar_predicate() {
   return Value ? 1 : 0;
 }
+
+template <std::int32_t Value>
+inline std::int32_t scalar_result_constant() {
+  return Value;
+}
