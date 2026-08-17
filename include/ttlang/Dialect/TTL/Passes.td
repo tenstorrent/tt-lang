@@ -127,12 +127,13 @@ def TTLFormPipeTransports
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
     bytes. Selection counts the widened intermediate DFB types, a conservative
-    receiver-published address table, required transport scratch, and
-    synchronized-reset scratch
-    against the same L1 budget used by `ttl-validate-cb-budget`.
-    `group-size = 1` disables grouping. A larger value is an upper bound; the
-    pass selects a smaller group when required by the loop trip count or L1
-    capacity. Ineligible loops retain scalar transfer IR.
+    receiver-published address table, required transport scratch,
+    synchronized-reset scratch, global semaphores, and DFB reconfiguration
+    state against the same L1 budget used by `ttl-validate-cb-budget`.
+    `group-size = 1` disables grouping but still validates the combined
+    allocation. A larger value is an upper bound; the pass selects a smaller
+    group when required by the loop trip count or L1 capacity. Ineligible loops
+    retain scalar transfer IR.
 
     A module containing PipeNet protocol operations must assign `dfb_id` to
     every user-declared DFB before physical allocation.
