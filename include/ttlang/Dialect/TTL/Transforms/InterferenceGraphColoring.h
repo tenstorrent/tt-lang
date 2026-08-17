@@ -210,6 +210,35 @@ colorInterferenceGraphWithinWeightLimitExactly(
     unsigned colorLimit, std::uint64_t weightLimit,
     std::uint64_t searchStateLimit);
 
+enum class ExactInterferenceGraphWeightStatus {
+  Optimal,
+  AllocationWeightOverflow,
+  SearchLimitReached,
+};
+
+/// Result of minimizing the sum of maximum vertex weight per used color.
+struct ExactInterferenceGraphWeightColoring {
+  ExactInterferenceGraphWeightStatus status =
+      ExactInterferenceGraphWeightStatus::Optimal;
+  llvm::SmallVector<unsigned> colors;
+  unsigned colorCount = 0;
+  std::uint64_t allocationWeight = 0;
+  std::uint64_t exploredStateCount = 0;
+
+  bool isOptimal() const {
+    return status == ExactInterferenceGraphWeightStatus::Optimal;
+  }
+};
+
+/// Proves the minimum weighted allocation within `colorLimit` colors.
+///
+/// `initialColors` must be a valid coloring and supplies the first upper bound.
+/// Reaching `searchStateLimit` is inconclusive and returns no coloring.
+ExactInterferenceGraphWeightColoring colorInterferenceGraphMinimumWeightExactly(
+    const InterferenceGraph &graph, llvm::ArrayRef<std::uint64_t> vertexWeights,
+    unsigned colorLimit, llvm::ArrayRef<unsigned> initialColors,
+    std::uint64_t searchStateLimit);
+
 /// Computes a deterministic assignment with the minimum resource-slot count.
 ///
 /// Disconnected candidate groups have no conflicts between them, so they are
