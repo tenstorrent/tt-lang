@@ -91,6 +91,117 @@ def _make_reconfiguration_operation(data_format, grid_cols):
     return reconfiguration_operation
 
 
+def _make_live_crossing_operation(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def live_crossing_operation(
+        before_input,
+        before_output,
+        crossing_input,
+        crossing_output,
+        after_input,
+        after_output,
+    ):
+        before_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        before_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        crossing_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        crossing_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        after_source = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+        after_result = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+
+        @ttl.compute(kernel=compute_kernel)
+        def live_payload_compute():
+            with before_source.wait() as source:
+                with before_result.reserve() as result:
+                    result.store(source)
+            ttl.reconfigure_dfbs(boundary)
+            with crossing_source.wait() as source:
+                with crossing_result.reserve() as result:
+                    result.store(source)
+            with after_source.wait() as source:
+                with after_result.reserve() as result:
+                    result.store(source)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def live_payload_reader():
+            with before_source.reserve() as destination:
+                ttl.copy(before_input[0, 0], destination).wait()
+            with crossing_source.reserve() as destination:
+                ttl.copy(crossing_input[0, 0], destination).wait()
+            ttl.reconfigure_dfbs(boundary)
+            with after_source.reserve() as destination:
+                ttl.copy(after_input[0:1, 0:2], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def live_payload_writer():
+            with before_result.wait() as source:
+                ttl.copy(source, before_output[0, 0]).wait()
+            ttl.reconfigure_dfbs(boundary)
+            with crossing_result.wait() as source:
+                ttl.copy(source, crossing_output[0, 0]).wait()
+            with after_result.wait() as source:
+                ttl.copy(source, after_output[0:1, 0:2]).wait()
+
+    return live_crossing_operation
+
+
+def _make_conditional_reconfiguration_operation(data_format, enabled_column):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation(grid=(2, 1))
+    def conditional_reconfiguration_operation(input_tensor, output_tensor):
+        source_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == enabled_column:
+                ttl.reconfigure_dfbs(boundary)
+                with source_dfb.wait() as source:
+                    with result_dfb.reserve() as result:
+                        result.store(source)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == enabled_column:
+                ttl.reconfigure_dfbs(boundary)
+                with source_dfb.reserve() as destination:
+                    ttl.copy(input_tensor[0, node_x], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == enabled_column:
+                ttl.reconfigure_dfbs(boundary)
+                with result_dfb.wait() as source:
+                    ttl.copy(source, output_tensor[0, node_x]).wait()
+
+    return conditional_reconfiguration_operation
+
+
+def _assert_output(actual, expected, dtype):
+    tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
+    assert_allclose(
+        ttnn.to_torch(actual).float(),
+        expected.float(),
+        rtol=tolerance[0],
+        atol=tolerance[1],
+    )
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("grid_cols", [1, 2], ids=["one-core", "two-core"])
 @pytest.mark.parametrize(
@@ -161,7 +272,6 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
         options="--ttl-reuse-user-dfbs",
     )
 
-    tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
     for actual, expected in (
         (first_output, first_host),
         (second_output, second_host),
@@ -170,9 +280,107 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
         (cached_second_output, cached_second_host),
         (cached_third_output, cached_third_host),
     ):
-        assert_allclose(
-            ttnn.to_torch(actual).float(),
-            expected.float(),
-            rtol=tolerance[0],
-            atol=tolerance[1],
-        )
+        _assert_output(actual, expected, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_live_payload_crosses_reconfiguration_and_cached_execution(
+    device, dtype, to_device, monkeypatch, tmp_path
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_live_crossing_operation(data_format)
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(tmp_path / "live_crossing.mlir"))
+
+    initial_inputs = (
+        torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32).to(dtype),
+        torch.arange(32 * 32, dtype=torch.float32)
+        .reshape(32, 32)
+        .remainder(251)
+        .to(dtype),
+        torch.arange(32 * 64, dtype=torch.float32)
+        .reshape(32, 64)
+        .remainder(197)
+        .to(dtype),
+    )
+    initial_outputs = tuple(
+        to_device(torch.zeros_like(input_tensor), device)
+        for input_tensor in initial_inputs
+    )
+    operation(
+        to_device(initial_inputs[0], device),
+        initial_outputs[0],
+        to_device(initial_inputs[1], device),
+        initial_outputs[1],
+        to_device(initial_inputs[2], device),
+        initial_outputs[2],
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    final_mlir = (tmp_path / "live_crossing.mlir").read_text()
+    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
+    assert "ttl.dfb_reconfiguration_plan" in final_mlir
+    for actual, expected in zip(initial_outputs, initial_inputs):
+        _assert_output(actual, expected, dtype)
+
+    cached_inputs = tuple(
+        (input_tensor.float() + offset).to(dtype)
+        for input_tensor, offset in zip(initial_inputs, (3, -5, 7))
+    )
+    cached_outputs = tuple(
+        to_device(torch.zeros_like(input_tensor), device)
+        for input_tensor in cached_inputs
+    )
+    operation(
+        to_device(cached_inputs[0], device),
+        cached_outputs[0],
+        to_device(cached_inputs[1], device),
+        cached_outputs[1],
+        to_device(cached_inputs[2], device),
+        cached_outputs[2],
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    for actual, expected in zip(cached_outputs, cached_inputs):
+        _assert_output(actual, expected, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+@pytest.mark.parametrize("enabled_column", [0, 1], ids=["left", "right"])
+def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
+    device,
+    dtype,
+    to_device,
+    enabled_column,
+    monkeypatch,
+    tmp_path,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_conditional_reconfiguration_operation(data_format, enabled_column)
+    monkeypatch.setenv(
+        "TTLANG_FINAL_MLIR",
+        str(tmp_path / f"conditional_{enabled_column}.mlir"),
+    )
+    input_host = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64).to(dtype)
+    output = to_device(torch.zeros_like(input_host), device)
+    operation(
+        to_device(input_host, device),
+        output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    final_mlir = (tmp_path / f"conditional_{enabled_column}.mlir").read_text()
+    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
+    expected = torch.zeros_like(input_host)
+    column_start = enabled_column * 32
+    expected[:, column_start : column_start + 32] = input_host[
+        :, column_start : column_start + 32
+    ]
+    _assert_output(output, expected, dtype)

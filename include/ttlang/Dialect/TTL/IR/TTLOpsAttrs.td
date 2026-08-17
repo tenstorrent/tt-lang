@@ -110,9 +110,10 @@ def TTL_DFBReconfigurationAttr
     Every site executes zero or one dynamic instance per dispatch and launch
     node. Every participant executes the same instances in the same order, and
     every boundary site in one module declares the same participant set.
-    Before any participant continues, all participating kernels have completed
-    prior DFB, compute, and data-movement work and the runtime has installed the
-    next epoch's DFB interface configuration.
+    DFB-interface work ordered before the boundary completes before the runtime
+    installs the next epoch's configuration. DFB-interface work ordered after
+    the boundary begins after installation. Independent math and SFPU work may
+    overlap the boundary.
 
     This attribute identifies synchronization only. Source programs retain
     logical DFB identities across boundaries; physical indices and epoch
