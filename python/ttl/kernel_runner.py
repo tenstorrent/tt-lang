@@ -1690,16 +1690,18 @@ def build_kernel_descriptors(
                 ]
             runtime_args = combined_runtime_args
 
-        kernel_desc = ttnn.KernelDescriptor(
+        kernel_descriptor_args = dict(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
             defines=defines,
             common_runtime_args=common_runtime_args,
-            runtime_args=runtime_args,
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
         )
+        if reconfiguration_args:
+            kernel_descriptor_args["runtime_args"] = runtime_args
+        kernel_desc = ttnn.KernelDescriptor(**kernel_descriptor_args)
         kernel_descriptors.append(kernel_desc)
 
     return kernel_descriptors
@@ -4018,6 +4020,72 @@ def _fabric_manager_intervals_to_source(kernel_specs: List[KernelSpec]) -> str:
     return "[" + ", ".join(kernel_intervals) + "]"
 
 
+def _append_physical_dfb_config_source(
+    lines: List[str],
+    config: PhysicalDFBConfig,
+    *,
+    indent: str,
+    closing_suffix: str = "",
+) -> None:
+    """Append one reconstructible physical DFB configuration."""
+    lines.append(f"{indent}PhysicalDFBConfig(")
+    lines.append(f"{indent}    dfb_index={config.dfb_index},")
+    lines.append(f"{indent}    num_tiles={config.num_tiles},")
+    lines.append(f"{indent}    data_format={config.data_format!r},")
+    lines.append(f"{indent}    block_count={config.block_count},")
+    lines.append(f"{indent}    page_size={config.page_size},")
+    lines.append(f"{indent}    tile={config.tile!r},")
+    if config.allocation_nodes is not None:
+        lines.append(
+            f"{indent}    allocation_nodes={config.allocation_nodes!r},"
+        )
+    if config.storage_segments:
+        lines.append(f"{indent}    storage_segments=(")
+        for segment in config.storage_segments:
+            lines.append(f"{indent}        DFBStorageSegment(")
+            lines.append(f"{indent}            nodes={segment.nodes!r},")
+            lines.append(
+                f"{indent}            tensor_index={segment.tensor_index!r},"
+            )
+            lines.append(f"{indent}            byte_offset={segment.byte_offset},")
+            lines.append(f"{indent}            byte_size={segment.byte_size!r},")
+            lines.append(f"{indent}        ),")
+        lines.append(f"{indent}    ),")
+    lines.append(f"{indent}){closing_suffix}")
+
+
+def _append_dfb_reconfiguration_plan_source(
+    lines: List[str], plan: Optional[DFBReconfigurationPlan]
+) -> None:
+    """Append the finalized reconfiguration plan used by emitted runners."""
+    if plan is None:
+        lines.append("DFB_RECONFIGURATION_PLAN = None")
+        return
+
+    lines.append("DFB_RECONFIGURATION_PLAN = DFBReconfigurationPlan(")
+    lines.append(f"    boundary_ordinals={plan.boundary_ordinals!r},")
+    lines.append("    dfb_epochs=(")
+    for epochs in plan.dfb_epochs:
+        lines.append("        (")
+        for epoch in epochs:
+            lines.append("            DFBConfigurationEpoch(")
+            lines.append(
+                "                entry_reconfiguration_ordinal="
+                f"{epoch.entry_reconfiguration_ordinal!r},"
+            )
+            lines.append("                config=")
+            _append_physical_dfb_config_source(
+                lines,
+                epoch.config,
+                indent="                ",
+                closing_suffix=",",
+            )
+            lines.append("            ),")
+        lines.append("        ),")
+    lines.append("    ),")
+    lines.append(")")
+
+
 def emit_runner_source(
     kernel_specs: List[KernelSpec],
     cb_configs: List[PhysicalDFBConfig],
@@ -4034,6 +4102,7 @@ def emit_runner_source(
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -4059,6 +4128,8 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import DFBStorageSegment")
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.domains import DeviceDomain")
+    lines.append("from ttl.dataflow_buffer import DFBConfigurationEpoch")
+    lines.append("from ttl.dataflow_buffer import DFBReconfigurationPlan")
     lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelRuntimeResourceCache,")
@@ -4172,27 +4243,15 @@ def emit_runner_source(
     for physical_index, config in enumerate(cb_configs):
         _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, physical_index)
-        lines.append("    PhysicalDFBConfig(")
-        lines.append(f"        dfb_index={config.dfb_index},")
-        lines.append(f"        num_tiles={config.num_tiles},")
-        lines.append(f"        data_format={config.data_format!r},")
-        lines.append(f"        block_count={config.block_count},")
-        lines.append(f"        page_size={config.page_size},")
-        lines.append(f"        tile={config.tile!r},")
-        if config.allocation_nodes is not None:
-            lines.append(f"        allocation_nodes={config.allocation_nodes!r},")
-        if config.storage_segments:
-            lines.append("        storage_segments=(")
-            for segment in config.storage_segments:
-                lines.append("            DFBStorageSegment(")
-                lines.append(f"                nodes={segment.nodes!r},")
-                lines.append(f"                tensor_index={segment.tensor_index!r},")
-                lines.append(f"                byte_offset={segment.byte_offset},")
-                lines.append(f"                byte_size={segment.byte_size!r},")
-                lines.append("            ),")
-            lines.append("        ),")
-        lines.append(f"    ),  # DFB {physical_index}")
+        _append_physical_dfb_config_source(
+            lines,
+            config,
+            indent="    ",
+            closing_suffix=f",  # DFB {physical_index}",
+        )
     lines.append("]")
+    lines.append("")
+    _append_dfb_reconfiguration_plan_source(lines, dfb_reconfiguration_plan)
     lines.append("")
 
     if requires_runtime_resource_factory:
@@ -4292,6 +4351,7 @@ def emit_runner_source(
     lines.append("        kernel_specs=kernel_specs,")
     lines.append("        tensors=tensors,")
     lines.append("        cb_configs=CB_CONFIGS,")
+    lines.append("        dfb_reconfiguration_plan=DFB_RECONFIGURATION_PLAN,")
     lines.append("        core_ranges=core_ranges,")
     lines.append("        program_hash=PROGRAM_HASH,")
     lines.append("        num_pipe_sync_semaphores=NUM_PIPE_SYNC_SEMAPHORES,")
@@ -4309,7 +4369,6 @@ def emit_runner_source(
     lines.append("        runtime_resource_cache=_RUNTIME_RESOURCE_CACHE,")
     lines.append("    )")
     lines.append("")
-
     lines.append("")
     lines.append('if __name__ == "__main__":')
     lines.append('    print("Runner generated. See run() function for usage.")')
@@ -4335,6 +4394,7 @@ def emit_runner_file(
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -4364,6 +4424,7 @@ def emit_runner_file(
         device_domain=device_domain,
         kernel_fabric_routes=kernel_fabric_routes,
         requires_runtime_resource_factory=requires_runtime_resource_factory,
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -4385,6 +4446,7 @@ __all__ = [
     "ProgramResourcePlan",
     "PipeRuntimeResources",
     "KernelRuntimeResourceCache",
+    "DFBReconfigurationRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",
@@ -4393,6 +4455,7 @@ __all__ = [
     "build_pipe_computed_address_dfb_tensors",
     "build_pipe_runtime_resources",
     "get_cached_runtime_resources",
+    "build_dfb_reconfiguration_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
     "normalize_program_hash",
     "combine_program_hash_with_runtime_resources",

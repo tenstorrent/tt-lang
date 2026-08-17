@@ -1723,6 +1723,7 @@ def _compile_ttnn_kernel(
             device_domain=device_domain,
             kernel_fabric_routes=kernel_fabric_routes,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         )
 
     return compiled_kernel

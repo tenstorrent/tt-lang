@@ -32,7 +32,12 @@ from ttl import (
     ProgramRuntimeResources,
     kernel_runner,
 )
-from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
+from ttl.dataflow_buffer import (
+    DFBConfigurationEpoch,
+    DFBReconfigurationPlan,
+    DFBStorageSegment,
+    PhysicalDFBConfig,
+)
 from ttl.domains import DeviceDomain
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
 
@@ -320,9 +325,18 @@ class _FakeTTNN:
             self.config = config
             self.compiler_include_paths = compiler_include_paths or []
             self.defines = defines or []
-            self.runtime_args = defaultdict(_CopyingRuntimeArgumentRow)
-            for core, values in runtime_args or []:
-                self.runtime_args[core.x][core.y] = values
+            if isinstance(runtime_args, dict):
+                self.runtime_args = runtime_args
+            else:
+                self.runtime_args = defaultdict(_CopyingRuntimeArgumentRow)
+                for core, values in runtime_args or []:
+                    self.runtime_args[core.x][core.y] = values
+
+    class RuntimeArgs(dict):
+        def __missing__(self, core_x):
+            core_args = {}
+            self[core_x] = core_args
+            return core_args
 
     class Tile:
         def __init__(self, tile_shape):
@@ -430,6 +444,11 @@ class _FakeTTNN:
     @staticmethod
     def get_dram_alignment():
         return 64
+
+    @staticmethod
+    def corerange_to_cores(_core_ranges, row_wise=True):
+        assert row_wise
+        return [_FakeTTNN.CoreCoord(0, 0)]
 
     @staticmethod
     def generic_op(tensors, program):
@@ -2490,6 +2509,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     )
 
     assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x3020]
+    assert descriptors[0].runtime_args is None
     with pytest.raises(
         RuntimeError,
         match="pipe resource plan expected 2 extra common runtime args, got 1",
@@ -2505,6 +2525,30 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
             extra_common_runtime_args=[0x3000],
             expected_extra_common_runtime_args=2,
         )
+
+
+def test_build_kernel_descriptors_binds_reconfiguration_args_by_core(monkeypatch):
+    """Boundary configuration addresses use per-core unique runtime arguments."""
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        dfb_reconfiguration_runtime_args={(0, 0): [0x4000, 0x5000]},
+    )
+
+    assert descriptors[0].runtime_args[0][0] == [0x4000, 0x5000]
 
 
 def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
@@ -6098,6 +6142,41 @@ def test_emit_runner_source_preserves_tensor_backing_segments(monkeypatch):
     assert "tensor_index=0" in source
     assert "byte_offset=2048" in source
     assert "byte_size=2048" in source
+
+
+def test_emit_runner_source_preserves_dfb_reconfiguration_resources(monkeypatch):
+    """Generated runners reconstruct and bind every reconfiguration resource."""
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial_config = PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, (32, 32))
+    next_config = PhysicalDFBConfig(0, 2, "bfloat16", 3, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial_config),
+                DFBConfigurationEpoch(7, next_config),
+            ),
+        ),
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[initial_config],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        dfb_reconfiguration_plan=plan,
+    )
+
+    compile(source, "<generated-runner>", "exec")
+    assert "boundary_ordinals=(7,)" in source
+    assert "entry_reconfiguration_ordinal=7" in source
+    assert "num_tiles=2" in source
+    assert "block_count=3" in source
+    assert "build_dfb_reconfiguration_runtime_resources(" in source
+    assert "dfb_reconfiguration_runtime_args=(" in source
+    assert "dfb_reconfiguration_scratch_tensors=(" in source
+    assert "dfb_reconfiguration_configuration_tensors=(" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
