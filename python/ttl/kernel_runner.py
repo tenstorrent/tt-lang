@@ -141,6 +141,7 @@ def _detect_device_arch(device) -> Optional[str]:
         "_arch",
         "_architecture",
     ):
+        # Closed device handles may raise exceptions other than AttributeError.
         try:
             architecture = getattr(device, attribute_name)
         except Exception:

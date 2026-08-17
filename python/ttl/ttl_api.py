@@ -123,6 +123,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    _detect_device_arch,
     _same_device,
     attach_runtime_resource_finalizer,
     KernelRuntimeResourceCache,
@@ -612,33 +613,6 @@ def _resolve_l1_budget(
         return get_min_remaining_l1_for_device(device)
     except ValueError:
         return 0
-
-
-def _detect_device_arch(device) -> Optional[str]:
-    """Return a normalized architecture string from a TTNN device if present."""
-    arch_attrs = (
-        "arch",
-        "architecture",
-        "chip_type",
-        "device_type",
-        "_arch",
-        "_architecture",
-    )
-    for attr in arch_attrs:
-        # Properties on device handles may raise for reasons other than
-        # AttributeError (e.g., closed handle); guard both attribute access
-        # and the optional method call.
-        try:
-            arch_value = getattr(device, attr)
-        except Exception:
-            continue
-        if callable(arch_value):
-            try:
-                arch_value = arch_value()
-            except Exception:
-                continue
-        return str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
-    return None
 
 
 def _device_target_arch(args) -> Optional[str]:

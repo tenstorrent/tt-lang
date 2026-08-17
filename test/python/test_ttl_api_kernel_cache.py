@@ -4,6 +4,7 @@
 
 """Unit tests for @ttl.operation cache and program-hash behavior."""
 
+import functools
 import gc
 import itertools
 import threading
@@ -11,6 +12,7 @@ import weakref
 
 import pytest
 
+import ttl.atom as atom_module
 import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
 
@@ -174,6 +176,53 @@ def test_explicit_operation_propagates_runtime_resource_factory(monkeypatch):
     )
     assert isinstance(
         compile_calls[0]["compile_options"]["runtime_resource_cache"],
+        kernel_runner.KernelRuntimeResourceCache,
+    )
+
+
+def test_unified_operation_cache_forwards_runtime_resources(monkeypatch):
+    compile_calls = []
+
+    def compile_atom(*args, **kwargs):
+        compile_calls.append((args, kwargs))
+        return _RecordingCompiledKernel(kwargs["runtime_resource_cache"])
+
+    monkeypatch.setattr(atom_module, "_compile_atom", compile_atom)
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    decorator_options = {
+        "num_outs": 1,
+        "memory_space": "L1",
+        "tiled": True,
+        "fp32_dest_acc_en": None,
+        "dst_full_sync_en": None,
+        "math_fidelity": None,
+        "runtime_resource_factory": None,
+    }
+
+    def operation(input_tensor, output_tensor):
+        pass
+
+    compile_callback = functools.partial(
+        atom_module._compile_unified_operation, object(), decorator_options
+    )
+    wrapper = ttl_api._make_operation_wrapper(
+        operation,
+        compile_callback,
+        grid=(1, 1),
+        fp32_dest_acc_en=None,
+        dst_full_sync_en=None,
+        math_fidelity=None,
+        options=None,
+    )
+    first_result = wrapper(_FakeTensor(), _FakeTensor())
+    second_result = wrapper(_FakeTensor(), _FakeTensor())
+
+    assert first_result is second_result
+    assert len(compile_calls) == 1
+    assert isinstance(
+        compile_calls[0][1]["runtime_resource_cache"],
         kernel_runner.KernelRuntimeResourceCache,
     )
 
