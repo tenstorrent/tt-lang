@@ -2112,6 +2112,77 @@ def test_build_pipe_runtime_resources_zero_initializes_reset_state(monkeypatch):
     assert observed_allocations == [(core_ranges, 16, device, True)]
 
 
+def test_pipe_computed_address_backing_uses_maximum_epoch_capacity(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    device = object()
+    allocation_calls = []
+
+    def allocate_storage(core_ranges, num_bytes, allocation_device):
+        allocation_calls.append((core_ranges, num_bytes, allocation_device))
+        return _FakeTensor(allocation_device, address=0x8000)
+
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    initial_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    larger_config = PhysicalDFBConfig(0, 1, "bfloat16", 3, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial_config),
+                DFBConfigurationEpoch(7, larger_config),
+            ),
+        ),
+    )
+    core_ranges = _FakeCoreRanges()
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[_FakeTensor(device)],
+        core_ranges=core_ranges,
+        cb_configs=[initial_config],
+        pipe_computed_address_dfb_indices=[0],
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert len(allocation_calls) == 1
+    assert _descriptor_cores(
+        type("Allocation", (), {"core_ranges": allocation_calls[0][0]})()
+    ) == {(0, 0)}
+    assert allocation_calls[0][1:] == (6144, device)
+    assert resources.computed_address_dfb_allocation_bytes == {0: 6144}
+    assert resources.computed_address_base_addresses == {0: 0x8000}
+
+
+def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    device = object()
+    initial_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    larger_config = PhysicalDFBConfig(0, 1, "bfloat16", 3, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial_config),
+                DFBConfigurationEpoch(7, larger_config),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"DFB\[0\] PipeNet backing is smaller than its reconfiguration",
+    ):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=[_FakeTensor(device)],
+            core_ranges=_FakeCoreRanges(),
+            plan=plan,
+            existing_backing_tensors={0: object()},
+            existing_backing_allocation_bytes={0: 2048},
+        )
+
+
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
@@ -3854,6 +3925,8 @@ def test_emit_runner_source_preserves_dfb_reconfiguration_resources(monkeypatch)
     assert "num_tiles=2" in source
     assert "block_count=3" in source
     assert "build_dfb_reconfiguration_runtime_resources(" in source
+    assert "dfb_reconfiguration_plan=DFB_RECONFIGURATION_PLAN" in source
+    assert "computed_address_dfb_allocation_bytes" in source
     assert "dfb_reconfiguration_runtime_args=(" in source
     assert "dfb_reconfiguration_scratch_tensors=(" in source
     assert "dfb_reconfiguration_configuration_tensors=(" in source
