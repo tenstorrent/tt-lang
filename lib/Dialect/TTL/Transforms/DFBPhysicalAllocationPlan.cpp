@@ -1000,6 +1000,9 @@ validateTensorBackingRanges(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       if (lhsStart >= rhsEnd || rhsStart >= lhsEnd) {
         continue;
       }
+      if (lhs.physicalIndex == rhs.physicalIndex) {
+        continue;
+      }
       if (lhs.tensorBacking != rhs.tensorBacking) {
         analysisFailure.set(
             rhs.declarations.front(),
