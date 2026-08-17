@@ -420,6 +420,8 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
       getL1AllocationSizeBytes(module, scratchBytes);
   FailureOr<uint64_t> globalSemaphoreBytes =
       getGlobalSemaphoreL1Bytes(module, globalSemaphoreCount);
+  FailureOr<uint64_t> reconfigurationStateBytes =
+      getDFBReconfigurationStateAllocationBytes(module);
   std::optional<uint64_t> requiredBytes =
       succeeded(dfbBytes) && succeeded(scratchAllocationBytes)
           ? llvm::checkedAddUnsigned(*dfbBytes, *scratchAllocationBytes)
@@ -428,6 +430,12 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
     requiredBytes =
         llvm::checkedAddUnsigned(*requiredBytes, *globalSemaphoreBytes);
   } else if (failed(globalSemaphoreBytes)) {
+    requiredBytes = std::nullopt;
+  }
+  if (requiredBytes && succeeded(reconfigurationStateBytes)) {
+    requiredBytes = llvm::checkedAddUnsigned(*requiredBytes,
+                                             *reconfigurationStateBytes);
+  } else if (failed(reconfigurationStateBytes)) {
     requiredBytes = std::nullopt;
   }
   if (!requiredBytes) {
@@ -443,6 +451,8 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
                        << budgetBytes << " (DFB=" << *dfbBytes
                        << ", scratch=" << *scratchAllocationBytes
                        << ", global semaphores=" << *globalSemaphoreBytes
+                       << ", reconfiguration state="
+                       << *reconfigurationStateBytes
                        << ")";
   return failure();
 }
