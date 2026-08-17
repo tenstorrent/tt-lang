@@ -299,6 +299,10 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
+    if (failed(validateDFBReconfigurationTarget(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
         getAnalysis<DFBLogicalIdentityAnalysis>();
     if (!logicalIdentityAnalysis.succeeded()) {
