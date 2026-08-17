@@ -170,6 +170,7 @@ class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
         self.generic_op_calls = []
+        self.synchronize_calls = []
         self.next_address = 0x1000
 
     class TensorAccessorArgs:
@@ -317,6 +318,43 @@ class _FakeTTNN:
     @staticmethod
     def get_global_semaphore_address(semaphore):
         return semaphore["address"]
+
+    def synchronize_device(self, device):
+        self.synchronize_calls.append(device)
+
+
+class _LifetimeTrackedSemaphore:
+    def __init__(self, identifier, address, events):
+        self.identifier = identifier
+        self.address = address
+        self.events = events
+
+    def __del__(self):
+        self.events.append(("release", self.identifier))
+
+
+class _LifetimeTrackingTTNN(_FakeTTNN):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+        self.semaphore_refs = []
+
+    def create_global_semaphore(self, device, core_ranges, initial_value):
+        identifier = len(self.semaphore_refs)
+        semaphore = _LifetimeTrackedSemaphore(
+            identifier, self.next_address, self.events
+        )
+        self.next_address += 0x20
+        self.events.append(("allocate", identifier))
+        self.semaphore_refs.append(weakref.ref(semaphore))
+        return semaphore
+
+    @staticmethod
+    def get_global_semaphore_address(semaphore):
+        return semaphore.address
+
+    def synchronize_device(self, device):
+        self.events.append(("synchronize", device))
 
 
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
@@ -1764,76 +1802,6 @@ def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
         )
 
 
-def test_reconfiguration_replaces_cached_resources_without_l1_overlap(monkeypatch):
-    fake_ttnn = _FakeTTNN()
-    fake_ttnn.uint32 = "uint32"
-    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
-    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0}
-    )
-    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
-    fake_ttnn.ShardSpec = lambda *args: args
-    fake_ttnn.MemoryConfig = lambda *args: args
-    device = object()
-    pipe_backing = _FakeTensor(device, address=0x8000)
-    cached_owned_scratch = _FakeTensor(device, address=0x9000)
-    cached_pipe_backing = _FakeTensor(device, address=0xA000)
-    cached_configuration = _FakeTensor(device, address=0xB000)
-    cached_resources = kernel_runner.DFBReconfigurationRuntimeResources(
-        scratch_tensors={0: cached_pipe_backing, 1: cached_owned_scratch},
-        configuration_tensors=[cached_configuration],
-        configuration_runtime_args={(0, 0): [0xB000]},
-        device=device,
-        scratch_allocation_bytes={0: 2048, 1: 2048},
-        borrowed_scratch_indices={0},
-    )
-    initial_configs = [
-        PhysicalDFBConfig(dfb_index, 1, "bfloat16", 1, 2048, (32, 32))
-        for dfb_index in range(2)
-    ]
-    plan = DFBReconfigurationPlan(
-        boundary_ordinals=(7,),
-        dfb_epochs=tuple(
-            (
-                DFBConfigurationEpoch(None, config),
-                DFBConfigurationEpoch(7, config),
-            )
-            for config in initial_configs
-        ),
-    )
-
-    def allocate_configuration(*_args, **_kwargs):
-        assert cached_resources.scratch_tensors == {}
-        assert cached_resources.configuration_tensors == []
-        assert cached_resources.configuration_runtime_args == {}
-        return _FakeTensor(device, address=0xC000)
-
-    fake_ttnn.from_torch = allocate_configuration
-    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    monkeypatch.setattr(
-        kernel_runner,
-        "_l1_buffer_addresses_by_core",
-        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
-    )
-
-    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
-        tensors=[_FakeTensor(device)],
-        core_ranges=_FakeCoreRanges(),
-        plan=plan,
-        existing_backing_tensors={0: pipe_backing},
-        existing_backing_allocation_bytes={0: 2048},
-        existing_resources=cached_resources,
-    )
-
-    assert resources.scratch_tensors == {
-        0: pipe_backing,
-        1: cached_owned_scratch,
-    }
-    assert resources.scratch_allocation_bytes == {0: 2048, 1: 2048}
-    assert resources.borrowed_scratch_indices == {0}
-
-
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
@@ -2202,26 +2170,184 @@ def test_build_generic_op_io_tensors_requires_user_output():
 
 
 def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
-    fake_ttnn = _FakeTTNN()
+    fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
     )
     tensor = _FakeTensor(object())
-    lifetime = []
+    core_ranges = _FakeCoreRanges()
+    cache = kernel_runner.KernelRuntimeResourceCache()
 
     for _ in range(2):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[],
             tensors=[tensor],
             cb_configs=[],
-            core_ranges=_FakeCoreRanges(),
+            core_ranges=core_ranges,
             num_pipe_global_semaphores=2,
-            pipe_global_semaphore_lifetime=lifetime,
+            runtime_resource_cache=cache,
         )
 
-    assert len(fake_ttnn.create_calls) == 4
-    assert lifetime == fake_ttnn.create_calls[-2:]
+    assert fake_ttnn.events == [("allocate", 0), ("allocate", 1)]
+    assert [
+        semaphore.identifier for semaphore in cache.pipe_resources.global_semaphores
+    ] == [0, 1]
+
+
+def test_run_kernel_synchronizes_uncached_runtime_resources(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakeTensor(device)],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        num_pipe_global_semaphores=1,
+    )
+
+    assert fake_ttnn.semaphore_refs[0]() is None
+    synchronize_index = fake_ttnn.events.index(("synchronize", device))
+    release_index = fake_ttnn.events.index(("release", 0))
+    assert synchronize_index < release_index
+
+
+def test_run_kernel_synchronizes_uncached_resources_after_dispatch_error(
+    monkeypatch,
+):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    def failing_generic_op(_tensors, _program):
+        fake_ttnn.events.append(("dispatch", device))
+        raise RuntimeError("dispatch failed")
+
+    def failing_synchronize(_device):
+        fake_ttnn.events.append(("synchronize", device))
+        raise ValueError("synchronization failed")
+
+    fake_ttnn.generic_op = failing_generic_op
+    fake_ttnn.synchronize_device = failing_synchronize
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+        )
+
+    dispatch_index = fake_ttnn.events.index(("dispatch", device))
+    synchronize_index = fake_ttnn.events.index(("synchronize", device))
+    release_index = fake_ttnn.events.index(("release", 0))
+    assert dispatch_index < synchronize_index < release_index
+
+
+def test_run_kernel_synchronizes_before_replacing_incompatible_resources(
+    monkeypatch,
+):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    first_device = object()
+    second_device = object()
+    cache = kernel_runner.KernelRuntimeResourceCache()
+
+    for device in (first_device, second_device):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+            runtime_resource_cache=cache,
+        )
+
+    synchronize_index = fake_ttnn.events.index(("synchronize", first_device))
+    release_index = fake_ttnn.events.index(("release", 0))
+    replacement_index = fake_ttnn.events.index(("allocate", 1))
+    assert synchronize_index < release_index < replacement_index
+
+
+def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    scratch_allocations = []
+    configuration_allocations = []
+
+    def allocate_scratch(_core_ranges, _num_bytes, _device):
+        tensor = _FakeTensor(device, address=0x8000)
+        scratch_allocations.append(tensor)
+        return tensor
+
+    def allocate_configuration(*_args, **_kwargs):
+        tensor = _FakeTensor(device, address=0x9000)
+        configuration_allocations.append(tensor)
+        return tensor
+
+    fake_ttnn.from_torch = allocate_configuration
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+
+    initial_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial_config),
+                DFBConfigurationEpoch(7, initial_config),
+            ),
+        ),
+    )
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    tensor = _FakeTensor(device)
+    core_ranges = _FakeCoreRanges()
+
+    for _ in range(2):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[tensor],
+            cb_configs=[initial_config],
+            core_ranges=core_ranges,
+            dfb_reconfiguration_plan=plan,
+            runtime_resource_cache=cache,
+        )
+
+    assert len(scratch_allocations) == 1
+    assert len(configuration_allocations) == 1
+    assert cache.reconfiguration_resources.scratch_tensors[0] is scratch_allocations[0]
+    assert (
+        cache.reconfiguration_resources.configuration_tensors[0]
+        is configuration_allocations[0]
+    )
 
 
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
@@ -2769,22 +2895,14 @@ def test_reconfiguration_rejects_staggered_tensor_aliases(monkeypatch):
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
     ]
-    initial_second_config = PhysicalDFBConfig(
-        1, 1, "bfloat16", 1, 2048, (32, 32)
-    )
+    initial_second_config = PhysicalDFBConfig(1, 1, "bfloat16", 1, 2048, (32, 32))
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
         dfb_epochs=(
-            (
-                DFBConfigurationEpoch(
-                    None, _tensor_backing_config(0, nodes=((0, 0),))
-                ),
-            ),
+            (DFBConfigurationEpoch(None, _tensor_backing_config(0, nodes=((0, 0),))),),
             (
                 DFBConfigurationEpoch(None, initial_second_config),
-                DFBConfigurationEpoch(
-                    7, _tensor_backing_config(1, nodes=((0, 0),))
-                ),
+                DFBConfigurationEpoch(7, _tensor_backing_config(1, nodes=((0, 0),))),
             ),
         ),
     )
@@ -2804,25 +2922,17 @@ def test_reconfiguration_validates_aliases_in_execution_order(monkeypatch):
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
     ]
-    initial_first_config = PhysicalDFBConfig(
-        0, 1, "bfloat16", 1, 2048, (32, 32)
-    )
-    final_second_config = PhysicalDFBConfig(
-        1, 1, "bfloat16", 1, 2048, (32, 32)
-    )
+    initial_first_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    final_second_config = PhysicalDFBConfig(1, 1, "bfloat16", 1, 2048, (32, 32))
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(1, 0),
         dfb_epochs=(
             (
                 DFBConfigurationEpoch(None, initial_first_config),
-                DFBConfigurationEpoch(
-                    1, _tensor_backing_config(0, nodes=((0, 0),))
-                ),
+                DFBConfigurationEpoch(1, _tensor_backing_config(0, nodes=((0, 0),))),
             ),
             (
-                DFBConfigurationEpoch(
-                    None, _tensor_backing_config(1, nodes=((0, 0),))
-                ),
+                DFBConfigurationEpoch(None, _tensor_backing_config(1, nodes=((0, 0),))),
                 DFBConfigurationEpoch(0, final_second_config),
             ),
         ),
@@ -2843,9 +2953,7 @@ def test_reconfiguration_retains_unmodified_node_aliases(monkeypatch):
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
     ]
-    initial_second_config = PhysicalDFBConfig(
-        1, 1, "bfloat16", 1, 2048, (32, 32)
-    )
+    initial_second_config = PhysicalDFBConfig(1, 1, "bfloat16", 1, 2048, (32, 32))
     first_node_scratch_config = PhysicalDFBConfig(
         0,
         1,
@@ -2867,9 +2975,7 @@ def test_reconfiguration_retains_unmodified_node_aliases(monkeypatch):
             ),
             (
                 DFBConfigurationEpoch(None, initial_second_config),
-                DFBConfigurationEpoch(
-                    7, _tensor_backing_config(1, nodes=((1, 0),))
-                ),
+                DFBConfigurationEpoch(7, _tensor_backing_config(1, nodes=((1, 0),))),
             ),
         ),
     )
@@ -2953,9 +3059,8 @@ def test_emit_runner_source_preserves_dfb_reconfiguration_resources(monkeypatch)
     assert "entry_reconfiguration_ordinal=7" in source
     assert "num_tiles=2" in source
     assert "block_count=3" in source
-    assert "build_dfb_reconfiguration_runtime_resources(" in source
+    assert "get_cached_runtime_resources(" in source
     assert "dfb_reconfiguration_plan=DFB_RECONFIGURATION_PLAN" in source
-    assert "computed_address_dfb_allocation_bytes" in source
     assert "dfb_reconfiguration_runtime_args=(" in source
     assert "dfb_reconfiguration_scratch_tensors=(" in source
     assert "dfb_reconfiguration_configuration_tensors=(" in source
@@ -2987,7 +3092,6 @@ def test_emitted_runner_without_resources_executes_shared_runner(monkeypatch):
     def record_run(**kwargs):
         calls.append(kwargs)
         return "executed"
-
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[],
@@ -3101,6 +3205,39 @@ def test_emitted_runner_requires_and_applies_runtime_resource_factory(monkeypatc
         descriptor.runtime_args[0].values for descriptor in plans[1].kernel_descriptors
     ] == [(17,), (18,)]
     assert plans[0].structural_fingerprint == plans[1].structural_fingerprint
+
+
+def test_emitted_runner_reuses_global_semaphore_owners(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        num_pipe_global_semaphores=1,
+    )
+    namespace = {"__name__": "generated_runner"}
+    exec(compile(source, "<generated-runner>", "exec"), namespace)
+
+    device = object()
+    tensor = _FakeTensor(device)
+    namespace["run"]([tensor], device=device)
+    first_owner = namespace["_RUNTIME_RESOURCE_CACHE"].pipe_resources.global_semaphores[
+        0
+    ]
+
+    namespace["run"]([tensor], device=device)
+    second_owner = namespace[
+        "_RUNTIME_RESOURCE_CACHE"
+    ].pipe_resources.global_semaphores[0]
+    assert second_owner is first_owner
+    assert fake_ttnn.events == [("allocate", 0)]
 
 
 def test_emit_runner_source_accepts_physical_dfb_configs():

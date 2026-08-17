@@ -22,6 +22,10 @@ class _FakeTile:
         self.tile_shape = tile_shape
 
 
+class _FakeDevice:
+    arch = "blackhole"
+
+
 class _FakeTensor:
     def __init__(
         self,
@@ -33,6 +37,7 @@ class _FakeTensor:
         layout="TILE",
         tile=(32, 32),
         allocation_capacity=1 << 20,
+        device=None,
     ):
         self.shape = shape
         self.padded_shape = padded_shape or shape
@@ -41,6 +46,7 @@ class _FakeTensor:
         self._memory_config = _FakeMemoryConfig(memory_space, memory_layout)
         self._tile = _FakeTile(tile)
         self.allocation_capacity = allocation_capacity
+        self._device = device
 
     def memory_config(self):
         return self._memory_config
@@ -49,7 +55,7 @@ class _FakeTensor:
         return self._tile
 
     def device(self):
-        return None
+        return self._device
 
 
 class _RecordingCompiledKernel:
@@ -293,13 +299,18 @@ def test_operation_cache_separates_effective_l1_budgets(monkeypatch):
     assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
 
 
-def test_operation_cache_separates_device_derived_l1_budgets(monkeypatch):
+def test_operation_cache_reuses_device_derived_l1_budget(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
-    budgets = iter((98304, 73760, 98304))
+    budget_queries = []
+
+    def resolve_budget(runtime_args, compiler_options):
+        budget_queries.append((runtime_args, compiler_options))
+        return 98304 if len(budget_queries) == 1 else 73760
+
     monkeypatch.setattr(
         ttl_api,
         "_resolve_l1_budget",
-        lambda runtime_args, compiler_options: next(budgets),
+        resolve_budget,
     )
 
     @ttl_api.operation(grid=(1, 1))
@@ -312,9 +323,32 @@ def test_operation_cache_separates_device_derived_l1_budgets(monkeypatch):
     second_result = copy_kernel(input_tensor, output_tensor)
     repeated_first_result = copy_kernel(input_tensor, output_tensor)
 
-    assert len(compile_calls) == 2
-    assert first_result != second_result
+    assert len(compile_calls) == 1
+    assert len(budget_queries) == 1
+    assert first_result == second_result
     assert first_result == repeated_first_result
+    assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
+
+
+def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    budgets = iter((98304, 73760))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    first_device = _FakeDevice()
+    second_device = _FakeDevice()
+    copy_kernel(_FakeTensor(device=first_device), _FakeTensor(device=first_device))
+    copy_kernel(_FakeTensor(device=second_device), _FakeTensor(device=second_device))
+
+    assert len(compile_calls) == 2
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
     assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
 

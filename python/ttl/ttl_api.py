@@ -121,6 +121,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    KernelRuntimeResourceCache,
     KernelSpec,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
@@ -298,7 +299,7 @@ def _make_cache_key(
     math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
-    l1_budget_override: int = 0,
+    l1_budget_override: Any = 0,
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
@@ -610,6 +611,17 @@ def _resolve_l1_budget(args: tuple, compiler_options: CompilerOptions) -> int:
         return 0
 
 
+def _l1_budget_cache_key(args: tuple, compiler_options: CompilerOptions) -> Any:
+    """Return a stable cache identity for explicit or device-derived budgets."""
+    if compiler_options.l1_budget != 0:
+        return compiler_options.l1_budget
+    try:
+        device = _require_device(args)
+    except ValueError:
+        device = None
+    return ("device-derived", id(device) if device is not None else None)
+
+
 def _detect_device_arch(device) -> Optional[str]:
     """Return a normalized architecture string from a TTNN device if present."""
     arch_attrs = (
@@ -839,11 +851,10 @@ class CompiledTTNNKernel:
                     "requires logical-kernel selectors for compiled kernel indices "
                     f"{missing_selector_indices}"
                 )
-        self._pipe_global_semaphore_lifetime = []
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
         self._runtime_resource_lifetimes = ()
-        self._dfb_reconfiguration_resource_cache = []
+        self._runtime_resource_cache = KernelRuntimeResourceCache()
         self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
@@ -892,7 +903,6 @@ class CompiledTTNNKernel:
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
             runtime_resource_lifetime_commit=(
@@ -900,9 +910,8 @@ class CompiledTTNNKernel:
                 if self.runtime_resource_factory is not None
                 else None
             ),
-            dfb_reconfiguration_resource_cache=(
-                self._dfb_reconfiguration_resource_cache
-            ),
+            runtime_resource_cache=self._runtime_resource_cache,
+            device=device,
         )
 
     def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
@@ -2764,7 +2773,7 @@ def _make_operation_wrapper(
             CompilerOptions.from_argv()
         )
         target_arch = _device_target_arch(runtime_args)
-        l1_budget_override = _resolve_l1_budget(runtime_args, compiler_options)
+        l1_budget_key = _l1_budget_cache_key(runtime_args, compiler_options)
 
         cache_key = _make_cache_key(
             runtime_args,
@@ -2774,11 +2783,12 @@ def _make_operation_wrapper(
             math_fidelity=math_fidelity,
             target_arch=target_arch,
             compiler_options=compiler_options,
-            l1_budget_override=l1_budget_override,
+            l1_budget_override=l1_budget_key,
         )
 
         compiled_kernel = cache.get(cache_key)
         if compiled_kernel is None:
+            l1_budget_override = _resolve_l1_budget(runtime_args, compiler_options)
             compiled_kernel = compile_callback(
                 runtime_args,
                 kwargs,

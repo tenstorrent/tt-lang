@@ -18,6 +18,7 @@ import hashlib
 import json
 import operator
 import os
+import threading
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
@@ -849,8 +850,17 @@ class DFBReconfigurationRuntimeResources:
     configuration_tensors: List[Any]
     configuration_runtime_args: Dict[Tuple[int, int], List[int]]
     device: Optional[Any] = None
-    scratch_allocation_bytes: Dict[int, int] = field(default_factory=dict)
-    borrowed_scratch_indices: set[int] = field(default_factory=set)
+
+
+@dataclass
+class KernelRuntimeResourceCache:
+    """Persistent L1 resources shared by serialized cached invocations."""
+
+    lock: Any = field(default_factory=threading.RLock, repr=False)
+    compatibility_key: Optional[Tuple[Any, ...]] = None
+    device: Optional[Any] = None
+    pipe_resources: Optional[PipeRuntimeResources] = None
+    reconfiguration_resources: Optional[DFBReconfigurationRuntimeResources] = None
 
 
 _DFB_RECONFIGURATION_WORDS_PER_CORE = 264
@@ -1300,7 +1310,6 @@ def build_dfb_reconfiguration_runtime_resources(
     plan: Optional[DFBReconfigurationPlan],
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
-    existing_resources: Optional[DFBReconfigurationRuntimeResources] = None,
     device: Optional[Any] = None,
 ) -> DFBReconfigurationRuntimeResources:
     """Allocate scratch storage and one shared L1 configuration per boundary."""
@@ -1332,10 +1341,6 @@ def build_dfb_reconfiguration_runtime_resources(
         if scratch_bytes > 0:
             scratch_bytes_by_index[dfb_index] = scratch_bytes
 
-    cached_resources_match_device = (
-        existing_resources is not None
-        and existing_resources.device == resource_device
-    )
     scratch_tensors = {}
     for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
         existing_tensor = reusable_backing_tensors.get(dfb_index)
@@ -1348,17 +1353,6 @@ def build_dfb_reconfiguration_runtime_resources(
                 )
             scratch_tensors[dfb_index] = existing_tensor
             continue
-        if cached_resources_match_device:
-            cached_tensor = existing_resources.scratch_tensors.get(dfb_index)
-            cached_allocation_bytes = existing_resources.scratch_allocation_bytes.get(
-                dfb_index
-            )
-            if (
-                cached_tensor is not None
-                and cached_allocation_bytes is not None
-                and cached_allocation_bytes >= scratch_bytes
-            ):
-                scratch_tensors[dfb_index] = cached_tensor
 
     all_cores = ttnn.corerange_to_cores(core_ranges, row_wise=True)
     core_keys = [(int(core.x), int(core.y)) for core in all_cores]
@@ -1378,14 +1372,6 @@ def build_dfb_reconfiguration_runtime_resources(
         )
         for boundary_ordinal in plan.boundary_ordinals
     }
-
-    # Cached calls must release superseded device allocations before requesting
-    # replacements because both generations consume the same per-core L1.
-    if existing_resources is not None:
-        existing_resources.scratch_tensors.clear()
-        existing_resources.scratch_allocation_bytes.clear()
-        existing_resources.configuration_tensors.clear()
-        existing_resources.configuration_runtime_args.clear()
 
     for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
         if dfb_index in scratch_tensors:
@@ -1530,11 +1516,158 @@ def build_dfb_reconfiguration_runtime_resources(
         configuration_tensors=configuration_tensors,
         configuration_runtime_args=configuration_runtime_args,
         device=resource_device,
-        scratch_allocation_bytes=scratch_bytes_by_index,
-        borrowed_scratch_indices=(
-            set(scratch_tensors).intersection(reusable_backing_tensors)
-        ),
     )
+
+
+def _runtime_resource_compatibility_key(
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    core_ranges: Any,
+    pipe_sram_scratch_bytes: int,
+    num_pipe_global_semaphores: int,
+    pipe_computed_address_dfb_indices: Tuple[int, ...],
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
+    device: Optional[Any],
+) -> Tuple[Tuple[Any, ...], Optional[Any]]:
+    requires_device = (
+        pipe_sram_scratch_bytes > 0
+        or num_pipe_global_semaphores > 0
+        or bool(pipe_computed_address_dfb_indices)
+        or dfb_reconfiguration_plan is not None
+    )
+    resource_device = device
+    if resource_device is None and requires_device:
+        resource_device = _first_device(tensors)
+
+    core_key = tuple(
+        (int(core.x), int(core.y))
+        for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
+    )
+    tensor_address_key = []
+    if dfb_reconfiguration_plan is not None:
+        _validate_dfb_reconfiguration_plan(tensors, dfb_reconfiguration_plan)
+        tensor_indices = sorted(
+            {
+                segment.tensor_index
+                for epochs in dfb_reconfiguration_plan.dfb_epochs
+                for epoch in epochs
+                for segment in epoch.config.storage_segments
+                if segment.tensor_index is not None
+            }
+        )
+        for tensor_index in tensor_indices:
+            addresses = _l1_buffer_addresses_by_core(
+                tensors[tensor_index], resource_device
+            )
+            tensor_address_key.append((tensor_index, tuple(sorted(addresses.items()))))
+
+    compatibility_key = (
+        resource_device,
+        core_key,
+        tuple(cb_configs),
+        pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores,
+        pipe_computed_address_dfb_indices,
+        dfb_reconfiguration_plan,
+        tuple(tensor_address_key),
+    )
+    return compatibility_key, resource_device
+
+
+def _get_cached_runtime_resources_impl(
+    cache: Optional[KernelRuntimeResourceCache],
+    *,
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    core_ranges: Any,
+    pipe_sram_scratch_bytes: int,
+    num_pipe_global_semaphores: int,
+    pipe_computed_address_dfb_indices: Tuple[int, ...],
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
+    device: Optional[Any],
+) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
+    pipe_computed_address_dfb_indices = tuple(pipe_computed_address_dfb_indices)
+    compatibility_key, resource_device = _runtime_resource_compatibility_key(
+        tensors,
+        cb_configs,
+        core_ranges,
+        pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores,
+        pipe_computed_address_dfb_indices,
+        dfb_reconfiguration_plan,
+        device,
+    )
+    if (
+        cache is not None
+        and cache.compatibility_key == compatibility_key
+        and cache.pipe_resources is not None
+        and cache.reconfiguration_resources is not None
+    ):
+        return cache.pipe_resources, cache.reconfiguration_resources
+
+    if cache is not None and cache.compatibility_key is not None:
+        if cache.device is not None:
+            ttnn.synchronize_device(cache.device)
+        cache.compatibility_key = None
+        cache.device = None
+        cache.pipe_resources = None
+        cache.reconfiguration_resources = None
+
+    pipe_resources = build_pipe_runtime_resources(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        cb_configs=cb_configs,
+        pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores=num_pipe_global_semaphores,
+        pipe_computed_address_dfb_indices=list(pipe_computed_address_dfb_indices),
+        device=resource_device,
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+    )
+    reconfiguration_resources = build_dfb_reconfiguration_runtime_resources(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        plan=dfb_reconfiguration_plan,
+        existing_backing_tensors=pipe_resources.computed_address_dfb_tensors,
+        existing_backing_allocation_bytes=(
+            pipe_resources.computed_address_dfb_allocation_bytes
+        ),
+        device=resource_device,
+    )
+    if cache is not None:
+        cache.compatibility_key = compatibility_key
+        cache.device = resource_device
+        cache.pipe_resources = pipe_resources
+        cache.reconfiguration_resources = reconfiguration_resources
+    return pipe_resources, reconfiguration_resources
+
+
+def get_cached_runtime_resources(
+    cache: Optional[KernelRuntimeResourceCache],
+    *,
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    core_ranges: Any,
+    pipe_sram_scratch_bytes: int,
+    num_pipe_global_semaphores: int,
+    pipe_computed_address_dfb_indices: Tuple[int, ...],
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
+    device: Optional[Any],
+) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
+    """Return one compatible resource generation from a synchronized cache."""
+    arguments = {
+        "tensors": tensors,
+        "cb_configs": cb_configs,
+        "core_ranges": core_ranges,
+        "pipe_sram_scratch_bytes": pipe_sram_scratch_bytes,
+        "num_pipe_global_semaphores": num_pipe_global_semaphores,
+        "pipe_computed_address_dfb_indices": (pipe_computed_address_dfb_indices),
+        "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
+        "device": device,
+    }
+    if cache is None:
+        return _get_cached_runtime_resources_impl(None, **arguments)
+    with cache.lock:
+        return _get_cached_runtime_resources_impl(cache, **arguments)
 
 
 def build_pipe_sync_semaphore_descriptors(
@@ -1715,9 +1848,7 @@ def _validate_dfb_reconfiguration_plan(
     if not boundary_ordinals:
         raise ValueError("DFB reconfiguration plan must contain a boundary")
     if len(set(boundary_ordinals)) != len(boundary_ordinals):
-        raise ValueError(
-            "DFB reconfiguration boundary ordinals must be unique"
-        )
+        raise ValueError("DFB reconfiguration boundary ordinals must be unique")
 
     configurations_by_entry = {None: {}}
     configurations_by_entry.update({ordinal: {} for ordinal in boundary_ordinals})
@@ -1768,9 +1899,7 @@ def _validate_dfb_reconfiguration_plan(
 
     for config in configurations_by_entry[None].values():
         apply_configuration(config)
-    _validate_tensor_backing_aliases(
-        tensors, current_tensor_configurations.values()
-    )
+    _validate_tensor_backing_aliases(tensors, current_tensor_configurations.values())
     for boundary_ordinal in boundary_ordinals:
         for config in configurations_by_entry[boundary_ordinal].values():
             apply_configuration(config)
@@ -1982,7 +2111,7 @@ def build_generic_op_io_tensors(
     return io_tensors
 
 
-def run_kernel_on_device(
+def _run_kernel_on_device_impl(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -1992,15 +2121,13 @@ def run_kernel_on_device(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
-    pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
     runtime_resource_lifetime_commit: Optional[
         Callable[[Tuple[object, ...]], None]
     ] = None,
-    dfb_reconfiguration_resource_cache: Optional[
-        List[DFBReconfigurationRuntimeResources]
-    ] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    device: Optional[Any] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -2024,16 +2151,15 @@ def run_kernel_on_device(
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
-        pipe_global_semaphore_lifetime: Optional list replaced with the current
-            call's GlobalSemaphore objects. Cached kernels keep this bounded
-            owner list so repeated calls do not retain old semaphore objects.
         runtime_resource_factory: Optional callback that returns declarative
             resources for the current invocation.
         operation_name: User-facing operation name for callback diagnostics.
         runtime_resource_lifetime_commit: Callback that replaces the compiled
             operation's retained owner tuple after successful execution.
-        dfb_reconfiguration_resource_cache: Optional one-element list owning
-            persistent scratch tensors and cached resource metadata.
+        runtime_resource_cache: Optional cache owning persistent PipeNet and
+            DFB reconfiguration resources.
+        device: Optional explicit resource device. Defaults to the first input
+            tensor's device.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -2083,50 +2209,26 @@ def run_kernel_on_device(
     grid_cols = grid_size.x
     grid_rows = grid_size.y
 
-    cached_reconfiguration_resources = (
-        dfb_reconfiguration_resource_cache[0]
-        if dfb_reconfiguration_resource_cache
-        else None
-    )
-    if cached_reconfiguration_resources is not None:
-        cached_reconfiguration_resources.configuration_tensors.clear()
-        cached_reconfiguration_resources.configuration_runtime_args.clear()
-        for dfb_index in cached_reconfiguration_resources.borrowed_scratch_indices:
-            cached_reconfiguration_resources.scratch_tensors.pop(dfb_index, None)
-            cached_reconfiguration_resources.scratch_allocation_bytes.pop(
-                dfb_index, None
-            )
-        cached_reconfiguration_resources.borrowed_scratch_indices.clear()
-
-    pipe_runtime_resources = build_pipe_runtime_resources(
-        tensors=tensors,
-        core_ranges=core_ranges,
-        cb_configs=cb_configs,
-        pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
-        num_pipe_global_semaphores=num_pipe_global_semaphores,
-        pipe_computed_address_dfb_indices=sorted(
+    pipe_computed_address_dfb_indices = tuple(
+        sorted(
             {
                 dfb_index
                 for spec in kernel_specs
                 for dfb_index in spec.pipe_computed_address_dfb_indices
             }
-        ),
-        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        )
     )
-    if pipe_global_semaphore_lifetime is not None:
-        pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
-    reconfiguration_resources = build_dfb_reconfiguration_runtime_resources(
+    pipe_runtime_resources, reconfiguration_resources = get_cached_runtime_resources(
+        runtime_resource_cache,
         tensors=tensors,
+        cb_configs=cb_configs,
         core_ranges=core_ranges,
-        plan=dfb_reconfiguration_plan,
-        existing_backing_tensors=(pipe_runtime_resources.computed_address_dfb_tensors),
-        existing_backing_allocation_bytes=(
-            pipe_runtime_resources.computed_address_dfb_allocation_bytes
-        ),
-        existing_resources=cached_reconfiguration_resources,
+        pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+        num_pipe_global_semaphores=num_pipe_global_semaphores,
+        pipe_computed_address_dfb_indices=pipe_computed_address_dfb_indices,
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        device=device,
     )
-    if dfb_reconfiguration_resource_cache is not None:
-        dfb_reconfiguration_resource_cache[:] = [reconfiguration_resources]
 
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
@@ -2200,10 +2302,91 @@ def run_kernel_on_device(
         ),
     )
 
-    result = ttnn.generic_op(io_tensors, program)
+    owns_runtime_resources = bool(
+        pipe_runtime_resources.scratch_tensors
+        or pipe_runtime_resources.global_semaphores
+        or pipe_runtime_resources.computed_address_dfb_tensors
+        or reconfiguration_resources.scratch_tensors
+        or reconfiguration_resources.configuration_tensors
+    )
+    synchronize_uncached_resources = (
+        runtime_resource_cache is None and owns_runtime_resources
+    )
+    resource_device = None
+    if synchronize_uncached_resources:
+        resource_device = reconfiguration_resources.device
+        if resource_device is None:
+            resource_device = device if device is not None else _first_device(tensors)
+    try:
+        result = ttnn.generic_op(io_tensors, program)
+    except BaseException:
+        if synchronize_uncached_resources:
+            try:
+                ttnn.synchronize_device(resource_device)
+            except BaseException:
+                # Preserve the dispatch failure; synchronization is cleanup.
+                pass
+        raise
+    if synchronize_uncached_resources:
+        ttnn.synchronize_device(resource_device)
     if resource_plan is not None and runtime_resource_lifetime_commit is not None:
         runtime_resource_lifetime_commit(resource_plan.lifetimes)
     return result
+
+
+def run_kernel_on_device(
+    kernel_specs: List[KernelSpec],
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    core_ranges: Any,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    program_hash: Optional[int] = None,
+    num_pipe_sync_semaphores: int = 0,
+    pipe_sram_scratch_bytes: int = 0,
+    num_pipe_global_semaphores: int = 0,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    operation_name: str = "<anonymous>",
+    runtime_resource_lifetime_commit: Optional[
+        Callable[[Tuple[object, ...]], None]
+    ] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    device: Optional[Any] = None,
+) -> Any:
+    """Execute a kernel, serializing use of persistent runtime resources."""
+    if runtime_resource_cache is None:
+        return _run_kernel_on_device_impl(
+            kernel_specs=kernel_specs,
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+            program_hash=program_hash,
+            num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+            pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
+            runtime_resource_factory=runtime_resource_factory,
+            operation_name=operation_name,
+            runtime_resource_lifetime_commit=runtime_resource_lifetime_commit,
+            runtime_resource_cache=None,
+            device=device,
+        )
+    with runtime_resource_cache.lock:
+        return _run_kernel_on_device_impl(
+            kernel_specs=kernel_specs,
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+            program_hash=program_hash,
+            num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+            pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
+            runtime_resource_factory=runtime_resource_factory,
+            operation_name=operation_name,
+            runtime_resource_lifetime_commit=runtime_resource_lifetime_commit,
+            runtime_resource_cache=runtime_resource_cache,
+            device=device,
+        )
 
 
 def _serialize_core_ranges(
@@ -2364,6 +2547,7 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import DFBReconfigurationPlan")
     lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.kernel_runner import (")
+    lines.append("    KernelRuntimeResourceCache,")
     lines.append("    KernelSpec,")
     lines.append("    run_kernel_on_device,")
     lines.append(")")
@@ -2377,6 +2561,8 @@ def emit_runner_source(
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
+    lines.append("_RUNTIME_RESOURCE_CACHE = KernelRuntimeResourceCache()")
+    lines.append("")
     lines.append("KERNEL_PATHS = [")
     for spec in kernel_specs:
         lines.append(f'    ("{spec.path}", "{spec.thread_type}"),')
@@ -2528,8 +2714,11 @@ def emit_runner_source(
     if requires_runtime_resource_factory:
         lines.append("        runtime_resource_factory=runtime_resource_factory,")
     lines.append("        operation_name=OPERATION_NAME,")
+    lines.append("        runtime_resource_cache=_RUNTIME_RESOURCE_CACHE,")
+    lines.append("        device=device,")
     lines.append("    )")
     lines.append("")
+
     lines.append("")
     lines.append('if __name__ == "__main__":')
     lines.append('    print("Runner generated. See run() function for usage.")')
@@ -2592,6 +2781,7 @@ __all__ = [
     "ProgramResourcePlan",
     "PipeRuntimeResources",
     "DFBReconfigurationRuntimeResources",
+    "KernelRuntimeResourceCache",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",
@@ -2600,6 +2790,7 @@ __all__ = [
     "build_pipe_computed_address_dfb_tensors",
     "build_pipe_runtime_resources",
     "build_dfb_reconfiguration_runtime_resources",
+    "get_cached_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
     "normalize_program_hash",
     "combine_program_hash_with_runtime_resources",
