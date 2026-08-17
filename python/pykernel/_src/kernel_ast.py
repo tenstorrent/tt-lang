@@ -103,9 +103,9 @@ class _AssignmentCollector(_ScopedCollector):
     their previous value, directly (`acc = acc + x`), through local aliases
     (`tmp = acc; acc = tmp + x`), or through control-flow dependencies where
     the enclosing if-condition reads the assigned variable
-    (`if val > max_val: max_val = val`). `scf.for` uses this narrower list
-    because loop-local assignments that do not depend on a previous outer value
-    do not need iter_args.
+    (`if val > max_val: max_val = val`). This recurrence classification is
+    distinct from the complete set of outer assignments that `scf.for` must
+    return to preserve Python variable rebinding.
 
     `augassign_only_names` preserves the DFB-attached block exception:
     `out_blk += x` lowers through block `__iadd__` as an in-place accumulating
@@ -142,12 +142,6 @@ class _AssignmentCollector(_ScopedCollector):
             return
         self.loop_carried_names.append(name)
         self._loop_carried_seen.add(name)
-
-    def requires_loop_carried_state(self, name):
-        return (
-            name in self._loop_carried_seen
-            or name in self._dependencies_by_name.get(name, set())
-        )
 
     def _record_assignment(self, targets, value, *, from_augassign=False):
         read_variable_names = _collect_read_variable_names(value)
@@ -657,10 +651,11 @@ class TTCompilerBase(PyKernelAstBase):
         for stmt in node.body:
             collector.visit(stmt)
 
-        # A name is carried only if it already exists outside the loop;
-        # otherwise it is loop-local and rebinding it does not need an
-        # iter_arg. Type is not constrained: scf.for accepts any iter_arg
-        # type, so tensor and scalar recurrences are both materialized.
+        # Every assignment to an existing outer variable is an observable
+        # Python rebind: the next iteration and code after the loop must see
+        # the last executed assignment, while a zero-trip loop preserves the
+        # initial value. Loop-local assignments do not need an iter_arg. Type
+        # is not constrained because scf.for accepts any iter_arg type.
         # An AugAssign-only entry on a DFB-attached block target
         # (`out_blk = cb.reserve(); out_blk += x`) is dropped because
         # __iadd__ lowers it to an in-place accumulating store rather than a
@@ -669,8 +664,6 @@ class TTCompilerBase(PyKernelAstBase):
         # produces a fresh value that scf.for must thread.
         carried_var_names = []
         for var_name in collector.names:
-            if not collector.requires_loop_carried_state(var_name):
-                continue
             if var_name == node.target.id:
                 continue
             if not self._var_exists(var_name):

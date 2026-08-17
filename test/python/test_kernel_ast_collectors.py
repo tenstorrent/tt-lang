@@ -13,6 +13,7 @@ import ast
 import pytest
 
 from ttl.pykernel._src.kernel_ast import (
+    TTCompilerBase,
     _AssignmentCollector,
     _collect_unsupported_language_constructs,
 )
@@ -24,6 +25,16 @@ def _collect_assignments(source):
     for statement in parsed_module.body:
         collector.visit(statement)
     return collector
+
+
+def _collect_loop_results(source, outer_names):
+    parsed_module = ast.parse(source)
+    loop = parsed_module.body[0]
+    assert isinstance(loop, ast.For)
+
+    compiler = object.__new__(TTCompilerBase)
+    compiler.symbol_tables = [{name: object() for name in outer_names}]
+    return compiler._get_loop_carried_var_names(loop)
 
 
 @pytest.mark.parametrize(
@@ -124,6 +135,47 @@ def test_plain_assignment_clears_augassign_only_status():
 
     assert collector.loop_carried_names == ["accumulator"]
     assert collector.augassign_only_names == set()
+
+
+@pytest.mark.parametrize(
+    ("source", "outer_names", "expected_results"),
+    [
+        (
+            "for iteration in range(4):\n    selected_token = next_token",
+            {"selected_token", "next_token"},
+            ["selected_token"],
+        ),
+        (
+            "for iteration in range(4):\n"
+            "    previous_first = previous_second\n"
+            "    previous_second = current_token\n"
+            "    current_token = selected_token",
+            {
+                "previous_first",
+                "previous_second",
+                "current_token",
+                "selected_token",
+            },
+            ["previous_first", "previous_second", "current_token"],
+        ),
+        (
+            "for iteration in range(4):\n"
+            "    temporary = source\n"
+            "    result = temporary",
+            {"source", "result"},
+            ["result"],
+        ),
+        (
+            "for iteration in range(0):\n    result = replacement",
+            {"result", "replacement"},
+            ["result"],
+        ),
+    ],
+)
+def test_loop_results_include_every_outer_reassignment(
+    source, outer_names, expected_results
+):
+    assert _collect_loop_results(source, outer_names) == expected_results
 
 
 @pytest.mark.parametrize(
