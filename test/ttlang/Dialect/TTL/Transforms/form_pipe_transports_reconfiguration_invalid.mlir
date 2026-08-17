@@ -1,6 +1,6 @@
 // Verifies that transport grouping rejects combined DFB and runtime storage
 // that exceeds the configured L1 budget.
-// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25663})'
+// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25727})'
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
@@ -10,10 +10,13 @@
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
-// DFB storage (24576), Pipe scratch (32), and boundary state (1056) each fit
-// when checked separately, but their combined 25664-byte allocation does not.
-// expected-error @below {{combined DFB and runtime resources require 25664 L1 bytes but the budget is 25663 (DFB=24576, scratch=32, global semaphores=0, reconfiguration state=1056)}}
-module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+// DFB storage (24576), Pipe scratch (64), and boundary state (1088) each fit
+// when checked separately, but their combined 25728-byte allocation does not.
+// expected-error @below {{combined DFB and runtime resources require 25728 L1 bytes but the budget is 25727 (DFB=24576, scratch=64, global semaphores=0, reconfiguration state=1088)}}
+module attributes {
+  ttl.launch_grid = array<i64: 2, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
   func.func @writer(
       %input: tensor<1x12x!ttcore.tile<32x32, f32>, #layout>,
       %output: tensor<1x12x!ttcore.tile<32x32, f32>, #layout>)
