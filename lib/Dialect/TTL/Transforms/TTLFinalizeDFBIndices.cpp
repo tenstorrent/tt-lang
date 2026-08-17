@@ -223,14 +223,8 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
                       builder.getArrayAttr(assumedGroupAttributes));
   }
 
-  SmallVector<int64_t> boundaryOrdinals;
-  moduleOp.walk([&](DFBReconfigurationOp reconfiguration) {
-    int64_t ordinal = reconfiguration.getBoundary().getOrdinal();
-    if (!llvm::is_contained(boundaryOrdinals, ordinal)) {
-      boundaryOrdinals.push_back(ordinal);
-    }
-  });
-  llvm::sort(boundaryOrdinals);
+  ArrayRef<int64_t> boundaryOrdinals =
+      allocationPlan.getReconfigurationBoundaryOrdinals();
   if (!boundaryOrdinals.empty()) {
     moduleOp->setAttr(
         kDFBReconfigurationPlanAttrName,

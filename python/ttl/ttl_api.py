@@ -1835,9 +1835,9 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
     boundary_ordinals = tuple(int(value) for value in plan_attr["boundary_ordinals"])
     if not boundary_ordinals or any(ordinal < 0 for ordinal in boundary_ordinals):
         raise ValueError(f"{attribute_name}.boundary_ordinals must be non-empty")
-    if tuple(sorted(set(boundary_ordinals))) != boundary_ordinals:
+    if len(set(boundary_ordinals)) != len(boundary_ordinals):
         raise ValueError(
-            f"{attribute_name}.boundary_ordinals must be strictly increasing"
+            f"{attribute_name}.boundary_ordinals must be unique"
         )
 
     dfb_epochs_by_index = {}

@@ -13,7 +13,7 @@ This module provides a single reusable implementation of kernel argument
 building and execution.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import operator
@@ -2339,9 +2339,9 @@ def _validate_dfb_reconfiguration_plan(
     boundary_ordinals = plan.boundary_ordinals
     if not boundary_ordinals:
         raise ValueError("DFB reconfiguration plan must contain a boundary")
-    if tuple(sorted(set(boundary_ordinals))) != boundary_ordinals:
+    if len(set(boundary_ordinals)) != len(boundary_ordinals):
         raise ValueError(
-            "DFB reconfiguration boundary ordinals must be strictly increasing"
+            "DFB reconfiguration boundary ordinals must be unique"
         )
 
     configurations_by_entry = {None: {}}
@@ -2373,11 +2373,35 @@ def _validate_dfb_reconfiguration_plan(
             _validate_physical_dfb_config(config, dfb_index)
             configurations_by_entry[entry_ordinal][dfb_index] = config
 
-    current_configurations = configurations_by_entry[None].copy()
-    _validate_tensor_backing_aliases(tensors, current_configurations.values())
+    current_tensor_configurations = {}
+
+    def apply_configuration(config: PhysicalDFBConfig) -> None:
+        if not config.storage_segments:
+            for dfb_node in list(current_tensor_configurations):
+                if dfb_node[0] == config.dfb_index:
+                    del current_tensor_configurations[dfb_node]
+            return
+        for segment in config.storage_segments:
+            for node in segment.nodes:
+                dfb_node = (config.dfb_index, node)
+                current_tensor_configurations.pop(dfb_node, None)
+                if segment.is_tensor_backed:
+                    node_segment = replace(segment, nodes=(node,))
+                    current_tensor_configurations[dfb_node] = replace(
+                        config, storage_segments=(node_segment,)
+                    )
+
+    for config in configurations_by_entry[None].values():
+        apply_configuration(config)
+    _validate_tensor_backing_aliases(
+        tensors, current_tensor_configurations.values()
+    )
     for boundary_ordinal in boundary_ordinals:
-        current_configurations.update(configurations_by_entry[boundary_ordinal])
-        _validate_tensor_backing_aliases(tensors, current_configurations.values())
+        for config in configurations_by_entry[boundary_ordinal].values():
+            apply_configuration(config)
+        _validate_tensor_backing_aliases(
+            tensors, current_tensor_configurations.values()
+        )
 
 
 def build_cb_descriptors(
