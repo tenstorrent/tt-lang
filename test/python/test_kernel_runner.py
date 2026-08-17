@@ -4173,7 +4173,7 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
     l1_buffer_type = object()
     dram_buffer_type = object()
     device_info = SimpleNamespace(
-        address_at_first_l1_cb_buffer=0x2000,
+        address_at_first_l1_cb_buffer=0x1FC0,
         cb_limit=0x1000,
     )
     buffer_pages = [
