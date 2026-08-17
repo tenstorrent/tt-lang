@@ -19,6 +19,8 @@ import json
 import operator
 import os
 import threading
+import warnings
+import weakref
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
@@ -914,6 +916,36 @@ def release_cached_runtime_resources(cache: KernelRuntimeResourceCache) -> None:
     """Synchronize and release one operation's persistent L1 resources."""
     with cache.lock:
         _release_cached_runtime_resources_impl(cache)
+
+
+# A failed device synchronization must retain owners referenced by in-flight work.
+_RETAINED_RUNTIME_RESOURCE_CACHES = []
+
+
+def finalize_runtime_resource_cache(runtime_resource_cache):
+    """Synchronize before releasing resources owned by a collected object."""
+    try:
+        release_cached_runtime_resources(runtime_resource_cache)
+    except BaseException as error:
+        _RETAINED_RUNTIME_RESOURCE_CACHES.append(runtime_resource_cache)
+        error_message = str(error) or type(error).__name__
+        try:
+            warnings.warn(
+                f"failed to synchronize operation runtime resources: {error_message}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        except BaseException:
+            pass
+
+
+def attach_runtime_resource_finalizer(owner, runtime_resource_cache):
+    """Attach exception-safe resource cleanup to a weak-referenceable owner."""
+    resource_finalizer = weakref.finalize(
+        owner, finalize_runtime_resource_cache, runtime_resource_cache
+    )
+    resource_finalizer.atexit = False
+    return resource_finalizer
 
 
 _DFB_RECONFIGURATION_WORDS_PER_CORE = 264
@@ -2600,6 +2632,7 @@ def emit_runner_source(
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelRuntimeResourceCache,")
     lines.append("    KernelSpec,")
+    lines.append("    attach_runtime_resource_finalizer,")
     lines.append("    run_kernel_on_device,")
     lines.append(")")
     lines.append("")
@@ -2612,7 +2645,14 @@ def emit_runner_source(
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
+    lines.append("class _RuntimeResourceOwner:")
+    lines.append("    pass")
+    lines.append("")
+    lines.append("_RUNTIME_RESOURCE_OWNER = _RuntimeResourceOwner()")
     lines.append("_RUNTIME_RESOURCE_CACHE = KernelRuntimeResourceCache()")
+    lines.append("_RUNTIME_RESOURCE_FINALIZER = attach_runtime_resource_finalizer(")
+    lines.append("    _RUNTIME_RESOURCE_OWNER, _RUNTIME_RESOURCE_CACHE")
+    lines.append(")")
     lines.append("")
     lines.append("KERNEL_PATHS = [")
     for spec in kernel_specs:

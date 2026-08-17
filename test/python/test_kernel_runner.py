@@ -6,6 +6,7 @@
 
 from collections import defaultdict
 from dataclasses import FrozenInstanceError
+import gc
 import os
 import subprocess
 import sys
@@ -3266,6 +3267,50 @@ def test_emitted_runner_reuses_global_semaphore_owners(monkeypatch):
     ].pipe_resources.global_semaphores[0]
     assert second_owner is first_owner
     assert fake_ttnn.events == [("allocate", 0)]
+
+    del first_owner
+    del second_owner
+    namespace.clear()
+    gc.collect()
+    assert fake_ttnn.events == [
+        ("allocate", 0),
+        ("synchronize", device),
+        ("release", 0),
+    ]
+
+
+def test_emitted_runner_synchronizes_before_owner_destruction(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        num_pipe_global_semaphores=1,
+    )
+    namespace = {"__name__": "generated_runner"}
+    exec(compile(source, "<generated-runner>", "exec"), namespace)
+
+    device = object()
+    namespace["run"]([_FakeTensor(device)], device=device)
+    resource_owner = namespace["_RUNTIME_RESOURCE_CACHE"].pipe_resources
+    semaphore_reference = weakref.ref(resource_owner.global_semaphores[0])
+    del resource_owner
+    namespace.clear()
+    gc.collect()
+
+    assert fake_ttnn.events == [
+        ("allocate", 0),
+        ("synchronize", device),
+        ("release", 0),
+    ]
+    assert semaphore_reference() is None
 
 
 def test_emit_runner_source_accepts_physical_dfb_configs():

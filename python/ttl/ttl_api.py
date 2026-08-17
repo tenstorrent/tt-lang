@@ -13,8 +13,6 @@ import os
 import random
 import sys
 import threading
-import warnings
-import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
@@ -125,6 +123,7 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     _detect_device_arch,
+    attach_runtime_resource_finalizer,
     KernelRuntimeResourceCache,
     KernelSpec,
     get_min_remaining_l1_for_device,
@@ -147,30 +146,6 @@ from .runtime_resources import ProgramRuntimeResources
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
-
-# A failed device synchronization must retain owners referenced by in-flight work.
-_RETAINED_RUNTIME_RESOURCE_CACHES = []
-
-
-def _finalize_runtime_resource_cache(runtime_resource_cache):
-    try:
-        release_cached_runtime_resources(runtime_resource_cache)
-    except Exception as error:
-        _RETAINED_RUNTIME_RESOURCE_CACHES.append(runtime_resource_cache)
-        warnings.warn(
-            f"failed to synchronize operation runtime resources: {error}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-
-def _attach_runtime_resource_finalizer(owner, runtime_resource_cache):
-    resource_finalizer = weakref.finalize(
-        owner, _finalize_runtime_resource_cache, runtime_resource_cache
-    )
-    resource_finalizer.atexit = False
-    return resource_finalizer
-
 
 _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
@@ -881,7 +856,7 @@ class CompiledTTNNKernel:
             else runtime_resource_cache
         )
         if owns_runtime_resource_cache:
-            self._runtime_resource_finalizer = _attach_runtime_resource_finalizer(
+            self._runtime_resource_finalizer = attach_runtime_resource_finalizer(
                 self, self._runtime_resource_cache
             )
         self.opaque_include_paths = opaque_include_paths or []
@@ -2879,7 +2854,7 @@ def _make_operation_wrapper(
 
         return result
 
-    _attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
+    attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
     return _wrapper
 
 

@@ -453,7 +453,14 @@ def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypat
     assert events == ["synchronize:device", "release"]
 
 
-def test_runtime_resource_finalizer_retains_owners_when_sync_fails(monkeypatch):
+@pytest.mark.parametrize(
+    "synchronization_error",
+    [RuntimeError("device synchronization failed"), KeyboardInterrupt()],
+    ids=["runtime-error", "keyboard-interrupt"],
+)
+def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
+    monkeypatch, synchronization_error
+):
     events = []
 
     class LifetimeOwner:
@@ -462,7 +469,7 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(monkeypatch):
 
     def fail_synchronization(_device):
         events.append("synchronize")
-        raise RuntimeError("device synchronization failed")
+        raise synchronization_error
 
     fake_ttnn = type(
         "FakeTTNN", (), {"synchronize_device": staticmethod(fail_synchronization)}
@@ -474,17 +481,49 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(monkeypatch):
         pipe_resources=LifetimeOwner(),
     )
 
-    with pytest.warns(RuntimeWarning, match="device synchronization failed"):
-        ttl_api._finalize_runtime_resource_cache(runtime_resource_cache)
+    with pytest.warns(RuntimeWarning, match="failed to synchronize"):
+        kernel_runner.finalize_runtime_resource_cache(runtime_resource_cache)
 
     assert events == ["synchronize"]
-    assert runtime_resource_cache in ttl_api._RETAINED_RUNTIME_RESOURCE_CACHES
+    assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
     assert runtime_resource_cache.pipe_resources is not None
 
     fake_ttnn.synchronize_device = lambda _device: events.append("cleanup-sync")
-    ttl_api._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
     kernel_runner.release_cached_runtime_resources(runtime_resource_cache)
     assert events == ["synchronize", "cleanup-sync", "release"]
+
+
+def test_runtime_resource_finalizer_retains_owners_when_warning_fails(monkeypatch):
+    runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resources",), device="device", pipe_resources=object()
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        type(
+            "FakeTTNN",
+            (),
+            {
+                "synchronize_device": staticmethod(
+                    lambda _device: (_ for _ in ()).throw(KeyboardInterrupt())
+                )
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        kernel_runner.warnings,
+        "warn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("warning")),
+    )
+
+    kernel_runner.finalize_runtime_resource_cache(runtime_resource_cache)
+
+    assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
+    kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    runtime_resource_cache.compatibility_key = None
+    runtime_resource_cache.device = None
+    runtime_resource_cache.pipe_resources = None
 
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
