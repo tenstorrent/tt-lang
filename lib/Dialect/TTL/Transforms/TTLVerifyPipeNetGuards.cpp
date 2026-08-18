@@ -11,6 +11,8 @@
 // wait-for cycles in execution order.
 //===----------------------------------------------------------------------===//
 
+#include "DFBVerification.h"
+
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -2325,7 +2327,9 @@ struct TTLVerifyPipeNetGuardsPass
       }
     });
 
-    verifyCBWaits(state);
+    if (!isDFBProtocolDomainVerificationRelaxed()) {
+      verifyCBWaits(state);
+    }
     if (state.sawError) {
       signalPassFailure();
       return;
