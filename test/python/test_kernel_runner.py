@@ -970,6 +970,50 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
     assert kernel_runner.get_min_remaining_l1_for_device(device) == 0x900
 
 
+def test_mesh_remaining_l1_uses_reference_allocator_global_floor(monkeypatch):
+    l1_buffer_type = object()
+    device_info = SimpleNamespace(cb_limit=0x1000)
+    buffer_pages = [
+        SimpleNamespace(
+            buffer_type=l1_buffer_type,
+            core_x=0,
+            core_y=0,
+            page_address=0x2900,
+        ),
+        SimpleNamespace(
+            buffer_type=l1_buffer_type,
+            core_x=1,
+            core_y=0,
+            page_address=0x2C00,
+        ),
+    ]
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: device_info,
+        get_buffer_pages=lambda _device: buffer_pages,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        SimpleNamespace(
+            BufferType=SimpleNamespace(L1=l1_buffer_type),
+            get_allocator_base_address=lambda _device, _buffer_type: 0x2000,
+            _ttnn=SimpleNamespace(reports=reports),
+        ),
+    )
+
+    device = SimpleNamespace(get_num_devices=lambda: 32)
+    remaining_by_core = kernel_runner._get_remaining_l1_by_core_for_device(
+        device,
+        {(0, 0), (1, 0), (2, 0)},
+    )
+
+    assert remaining_by_core == {
+        (0, 0): 0x900,
+        (1, 0): 0x900,
+        (2, 0): 0x900,
+    }
+
+
 def test_specialized_dfb_budget_uses_each_cores_remaining_l1(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
