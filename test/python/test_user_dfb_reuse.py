@@ -784,8 +784,6 @@ _waited_mutation_bf16_iadd_kernel = _make_waited_block_iadd_kernel("bf16")
 _waited_mutation_f32_iadd_kernel = _make_waited_block_iadd_kernel("float32")
 _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
 _exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
-_cumulative_bf16_queue_state_kernel = _make_cumulative_queue_state_kernel("bf16")
-_cumulative_f32_queue_state_kernel = _make_cumulative_queue_state_kernel("float32")
 _conditional_bf16_lifecycle_kernel = _make_conditional_lifecycle_kernel("bf16")
 _conditional_f32_lifecycle_kernel = _make_conditional_lifecycle_kernel("float32")
 _dispatch_condition_bf16_lifecycle_kernel = _make_dispatch_condition_lifecycle_kernel(
@@ -1060,10 +1058,10 @@ def test_repeated_transaction_lifecycles_reuse_dfb(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("data_format", "dtype"),
     [
-        (_cumulative_bf16_queue_state_kernel, torch.bfloat16),
-        (_cumulative_f32_queue_state_kernel, torch.float32),
+        ("bf16", torch.bfloat16),
+        ("float32", torch.float32),
     ],
     ids=["bf16", "f32"],
 )
@@ -1073,8 +1071,9 @@ def test_repeated_transaction_lifecycles_reuse_dfb(
     ids=["dram", "l1"],
 )
 def test_cumulative_queue_state_lifecycles_reuse_dfb(
-    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+    device, data_format, dtype, memory_config, to_device, monkeypatch, tmp_path
 ):
+    operation = _make_cumulative_queue_state_kernel(data_format)
     element_indices = torch.arange(TILE * 16 * TILE, dtype=torch.float32).reshape(
         TILE, 16 * TILE
     )
