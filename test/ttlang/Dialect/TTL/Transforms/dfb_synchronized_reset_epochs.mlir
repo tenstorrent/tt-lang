@@ -579,3 +579,200 @@ module attributes {ttl.launch_grid = [1, 1]} {
     return
   }
 }
+
+// -----
+
+// The first participant retains its repeated domain so its final access orders
+// the corresponding reset instance and the following participant lifecycle.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @first_participant_repeated_reset_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "consume_first" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+      ttl.opaque_call "reset_first" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%first) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> ()
+    }
+    scf.for %transaction = %lower to %upper step %step {
+      ttl.opaque_call "consume_second" dfb_dependencies(%second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    }
+    return
+  }
+
+  func.func @first_participant_repeated_reset_data_movement()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "produce_first" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+      ttl.opaque_call "reset_first" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%first) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> ()
+    }
+    scf.for %transaction = %lower to %upper step %step {
+      ttl.opaque_call "produce_second" dfb_dependencies(%second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// Separate sequential loops are distinct reset domains even when their trip
+// counts and participant sets match.
+// CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=2048 handoff=proven
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @separate_repeated_reset_loops()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset_before_first" dfb_reset <0, all_local = true, participants[<kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    }
+    ttl.opaque_call "complete_first" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset_before_second" dfb_reset <1, all_local = true, participants[<kind = data_movement>]> () {header = "reset.hpp"} : () -> ()
+    }
+    ttl.opaque_call "complete_second" dfb_dependencies(%second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Each iteration completes one two-tile transaction before the same
+// synchronized reset. The reset restores cursor zero, so four executions fit
+// a three-tile allocation without a ring-boundary crossing.
+// CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=6144 handoff=proven
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: reset_epochs=[{executions=4,accesses=[0, 1, 2, 3],transactions=[2],write_owner=(0,0):noc0:write,read_owner=(0,0):unpack:read,terminal_reset=0,terminal_state=canonical}]
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_reset_lifetime_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 3}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "consume_two" dfb_dependencies(%old : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "effects.hpp"} : () -> ()
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>) -> ()
+    }
+    ttl.opaque_call "consume_current" dfb_dependencies(%current : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    return
+  }
+
+  func.func @repeated_reset_lifetime_data_movement()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 3}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "produce_two" dfb_dependencies(%old : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "effects.hpp"} : () -> ()
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%old) {header = "reset.hpp"} : (!ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>) -> ()
+    }
+    ttl.opaque_call "produce_current" dfb_dependencies(%current : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// A dispatch-wide access cannot use a reset repeated by a different execution
+// count as its canonical terminator.
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: occurrences=[0:1, 1:1, 2:1, 3:1] transactions=[2]
+// CHECK-NOT: reset_epochs=
+// CHECK: DFB allocation liveness report end
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_reset_access_count_mismatch()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 1 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    ttl.opaque_call "complete_two" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>, #ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "effects.hpp"} : () -> ()
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// A reset before the access in each iteration cannot terminate that
+// iteration's transaction.
+// CHECK: DFB logical_id=0 bounded=0
+// CHECK: quiescence=mismatched-transaction
+// CHECK: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @repeated_reset_precedes_access()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 1 : i32,
+                  ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = data_movement>]> (%dfb) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) -> ()
+      ttl.opaque_call "complete_two" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>, #ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "effects.hpp"} : () -> ()
+    }
+    return
+  }
+}

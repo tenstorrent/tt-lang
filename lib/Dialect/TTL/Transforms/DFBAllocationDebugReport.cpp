@@ -238,7 +238,11 @@ static void printResetEpochs(llvm::raw_ostream &output,
   output << '[';
   llvm::interleaveComma(
       lifetime.resetEpochs, output, [&](const DFBLifecycleEpoch &epoch) {
-        output << "{accesses=";
+        output << '{';
+        if (epoch.executionCount > 1) {
+          output << "executions=" << epoch.executionCount << ',';
+        }
+        output << "accesses=";
         printValues(output, epoch.accessOccurrenceIndices);
         output << ",transactions=";
         printTransactionRuns(output, epoch.transactionRuns);
@@ -281,7 +285,8 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
   return llvm::equal(
       lhs, rhs,
       [](const DFBLifecycleEpoch &lhsEpoch, const DFBLifecycleEpoch &rhsEpoch) {
-        return lhsEpoch.accessOccurrenceIndices ==
+        return lhsEpoch.executionCount == rhsEpoch.executionCount &&
+               lhsEpoch.accessOccurrenceIndices ==
                    rhsEpoch.accessOccurrenceIndices &&
                lhsEpoch.transactionRuns == rhsEpoch.transactionRuns &&
                lhsEpoch.writeCursorRuns == rhsEpoch.writeCursorRuns &&
