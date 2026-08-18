@@ -55,3 +55,17 @@ func.func @tile_matmul_scalar_tensor(
         -> !ttcore.tile<32x32, bf16>
   return
 }
+
+// -----
+
+// Only BF16 lhs by BFP4_B rhs can use different operand data types.
+func.func @tile_matmul_unsupported_mixed_types(
+    %lhs: !ttcore.tile<32x32, f32>,
+    %rhs: !ttcore.tile<32x32, bfp_bf4>) {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{unsupported matmul element data type combination: lhs has !ttcore.tile<32x32, f32>, rhs has !ttcore.tile<32x32, bfp_bf4>, and result has !ttcore.tile<32x32, f32>}}
+  %result = ttl.tile_matmul_block %lhs, %rhs into dst[%c0]
+      : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, bfp_bf4>
+        -> !ttcore.tile<32x32, f32>
+  return
+}
