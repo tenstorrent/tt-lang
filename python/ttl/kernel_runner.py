@@ -188,9 +188,9 @@ def get_min_remaining_l1_for_device(device):
     return minimum_remaining_bytes
 
 
-def _contains_multiple_physical_devices(device) -> bool:
+def _requires_global_l1_floor(device) -> bool:
     get_num_devices = getattr(device, "get_num_devices", None)
-    return get_num_devices is not None and int(get_num_devices()) > 1
+    return get_num_devices is None or int(get_num_devices()) != 1
 
 
 def _get_remaining_l1_by_core_for_device(
@@ -216,12 +216,10 @@ def _get_remaining_l1_by_core_for_device(
         if core in remaining_bytes:
             remaining_bytes[core] = min(remaining_bytes[core], page_remaining_bytes)
 
-    # TTNN reports one physical allocator for a MeshDevice, while the same
-    # logical program executes on devices with potentially different harvested
-    # worker mappings. Common tensor and runtime-resource addresses make the
-    # reference allocator's lowest live page a conservative bound for every
-    # worker.
-    if _contains_multiple_physical_devices(device):
+    # Mesh and unrecognized device wrappers cannot prove that one reported
+    # allocator covers every worker. Common allocation addresses make the
+    # reference allocator's lowest live page safe for every worker.
+    if _requires_global_l1_floor(device):
         remaining_bytes = {
             core: min(core_remaining_bytes, minimum_remaining_bytes)
             for core, core_remaining_bytes in remaining_bytes.items()

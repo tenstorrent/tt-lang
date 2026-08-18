@@ -956,7 +956,7 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
         ),
     )
 
-    device = object()
+    device = SimpleNamespace(get_num_devices=lambda: 1)
     remaining_by_core = kernel_runner._get_remaining_l1_by_core_for_device(
         device,
         {(0, 0), (1, 0), (2, 0)},
@@ -970,7 +970,12 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
     assert kernel_runner.get_min_remaining_l1_for_device(device) == 0x900
 
 
-def test_mesh_remaining_l1_uses_reference_allocator_global_floor(monkeypatch):
+@pytest.mark.parametrize(
+    "device",
+    [SimpleNamespace(get_num_devices=lambda: 32), object()],
+    ids=["multiple-devices", "unknown-device-type"],
+)
+def test_global_remaining_l1_uses_reference_allocator_floor(monkeypatch, device):
     l1_buffer_type = object()
     device_info = SimpleNamespace(cb_limit=0x1000)
     buffer_pages = [
@@ -1001,7 +1006,6 @@ def test_mesh_remaining_l1_uses_reference_allocator_global_floor(monkeypatch):
         ),
     )
 
-    device = SimpleNamespace(get_num_devices=lambda: 32)
     remaining_by_core = kernel_runner._get_remaining_l1_by_core_for_device(
         device,
         {(0, 0), (1, 0), (2, 0)},
