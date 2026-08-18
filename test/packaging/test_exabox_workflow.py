@@ -73,6 +73,10 @@ def test_hardware_matrix_adds_manual_blackhole_loudbox() -> None:
     assert "matrix.hardware == 'bh-loudbox-viommu'" in call_build
     assert "tt-ubuntu-2204-bh-loudbox-viommu-stable" in call_build
     assert "tt-ubuntu-2204-n150-stable" in call_build
+    assert (
+        "defer_result_check: ${{ matrix.hardware != 'bh-loudbox-viommu' }}"
+        in call_build
+    )
     assert "--optional-runner" not in call_build
     assert "inputs.run_galaxy_tests && 3 || 2" in call_build
     assert "inputs.run_galaxy_tests && 2 || 1" in call_build

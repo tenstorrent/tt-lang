@@ -144,7 +144,7 @@ jobs:
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
-            defer_result_check: true
+            defer_result_check: ${{ matrix.hardware != 'bh-loudbox-viommu' }}
             hardware: ${{ matrix.hardware }}
             runner_label: ${{ matrix.hardware == 'bh-loudbox-viommu' && 'tt-ubuntu-2204-bh-loudbox-viommu-stable' || 'tt-ubuntu-2204-n150-stable' }}
             timeout: 90
