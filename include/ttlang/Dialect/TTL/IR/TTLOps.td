@@ -339,8 +339,8 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
     /// Returns the unique formal output index whose attached DFB matches
     /// `view`. Failure means the association is absent or ambiguous.
-    /// TODO(bnorris): Encode this association in `ttl.tile_store` and remove
-    /// DFB-based discovery. See #797.
+    /// TODO(#797): Encode this association in `ttl.tile_store` and remove
+    /// DFB-based discovery.
     FailureOr<unsigned> getOutputIndexForView(Value view);
 
     // Return whether the body contains an op of the given type.

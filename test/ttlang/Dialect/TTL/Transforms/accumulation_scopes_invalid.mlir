@@ -1,12 +1,13 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes))' --verify-diagnostics --split-input-file
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{strategy=dst}))' --verify-diagnostics --split-input-file
 
 // Summary: Verifies tensor accumulation lowering rejects invalid scopes before
 // mutation.
 
-func.func @scope_output_must_be_reserve() {
-  %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+func.func @stateful_dst_not_supported() {
+  %out_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %out = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{'ttl.accumulation_scope' op tensor accumulation lowering requires output from ttl.cb_reserve}}
+  // expected-error @below {{'ttl.accumulation_scope' op cannot lower stateful tensor accumulation scope to DST: stateful DST lowering is not implemented (at this point)}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%acc: tensor<1x1x!ttcore.tile<32x32, bf16>>):
@@ -29,7 +30,7 @@ func.func @contribution_wait_must_use_default_block_size() {
   %init = ttl.attach_cb %init_wait, %init_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %out = ttl.cb_reserve %out_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
-  // expected-error @below {{'ttl.accumulation_scope' op cannot lower tensor accumulation scope to DST: expected a DST-compatible same-type additive recurrence with an attached init tensor, a streamed or resident contribution ttl.cb_wait using the default block size, balanced contribution releases, and a static output tile count that fits in DST}}
+  // expected-error @below {{'ttl.accumulation_scope' op cannot lower tensor accumulation scope to DST: expected a DST-compatible same-type additive recurrence with one loop-carried accumulator and one final store; select the automatic accumulation strategy or l1-pack}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%acc_init: tensor<1x1x!ttcore.tile<32x32, bf16>>):

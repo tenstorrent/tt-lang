@@ -1,8 +1,8 @@
 // Summary: Verify tensor accumulation scope formation across multi-tile
 // recurrences and non-additive work inside the recurrence loop.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes))' --split-input-file | FileCheck %s --check-prefix=DST
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state))' --split-input-file | FileCheck %s --check-prefix=FALLBACK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=dst}, ttl-lower-accumulation-scopes))' --split-input-file | FileCheck %s --check-prefix=LOWER
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=dst}, ttl-lower-accumulation-scopes, ttl-materialize-loop-state))' --split-input-file | FileCheck %s --check-prefix=MATERIALIZE
 
 // Multi-tile additive recurrence lowers to one streaming DST section. Each
 // iteration consumes one 2x2 contribution block while the accumulator stays in
@@ -32,22 +32,22 @@ func.func @multitile_tensor_recurrence_scope() {
   return
 }
 
-// DST-LABEL: func.func @multitile_tensor_recurrence_scope
-// DST: %[[CONTRIB_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
-// DST: ttl.dst_section
-// DST-COUNT-4: ttl.copy_tile
-// DST: scf.for
-// DST: ttl.cb_wait %[[CONTRIB_CB]] : <[2, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-// DST-COUNT-4: ttl.tile_accumulate
-// DST: ttl.cb_pop %[[CONTRIB_CB]] : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
-// DST-COUNT-4: ttl.tile_store
-// DST-NOT: ttl.compute
+// LOWER-LABEL: func.func @multitile_tensor_recurrence_scope
+// LOWER: %[[CONTRIB_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
+// LOWER: ttl.dst_section
+// LOWER-COUNT-4: ttl.copy_tile
+// LOWER: scf.for
+// LOWER: ttl.cb_wait %[[CONTRIB_CB]] : <[2, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+// LOWER-COUNT-4: ttl.tile_accumulate
+// LOWER: ttl.cb_pop %[[CONTRIB_CB]] : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
+// LOWER-COUNT-4: ttl.tile_store
+// LOWER-NOT: ttl.compute
 
 // -----
 
-// Broadcast work inside the loop is not part of the additive recurrence and
-// requires normal loop-state materialization.
-func.func @broadcast_in_loop_falls_back() {
+// Broadcast work inside the loop is preserved while the additive recurrence
+// lowers to packer L1 accumulation.
+func.func @broadcast_in_loop_lowers_to_l1_pack() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c3 = arith.constant 3 : index
@@ -73,21 +73,25 @@ func.func @broadcast_in_loop_falls_back() {
   return
 }
 
-// DST-LABEL: func.func @broadcast_in_loop_falls_back
-// DST-NOT: ttl.accumulation_scope
-// DST-NOT: ttl.tile_accumulate
-// DST: %{{.*}} = scf.for
-// FALLBACK-LABEL: func.func @broadcast_in_loop_falls_back
-// FALLBACK: ttl.compiler_allocated
-// FALLBACK: ttl.block.broadcast
-// FALLBACK-NOT: ttl.accumulation_scope
-// FALLBACK-NOT: ttl.tile_accumulate
+// LOWER-LABEL: func.func @broadcast_in_loop_lowers_to_l1_pack
+// LOWER-NOT: ttl.accumulation_scope
+// LOWER-NOT: ttl.tile_accumulate
+// LOWER: ttl.store
+// LOWER: scf.for
+// LOWER: ttl.block.broadcast
+// LOWER: ttl.store
+// LOWER: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+// MATERIALIZE-LABEL: func.func @broadcast_in_loop_lowers_to_l1_pack
+// MATERIALIZE: ttl.block.broadcast
+// MATERIALIZE: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+// MATERIALIZE-NOT: ttl.compiler_allocated
+// MATERIALIZE-NOT: ttl.accumulation_scope
 
 // -----
 
-// A reduce op in the loop is not part of the additive recurrence and requires
-// normal loop-state materialization.
-func.func @reduce_in_loop_falls_back() {
+// A reduce op inside the loop is preserved while the additive recurrence
+// lowers to packer L1 accumulation.
+func.func @reduce_in_loop_lowers_to_l1_pack() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c3 = arith.constant 3 : index
@@ -116,12 +120,16 @@ func.func @reduce_in_loop_falls_back() {
   return
 }
 
-// DST-LABEL: func.func @reduce_in_loop_falls_back
-// DST-NOT: ttl.accumulation_scope
-// DST-NOT: ttl.tile_accumulate
-// DST: %{{.*}} = scf.for
-// FALLBACK-LABEL: func.func @reduce_in_loop_falls_back
-// FALLBACK: ttl.compiler_allocated
-// FALLBACK: ttl.reduce
-// FALLBACK-NOT: ttl.accumulation_scope
-// FALLBACK-NOT: ttl.tile_accumulate
+// LOWER-LABEL: func.func @reduce_in_loop_lowers_to_l1_pack
+// LOWER-NOT: ttl.accumulation_scope
+// LOWER-NOT: ttl.tile_accumulate
+// LOWER: ttl.store
+// LOWER: scf.for
+// LOWER: ttl.reduce
+// LOWER: ttl.store
+// LOWER: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+// MATERIALIZE-LABEL: func.func @reduce_in_loop_lowers_to_l1_pack
+// MATERIALIZE: ttl.reduce
+// MATERIALIZE: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+// MATERIALIZE-NOT: ttl.compiler_allocated
+// MATERIALIZE-NOT: ttl.accumulation_scope
