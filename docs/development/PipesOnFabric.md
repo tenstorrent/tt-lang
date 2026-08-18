@@ -621,6 +621,13 @@ domain means the complete descriptor executes the interval; a present empty
 domain means no node executes it. The external binding must cover the resulting
 node set exactly.
 
+Each scoped external call releases its manager before returning. Scoped calls
+in one RISC function are therefore sequential even when sibling structured
+control-flow regions contain them, provided both execute on the same single
+launch node. Multiple launch nodes may progress independently, and calls in
+different functions may execute concurrently, so those intervals remain
+interfering.
+
 The compiler serializes an ordered sequence of generated receiver and sender
 manager intervals only when corresponding intervals each contain one protocol
 operation, implement the same transfers at the same device and TENSIX node,

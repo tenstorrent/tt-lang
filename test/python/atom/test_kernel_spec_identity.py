@@ -158,20 +158,21 @@ def test_scoped_external_managers_retain_conditional_launch_domain(monkeypatch):
     @ttl.operation(grid=(3, 2))
     def conditional_managers(inp):
         core_x, core_y = ttl.node(dims=2)
-        if core_x == 1:
-            if core_y == 0:
-                ttl.call_extern_func(
-                    HEADER,
-                    "pre",
-                    kernel=ttl.PIPE_SOURCE_KERNEL,
-                    fabric_manager_effects=(pre_manager.scoped(),),
-                )
-                ttl.call_extern_func(
-                    HEADER,
-                    "post",
-                    kernel=ttl.PIPE_SOURCE_KERNEL,
-                    fabric_manager_effects=(post_manager.scoped(),),
-                )
+        active = core_x == 1 and core_y == 0
+        if active:
+            ttl.call_extern_func(
+                HEADER,
+                "pre",
+                kernel=ttl.PIPE_SOURCE_KERNEL,
+                fabric_manager_effects=(pre_manager.scoped(),),
+            )
+        if active:
+            ttl.call_extern_func(
+                HEADER,
+                "post",
+                kernel=ttl.PIPE_SOURCE_KERNEL,
+                fabric_manager_effects=(post_manager.scoped(),),
+            )
 
     conditional_managers(
         ttnn.from_torch(
