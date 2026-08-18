@@ -112,7 +112,12 @@ which assigns temporary IDs to compiler-created DFBs without modifying IR.
 Schedule verification uses exact transfer provenance and does not depend on DFB
 allocation.
 
-### Per-core descriptor specialization
+### Per-core descriptor allocation
+
+Physical allocation records the exact union of launch nodes that access each
+physical DFB index. The runtime restricts descriptors to this domain without
+requiring kernel specialization. An exact empty domain installs no descriptor;
+an unknown domain retains conservative whole-grid allocation.
 
 Per-core kernel specialization can remove different DFB operations on
 different launch nodes. Each final TTKernel function records the physical
@@ -121,12 +126,13 @@ indices still referenced by its compile-time arguments in
 An unresolved call or missing annotation is conservative and keeps every DFB
 available on the affected function's launch nodes.
 
-The runtime unions these sets for every kernel dispatched to a logical core.
-It then intersects the result with the finalized storage segments for each
-physical DFB. Static storage, tensor-backed ranges, and PipeNet
+The runtime unions these sets for every kernel dispatched to a logical core,
+then intersects the result with the physical allocation domain and finalized
+storage segments. Static storage, tensor-backed ranges, and PipeNet
 computed-address backing therefore use only cores where a surviving kernel can
-access that physical index. A tensor-backed or finalized static segment remains
-restricted to its allocation domain.
+access that physical index. A computed-address DFB with an empty effective
+domain retains one hidden backing shard because the PipeNet ABI still requires
+a receiver address, but no launch core installs its descriptor.
 
 Descriptor construction partitions launch nodes by their complete DFB storage
 signature. Every node in one partition receives the same ordered descriptor
@@ -1645,7 +1651,12 @@ non-DFB argument index.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
 Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
-and `block_count`. The planner computes `page_size` with
+and `block_count`. When the compiler proves the exact union of launch nodes
+that access the physical index, the descriptor also contains
+`allocation_nodes`. An empty array records an unreachable allocation. Omitting
+the field retains conservative whole-grid allocation when the node domain is
+unknown. This metadata controls storage residency independently from optional
+per-core executable specialization. The planner computes `page_size` with
 `ttcore::getElementSizeBytes()` on the finalized element type, so subtile
 dimensions affect the physical allocation without requiring runtime device
 initialization.
@@ -1662,13 +1673,20 @@ buildRuntimeDescriptors(assignments):
           num_tiles = type.elementsPerBlock,
           element_type = type.elementType,
           page_size = byteSize(type.elementType),
-          block_count = type.blockCount}
+          block_count = type.blockCount,
+          allocation_nodes = exactUnionOrUnknown(launchDomains(index))}
 ```
 
 Every finalized declaration contributes to the table. Type equality makes
 each deduplicated descriptor valid for every declaration at that physical
 index, and deriving the page size from the same element type used by lowering
 keeps compiler and runtime allocation sizes equal.
+
+The runtime intersects `allocation_nodes` with final per-kernel DFB-use
+metadata when both are available. The allocation domain restricts an
+unspecialized grid-wide kernel, while specialized use metadata may remove
+additional DFBs after coordinate folding. Tensor-backed storage segments must
+cover the exact allocation nodes and retain their existing storage identity.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
