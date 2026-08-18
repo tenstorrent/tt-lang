@@ -1255,6 +1255,29 @@ page format, sufficient storage, and legal ring-pointer progression.
 `CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
 is a pointer comparison.
 
+### Repeated synchronized reset intervals
+
+A synchronized reset declaration in an immutable sequential `scf.for` or
+`affine.for` loop denotes one collective reset instance per iteration. Every
+participant must execute once in each iteration on the same launch node and
+must have the same nested trip-count sequence. Unknown counts, conditional
+iterations, non-sequential loops, participant-count differences, and target-set
+differences are rejected because they cannot establish corresponding collective
+instances.
+
+The liveness analysis represents the first and last reset instances without
+expanding the happens-before graph by the trip count. A DFB receives a repeated
+interval lifetime only when every active access executes once per iteration in
+the same local loop nest and completes before that iteration's reset. Protocol
+validation then normalizes each selected access to one representative interval.
+The reset supplies the terminal canonical pointer and occupancy state, and the
+lifecycle epoch records the number of represented intervals.
+
+This representative interval does not create a dispatch-wide allocation
+boundary between unrelated DFB declarations. Accesses outside the matching loop
+domain, consumer-only intervals that may block before the reset, and incomplete
+or conditionally mismatched protocols remain conservative.
+
 ### Logical identity
 
 The frontend assigns each user-declared DFB a module-wide logical `dfb_id` and
