@@ -2878,7 +2878,8 @@ template <typename... ExpectedAcquireOps>
 static mlir::FailureOr<mlir::Type>
 verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
                        mlir::RankedTensorType blockTy, mlir::ValueRange coords,
-                       llvm::StringRef expectedAcquisition) {
+                       llvm::StringRef expectedAcquisition,
+                       bool allowComputeThread = false) {
   auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
   if (!func) {
     return op->emitOpError()
@@ -2887,10 +2888,17 @@ verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
   }
   auto threadAttr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
       mlir::tt::ttl::kKernelThreadAttrName);
-  if (!threadAttr ||
-      threadAttr.getValue() != mlir::tt::ttkernel::ThreadType::Noc) {
+  if (!threadAttr) {
+    return op->emitOpError() << "requires a kernel thread type";
+  }
+  auto threadType = threadAttr.getValue();
+  if (threadType != mlir::tt::ttkernel::ThreadType::Noc &&
+      (!allowComputeThread ||
+       threadType != mlir::tt::ttkernel::ThreadType::Compute)) {
     return op->emitOpError()
-           << "is only allowed in data movement (noc) threads";
+           << (allowComputeThread
+                   ? "is only allowed in data movement (noc) or compute threads"
+                   : "is only allowed in data movement (noc) threads");
   }
 
   mlir::Operation *acquireOp = mlir::tt::ttl::findCBAcquireOp(block);
@@ -2935,7 +2943,8 @@ mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> scalarTy = verifyRawElementAccess<CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait");
+      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait",
+      /*allowComputeThread=*/true);
   if (failed(scalarTy)) {
     return failure();
   }

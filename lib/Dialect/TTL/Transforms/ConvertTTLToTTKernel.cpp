@@ -2483,11 +2483,56 @@ struct ReadIndexLowering : OpConversionPattern<ReadIndexOp> {
           op, "block does not trace to a dataflow buffer");
     }
 
-    auto [l1Pointer, offset] =
-        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
-                           elementWidth, rewriter, loc);
-    Value rawBits = ttk::LoadFromL1Op::create(rewriter, loc, integerType,
-                                              l1Pointer, offset);
+    Value rawBits;
+    auto threadType = getKernelThreadType(getEnclosingKernelThread(op));
+    if (threadType == ttk::ThreadType::Compute) {
+      auto tileType = mlir::dyn_cast<ttcore::TileType>(elementType);
+      if (!tileType) {
+        return rewriter.notifyMatchFailure(
+            op, "compute-thread index reads require a tiled dataflow buffer");
+      }
+
+      Value flatElementOffset = computeRawElementOffset(
+          blockType, adaptor.getCoords(), rewriter, loc);
+      auto constantI32 = [&](int64_t value) -> Value {
+        return arith::ConstantIntOp::create(rewriter, loc, value, 32);
+      };
+      int64_t elementsPerTile = tileType.getHeight() * tileType.getWidth();
+      Value pageIndex = arith::DivUIOp::create(rewriter, loc, flatElementOffset,
+                                               constantI32(elementsPerTile));
+      Value elementOffset = arith::RemUIOp::create(
+          rewriter, loc, flatElementOffset, constantI32(elementsPerTile));
+
+      int64_t elementsPerWord = 32 / elementWidth;
+      Value wordOffset = arith::DivUIOp::create(rewriter, loc, elementOffset,
+                                                constantI32(elementsPerWord));
+      Value dfbId =
+          ttk::GetDfbIdOp::create(rewriter, loc, rewriter.getI32Type(), *cb);
+      Value packedWord = ttk::ReadTileValueOp::create(
+          rewriter, loc, rewriter.getI32Type(), dfbId, pageIndex, wordOffset);
+
+      if (elementWidth == 32) {
+        rawBits = packedWord;
+      } else {
+        Value subwordIndex = arith::RemUIOp::create(
+            rewriter, loc, elementOffset, constantI32(elementsPerWord));
+        Value bitOffset = arith::MulIOp::create(rewriter, loc, subwordIndex,
+                                                constantI32(elementWidth));
+        Value shiftedWord =
+            arith::ShRUIOp::create(rewriter, loc, packedWord, bitOffset);
+        uint32_t bitMask = (uint32_t{1} << elementWidth) - 1;
+        Value maskedWord = arith::AndIOp::create(rewriter, loc, shiftedWord,
+                                                 constantI32(bitMask));
+        rawBits =
+            arith::TruncIOp::create(rewriter, loc, integerType, maskedWord);
+      }
+    } else {
+      auto [l1Pointer, offset] =
+          emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                             elementWidth, rewriter, loc);
+      rawBits = ttk::LoadFromL1Op::create(rewriter, loc, integerType, l1Pointer,
+                                          offset);
+    }
     Value integerValue;
     if (floatType) {
       integerValue =

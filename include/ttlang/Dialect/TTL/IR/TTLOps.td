@@ -2021,7 +2021,7 @@ def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
 }
 
 //===----------------------------------------------------------------------===//
-// Raw element access operations (data movement threads only)
+// Raw element and index access operations
 //===----------------------------------------------------------------------===//
 
 def TTL_RawElementReadOp : TTL_Op<"raw_element_read",
@@ -2056,8 +2056,7 @@ def TTL_RawElementReadOp : TTL_Op<"raw_element_read",
   let hasVerifier = 1;
 }
 
-def TTL_ReadIndexOp : TTL_Op<"read_index",
-    [MemoryEffects<[MemRead]>, TTL_DataMovementOpTrait]> {
+def TTL_ReadIndexOp : TTL_Op<"read_index", [MemoryEffects<[MemRead]>]> {
   let summary = "Read a nonnegative scalar element as an index";
   let description = [{
     `ttl.read_index` reads a single f32, bf16, ui8, ui16, or ui32 scalar
@@ -2072,7 +2071,9 @@ def TTL_ReadIndexOp : TTL_Op<"read_index",
     preconditions are violated. This operation is intended for
     tensor-provided offsets such as table indices and positions.
 
-    This operation is restricted to data movement (noc) threads.
+    This operation is available in data movement and compute threads. This
+    permits a data movement producer to publish an integer control value
+    through a dataflow buffer for a compute consumer.
 
     Example:
     ```mlir

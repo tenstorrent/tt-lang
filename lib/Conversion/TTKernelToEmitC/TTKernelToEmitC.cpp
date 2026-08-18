@@ -3460,6 +3460,7 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::SetupFabricConnectionsOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CloseFabricConnectionsOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetTileSizeOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::ReadTileValueOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetNocAddrFromBankIDOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetDataFormatOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>>(

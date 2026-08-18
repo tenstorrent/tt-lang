@@ -5015,6 +5015,29 @@ def TTKernel_GetReadPtrOp : TTKernel_Op<"get_read_ptr"> {
     }];
 }
 
+def TTKernel_ReadTileValueOp : TTKernel_Op<"read_tile_value",
+    [MemoryEffects<[MemRead]>]> {
+    let summary = "Read and distribute one 32-bit dataflow buffer value";
+    let description = [{
+      Reads one 32-bit word from a waited dataflow buffer page on the unpack
+      processor and distributes the value to the math and pack processors.
+      Every compute processor therefore observes the same value and may use it
+      in control flow that encloses tile operations.
+
+      `dfb_id` identifies the dataflow buffer, `page_index` selects a page
+      relative to its current read position, and `word_offset` selects a
+      32-bit word within that page.
+    }];
+
+    let arguments = (ins I32:$dfbId, I32:$pageIndex, I32:$wordOffset);
+    let results = (outs I32:$value);
+
+    let assemblyFormat = [{
+      `(` $dfbId `,` $pageIndex `,` $wordOffset `)` attr-dict `:`
+      functional-type(operands, results)
+    }];
+}
+
 def TTKernel_GetTileSizeOp : TTKernel_Op<"get_tile_size"> {
     let summary = "Get the tile size in bytes of a given CB";
     let description = [{

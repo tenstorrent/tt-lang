@@ -1815,8 +1815,8 @@ def test_chained_copy_wait_routes_to_data_movement():
     assert "ttl.copy" in _kind_src(result, KernelKind.DATA_MOVEMENT)
 
 
-def test_read_index_routes_to_data_movement():
-    """Tensor-provided indices remain with their dataflow buffer acquire."""
+def test_read_index_follows_data_movement_uses():
+    """A tensor-provided index follows its data-movement consumer."""
     fn = _fn(
         """
         def k(weights, output):
@@ -1834,6 +1834,108 @@ def test_read_index_routes_to_data_movement():
 
     assert "ttl.read_index" not in _kind_src(result, KernelKind.COMPUTE)
     assert "ttl.read_index" in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_follows_compute_uses():
+    """A tensor-provided index follows its compute consumer."""
+    fn = _fn(
+        """
+        def k(output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            slot = ttl.read_index(index_block, 0, 0)
+            if slot == 0:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"output_dfb"},
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_follows_transitive_compute_use():
+    """Scalar transformations retain the consumer's compute placement."""
+    fn = _fn(
+        """
+        def k(output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            slot = ttl.read_index(index_block, 0, 0)
+            adjusted_slot = slot + 1
+            if adjusted_slot == 1:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"output_dfb"},
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_in_control_expression_follows_body():
+    """A direct control-expression read follows the selected body kernel."""
+    fn = _fn(
+        """
+        def k(output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            if ttl.read_index(index_block, 0, 0) == 0:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"output_dfb"},
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_rejects_multiple_logical_consumers():
+    """One acquired index block cannot be consumed by two logical kernels."""
+    fn = _fn(
+        """
+        def k(weights, output, output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            slot = ttl.read_index(index_block, 0, 0)
+            ttl.copy(weights[slot], output)
+            if slot == 0:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="used by multiple logical kernels.*each .* must resolve",
+    ):
+        split_function_body(
+            fn,
+            dfb_param_names={"output_dfb"},
+            local_dfb_names={"index_dfb"},
+        )
 
 
 def test_raw_element_access_routes_to_data_movement():
