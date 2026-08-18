@@ -71,6 +71,44 @@ func.func @loop_backedge_is_live()
 
 // -----
 
+// A DFB acquired both inside a loop and after it is live from the loop onward.
+// The bind's use-list is not program ordered, so choosing one arbitrary acquire
+// can mistake the post-loop wait for the first use and merge it with a DFB that
+// is still live in the loop.
+// CHECK-LABEL: func.func @all_acquires_set_lifetime_start
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
+// CHECK: ttl.bind_cb{cb_index = 0,
+// CHECK: ttl.bind_cb{cb_index = 1,
+func.func @all_acquires_set_lifetime_start()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32} {
+  %total = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %partial = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    %first = arith.cmpi eq, %i, %c0 : index
+    scf.if %first {
+      %r0 = ttl.cb_reserve %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    } else {
+      %r1 = ttl.cb_reserve %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      %w0 = ttl.cb_wait %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %r0 = ttl.cb_reserve %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %w1 = ttl.cb_wait %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.cb_pop %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.cb_push %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+  }
+  %result = ttl.cb_wait %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
 // A pipe may retain or address CB pages asynchronously, so a pipe-attached
 // DFB is never an arena candidate.
 // CHECK-LABEL: func.func @pipe_attached_is_dedicated

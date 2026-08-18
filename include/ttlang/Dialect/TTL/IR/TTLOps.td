@@ -1626,7 +1626,8 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 
-def TTL_OpaqueCallOp : TTL_Op<"opaque_call", []> {
+def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Call an external C/C++ function by name";
   let description = [{
     `ttl.opaque_call` emits a call to an external C/C++ function whose
