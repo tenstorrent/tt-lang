@@ -42,19 +42,21 @@ class _Placement(Enum):
     DATA_MOVEMENT = auto()
     CONTROL = auto()
     DEFERRED = auto()
+    VALUE_DEPENDENT = auto()
 
 
 # ----- op registry ----------------------------------------------------------
 
 
 # DATA_MOVEMENT resolves to the current callback's logical data-movement
-# kernel. CONTROL does not constrain placement.
+# kernel. CONTROL does not constrain placement. VALUE_DEPENDENT follows the
+# logical kernel that consumes the call's scalar result.
 _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     # Data movement
     "copy": _Placement.DATA_MOVEMENT,
     "element_read": _Placement.DATA_MOVEMENT,
     "element_write": _Placement.DATA_MOVEMENT,
-    "read_index": _Placement.DATA_MOVEMENT,
+    "read_index": _Placement.VALUE_DEPENDENT,
     # Compute
     "fill": KernelKind.COMPUTE,
     "matmul": KernelKind.COMPUTE,
@@ -639,6 +641,7 @@ class _AnchorPlanner:
     # --- entry ---
 
     def analyze(self, body: List[ast.stmt]) -> None:
+        transaction_start = len(self._state.transactions)
         _validate_dfb_acquire_keywords(body, self.dfb_names)
         self._discover_producers(body)
         self._discover_callback_kernels(body)
@@ -651,6 +654,35 @@ class _AnchorPlanner:
             selector_resolver=self._selector_resolver,
             inferred_external_kernels=self._inferred_external_kernels,
         )
+        self._resolve_transactions(
+            inferred_users,
+            explicit_releases,
+            allow_unowned=True,
+        )
+        for stmt in body:
+            self._annotate(stmt, allow_unowned=True)
+
+        provisional_kernels: Set[KernelSelector] = set()
+        for selection in self._state.anchor_selections.values():
+            provisional_kernels.update(selection)
+        _ScalarLivenessPlanner(
+            self._state,
+            frozenset(provisional_kernels),
+            refined_statement_ids=_value_dependent_definition_statement_ids(body),
+        ).analyze(body)
+
+        inferred_users, explicit_releases = _collect_block_ownership(
+            body,
+            set(self._producers.keys()),
+            self.dfb_names,
+            data_movement_kernels=self._data_movement_kernels,
+            callback_kernels=self._callback_kernels,
+            selector_resolver=self._selector_resolver,
+            inferred_external_kernels=self._inferred_external_kernels,
+            statement_selections=self._state.anchor_selections,
+        )
+        self.block_owners.clear()
+        del self._state.transactions[transaction_start:]
         self._resolve_transactions(inferred_users, explicit_releases)
         for stmt in body:
             self._annotate(stmt)
@@ -702,6 +734,7 @@ class _AnchorPlanner:
         self,
         inferred_users: Dict[str, Set[KernelSelector]],
         explicit_releases: Dict[str, List[Tuple[ast.Call, KernelSelector]]],
+        allow_unowned: bool = False,
     ) -> None:
         for block_name, producers in self._producers.items():
             inferred = frozenset(inferred_users.get(block_name, set()))
@@ -730,6 +763,8 @@ class _AnchorPlanner:
                 )
             owners = inferred or explicit
             if not owners:
+                if allow_unowned:
+                    continue
                 raise _split_error(
                     producers[0],
                     f"result of a DFB wait/reserve bound to {block_name!r} has "
@@ -750,11 +785,11 @@ class _AnchorPlanner:
 
     # --- statement selection ---
 
-    def _annotate(self, stmt: ast.stmt) -> None:
+    def _annotate(self, stmt: ast.stmt, allow_unowned: bool = False) -> None:
         if isinstance(stmt, (ast.For, ast.While, ast.If)):
             children = list(stmt.body) + list(stmt.orelse)
             for child in children:
-                self._annotate(child)
+                self._annotate(child, allow_unowned=allow_unowned)
             child_kernels: Set[KernelSelector] = set()
             for child in children:
                 child_kernels.update(self._descendant_anchor_kernels(child))
@@ -786,7 +821,7 @@ class _AnchorPlanner:
                     )
                 self._state.select(stmt, kernels)
             for child in stmt.body:
-                self._annotate(child)
+                self._annotate(child, allow_unowned=allow_unowned)
             if kernels is not None:
                 self._validate_with_body_selection(stmt, kernels)
             return
@@ -814,6 +849,8 @@ class _AnchorPlanner:
             block_name, dfb_name = prod
             owner = self.block_owners.get(block_name)
             if owner is None:
+                if allow_unowned:
+                    return
                 raise _split_error(
                     stmt,
                     f"result of {dfb_name}.wait()/.reserve() bound to "
@@ -1158,6 +1195,63 @@ def _assigned_names_in(statements: List[ast.stmt]) -> Set[str]:
     return names
 
 
+def _contains_value_dependent_call(root: ast.AST) -> bool:
+    for node in _iter_skip_nested_fns(root):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "ttl"
+            and _TTL_OPS.get(func.attr) is _Placement.VALUE_DEPENDENT
+        ):
+            return True
+    return False
+
+
+def _value_dependent_definition_statement_ids(
+    statements: List[ast.stmt],
+) -> FrozenSet[int]:
+    """Find scalar definitions derived from value-dependent TTL calls."""
+    selected_statements: Set[int] = set()
+
+    def analyze_body(
+        body: List[ast.stmt],
+        inherited_names: Set[str],
+    ) -> Set[str]:
+        dependent_names = set(inherited_names)
+        for statement in body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner_names = dependent_names - _nested_scope_bindings(statement)
+                analyze_body(statement.body, inner_names)
+                continue
+            if isinstance(statement, (ast.If, ast.While, ast.For)):
+                body_names = analyze_body(statement.body, dependent_names)
+                else_names = analyze_body(statement.orelse, dependent_names)
+                dependent_names.update(body_names)
+                dependent_names.update(else_names)
+                continue
+            if isinstance(statement, ast.With):
+                dependent_names = analyze_body(statement.body, dependent_names)
+                continue
+
+            bound_names = _direct_bound_names(statement)
+            if not bound_names:
+                continue
+            source_is_dependent = _contains_value_dependent_call(statement) or bool(
+                _direct_loaded_names(statement) & dependent_names
+            )
+            dependent_names.difference_update(bound_names)
+            if source_is_dependent:
+                dependent_names.update(bound_names)
+                selected_statements.add(id(statement))
+        return dependent_names
+
+    analyze_body(statements, set())
+    return frozenset(selected_statements)
+
+
 class _ScalarLivenessPlanner:
     """Preserve scalar definitions in every kernel that observes them."""
 
@@ -1165,9 +1259,11 @@ class _ScalarLivenessPlanner:
         self,
         state: _AnalysisState,
         all_kernels: FrozenSet[KernelSelector],
+        refined_statement_ids: FrozenSet[int] = frozenset(),
     ):
         self._state = state
         self._all_kernels = all_kernels
+        self._refined_statement_ids = refined_statement_ids
 
     def analyze(self, body: List[ast.stmt]) -> None:
         self._analyze_body(body, {}, self._all_kernels)
@@ -1315,9 +1411,18 @@ class _ScalarLivenessPlanner:
         live: Dict[str, Set[KernelSelector]],
         parent_kernels: FrozenSet[KernelSelector],
     ) -> Dict[str, Set[KernelSelector]]:
-        statement_kernels = self._selection(statement, parent_kernels)
         anchored = id(statement) in self._state.anchor_selections
-        for name in _direct_bound_names(statement):
+        bound_names = _direct_bound_names(statement)
+        required_output_kernels = self._required_output_kernels(bound_names, live)
+        if (
+            id(statement) in self._refined_statement_ids
+            and not anchored
+            and required_output_kernels
+        ):
+            self._state.select(statement, required_output_kernels)
+            anchored = True
+        statement_kernels = self._selection(statement, parent_kernels)
+        for name in bound_names:
             required = live.get(name, set())
             missing = required - set(statement_kernels)
             if missing and anchored:
@@ -1631,11 +1736,13 @@ def _collect_block_ownership(
     callback_kernels: Mapping[str, Set[KernelSelector]],
     selector_resolver: _KernelSelectorResolver,
     inferred_external_kernels: FrozenSet[KernelSelector],
+    statement_selections: Optional[Mapping[int, FrozenSet[KernelSelector]]] = None,
 ) -> Tuple[
     Dict[str, Set[KernelSelector]],
     Dict[str, List[Tuple[ast.Call, KernelSelector]]],
 ]:
     """Collect inferred block uses and explicit release ownership separately."""
+    statement_selections = statement_selections or {}
     inferred_users: Dict[str, Set[KernelSelector]] = {
         name: set() for name in block_names
     }
@@ -1662,7 +1769,12 @@ def _collect_block_ownership(
         visible: Set[str],
         current_data_movement_kernels: FrozenSet[KernelSelector],
         current_external_kernels: FrozenSet[KernelSelector],
+        current_statement_kernels: FrozenSet[KernelSelector] = frozenset(),
     ):
+        if isinstance(node, ast.stmt):
+            current_statement_kernels = statement_selections.get(
+                id(node), current_statement_kernels
+            )
         if isinstance(node, ast.Call):
             func = node.func
             sub_data_movement_kernels = current_data_movement_kernels
@@ -1681,6 +1793,7 @@ def _collect_block_ownership(
                             visible,
                             sub_data_movement_kernels,
                             sub_external_kernels,
+                            current_statement_kernels,
                         )
                     for keyword in node.keywords:
                         visit(
@@ -1688,6 +1801,7 @@ def _collect_block_ownership(
                             visible,
                             sub_data_movement_kernels,
                             sub_external_kernels,
+                            current_statement_kernels,
                         )
                     return
                 if receiver in visible and method == "store":
@@ -1704,6 +1818,14 @@ def _collect_block_ownership(
                 current_external_kernels,
                 selector_resolver,
             )
+            if (
+                selection is None
+                and isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "ttl"
+                and _TTL_OPS.get(func.attr) is _Placement.VALUE_DEPENDENT
+            ):
+                selection = current_statement_kernels or None
             selection = selection or block_method_selection
             if selection is not None and not _is_external_call(node):
                 record_call_args(node, selection, visible)
@@ -1713,6 +1835,7 @@ def _collect_block_ownership(
                     visible,
                     sub_data_movement_kernels,
                     sub_external_kernels,
+                    current_statement_kernels,
                 )
             for kw in node.keywords:
                 visit(
@@ -1720,6 +1843,7 @@ def _collect_block_ownership(
                     visible,
                     sub_data_movement_kernels,
                     sub_external_kernels,
+                    current_statement_kernels,
                 )
             if isinstance(func, ast.Attribute):
                 visit(
@@ -1727,6 +1851,7 @@ def _collect_block_ownership(
                     visible,
                     sub_data_movement_kernels,
                     sub_external_kernels,
+                    current_statement_kernels,
                 )
             return
         if isinstance(node, ast.BinOp):
@@ -1763,6 +1888,7 @@ def _collect_block_ownership(
                     inner,
                     nested_data_movement_kernels,
                     nested_external_kernels,
+                    current_statement_kernels,
                 )
             return
         if isinstance(node, ast.Lambda):
@@ -1772,6 +1898,7 @@ def _collect_block_ownership(
                 inner,
                 current_data_movement_kernels,
                 current_external_kernels,
+                current_statement_kernels,
             )
             return
 
@@ -1781,6 +1908,7 @@ def _collect_block_ownership(
                 visible,
                 current_data_movement_kernels,
                 current_external_kernels,
+                current_statement_kernels,
             )
 
     for stmt in stmts:

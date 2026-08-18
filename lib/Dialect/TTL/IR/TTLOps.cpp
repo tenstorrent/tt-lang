@@ -2833,8 +2833,8 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 template <typename ExpectedAcquireOp>
 static mlir::FailureOr<mlir::Type>
 verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
-                       mlir::RankedTensorType blockTy,
-                       mlir::ValueRange coords) {
+                       mlir::RankedTensorType blockTy, mlir::ValueRange coords,
+                       bool allowComputeThread = false) {
   llvm::StringRef acquireName = ExpectedAcquireOp::getOperationName();
   auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
   if (!func) {
@@ -2844,10 +2844,17 @@ verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
   }
   auto threadAttr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
       mlir::tt::ttl::kKernelThreadAttrName);
-  if (!threadAttr ||
-      threadAttr.getValue() != mlir::tt::ttkernel::ThreadType::Noc) {
+  if (!threadAttr) {
+    return op->emitOpError() << "requires a kernel thread type";
+  }
+  auto threadType = threadAttr.getValue();
+  if (threadType != mlir::tt::ttkernel::ThreadType::Noc &&
+      (!allowComputeThread ||
+       threadType != mlir::tt::ttkernel::ThreadType::Compute)) {
     return op->emitOpError()
-           << "is only allowed in data movement (noc) threads";
+           << (allowComputeThread
+                   ? "is only allowed in data movement (noc) or compute threads"
+                   : "is only allowed in data movement (noc) threads");
   }
 
   mlir::Operation *acquireOp = mlir::tt::ttl::findCBAcquireOp(block);
@@ -2889,13 +2896,22 @@ mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> scalarTy = verifyRawElementAccess<CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords());
+      getOperation(), getBlock(), blockTy, getCoords(),
+      /*allowComputeThread=*/true);
   if (failed(scalarTy)) {
     return failure();
   }
-  if (!scalarTy->isF32() && !scalarTy->isBF16()) {
-    return emitOpError() << "requires an f32 or bf16 block element type, got "
-                         << *scalarTy;
+  auto integerType = mlir::dyn_cast<IntegerType>(*scalarTy);
+  bool isSupportedUnsignedInteger =
+      integerType && integerType.isUnsigned() &&
+      (integerType.getWidth() == 8 || integerType.getWidth() == 16 ||
+       integerType.getWidth() == 32);
+  if (!scalarTy->isF32() && !scalarTy->isBF16() &&
+      !isSupportedUnsignedInteger) {
+    return emitOpError()
+           << "requires an f32, bf16, ui8, ui16, or ui32 block element type, "
+              "got "
+           << *scalarTy;
   }
   return success();
 }

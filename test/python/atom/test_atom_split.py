@@ -2464,6 +2464,136 @@ def test_read_index_routes_to_data_movement():
     assert "ttl.read_index" in _kind_src(result, KernelKind.DATA_MOVEMENT)
 
 
+def test_read_index_follows_compute_uses():
+    """A tensor-provided index follows its compute consumer."""
+    fn = _fn(
+        """
+        def k(output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            slot = ttl.read_index(index_block, 0, 0)
+            if slot == 0:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"output_dfb"},
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_follows_transitive_compute_use():
+    """Scalar transformations retain the consumer's compute placement."""
+    fn = _fn(
+        """
+        def k(output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            slot = ttl.read_index(index_block, 0, 0)
+            adjusted_slot = slot + 1
+            if adjusted_slot == 1:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"output_dfb"},
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_in_control_expression_follows_body():
+    """A direct control-expression read follows the selected body kernel."""
+    fn = _fn(
+        """
+        def k(output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            if ttl.read_index(index_block, 0, 0) == 0:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"output_dfb"},
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_rejects_multiple_logical_consumers():
+    """One acquired index block cannot be consumed by two logical kernels."""
+    fn = _fn(
+        """
+        def k(weights, output, output_dfb):
+            index_block = index_dfb.wait()
+            output_block = output_dfb.reserve()
+            slot = ttl.read_index(index_block, 0, 0)
+            ttl.copy(weights[slot], output)
+            if slot == 0:
+                output_block.store(ttl.block.fill(0.0, shape=(1, 1)))
+            else:
+                output_block.store(ttl.block.fill(1.0, shape=(1, 1)))
+        """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="used by multiple logical kernels.*each .* must resolve",
+    ):
+        split_function_body(
+            fn,
+            dfb_param_names={"output_dfb"},
+            local_dfb_names={"index_dfb"},
+        )
+
+
+def test_raw_element_access_routes_to_data_movement():
+    """Raw scalar DFB access and its dependence remain on data movement."""
+    function = _fn(
+        """
+        def kernel():
+            source_block = source_dfb.wait()
+            destination_block = destination_dfb.reserve()
+            value = ttl.raw_element_read(source_block, 0, 3)
+            ttl.raw_element_write(destination_block, 0, 7, value)
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        local_dfb_names={"source_dfb", "destination_dfb"},
+    )
+
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    data_movement_source = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "ttl.raw_element_read" not in compute_source
+    assert "ttl.raw_element_write" not in compute_source
+    assert "value = ttl.raw_element_read(source_block, 0, 3)" in data_movement_source
+    assert (
+        "ttl.raw_element_write(destination_block, 0, 7, value)" in data_movement_source
+    )
+
+
 def test_compute_and_data_movement_route_to_separate_logical_kernels():
     """Copies and compute operations receive distinct logical kernels."""
     fn = _fn(

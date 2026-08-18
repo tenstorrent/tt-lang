@@ -10,12 +10,74 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import to_dram, to_l1
 from utils.correctness import assert_allclose
 
 TILE_SIZE = 32
 SLOT_TILES = 2
 SLOT_COUNT = 4
+
+
+@ttl.operation(grid=(1, 1))
+def compute_controlled_arithmetic(index_tensor, activation, output):
+    index_dfb = ttl.make_dataflow_buffer_like(index_tensor, shape=(1, 1), block_count=1)
+    activation_dfb = ttl.make_dataflow_buffer_like(
+        activation, shape=(1, 1), block_count=1
+    )
+    output_dfb = ttl.make_dataflow_buffer_like(output, shape=(1, 1), block_count=1)
+
+    with index_dfb.reserve() as index_destination:
+        ttl.copy(index_tensor[0, 0], index_destination).wait()
+    with activation_dfb.reserve() as activation_destination:
+        ttl.copy(activation[0, 0], activation_destination).wait()
+
+    with (
+        index_dfb.wait() as index_block,
+        activation_dfb.wait() as activation_block,
+        output_dfb.reserve() as output_block,
+    ):
+        runtime_index = ttl.read_index(index_block, 0, 0)
+        if runtime_index == 0:
+            output_block.store(activation_block + activation_block)
+        else:
+            output_block.store(activation_block * activation_block)
+
+    with output_dfb.wait() as published_output_block:
+        ttl.copy(published_output_block, output[0, 0]).wait()
+
+
+@pytest.mark.parametrize(
+    "index_dtype",
+    [torch.bfloat16, torch.float32, torch.uint8, torch.uint16, torch.uint32],
+    ids=["bf16", "fp32", "ui8", "ui16", "ui32"],
+)
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+@pytest.mark.parametrize("runtime_index", [0, 1])
+def test_read_index_controls_compute(device, index_dtype, memory, runtime_index):
+    """A DFB-provided integer predicates compute-thread tile arithmetic."""
+
+    tensor_factory = to_dram if memory == "dram" else to_l1
+    index_host = torch.full((TILE_SIZE, TILE_SIZE), runtime_index, dtype=index_dtype)
+    activation_host = (
+        torch.arange(TILE_SIZE * TILE_SIZE, dtype=torch.float32)
+        .remainder(17)
+        .reshape(TILE_SIZE, TILE_SIZE)
+        .to(torch.bfloat16)
+    )
+    output_host = torch.zeros_like(activation_host)
+
+    index_tensor = tensor_factory(index_host, device)
+    activation = tensor_factory(activation_host, device)
+    output = tensor_factory(output_host, device)
+
+    compute_controlled_arithmetic(index_tensor, activation, output)
+
+    actual = ttnn.to_torch(output).float()
+    if runtime_index == 0:
+        expected = activation_host.float() + activation_host.float()
+    else:
+        expected = activation_host.float() * activation_host.float()
+    assert_allclose(actual, expected, rtol=0.0, atol=0.0)
 
 
 def _make_gather_slot(index_bias):
