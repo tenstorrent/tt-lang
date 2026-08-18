@@ -209,7 +209,8 @@ The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
 `ttl.DFBEffect.repeat(count, effects)` repeats a literal ordered effect list a
 nonnegative, statically resolvable number of times. The frontend expands the
 repeat before creating IR, so downstream analyses receive the same flat effect
-sequence as an explicitly written list:
+sequence as an explicitly written list. The expanded `dfb_effects` sequence is
+limited to 4096 actions per external call:
 
 ```python
 dfb_effects=[

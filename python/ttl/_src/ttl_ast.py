@@ -36,6 +36,22 @@ from .global_semaphore import (
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
+_MAX_EXPANDED_EXTERNAL_DFB_EFFECTS = 4096
+
+
+def _accumulate_expanded_dfb_effect_count(
+    current_effect_count: int, repeated_effect_count: int, repeat_count: int
+) -> int:
+    if current_effect_count > _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS:
+        return _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS + 1
+    if repeat_count == 0:
+        return current_effect_count
+    remaining_effect_count = _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS - current_effect_count
+    if repeated_effect_count > remaining_effect_count // repeat_count:
+        return _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS + 1
+    return current_effect_count + repeated_effect_count * repeat_count
+
+
 @dataclass(frozen=True)
 class _ExternalTemplateArg:
     """Separate compile-time payloads from DFB values needed by allocation."""
@@ -51,6 +67,14 @@ class _ExternalDFBEffect:
     kind: object
     dfb: object
     num_tiles: int
+
+
+@dataclass(frozen=True)
+class _ExternalDFBEffectRepeat:
+    """One parsed repeat whose body has not been materialized."""
+
+    count: int
+    effects: tuple[object, ...]
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
@@ -1849,8 +1873,8 @@ class TTLGenericCompiler(TTCompilerBase):
         )
         return (is_qualified_owner or is_direct_owner) and node.func.attr == "repeat"
 
-    def _resolve_dfb_effect_sequence(self, node):
-        """Resolve and flatten a literal ordered DFB-effect sequence."""
+    def _parse_dfb_effect_sequence(self, node):
+        """Parse an ordered DFB-effect sequence without expanding repeats."""
         if not isinstance(node, ast.List):
             self._raise_error(
                 node,
@@ -1858,10 +1882,14 @@ class TTLGenericCompiler(TTCompilerBase):
                 "ttl.DFBEffect.repeat() effects must be lists",
             )
 
-        resolved_effects = []
+        parsed_effects = []
+        expanded_effect_count = 0
         for element in node.elts:
             if not self._is_dfb_effect_repeat(element):
-                resolved_effects.append(self._resolve_dfb_effect(element))
+                parsed_effects.append(self._resolve_dfb_effect(element))
+                expanded_effect_count = _accumulate_expanded_dfb_effect_count(
+                    expanded_effect_count, 1, 1
+                )
                 continue
 
             if len(element.args) != 2 or element.keywords:
@@ -1877,14 +1905,43 @@ class TTLGenericCompiler(TTCompilerBase):
                     element.args[0],
                     "ttl.DFBEffect.repeat() count must be nonnegative",
                 )
-            repeated_effects = self._resolve_dfb_effect_sequence(element.args[1])
-            if not repeated_effects:
+            repeated_effects, repeated_effect_count = self._parse_dfb_effect_sequence(
+                element.args[1]
+            )
+            if repeated_effect_count == 0:
                 self._raise_error(
                     element.args[1],
                     "ttl.DFBEffect.repeat() effects must not be empty",
                 )
-            resolved_effects.extend(repeated_effects * repeat_count)
+            parsed_effects.append(
+                _ExternalDFBEffectRepeat(repeat_count, repeated_effects)
+            )
+            expanded_effect_count = _accumulate_expanded_dfb_effect_count(
+                expanded_effect_count, repeated_effect_count, repeat_count
+            )
 
+        return tuple(parsed_effects), expanded_effect_count
+
+    def _append_dfb_effect_sequence(self, parsed_effects, resolved_effects):
+        for effect in parsed_effects:
+            if isinstance(effect, _ExternalDFBEffectRepeat):
+                for _repeat_index in range(effect.count):
+                    self._append_dfb_effect_sequence(effect.effects, resolved_effects)
+                continue
+            resolved_effects.append(effect)
+
+    def _resolve_dfb_effect_sequence(self, node):
+        """Resolve and flatten a literal ordered DFB-effect sequence."""
+        parsed_effects, expanded_effect_count = self._parse_dfb_effect_sequence(node)
+        if expanded_effect_count > _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS:
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_effects may contain at most "
+                f"{_MAX_EXPANDED_EXTERNAL_DFB_EFFECTS} expanded effects",
+            )
+
+        resolved_effects = []
+        self._append_dfb_effect_sequence(parsed_effects, resolved_effects)
         return resolved_effects
 
     def _visit_get_dfb_id(self, node):
