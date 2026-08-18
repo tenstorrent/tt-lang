@@ -57,6 +57,27 @@ class _DFBAllocation:
     total_size: int
 
 
+@dataclass(frozen=True)
+class _DFBDescriptorPlan:
+    """Runtime descriptor plus the metadata needed to model static storage."""
+
+    descriptor: Any
+    physical_index: int
+    total_size: int
+    nodes: Tuple[Tuple[int, int], ...]
+    has_static_storage: bool
+
+
+@dataclass(frozen=True)
+class _StaticDFBPackingResult:
+    """Predicted TT-Metal placement for one static descriptor order."""
+
+    packed_bytes: int
+    maximum_overflow_bytes: int
+    overflow_core: Optional[Tuple[int, int]]
+    required_bytes_on_overflow_core: int
+
+
 def _validate_physical_dfb_config(
     config: PhysicalDFBConfig, physical_index: int
 ) -> None:
@@ -896,7 +917,165 @@ def _dfb_format_descriptor(dfb_index: int, allocation: _DFBAllocation) -> Any:
     )
 
 
-def _build_partitioned_dfb_descriptors(
+def _order_static_dfb_descriptor_plans(
+    descriptor_plans: List[_DFBDescriptorPlan],
+    remaining_bytes_by_core: Dict[Tuple[int, int], int],
+) -> List[_DFBDescriptorPlan]:
+    """Order static descriptors to fit TT-Metal's per-core L1 allocators."""
+    static_plan_indices = tuple(
+        plan_index
+        for plan_index, plan in enumerate(descriptor_plans)
+        if plan.has_static_storage
+    )
+    if not static_plan_indices:
+        return descriptor_plans
+
+    # ProgramDescriptor preserves the singleton CoreRanges produced by
+    # _make_node_core_ranges. TT-Metal keeps one frontier per core and assigns
+    # each descriptor the maximum frontier across its cores.
+    allocator_cores = tuple(
+        sorted(
+            {
+                node
+                for plan_index in static_plan_indices
+                for node in descriptor_plans[plan_index].nodes
+            }
+        )
+    )
+    allocator_index_by_core = {
+        node: allocator_index for allocator_index, node in enumerate(allocator_cores)
+    }
+    allocator_indices_by_plan = {
+        plan_index: tuple(
+            allocator_index_by_core[node] for node in descriptor_plans[plan_index].nodes
+        )
+        for plan_index in static_plan_indices
+    }
+    available_bytes_by_allocator = tuple(
+        remaining_bytes_by_core[node] for node in allocator_cores
+    )
+
+    address_alignment = int(ttnn.get_dram_alignment())
+    if address_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid DFB address alignment")
+
+    def evaluate_order(order: Tuple[int, ...]) -> _StaticDFBPackingResult:
+        allocator_frontiers = [0] * len(allocator_cores)
+        for plan_index in order:
+            plan = descriptor_plans[plan_index]
+            allocator_indices = allocator_indices_by_plan[plan_index]
+            address = _align_up(
+                max(allocator_frontiers[index] for index in allocator_indices),
+                address_alignment,
+            )
+            end_address = address + plan.total_size
+            for allocator_index in allocator_indices:
+                allocator_frontiers[allocator_index] = end_address
+
+        overflow_records = [
+            (
+                frontier - available_bytes,
+                frontier,
+                allocator_cores[allocator_index],
+            )
+            for allocator_index, (frontier, available_bytes) in enumerate(
+                zip(allocator_frontiers, available_bytes_by_allocator)
+            )
+        ]
+        maximum_overflow, required_bytes, overflow_core = max(
+            overflow_records, default=(0, 0, None)
+        )
+        maximum_overflow = max(0, maximum_overflow)
+        return _StaticDFBPackingResult(
+            packed_bytes=max(allocator_frontiers, default=0),
+            maximum_overflow_bytes=maximum_overflow,
+            overflow_core=overflow_core if maximum_overflow else None,
+            required_bytes_on_overflow_core=(required_bytes if maximum_overflow else 0),
+        )
+
+    def packing_score(result: _StaticDFBPackingResult) -> Tuple[int, int]:
+        return result.maximum_overflow_bytes, result.packed_bytes
+
+    current_order = static_plan_indices
+    current_result = evaluate_order(current_order)
+    if current_result.maximum_overflow_bytes == 0:
+        return descriptor_plans
+
+    candidate_orders = [
+        tuple(
+            sorted(
+                static_plan_indices,
+                key=lambda plan_index: (
+                    len(descriptor_plans[plan_index].nodes),
+                    descriptor_plans[plan_index].physical_index,
+                    plan_index,
+                ),
+            )
+        ),
+        tuple(
+            sorted(
+                static_plan_indices,
+                key=lambda plan_index: (
+                    -len(descriptor_plans[plan_index].nodes),
+                    descriptor_plans[plan_index].physical_index,
+                    plan_index,
+                ),
+            )
+        ),
+    ]
+    evaluated_candidates = [
+        (packing_score(current_result), current_order, current_result)
+    ]
+    for candidate_order in dict.fromkeys(candidate_orders):
+        candidate_result = evaluate_order(candidate_order)
+        evaluated_candidates.append(
+            (packing_score(candidate_result), candidate_order, candidate_result)
+        )
+    current_score, current_order, current_result = min(evaluated_candidates)
+
+    while current_score[0] > 0:
+        next_candidate = None
+        for first_position in range(len(current_order)):
+            for second_position in range(first_position + 1, len(current_order)):
+                candidate_order_list = list(current_order)
+                (
+                    candidate_order_list[first_position],
+                    candidate_order_list[second_position],
+                ) = (
+                    candidate_order_list[second_position],
+                    candidate_order_list[first_position],
+                )
+                candidate_order = tuple(candidate_order_list)
+                candidate_result = evaluate_order(candidate_order)
+                candidate_score = packing_score(candidate_result)
+                if candidate_score >= current_score:
+                    continue
+                candidate = (candidate_score, candidate_order, candidate_result)
+                if next_candidate is None or candidate < next_candidate:
+                    next_candidate = candidate
+        if next_candidate is None:
+            break
+        current_score, current_order, current_result = next_candidate
+
+    if current_score[0] > 0:
+        overflow_core = current_result.overflow_core
+        assert overflow_core is not None
+        required_bytes = current_result.required_bytes_on_overflow_core
+        available_bytes = remaining_bytes_by_core[overflow_core]
+        raise ValueError(
+            "Static DFB descriptor packing did not find a fitting deterministic "
+            f"order; the best candidate requires {required_bytes} bytes on core "
+            f"{overflow_core}, where {available_bytes} bytes remain, and exceeds "
+            f"the L1 budget by {required_bytes - available_bytes} bytes"
+        )
+
+    ordered_plans = list(descriptor_plans)
+    for destination_index, source_index in zip(static_plan_indices, current_order):
+        ordered_plans[destination_index] = descriptor_plans[source_index]
+    return ordered_plans
+
+
+def _build_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     allocations: List[_DFBAllocation],
@@ -904,7 +1083,7 @@ def _build_partitioned_dfb_descriptors(
     backing_tensors: Dict[int, Any],
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
 ) -> List[Any]:
-    """Build descriptors on disjoint core partitions after DFB-use filtering."""
+    """Build descriptors by physical DFB storage source after use filtering."""
     active_cores = sorted({core for placement in placements for core in placement})
     static_bytes_by_core = {core: 0 for core in active_cores}
     for dfb_index, placement in enumerate(placements):
@@ -945,56 +1124,55 @@ def _build_partitioned_dfb_descriptors(
             + "\n  hint: reduce DFB dimensions or block_count."
         )
 
-    # A descriptor partition must have one consistent allocation sequence on
-    # every core because TT-Metal advances one static DFB allocation cursor.
-    cores_by_signature: Dict[
-        Tuple[Optional[Tuple[str, Optional[int]]], ...],
-        set[Tuple[int, int]],
-    ] = {}
-    for core in active_cores:
-        signature = tuple(placement.get(core) for placement in placements)
-        cores_by_signature.setdefault(signature, set()).add(core)
-
-    descriptors = []
-    for signature, partition_cores in cores_by_signature.items():
-        partition_ranges = _make_node_core_ranges(tuple(sorted(partition_cores)))
-        for dfb_index, source in enumerate(signature):
-            if source is None:
-                continue
+    descriptor_plans = []
+    for dfb_index, placement in enumerate(placements):
+        cores_by_source: Dict[Tuple[str, Optional[int]], set[Tuple[int, int]]] = {}
+        for core, source in placement.items():
+            cores_by_source.setdefault(source, set()).add(core)
+        for source, source_cores in cores_by_source.items():
             storage_kind, segment_index = source
             allocation = allocations[dfb_index]
             format_descriptor = _dfb_format_descriptor(dfb_index, allocation)
+            source_ranges = _make_node_core_ranges(tuple(sorted(source_cores)))
             if storage_kind == "tensor":
                 assert segment_index is not None
                 segment = cb_configs[dfb_index].storage_segments[segment_index]
                 tensor_index = segment.tensor_index
                 assert tensor_index is not None
-                descriptors.append(
-                    ttnn.cb_descriptor_from_sharded_tensor(
-                        dfb_index,
-                        tensors[tensor_index],
-                        address_offset=segment.byte_offset,
-                        total_size=allocation.total_size,
-                        core_ranges=partition_ranges,
-                    )
-                )
-                continue
-
-            descriptor = ttnn.CBDescriptor(
-                total_size=allocation.total_size,
-                core_ranges=partition_ranges,
-                format_descriptors=[format_descriptor],
-            )
-            if storage_kind == "computed":
-                backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                     dfb_index,
-                    backing_tensors[dfb_index],
+                    tensors[tensor_index],
+                    address_offset=segment.byte_offset,
                     total_size=allocation.total_size,
-                    core_ranges=partition_ranges,
+                    core_ranges=source_ranges,
                 )
-                descriptor.set_buffer_from_cb(backing_descriptor)
-            descriptors.append(descriptor)
-    return descriptors
+            else:
+                descriptor = ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=source_ranges,
+                    format_descriptors=[format_descriptor],
+                )
+                if storage_kind == "computed":
+                    backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                        dfb_index,
+                        backing_tensors[dfb_index],
+                        total_size=allocation.total_size,
+                        core_ranges=source_ranges,
+                    )
+                    descriptor.set_buffer_from_cb(backing_descriptor)
+            descriptor_plans.append(
+                _DFBDescriptorPlan(
+                    descriptor=descriptor,
+                    physical_index=dfb_index,
+                    total_size=allocation.total_size,
+                    nodes=tuple(sorted(source_cores)),
+                    has_static_storage=storage_kind == "static",
+                )
+            )
+    descriptor_plans = _order_static_dfb_descriptor_plans(
+        descriptor_plans, remaining_bytes_by_core
+    )
+    return [plan.descriptor for plan in descriptor_plans]
 
 
 def build_cb_descriptors(
@@ -1078,7 +1256,7 @@ def build_cb_descriptors(
             if device is not None
             else {core: DEFAULT_L1_CB_BUDGET_BYTES for core in placement_cores}
         )
-        return _build_partitioned_dfb_descriptors(
+        return _build_dfb_descriptors(
             tensors,
             cb_configs,
             allocations,
