@@ -345,9 +345,6 @@ _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
 _capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
 _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
 _exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
-_repeated_bf16_transaction_kernel = _make_repeated_transaction_kernel("bf16")
-_repeated_f32_transaction_kernel = _make_repeated_transaction_kernel("float32")
-
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
 
@@ -572,10 +569,10 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("data_format", "dtype"),
     [
-        (_repeated_bf16_transaction_kernel, torch.bfloat16),
-        (_repeated_f32_transaction_kernel, torch.float32),
+        ("bf16", torch.bfloat16),
+        ("float32", torch.float32),
     ],
     ids=["bf16", "f32"],
 )
@@ -585,8 +582,9 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
     ids=["dram", "l1"],
 )
 def test_repeated_transaction_lifecycles_reuse_dfb(
-    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+    device, data_format, dtype, memory_config, to_device, monkeypatch, tmp_path
 ):
+    operation = _make_repeated_transaction_kernel(data_format)
     element_indices = torch.arange(TILE * 16 * TILE, dtype=torch.float32).reshape(
         TILE, 16 * TILE
     )
