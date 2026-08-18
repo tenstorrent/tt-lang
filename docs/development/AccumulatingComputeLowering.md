@@ -299,6 +299,9 @@ does not compute `estimated_cost`. Candidate comparison then uses the feature
 counts directly in this order: DFB hops, pack/unpack tile traffic, packer
 reconfiguration count, then live DST tiles.
 
+If the target architecture is absent or not calibrated, `estimated_cost` is
+also reported as `unknown`, and the same feature-count ordering is used.
+
 Cost model decisions are printed by the `ttl-lower-accumulation-scopes` debug
 stream:
 

@@ -156,7 +156,7 @@ getCostWeights(AccumulationTargetArch targetArch) {
   case AccumulationTargetArch::WormholeB0:
     return {/*dfbHopFixedCost=*/286, /*dfbHopPerTileCost=*/136};
   case AccumulationTargetArch::Unknown:
-    return {/*dfbHopFixedCost=*/210, /*dfbHopPerTileCost=*/67};
+    return {};
   }
   llvm_unreachable("unknown accumulation target architecture");
 }
@@ -384,7 +384,9 @@ AccumulationCost AccumulationCostModel::computeDstCost(
     cost.oneTimePackUnpackTiles += info.unitTileCount;
   }
   cost.dstLiveTiles = info.unitTileCount;
-  cost.estimatedCost = estimateCost(cost, weights);
+  if (targetArch != AccumulationTargetArch::Unknown) {
+    cost.estimatedCost = estimateCost(cost, weights);
+  }
   return cost;
 }
 
@@ -399,7 +401,9 @@ AccumulationCost AccumulationCostModel::computeL1PackCost(
     cost.perIterationPackUnpackTiles = 2 * *info.unitTileCount;
   }
   cost.packReconfigs = 2;
-  cost.estimatedCost = estimateCost(cost, weights);
+  if (targetArch != AccumulationTargetArch::Unknown) {
+    cost.estimatedCost = estimateCost(cost, weights);
+  }
   return cost;
 }
 
