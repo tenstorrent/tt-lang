@@ -2818,9 +2818,11 @@ static DFBQuiescenceProof computeProtocolLifetime(
     bool includeUnknownDomains = false,
     ArrayRef<const DFBAccessOccurrence *> selectedAccesses = {},
     bool hasCanonicalResetTerminator = false,
-    std::uint64_t executionCountDivisor = 1) {
-  assert(executionCountDivisor > 0 &&
-         "execution-count divisor must be positive");
+    std::optional<std::uint64_t> expectedSelectedExecutionCount =
+        std::nullopt) {
+  assert((!expectedSelectedExecutionCount ||
+          (*expectedSelectedExecutionCount > 0 && !selectedAccesses.empty())) &&
+         "normalized selected accesses require a positive execution count");
   DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
   lifetime.node = node;
   SmallVector<const AccessRun *> reserves;
@@ -2995,23 +2997,18 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
     lifetime.conditionalExecutionProven = true;
   }
-  auto getIntervalExecutionCount =
-      [executionCountDivisor](
-          const AccessRun &run) -> std::optional<std::uint64_t> {
-    if (run.executionCount % executionCountDivisor != 0) {
-      return std::nullopt;
+  auto getIntervalExecutionCount = [&](const AccessRun &run) {
+    if (expectedSelectedExecutionCount) {
+      assert(run.executionCount == *expectedSelectedExecutionCount &&
+             "selected repeated-reset accesses must execute once per interval");
+      return std::uint64_t{1};
     }
-    return run.executionCount / executionCountDivisor;
+    return run.executionCount;
   };
   auto getTransactionCount = [&](ArrayRef<const AccessRun *> runs) {
     std::optional<std::uint64_t> total = 0;
     for (const AccessRun *run : runs) {
-      std::optional<std::uint64_t> intervalCount =
-          getIntervalExecutionCount(*run);
-      if (!intervalCount) {
-        return std::optional<std::uint64_t>();
-      }
-      total = llvm::checkedAddUnsigned(*total, *intervalCount);
+      total = llvm::checkedAddUnsigned(*total, getIntervalExecutionCount(*run));
       if (!total) {
         break;
       }
@@ -3046,7 +3043,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
   llvm::append_range(consumerProtocolRuns, waits);
   llvm::append_range(consumerProtocolRuns, pops);
   bool useCumulativeQueueProof =
-      executionCountDivisor == 1 && !resetTerminatedProducer &&
+      !expectedSelectedExecutionCount && !resetTerminatedProducer &&
       supportsCumulativeQueueProof(producerProtocolRuns) &&
       supportsCumulativeQueueProof(consumerProtocolRuns);
   if (!countsMatch && !useCumulativeQueueProof) {
@@ -3187,14 +3184,9 @@ static DFBQuiescenceProof computeProtocolLifetime(
     if (resetTerminatedProducer) {
       std::uint64_t occupiedTiles = 0;
       for (const AccessRun *reserve : reserves) {
-        std::optional<std::uint64_t> intervalCount =
-            getIntervalExecutionCount(*reserve);
-        if (!intervalCount) {
-          return {DFBQuiescenceFailureReason::MismatchedTransaction,
-                  reserve->access->operation};
-        }
+        std::uint64_t intervalCount = getIntervalExecutionCount(*reserve);
         std::optional<std::uint64_t> runTiles = llvm::checkedMulUnsigned(
-            *intervalCount,
+            intervalCount,
             static_cast<std::uint64_t>(reserve->access->numTiles));
         if (!runTiles) {
           return {DFBQuiescenceFailureReason::MismatchedTransaction,
@@ -3208,7 +3200,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
                   reserve->access->operation};
         }
         occupiedTiles = *updatedTiles;
-        appendTransactionRun(lifetime.transactionRuns, *intervalCount,
+        appendTransactionRun(lifetime.transactionRuns, intervalCount,
                              reserve->access->numTiles);
       }
     } else {
@@ -3230,26 +3222,20 @@ static DFBQuiescenceProof computeProtocolLifetime(
           return {DFBQuiescenceFailureReason::MismatchedTransaction,
                   reserve.access->operation};
         }
-        std::optional<std::uint64_t> reserveIntervalCount =
-            getIntervalExecutionCount(reserve);
-        std::optional<std::uint64_t> waitIntervalCount =
-            getIntervalExecutionCount(wait);
-        if (!reserveIntervalCount || !waitIntervalCount) {
-          return {DFBQuiescenceFailureReason::MismatchedTransaction,
-                  reserve.access->operation};
-        }
+        std::uint64_t reserveIntervalCount = getIntervalExecutionCount(reserve);
+        std::uint64_t waitIntervalCount = getIntervalExecutionCount(wait);
         std::uint64_t matchedCount =
-            std::min(*reserveIntervalCount - reserveOffset,
-                     *waitIntervalCount - waitOffset);
+            std::min(reserveIntervalCount - reserveOffset,
+                     waitIntervalCount - waitOffset);
         appendTransactionRun(lifetime.transactionRuns, matchedCount,
                              reserve.access->numTiles);
         reserveOffset += matchedCount;
         waitOffset += matchedCount;
-        if (reserveOffset == *reserveIntervalCount) {
+        if (reserveOffset == reserveIntervalCount) {
           ++reserveIndex;
           reserveOffset = 0;
         }
-        if (waitOffset == *waitIntervalCount) {
+        if (waitOffset == waitIntervalCount) {
           ++waitIndex;
           waitOffset = 0;
         }
@@ -3481,7 +3467,8 @@ static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
       logicalDFB, node, intervalLifetimes, graph, operationEvents, accessEvents,
       executionCounts, accessRuns, domainState, reportExecutionCounts,
       includeUnknownDomains, activeAccesses,
-      /*hasCanonicalResetTerminator=*/true, terminator->executionCount);
+      /*hasCanonicalResetTerminator=*/true,
+      /*expectedSelectedExecutionCount=*/terminator->executionCount);
   assert(intervalLifetimes.size() == 1 &&
          "one repeated interval must produce one protocol lifetime");
   lifetimes.push_back(std::move(intervalLifetimes.front()));
