@@ -1201,6 +1201,28 @@ def TTKernelSpecializeCores
   ];
 }
 
+def TTKernelAnnotateDFBUse
+    : Pass<"ttkernel-annotate-dfb-use", "::mlir::ModuleOp"> {
+  let summary = "Record physical DFB indices used by each TTKernel function";
+  let description = [{
+    Records the physical dataflow buffer indices referenced by each TTKernel
+    function after per-core specialization and canonicalization. Each function
+    receives a sorted `ttl.used_dfb_indices` array. Direct calls contribute
+    their transitive uses. Functions that call an unresolved symbol or a
+    declaration conservatively record every DFB compile-time argument.
+
+    The TTKernel compile-time argument ABI places all DFB indices before tensor
+    accessor arguments. `ttl.base_cta_index` supplies the number of DFB
+    arguments for each function; the module-wide maximum is used when a helper
+    function has no local ABI boundary.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelCombinePackTiles
     : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
   let summary = "Combine consecutive pack_tile ops into pack_tile_block";
