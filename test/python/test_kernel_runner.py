@@ -4,6 +4,8 @@
 
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from ttl import kernel_runner
@@ -908,6 +910,63 @@ def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
             core_ranges=full_grid,
             kernel_specs=[_specialized_spec(full_grid, None)],
         )
+
+
+def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
+    l1_buffer_type = object()
+    dram_buffer_type = object()
+    device_info = SimpleNamespace(
+        address_at_first_l1_cb_buffer=0x2000,
+        cb_limit=0x1000,
+    )
+    buffer_pages = [
+        SimpleNamespace(
+            buffer_type=l1_buffer_type,
+            core_x=0,
+            core_y=0,
+            page_address=0x2900,
+            page_size=0x100,
+        ),
+        SimpleNamespace(
+            buffer_type=l1_buffer_type,
+            core_x=1,
+            core_y=0,
+            page_address=0x2C00,
+            page_size=0x400,
+        ),
+        SimpleNamespace(
+            buffer_type=dram_buffer_type,
+            core_x=0,
+            core_y=0,
+            page_address=0x2100,
+            page_size=0x800,
+        ),
+    ]
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: device_info,
+        get_buffer_pages=lambda _device: buffer_pages,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        SimpleNamespace(
+            BufferType=SimpleNamespace(L1=l1_buffer_type),
+            _ttnn=SimpleNamespace(reports=reports),
+        ),
+    )
+
+    device = object()
+    remaining_by_core = kernel_runner._get_remaining_l1_by_core_for_device(
+        device,
+        {(0, 0), (1, 0), (2, 0)},
+    )
+
+    assert remaining_by_core == {
+        (0, 0): 0x900,
+        (1, 0): 0xC00,
+        (2, 0): 0x1000,
+    }
+    assert kernel_runner.get_min_remaining_l1_for_device(device) == 0x900
 
 
 def test_specialized_dfb_budget_uses_each_cores_remaining_l1(monkeypatch):
