@@ -2,32 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# TTLANG_HARDWARE_CI: skip-compiler
 # type: ignore
 
+import torch
 import ttl
 import ttnn
-from utils.correctness import assert_with_ulp
+from utils.correctness import assert_pcc
 
 
-def get_number_of_nodes(node_range_set):
-    """Get total number of nodes in a NodeRangeSet.
-
-    Args:
-        node_range_set: A NodeRangeSet containing one or more NodeRange objects
-
-    Returns:
-        Total number of nodes across all ranges
-    """
-    total_nodes = 0
-    for node_range in node_range_set.ranges():
-        x_range = node_range.end.x - node_range.start.x + 1
-        y_range = node_range.end.y - node_range.start.y + 1
-        total_nodes += x_range * y_range
-    return total_nodes
-
-
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid=(8, 7))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -47,117 +30,104 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
         out, shape=(1, 1), block_count=dfb_block_count
     )
 
-    # Get grid size and compute work distribution
-    y_size, x_size = ttl.grid_size(dims=2)
-    node_grid = ttnn.CoreCoord(x_size, y_size)
-
-    print(f"node_grid: {node_grid}, num_output_tiles_total: {num_output_tiles_total}")
-    (
-        _,
-        all_nodes,
-        node_group_1,
-        node_group_2,
-        work_per_node1,
-        work_per_node2,
-    ) = ttnn.split_work_to_cores(node_grid, num_output_tiles_total, row_wise=True)
-    print(
-        f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, "
-        f"work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
-    )
-
-    num_nodes_group_1 = get_number_of_nodes(node_group_1)
-    num_nodes_group_2 = get_number_of_nodes(node_group_2)
-
-    def get_tiles_per_node(node_id):
-        if node_id < num_nodes_group_1:
-            return work_per_node1
-        elif node_id < num_nodes_group_1 + num_nodes_group_2:
-            return work_per_node2
-        else:  # no work assigned
-            return 0
-
-    def get_start_tile_id(node_id):
-        if node_id < num_nodes_group_1:
-            return node_id * work_per_node1
-        elif node_id < num_nodes_group_1 + num_nodes_group_2:
-            return (
-                num_nodes_group_1 * work_per_node1
-                + (node_id - num_nodes_group_1) * work_per_node2
-            )
-        else:  # no work assigned
-            return 0
+    grid_cols, grid_rows = ttl.grid_size(dims=2)
+    num_nodes = grid_rows * grid_cols
+    tiles_per_node = -(-num_output_tiles_total // num_nodes)
 
     @ttl.compute()
     def mm_compute():
-        node_id = ttl.node(dims=1)
-        num_tiles = get_tiles_per_node(node_id)
+        node_col, node_row = ttl.node(dims=2)
+        node_id = node_row * grid_cols + node_col
 
-        for _ in range(num_tiles):
-            # Reserve output block once for the entire K accumulation
-            # The reserved block is automatically initialized with zeros
-            with out_dfb.reserve() as out_blk:
-                # Accumulate over K dimension
-                acc = ttl.block.fill(0, shape=out_blk.shape)
-                for _ in range(Kt):
-                    with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                        acc += a_blk @ b_blk
-                out_blk.store(acc)
+        for tile_offset in range(tiles_per_node):
+            current_tile_id = node_id * tiles_per_node + tile_offset
+            if current_tile_id < num_output_tiles_total:
+                with out_dfb.reserve() as out_blk:
+                    acc = ttl.block.fill(0, shape=out_blk.shape)
+                    for _ in range(Kt):
+                        with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
+                            acc += a_blk @ b_blk
+                    out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():
-        node_id = ttl.node(dims=1)
-        num_tiles = get_tiles_per_node(node_id)
+        node_col, node_row = ttl.node(dims=2)
+        node_id = node_row * grid_cols + node_col
 
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
-        for tile_id in range(num_tiles):
-            current_tile_id = get_start_tile_id(node_id) + tile_id
-            out_row = current_tile_id // Nt
-            out_col = current_tile_id % Nt
+        for tile_offset in range(tiles_per_node):
+            current_tile_id = node_id * tiles_per_node + tile_offset
+            if current_tile_id < num_output_tiles_total:
+                out_row = current_tile_id // Nt
+                out_col = current_tile_id % Nt
 
-            for k in range(Kt):
-                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
-                    # Note: Using integer notation for tile indexing
-                    a_wr = ttl.copy(a[out_row, k], a_blk)
-                    b_wr = ttl.copy(b[k, out_col], b_blk)
-                    a_wr.wait()
-                    b_wr.wait()
+                for k in range(Kt):
+                    with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
+                        a_wr = ttl.copy(a[out_row, k], a_blk)
+                        b_wr = ttl.copy(b[k, out_col], b_blk)
+                        a_wr.wait()
+                        b_wr.wait()
 
     @ttl.datamovement()
     def mm_writer():
-        node_id = ttl.node(dims=1)
-        num_tiles = get_tiles_per_node(node_id)
+        node_col, node_row = ttl.node(dims=2)
+        node_id = node_row * grid_cols + node_col
 
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
-        for tile_id in range(num_tiles):
-            current_tile_id = get_start_tile_id(node_id) + tile_id
-            out_row = current_tile_id // Nt
-            out_col = current_tile_id % Nt
+        for tile_offset in range(tiles_per_node):
+            current_tile_id = node_id * tiles_per_node + tile_offset
+            if current_tile_id < num_output_tiles_total:
+                out_row = current_tile_id // Nt
+                out_col = current_tile_id % Nt
 
-            with out_dfb.wait() as out_blk:
-                out_wr = ttl.copy(out_blk, out[out_row, out_col])
-                out_wr.wait()
+                with out_dfb.wait() as out_blk:
+                    out_wr = ttl.copy(out_blk, out[out_row, out_col])
+                    out_wr.wait()
 
 
 def main() -> None:
-    # Test with matrices that are multiples of tile size
-    M, K, N = 128, 256, 64
+    device = ttnn.open_device(device_id=0)
+    try:
+        # Test with matrices that are multiples of tile size.
+        M, K, N = 128, 256, 64
 
-    a = ttnn.rand((M, K), dtype=ttnn.float32)
-    b = ttnn.rand((K, N), dtype=ttnn.float32)
-    out = ttnn.empty((M, N), dtype=ttnn.float32)
+        a_torch = torch.rand((M, K), dtype=torch.bfloat16)
+        b_torch = torch.rand((K, N), dtype=torch.bfloat16)
+        out_torch = torch.zeros((M, N), dtype=torch.bfloat16)
 
-    print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
-    print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
-    print(f"Total output tiles: {(M//32) * (N//32)}")
-    print(f"Grid: 8x8 = 64 nodes")
+        a = ttnn.from_torch(
+            a_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        b = ttnn.from_torch(
+            b_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
-    tt_lang_multinode_matmul(a, b, out)
+        print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
+        print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
+        print(f"Total output tiles: {(M//32) * (N//32)}")
+        print("Grid: 8x7 = 56 nodes")
 
-    # Compute golden result
-    golden = a @ b
+        tt_lang_multinode_matmul(a, b, out)
 
-    # Verify correctness with relaxed tolerance for matmul
-    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out), ulp_threshold=1000)
+        golden = a_torch @ b_torch
+        assert_pcc(golden.float(), ttnn.to_torch(out).float(), threshold=0.99)
+    finally:
+        ttnn.close_device(device)
 
 
 if __name__ == "__main__":

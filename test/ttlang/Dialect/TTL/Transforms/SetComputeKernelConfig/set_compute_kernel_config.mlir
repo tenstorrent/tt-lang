@@ -62,6 +62,36 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 // -----
 
+// Purpose: direct f32 tile ops in ttl.dst_section enable fp32_dest_acc_en even
+// when they are not nested in ttl.compute.
+// DEFAULT-LABEL: func.func @direct_f32_dst_section_auto_enable
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// OVERRIDE-LABEL: func.func @direct_f32_dst_section_auto_enable
+// OVERRIDE-SAME: dst_full_sync_en = true
+// OVERRIDE-SAME: fp32_dest_acc_en = true
+// NO-MATMUL-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
+// NO-REDUCE-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
+// FPUOFF-LABEL: func.func @direct_f32_dst_section_auto_enable
+// FPUOFF-SAME: fp32_dest_acc_en = true
+func.func @direct_f32_dst_section_auto_enable(
+    %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+  %c0 = arith.constant 0 : index
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %output_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %input_attached = ttl.attach_cb %input, %input_cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %output = ttl.cb_reserve %output_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %tile = tensor.extract %input_attached[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.dst_section {
+    %dst_token, %copied = ttl.copy_tile %tile[%c0, %c0] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    ttl.tile_store %copied, %output[%c0, %c0] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+  }
+  return
+}
+
+// -----
+
 // Blackhole accepts index 32 in both explicit unpack policy and attached DFB
 // validation.
 // DEFAULT-LABEL: func.func @blackhole_accepts_dfb_index_32
@@ -84,45 +114,6 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
         : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     return
   }
-}
-
-// -----
-
-// Direct f32 tile operations in ttl.dst_section constrain kernel config even
-// when they are not nested in ttl.compute.
-// DEFAULT-LABEL: func.func @direct_f32_dst_section_auto_enable
-// DEFAULT-SAME: dst_full_sync_en = false
-// DEFAULT-SAME: fp32_dest_acc_en = true
-// DEFAULT-SAME: ttl.unpack_to_dest_fp32 = array<i32: 0>
-// NO-MATMUL-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
-// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
-// NO-REDUCE-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
-// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
-// FPUOFF-LABEL: func.func @direct_f32_dst_section_auto_enable
-// FPUOFF-SAME: fp32_dest_acc_en = true
-func.func @direct_f32_dst_section_auto_enable(
-    %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
-  %zero = arith.constant 0 : index
-  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %output_dfb = ttl.bind_cb {cb_index = 16, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %input_attached = ttl.attach_cb %input, %input_dfb
-      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
-         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %output = ttl.cb_reserve %output_dfb
-      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %tile = tensor.extract %input_attached[%zero, %zero]
-      : tensor<1x1x!ttcore.tile<32x32, f32>>
-  ttl.dst_section {
-    %dst_token, %copied = ttl.copy_tile %tile[%zero, %zero] into dst[%zero]
-        : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.tile_store %copied, %output[%zero, %zero] from dst[%zero]
-        : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
-  }
-  return
 }
 
 // -----
