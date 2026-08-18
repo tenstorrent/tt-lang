@@ -231,7 +231,10 @@ def TTL_FabricManagerIntervalAttr
     optional launch-node list records the exact nodes that execute an external
     interval. An absent list uses the enclosing kernel descriptor; a present
     empty list means no node executes the interval. The interference list
-    contains interval identities whose lifetimes may overlap.
+    contains interval identities whose lifetimes may overlap. Scoped external
+    intervals in distinct structured-control regions are sequential when they
+    execute on the same single launch node because each call releases its
+    manager before returning.
   }];
   let parameters = (ins
     "StringAttr":$identity,

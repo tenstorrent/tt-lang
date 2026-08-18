@@ -416,8 +416,22 @@ externalManagerIntervalsAreSequential(const FabricManagerIntervalPlan &lhs,
                                       const FabricManagerIntervalPlan &rhs) {
   if (lhs.kind != FabricManagerIntervalKind::External ||
       rhs.kind != FabricManagerIntervalKind::External ||
-      lhs.function != rhs.function ||
-      lhs.releaseBoundary->getBlock() != rhs.acquireBoundary->getBlock()) {
+      lhs.function != rhs.function) {
+    return false;
+  }
+
+  bool lhsIsScoped = lhs.acquireBoundary == lhs.releaseBoundary;
+  bool rhsIsScoped = rhs.acquireBoundary == rhs.releaseBoundary;
+  bool sameSingleLaunchNode = lhs.launchNodes && rhs.launchNodes &&
+                              lhs.launchNodes->size() == 1 &&
+                              lhs.launchNodes == rhs.launchNodes;
+  // One RISC cannot overlap synchronous scoped calls. Multiple launch nodes
+  // may progress independently, so cross-region ordering requires one node.
+  if (lhsIsScoped && rhsIsScoped && sameSingleLaunchNode) {
+    return true;
+  }
+
+  if (lhs.releaseBoundary->getBlock() != rhs.acquireBoundary->getBlock()) {
     return false;
   }
   return lhs.releaseBoundary->isBeforeInBlock(rhs.acquireBoundary);
