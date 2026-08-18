@@ -294,14 +294,19 @@ public:
   /// current. Only predecessors of each source gain reachability, and they
   /// gain exactly the existing successor set of its destination.
   bool tryAddEdgesAndUpdateReachability(
-      ArrayRef<std::pair<unsigned, unsigned>> edges) {
+      ArrayRef<std::pair<unsigned, unsigned>> edges,
+      bool tolerateCandidateInternalCycle = false) {
     assert(reachable.size() == successors.size() &&
            "transitive closure must be current before incremental updates");
     SmallVector<llvm::BitVector> candidateReachability = reachable;
     for (auto [source, destination] : edges) {
       if (source == destination ||
           candidateReachability[destination].test(source)) {
-        recordRejectedCycle(source, destination);
+        bool contradictsExistingOrder =
+            source != destination && reachable[destination].test(source);
+        if (contradictsExistingOrder || !tolerateCandidateInternalCycle) {
+          recordRejectedCycle(source, destination);
+        }
         return false;
       }
       if (candidateReachability[source].test(destination)) {
@@ -1828,6 +1833,14 @@ static bool tryAddCumulativeQueueEdges(
     LaunchNodeCoord node, const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains);
 
+static bool
+hasRepeatedEffectOperation(ArrayRef<const AccessRun *> protocolRuns) {
+  DenseSet<Operation *> operations;
+  return llvm::any_of(protocolRuns, [&](const AccessRun *run) {
+    return !operations.insert(run->access->operation).second;
+  });
+}
+
 /// Adds exact and cumulative producer-to-consumer synchronization edges.
 static void addProtocolSynchronizationEdges(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs, HappensBeforeGraph &graph,
@@ -1849,6 +1862,15 @@ static void addProtocolSynchronizationEdges(
       } else if (access.protocolEffect == DFBProtocolEffectKind::Wait) {
         waits.push_back(&runIt->second);
       }
+    }
+
+    // Repeated effects in one opaque call share one completion event. Exact
+    // matching would impose an all-before-all relation; cumulative analysis
+    // instead determines whether the internal producer/consumer schedule can
+    // make progress.
+    if (hasRepeatedEffectOperation(pushes) ||
+        hasRepeatedEffectOperation(waits)) {
+      continue;
     }
 
     std::size_t pushIndex = 0;
@@ -2356,6 +2378,83 @@ collectCumulativeSynchronizationEdges(
   return synchronizationEdges;
 }
 
+static bool
+isSingleOpaqueCallQueueScheduleFeasible(const CumulativeQueueSide &producer,
+                                        const CumulativeQueueSide &consumer,
+                                        std::uint64_t capacity) {
+  auto runsBelongToSingleOperation = [](ArrayRef<const AccessRun *> runs) {
+    Operation *operation = runs.front()->access->operation;
+    return llvm::all_of(runs, [&](const AccessRun *run) {
+      return run->access->operation == operation;
+    });
+  };
+  if (!runsBelongToSingleOperation(producer.orderedRuns) ||
+      !runsBelongToSingleOperation(consumer.orderedRuns)) {
+    return false;
+  }
+
+  Operation *producerOperation =
+      producer.orderedRuns.front()->access->operation;
+  Operation *consumerOperation =
+      consumer.orderedRuns.front()->access->operation;
+  bool hasRepeatedEffects = hasRepeatedEffectOperation(producer.orderedRuns) ||
+                            hasRepeatedEffectOperation(consumer.orderedRuns);
+  if (producerOperation == consumerOperation || !hasRepeatedEffects) {
+    return false;
+  }
+
+  std::size_t producerIndex = 0;
+  std::size_t consumerIndex = 0;
+  std::uint64_t occupiedTiles = 0;
+
+  auto tryAdvance = [&](ArrayRef<const AccessRun *> runs,
+                        std::size_t &runIndex) {
+    if (runIndex == runs.size()) {
+      return false;
+    }
+    const DFBAccessOccurrence &access = *runs[runIndex]->access;
+    std::uint64_t tiles = static_cast<std::uint64_t>(access.numTiles);
+    switch (*access.protocolEffect) {
+    case DFBProtocolEffectKind::Reserve:
+      if (tiles > capacity - occupiedTiles) {
+        return false;
+      }
+      break;
+    case DFBProtocolEffectKind::Push:
+      if (tiles > capacity - occupiedTiles) {
+        return false;
+      }
+      occupiedTiles += tiles;
+      break;
+    case DFBProtocolEffectKind::Wait:
+      if (tiles > occupiedTiles) {
+        return false;
+      }
+      break;
+    case DFBProtocolEffectKind::Pop:
+      if (tiles > occupiedTiles) {
+        return false;
+      }
+      occupiedTiles -= tiles;
+      break;
+    }
+    ++runIndex;
+    return true;
+  };
+
+  // Producer progress only adds occupancy and consumer progress only removes
+  // it, so advancing either enabled side cannot disable the other side.
+  while (producerIndex != producer.orderedRuns.size() ||
+         consumerIndex != consumer.orderedRuns.size()) {
+    bool producerAdvanced = tryAdvance(producer.orderedRuns, producerIndex);
+    bool consumerAdvanced = tryAdvance(consumer.orderedRuns, consumerIndex);
+    if (!producerAdvanced && !consumerAdvanced) {
+      return false;
+    }
+  }
+  return occupiedTiles == 0;
+}
+
 static bool tryAddCumulativeQueueEdges(
     const DFBLogicalLifecycle &logicalDFB, HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
@@ -2416,7 +2515,11 @@ static bool tryAddCumulativeQueueEdges(
     return false;
   }
 
-  if (!graph.tryAddEdgesAndUpdateReachability(*synchronizationEdges)) {
+  bool scheduleFeasible = isSingleOpaqueCallQueueScheduleFeasible(
+      *producer.side, *consumer.side,
+      static_cast<std::uint64_t>(physicalTileCount));
+  if (!graph.tryAddEdgesAndUpdateReachability(*synchronizationEdges,
+                                              scheduleFeasible)) {
     return false;
   }
   return true;

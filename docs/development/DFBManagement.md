@@ -1306,10 +1306,16 @@ every non-protocol DFB access must remain inside an acquire/release interval.
 The analysis relates each wait completion to the first push that publishes its
 required cumulative position. When a reservation exceeds currently available
 capacity, it also relates that reserve completion to the first pop that returns
-the required credit. A relation that would introduce a cycle is rejected as a
-blocking protocol. Unknown order, dynamic counts, mixed native and external
-cumulative sequences, condition mismatch, and incomplete terminal consumption
-remain conservative.
+the required credit. Repeated effects within one opaque call are not matched as
+independent operation-completion transactions. When one producer call and one
+consumer call contain the complete ordered protocol, the analysis simulates
+both effect sequences against the physical DFB capacity. A feasible cycle that
+exists only within the candidate edge batch remains unproved at operation
+granularity rather than becoming contradictory evidence. A protocol that
+cannot progress, or a relation that contradicts the existing happens-before
+graph, remains a hard contradiction. Unknown order, dynamic counts, mixed
+native and external cumulative sequences, condition mismatch, and incomplete
+terminal consumption remain conservative.
 
 Reports preserve the normalized transaction boundaries and the raw
 `write_cursor_runs` and `read_cursor_runs`. Allocation compatibility uses the
