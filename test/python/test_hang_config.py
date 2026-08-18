@@ -13,6 +13,7 @@ program, and how it finds kernel ELFs in the tt-metal cache. The device half
 """
 
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -175,6 +176,69 @@ def test_elf_discovery_from_generated_source_names(tmp_path):
     assert found["brisc"][0].endswith("brisc/brisc.elf")
 
     assert list(hang_collect.firmware_elfs(str(tmp_path))) == ["ncrisc"]
+
+
+def test_blackhole_xip_kernel_load_offsets_use_active_launch():
+    """Kernel PCs are displaced by the active config-buffer base plus text offset."""
+    firmware_elf = SimpleNamespace(
+        get_enum_value=lambda name: {
+            "ProgrammableCoreType::TENSIX": 1,
+            "TensixProcessorTypes::DM0": 0,
+            "TensixProcessorTypes::DM1": 1,
+            "TensixProcessorTypes::MATH0": 2,
+            "TensixProcessorTypes::MATH1": 3,
+            "TensixProcessorTypes::MATH2": 4,
+        }[name]
+    )
+    active_config = SimpleNamespace(
+        kernel_config_base=[0xDEAD, 0x100000],
+        kernel_text_offset=[0x100, 0x200, 0x300, 0x400, 0x500],
+    )
+    stale_config = SimpleNamespace(
+        kernel_config_base=[0, 0], kernel_text_offset=[0, 0, 0, 0, 0]
+    )
+    mailboxes = SimpleNamespace(
+        launch_msg_rd_ptr=1,
+        launch=[
+            SimpleNamespace(kernel_config=stale_config),
+            SimpleNamespace(kernel_config=active_config),
+        ],
+    )
+
+    assert hang_collect.blackhole_kernel_load_offsets(firmware_elf, mailboxes) == {
+        "brisc": 0x100100,
+        "ncrisc": 0x100200,
+        "trisc0": 0x100300,
+        "trisc1": 0x100400,
+        "trisc2": 0x100500,
+    }
+
+
+def test_symbolize_passes_xip_offset_only_for_kernel_elf(monkeypatch):
+    calls = {}
+
+    def top_callstack(pc, elfs, offsets, **kwargs):
+        calls.update(pc=pc, elfs=elfs, offsets=offsets, kwargs=kwargs)
+        return []
+
+    fake_module = SimpleNamespace(top_callstack=top_callstack)
+    monkeypatch.setitem(sys.modules, "ttexalens.tt_exalens_lib", fake_module)
+    report = hang_collect.Report()
+    elfs = {
+        "brisc": [
+            "/cache/build/kernels/generated/hash/brisc/brisc.elf",
+            "/cache/build/firmware/brisc/brisc.elf",
+        ]
+    }
+
+    hang_collect.symbolize(
+        object(), 0, 0, "brisc", 0x123456, elfs, report, 0x100000
+    )
+
+    assert calls["pc"] == 0x123456
+    assert calls["offsets"] == [0x100000, None]
+    assert calls["kwargs"]["extract_variables"] is False
+    assert not report.failures
 
 
 def test_devices_default_to_the_first_only(clean_env):

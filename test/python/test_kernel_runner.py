@@ -45,6 +45,33 @@ class _FakeCoreRanges:
         return _FakeBoundingBox()
 
 
+class _FakeCoreCoord:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
+class _FakeCoreRange:
+    def __init__(self, start, end):
+        self.start = _FakeCoreCoord(*start)
+        self.end = _FakeCoreCoord(*end)
+
+
+class _FakeExplicitCoreRanges:
+    def __init__(self, *ranges):
+        self._ranges = [_FakeCoreRange(start, end) for start, end in ranges]
+
+    def ranges(self):
+        return self._ranges
+
+    def bounding_box(self):
+        max_x = max(core_range.end.x for core_range in self._ranges)
+        max_y = max(core_range.end.y for core_range in self._ranges)
+        return SimpleNamespace(
+            grid_size=lambda: SimpleNamespace(x=max_x + 1, y=max_y + 1)
+        )
+
+
 class _FakeSubsetCoreRanges:
     def __init__(self, members):
         self.members = set(members)
@@ -73,6 +100,36 @@ class _FakeTTNN:
             self.cbs = cbs
             self.semaphores = semaphores
             self.custom_program_hash = None
+
+    class CBFormatDescriptor:
+        def __init__(self, buffer_index, data_format, page_size, tile=None):
+            self.buffer_index = buffer_index
+            self.data_format = data_format
+            self.page_size = page_size
+            self.tile = tile
+
+    class CBDescriptor:
+        def __init__(self, total_size, core_ranges, format_descriptors):
+            self.total_size = total_size
+            self.core_ranges = core_ranges
+            self.format_descriptors = format_descriptors
+
+    CoreCoord = _FakeCoreCoord
+
+    class CoreRange:
+        def __init__(self, start, end):
+            self.start = start
+            self.end = end
+
+        def __hash__(self):
+            return hash((self.start.x, self.start.y, self.end.x, self.end.y))
+
+    class CoreRangeSet:
+        def __init__(self, ranges):
+            self._ranges = list(ranges)
+
+        def ranges(self):
+            return self._ranges
 
     class ReaderConfigDescriptor:
         pass
@@ -124,6 +181,29 @@ class _FakeTTNN:
         return semaphore["address"]
 
 
+def _fake_cb_descriptor(
+    cb_id,
+    core_ranges,
+    total_size,
+    *,
+    page_size=32,
+    tile=(1, 32),
+    data_format="bf16",
+):
+    return SimpleNamespace(
+        total_size=total_size,
+        core_ranges=core_ranges,
+        format_descriptors=[
+            SimpleNamespace(
+                buffer_index=cb_id,
+                data_format=data_format,
+                page_size=page_size,
+                tile=SimpleNamespace(height=tile[0], width=tile[1]),
+            )
+        ],
+    )
+
+
 def test_remaining_l1_uses_absolute_cb_and_page_addresses(monkeypatch):
     l1 = object()
     reports = SimpleNamespace(
@@ -165,6 +245,43 @@ def test_remaining_l1_without_tensors_uses_cb_address_interval(monkeypatch):
     assert kernel_runner.get_min_remaining_l1_for_device(object()) == (
         0x130000 - 0x4A000
     )
+
+
+def test_remaining_l1_by_core_does_not_conflate_tensor_placements(monkeypatch):
+    l1 = object()
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(
+            address_at_first_l1_cb_buffer=0x4A000,
+            cb_limit=0x130000,
+        ),
+        get_buffer_pages=lambda _device: [
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=0x6A000,
+                core_x=0,
+                core_y=0,
+            ),
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=0xEA000,
+                core_x=1,
+                core_y=0,
+            ),
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1),
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    assert kernel_runner.get_remaining_l1_by_core_for_device(
+        object(), {(0, 0), (1, 0), (2, 0)}
+    ) == {
+        (0, 0): 0x20000,
+        (1, 0): 0xA0000,
+        (2, 0): 0xE6000,
+    }
 
 
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
@@ -448,6 +565,318 @@ def test_run_kernel_applies_runtime_resource_factory(monkeypatch):
     assert result["program"].kernels[0].defines == [("FABRIC_1D", "1")]
     assert result["program"].semaphores == ["fabric-sem-0", "fabric-sem-1"]
     assert lifetime == [owner]
+
+
+def test_cb_descriptor_override_accounts_for_disjoint_cores(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    program_cores = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    descriptors = [
+        _fake_cb_descriptor(
+            0, _FakeExplicitCoreRanges(((0, 0), (0, 0))), total_size=96
+        ),
+        _fake_cb_descriptor(
+            0, _FakeExplicitCoreRanges(((1, 0), (1, 0))), total_size=128
+        ),
+    ]
+
+    result = kernel_runner.validate_cb_descriptors_override(
+        descriptors=descriptors,
+        program_core_ranges=program_cores,
+        tensors=[_FakeTensorWithoutDevice()],
+        num_cbs=1,
+    )
+
+    # The descriptor total is 224 bytes, but no core owns more than 128.
+    assert result == descriptors
+
+
+def test_cb_descriptor_override_rejects_overlapping_id_on_one_core(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    descriptors = [
+        _fake_cb_descriptor(0, core, total_size=32),
+        _fake_cb_descriptor(0, core, total_size=64),
+    ]
+
+    with pytest.raises(ValueError, match="overlapping descriptors"):
+        kernel_runner.validate_cb_descriptors_override(
+            descriptors=descriptors,
+            program_core_ranges=core,
+            tensors=[_FakeTensorWithoutDevice()],
+            num_cbs=1,
+        )
+
+
+def test_cb_descriptor_override_rejects_mismatched_page_format(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    program_cores = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    descriptors = [
+        _fake_cb_descriptor(
+            0,
+            _FakeExplicitCoreRanges(((0, 0), (0, 0))),
+            total_size=64,
+            page_size=32,
+        ),
+        _fake_cb_descriptor(
+            0,
+            _FakeExplicitCoreRanges(((1, 0), (1, 0))),
+            total_size=64,
+            page_size=64,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="inconsistent page formats"):
+        kernel_runner.validate_cb_descriptors_override(
+            descriptors=descriptors,
+            program_core_ranges=program_cores,
+            tensors=[_FakeTensorWithoutDevice()],
+            num_cbs=1,
+        )
+
+
+def test_cb_descriptor_override_rejects_per_core_budget_overflow(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    descriptors = [
+        _fake_cb_descriptor(0, core, total_size=96),
+        _fake_cb_descriptor(1, core, total_size=64),
+    ]
+
+    with pytest.raises(ValueError, match="160 bytes on core \\(0, 0\\)"):
+        kernel_runner.validate_cb_descriptors_override(
+            descriptors=descriptors,
+            program_core_ranges=core,
+            tensors=[_FakeTensorWithoutDevice()],
+            num_cbs=2,
+        )
+
+
+def test_cb_descriptor_override_uses_matching_per_core_l1_budget(monkeypatch):
+    l1 = object()
+    device = object()
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(
+            address_at_first_l1_cb_buffer=0,
+            cb_limit=256,
+        ),
+        get_buffer_pages=lambda _device: [
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=128,
+                core_x=0,
+                core_y=0,
+            ),
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=192,
+                core_x=1,
+                core_y=0,
+            ),
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1),
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    core_1 = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+
+    descriptors = kernel_runner.validate_cb_descriptors_override(
+        descriptors=[
+            _fake_cb_descriptor(0, core_0, total_size=96),
+            _fake_cb_descriptor(0, core_1, total_size=160),
+        ],
+        program_core_ranges=program,
+        tensors=[_FakeTensor(device)],
+        num_cbs=1,
+    )
+
+    assert [descriptor.total_size for descriptor in descriptors] == [96, 160]
+
+
+def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 160)
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    core_1 = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    geometries = {
+        0: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=4,
+            total_size=128,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        1: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=1,
+            total_size=32,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+    }
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda index, _cb: geometries[index]
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors_by_core(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object(), object()],
+        core_ranges=program,
+        pages_by_core={0: [(core_0, 1), (core_1, 4)]},
+    )
+
+    # Uniform descriptors stay first so their base addresses remain identical
+    # across cores; specialized descriptors follow.
+    assert [descriptor.total_size for descriptor in descriptors] == [
+        32,
+        32,
+        32,
+        128,
+    ]
+    assert [
+        descriptor.format_descriptors[0].buffer_index
+        for descriptor in descriptors
+    ] == [1, 1, 0, 0]
+
+
+def test_cb_pages_by_core_requires_exact_grid_partition(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=1,
+        total_size=32,
+        tile_descriptor=SimpleNamespace(height=1, width=32),
+    )
+    monkeypatch.setattr(kernel_runner, "cb_geometry", lambda _index, _cb: geometry)
+
+    with pytest.raises(ValueError, match="must cover the whole program grid"):
+        kernel_runner.build_cb_descriptors_by_core(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[object()],
+            core_ranges=program,
+            pages_by_core={0: [(core_0, 1)]},
+        )
+
+
+def test_cb_pages_by_core_preserves_compiler_maximum(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=4,
+        total_size=128,
+        tile_descriptor=SimpleNamespace(height=1, width=32),
+    )
+    monkeypatch.setattr(kernel_runner, "cb_geometry", lambda _index, _cb: geometry)
+
+    with pytest.raises(ValueError, match="preserve the compiler-derived maximum"):
+        kernel_runner.build_cb_descriptors_by_core(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[object()],
+            core_ranges=program,
+            pages_by_core={0: [(program, 2)]},
+        )
+
+
+def test_cb_pages_by_core_preserves_specialization_order(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    core_1 = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    geometries = {
+        0: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=4,
+            total_size=128,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        1: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=2,
+            total_size=64,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+    }
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda index, _cb: geometries[index]
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors_by_core(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object(), object()],
+        core_ranges=program,
+        pages_by_core={
+            1: [(core_0, 2), (core_1, 1)],
+            0: [(core_0, 1), (core_1, 4)],
+        },
+    )
+
+    assert [
+        descriptor.format_descriptors[0].buffer_index
+        for descriptor in descriptors
+    ] == [1, 1, 0, 0]
+
+
+def test_run_kernel_rejects_both_cb_override_forms(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _FakeTensorWithoutDevice()
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    descriptor = _fake_cb_descriptor(0, core, total_size=32)
+
+    def factory(**_kwargs):
+        return kernel_runner.ProgramRuntimeResources(
+            cb_descriptors_override=[descriptor],
+            cb_pages_by_core={0: [(core, 1)]},
+        )
+
+    with pytest.raises(ValueError, match="cannot set both"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[tensor],
+            cb_configs=[object()],
+            core_ranges=core,
+            runtime_resource_factory=factory,
+        )
+
+
+def test_run_kernel_uses_validated_cb_descriptor_override(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _FakeTensorWithoutDevice()
+    core_ranges = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    descriptor = _fake_cb_descriptor(0, core_ranges, total_size=32)
+
+    def fail_default_builder(**_kwargs):
+        raise AssertionError("default whole-grid CB builder should not run")
+
+    def factory(**_kwargs):
+        return kernel_runner.ProgramRuntimeResources(
+            cb_descriptors_override=[descriptor]
+        )
+
+    monkeypatch.setattr(kernel_runner, "build_cb_descriptors", fail_default_builder)
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[tensor],
+        cb_configs=[object()],
+        core_ranges=core_ranges,
+        runtime_resource_factory=factory,
+    )
+
+    assert result["program"].cbs == [descriptor]
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():

@@ -767,6 +767,12 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def visit_Subscript(self, node):
         """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
+        if not isinstance(node.value, ast.Name):
+            self._raise_error(
+                node,
+                "TTL only supports subscripting tensor names; "
+                f"got {ast.unparse(node.value)!r}",
+            )
         tbl = self._var_exists(node.value.id)
         if not tbl:
             self._raise_error(node, f"Unknown variable: {node.value.id}")

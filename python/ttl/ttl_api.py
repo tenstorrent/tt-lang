@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import copy as _copy
 import functools
 import inspect
 import os
@@ -665,6 +666,88 @@ class CompiledTTNNKernel:
             runtime_resource_factory=self.runtime_resource_factory,
             runtime_resource_lifetime=self._runtime_resource_lifetime,
         )
+
+
+class _CompiledTTNNKernelTemplate:
+    """Resource-free template shared by separately-created op wrappers.
+
+    A compiled kernel normally retains the runtime-resource factory and the
+    tensors used to infer DFB formats.  A factory cache must not retain those
+    per-invocation resources: doing so can perturb L1 allocation and invalidate
+    opaque kernels that captured fixed addresses.  Keep only compile artifacts
+    and materialize a fresh runtime owner for each wrapper instead.
+    """
+
+    def __init__(self, kernel: CompiledTTNNKernel):
+        self.kernel_paths = list(kernel.kernel_paths)
+        self.kernel_configs = list(kernel.kernel_configs)
+        self.kernel_arg_specs = list(kernel.kernel_arg_specs)
+        self.num_tensors = kernel.num_tensors
+        self.core_ranges = kernel.core_ranges
+        self.kernel_tensor_indices = [
+            list(indices) for indices in kernel.kernel_tensor_indices
+        ]
+        self.kernel_core_ranges = list(kernel.kernel_core_ranges)
+        self.cb_configs = [self._detach_cb(config) for config in kernel.cb_configs]
+        self.cb_names = dict(kernel.cb_names)
+        self.program_hash = kernel.program_hash
+        self.source_lines = kernel.source_lines
+        self.all_source_lines = dict(kernel.all_source_lines)
+        self.thread_to_kernel = dict(kernel.thread_to_kernel)
+        self.kernel_line_offsets = dict(kernel.kernel_line_offsets or {})
+        self.num_pipe_sync_semaphores = kernel.num_pipe_sync_semaphores
+        self.pipe_sram_scratch_bytes = kernel.pipe_sram_scratch_bytes
+        self.num_pipe_global_semaphores = kernel.num_pipe_global_semaphores
+        self.opaque_include_paths = list(kernel.opaque_include_paths)
+
+    @staticmethod
+    def _detach_cb(config):
+        if config is None or isinstance(config, CompilerAllocatedDFBConfig):
+            return config
+        detached = _copy.copy(config)
+        # Preserve format inference without retaining the device allocation
+        # used by the first factory invocation.
+        detached._dtype = config.dtype
+        detached.tensor = None
+        return detached
+
+    def materialize(self, runtime_resource_factory=None) -> CompiledTTNNKernel:
+        return CompiledTTNNKernel(
+            kernel_paths=list(self.kernel_paths),
+            kernel_configs=list(self.kernel_configs),
+            kernel_arg_specs=list(self.kernel_arg_specs),
+            num_tensors=self.num_tensors,
+            core_ranges=self.core_ranges,
+            kernel_tensor_indices=[
+                list(indices) for indices in self.kernel_tensor_indices
+            ],
+            kernel_core_ranges=list(self.kernel_core_ranges),
+            cb_configs=list(self.cb_configs),
+            cb_names=dict(self.cb_names),
+            program_hash=self.program_hash,
+            source_lines=self.source_lines,
+            all_source_lines=dict(self.all_source_lines),
+            thread_to_kernel=dict(self.thread_to_kernel),
+            kernel_line_offsets=dict(self.kernel_line_offsets),
+            num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
+            pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+            opaque_include_paths=list(self.opaque_include_paths),
+            runtime_resource_factory=runtime_resource_factory,
+        )
+
+
+def _freeze_factory_cache_entry(compiled_kernel):
+    if isinstance(compiled_kernel, CompiledTTNNKernel):
+        return _CompiledTTNNKernelTemplate(compiled_kernel)
+    # Unit tests and downstream adapters may return a lightweight callable.
+    return compiled_kernel
+
+
+def _materialize_factory_cache_entry(entry, runtime_resource_factory):
+    if isinstance(entry, _CompiledTTNNKernelTemplate):
+        return entry.materialize(runtime_resource_factory)
+    return entry
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -2207,8 +2290,15 @@ def _make_operation_wrapper(
     math_fidelity: Optional[str],
     options: Optional[str],
     prepare_call: Optional[Callable] = None,
+    factory_cache=None,
+    factory_cache_key=None,
+    runtime_resource_factory=None,
 ) -> Callable:
     """Build the shared top-level operation cache and execution wrapper."""
+    if (factory_cache is None) != (factory_cache_key is None):
+        raise ValueError(
+            "factory_cache and factory_cache_key must be supplied together"
+        )
     kernel_id = random.getrandbits(64)
     cache: Dict[tuple, CompiledTTNNKernel] = {}
 
@@ -2242,6 +2332,17 @@ def _make_operation_wrapper(
         )
 
         compiled_kernel = cache.get(cache_key)
+        shared_key = None
+        if compiled_kernel is None and factory_cache is not None:
+            shared_key = (factory_cache_key, cache_key)
+            entry = factory_cache.get(shared_key)
+            if entry is not None:
+                compiled_kernel = _materialize_factory_cache_entry(
+                    entry, runtime_resource_factory
+                )
+                cache[cache_key] = compiled_kernel
+                if os.environ.get("TTLANG_FACTORY_CACHE_DEBUG") == "1":
+                    print(f"TT-Lang factory cache hit: {factory_cache_key!r}")
         if compiled_kernel is None:
             compiled_kernel = compile_callback(
                 runtime_args,
@@ -2253,6 +2354,17 @@ def _make_operation_wrapper(
             )
             if compiled_kernel is not None:
                 cache[cache_key] = compiled_kernel
+                if factory_cache is not None:
+                    if shared_key is None:
+                        shared_key = (factory_cache_key, cache_key)
+                    factory_cache[shared_key] = _freeze_factory_cache_entry(
+                        compiled_kernel
+                    )
+                    if os.environ.get("TTLANG_FACTORY_CACHE_DEBUG") == "1":
+                        print(
+                            "TT-Lang factory cache miss: "
+                            f"{factory_cache_key!r}"
+                        )
 
         if compiled_kernel is None or not _should_execute():
             return None
@@ -2317,6 +2429,8 @@ def pykernel_gen(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory=None,
+    factory_cache=None,
+    factory_cache_key=None,
     _prepare_call: Optional[Callable] = None,
 ) -> Callable:
     """
@@ -2336,6 +2450,11 @@ def pykernel_gen(
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        factory_cache: Optional caller-owned mapping shared by operations made
+            from the same dynamic factory.
+        factory_cache_key: Hashable identity for all compile-time captures,
+            including any fixed L1 or semaphore addresses. Must be supplied
+            together with ``factory_cache``.
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2404,6 +2523,9 @@ def pykernel_gen(
             math_fidelity=math_fidelity,
             options=options,
             prepare_call=_prepare_call,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+            runtime_resource_factory=runtime_resource_factory,
         )
 
     return _decorator
