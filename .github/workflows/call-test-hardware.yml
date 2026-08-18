@@ -1,8 +1,18 @@
-name: N150 Hardware Tests
+name: Hardware Tests
 
 on:
   workflow_dispatch:
     inputs:
+      hardware:
+        description: 'Hardware configuration name.'
+        required: false
+        type: string
+        default: 'n150'
+      runner_label:
+        description: 'GitHub Actions runner label.'
+        required: false
+        type: string
+        default: 'tt-ubuntu-2204-n150-stable'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -14,6 +24,16 @@ on:
         type: string
   workflow_call:
     inputs:
+      hardware:
+        description: 'Hardware configuration name.'
+        required: false
+        type: string
+        default: 'n150'
+      runner_label:
+        description: 'GitHub Actions runner label.'
+        required: false
+        type: string
+        default: 'tt-ubuntu-2204-n150-stable'
       defer_result_check:
         description: 'Allow the calling workflow to check the aggregate hardware result.'
         required: false
@@ -34,9 +54,9 @@ permissions:
   contents: read
 
 jobs:
-  test-n150:
-    name: "Hardware Tests (n150)"
-    runs-on: tt-ubuntu-2204-n150-stable
+  test-hardware:
+    name: "Hardware Tests (${{ inputs.hardware }})"
+    runs-on: ${{ inputs.runner_label }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
     continue-on-error: ${{ inputs.defer_result_check }}
 
@@ -54,7 +74,7 @@ jobs:
         shell: bash
 
     env:
-      RUNS_ON: n150
+      RUNS_ON: ${{ inputs.hardware }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
 
@@ -73,7 +93,7 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: Linux-ttlang-hw-n150
+          key: Linux-ttlang-hw-${{ inputs.hardware }}
           max-size: 200M
 
       - name: Build tt-lang
@@ -110,7 +130,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hardware-test-reports-n150
+          name: hardware-test-reports-${{ inputs.hardware }}
           path: |
             build/test/me2e-report*.xml
             build/test/python-lit-report*.xml

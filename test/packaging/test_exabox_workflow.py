@@ -31,15 +31,11 @@ def test_pull_request_ci_targets_main_only() -> None:
     )
 
 
-def test_galaxy_tests_run_only_for_pull_requests_targeting_main() -> None:
+def test_disabled_galaxy_tests_retain_exabox_configuration() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
     call_build = CALL_BUILD.read_text()
-    n150_workflow = CALL_TEST_HARDWARE.read_text()
 
-    assert (
-        "run_galaxy_tests: ${{ github.event_name == 'pull_request' "
-        "&& github.base_ref == 'main' }}" in ci_workflow
-    )
+    assert "run_galaxy_tests: false" in ci_workflow
     assert "uses: ./.github/workflows/call-test-exabox.yml" in call_build
     assert "if: ${{ inputs.run_galaxy_tests }}" in call_build
     assert "needs: [test-hardware, test-exabox]" in call_build
@@ -47,8 +43,21 @@ def test_galaxy_tests_run_only_for_pull_requests_targeting_main() -> None:
         "\n    report-skipped-galaxy:", 1
     )[0]
     assert "timeout: 90" in test_exabox
-    assert '"in-service", "galaxy-bh"' not in call_build
-    assert "galaxy-bh" not in n150_workflow
+
+
+def test_hardware_matrix_adds_optional_blackhole_loudbox() -> None:
+    call_build = CALL_BUILD.read_text()
+    hardware_workflow = CALL_TEST_HARDWARE.read_text()
+
+    assert "hardware: n150" in call_build
+    assert "runner_label: tt-ubuntu-2204-n150-stable" in call_build
+    assert "hardware: bh-loudbox-viommu" in call_build
+    assert "runner_label: tt-ubuntu-2204-bh-loudbox-viommu-stable" in call_build
+    assert "--optional-runner bh-loudbox-viommu" in call_build
+    assert "inputs.run_galaxy_tests && 3 || 2" in call_build
+    assert 'name: "Hardware Tests (${{ inputs.hardware }})"' in hardware_workflow
+    assert "runs-on: ${{ inputs.runner_label }}" in hardware_workflow
+    assert "RUNS_ON: ${{ inputs.hardware }}" in hardware_workflow
 
 
 def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> None:
