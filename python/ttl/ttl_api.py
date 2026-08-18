@@ -1352,7 +1352,9 @@ def _compile_ttnn_kernel(
             )
         )
         kernel_used_cb_indices.append(
-            _get_kernel_optional_i32_array_attr(module, name, "ttl.used_cb_indices")
+            _get_kernel_optional_i32_array_attr(
+                module, name, _ttl_ir.USED_DFB_INDICES_ATTR
+            )
         )
 
         # The specialized clone's launch coordinates (None on the default,

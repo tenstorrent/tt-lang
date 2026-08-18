@@ -1,16 +1,16 @@
 // RUN: ttlang-opt %s -ttkernel-annotate-cb-use | FileCheck %s
 
 // CHECK-LABEL: func.func private @unknown()
-// CHECK-SAME: ttl.used_cb_indices = array<i32>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32>
 
 // CHECK-LABEL: func.func @helper()
-// CHECK-SAME: ttl.used_cb_indices = array<i32: 1, 2>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
 
 // CHECK-LABEL: func.func @calls_helper()
-// CHECK-SAME: ttl.used_cb_indices = array<i32: 1, 2>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
 
 // CHECK-LABEL: func.func @calls_unknown()
-// CHECK-SAME: ttl.used_cb_indices = array<i32: 0, 1>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
 
 module {
   func.func private @unknown()

@@ -1370,7 +1370,7 @@ def TTKernelAnnotateCBUse
     coordinate branches have been removed. For each function, records the
     sorted physical CB indices reached through surviving
     `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_cb_indices`. The compile-time ABI places
+    `ttl.base_cta_index` in `ttl.used_dfb_indices`. The compile-time ABI places
     every CB before tensor-accessor arguments, including CB ids passed to
     opaque externs as scalar values.
 

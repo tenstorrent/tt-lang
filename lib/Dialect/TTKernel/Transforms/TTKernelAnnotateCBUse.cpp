@@ -108,7 +108,7 @@ struct TTKernelAnnotateCBUsePass
       }
       SmallVector<int32_t> sorted(usedCBs[key].begin(), usedCBs[key].end());
       llvm::sort(sorted);
-      func->setAttr(kUsedCBIndicesAttrName,
+      func->setAttr(kUsedDFBIndicesAttrName,
                     DenseI32ArrayAttr::get(module.getContext(), sorted));
     }
   }
