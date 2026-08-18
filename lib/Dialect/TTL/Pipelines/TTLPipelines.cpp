@@ -132,14 +132,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
 }
 
-void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
-  // Accumulation lowering consumes tensor loop iter_args before loop-state
-  // materialization replaces unsupported tensor state with explicit DFB state.
-  pm.addPass(createTTLFormAccumulationScopes());
-  pm.addPass(createTTLLowerAccumulationScopes());
-  pm.addPass(createTTLMaterializeLoopState());
-}
-
 void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyPipeNetSchedule());

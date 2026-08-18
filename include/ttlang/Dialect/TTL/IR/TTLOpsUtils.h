@@ -795,10 +795,11 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   return tileOp;
 }
 
-/// Collect the CB values targeted by pack_tile ops inside a loop.
+/// Collect the dataflow buffer values targeted by pack operations inside a
+/// loop.
 llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
 
-/// Returns true if two loops share any pack_tile CB target.
+/// Returns true if two loops share any pack operation dataflow buffer target.
 bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
 
 } // namespace mlir::tt::ttl

@@ -317,7 +317,7 @@ func.func @multi_push_after_loop() attributes {ttkernel.thread = #ttkernel.threa
 
 // Nested l1_acc loops: reserve is outside both loops, so both are annotated
 // and all iterations accumulate into the same CB slot. Disable guards
-// bracket the outermost loop; enable fires once after the first inner
+// bracket the outermost loop; enable runs once after the first inner
 // iteration of the first outer iteration.
 
 // CHECK-LABEL: func.func @nested_l1_acc_loops
@@ -1471,5 +1471,83 @@ func.func @multi_cb_init_then_l1_acc() attributes {ttkernel.thread = #ttkernel.t
   } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
   ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// An unannotated loop that packs into the accumulating output must execute
+// after the packer L1 accumulation scope is disabled.
+
+// CHECK-LABEL: func.func @bare_pack_loop_ends_accumulation_scope
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+func.func @bare_pack_loop_ends_accumulation_scope() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  scf.for %iv2 = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c1, %cb, %c1, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  }
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// A straight-line pack into the accumulating output must execute after the
+// packer L1 accumulation scope is disabled.
+
+// CHECK-LABEL: func.func @straight_line_pack_ends_accumulation_scope
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: ttkernel.pack_tile_block
+// CHECK: ttkernel.cb_push_back
+func.func @straight_line_pack_ends_accumulation_scope() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile_block(%c0, %cb, %c4) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }

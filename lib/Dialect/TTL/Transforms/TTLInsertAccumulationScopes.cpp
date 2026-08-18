@@ -22,7 +22,6 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -35,107 +34,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-/// Returns true if the loop carries any ttl.* annotation, indicating it was
-/// generated or already processed by a compiler pass.
-static bool hasCompilerAnnotation(scf::ForOp loop) {
-  for (NamedAttribute attr : loop->getAttrs()) {
-    if (attr.getName().getValue().starts_with("ttl.")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// Return true when the loop-to-store range contains only operations that the
-/// accumulation scope insertion can preserve or remove without changing
-/// visible program effects.
-static bool
-isContiguousSingleTensorAccumulator(scf::ForOp loop,
-                                    TensorAccumulationMatch &match) {
-  if (loop.getNumResults() != 1 || match.resultIndex != 0) {
-    return false;
-  }
-
-  if (!loop->isBeforeInBlock(match.finalStore)) {
-    return false;
-  }
-
-  llvm::SmallPtrSet<Operation *, 4> removableOps;
-  removableOps.insert(match.reserve.getOperation());
-  for (AttachCBOp attach : match.deadReserveAttachOps) {
-    removableOps.insert(attach.getOperation());
-  }
-
-  // Insertion normalizes the reserve before the loop and removes dead attach
-  // views. Other intervening operations would need explicit strategy-lowering
-  // support to preserve their relative execution order.
-  // TODO(#640): Preserve post-loop pure users by lowering them through a staged
-  // finalize region instead of requiring an immediate final store.
-  for (Operation *operation = loop->getNextNode();
-       operation != match.finalStore.getOperation();
-       operation = operation->getNextNode()) {
-    if (!removableOps.contains(operation)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/// Insert a semantic accumulation scope around a matched tensor recurrence.
-static LogicalResult insertTensorAccumulationScope(scf::ForOp loop,
-                                                   RewriterBase &rewriter) {
-  if (loop->getParentOfType<AccumulationScopeOp>()) {
-    return failure();
-  }
-
-  FailureOr<TensorAccumulationMatch> match =
-      matchAdditiveTensorAccumulation(loop, /*resultIndex=*/0);
-  if (failed(match) || !isContiguousSingleTensorAccumulator(loop, *match)) {
-    return failure();
-  }
-  // Strategy lowering consumes the whole matched loop. A loop-local store is a
-  // side effect not represented by the tensor recurrence scope contract.
-  bool hasLoopLocalStore = false;
-  loop->walk([&](StoreOp) {
-    hasLoopLocalStore = true;
-    return WalkResult::interrupt();
-  });
-  if (hasLoopLocalStore) {
-    return failure();
-  }
-
-  MLIRContext *context = loop.getContext();
-  ArrayAttr initialModes =
-      rewriter.getArrayAttr({AccumulationInitialModeAttr::get(
-          context, AccumulationInitialMode::Init)});
-
-  // The reserve defines the output view for the semantic scope. Moving it
-  // before the loop represents the required single output slot that persists
-  // across all accumulation iterations.
-  if (!match->reserve->isBeforeInBlock(loop)) {
-    rewriter.moveOpBefore(match->reserve, loop);
-  }
-  for (AttachCBOp attach : match->deadReserveAttachOps) {
-    rewriter.eraseOp(attach);
-  }
-
-  rewriter.setInsertionPoint(loop);
-  auto scope = AccumulationScopeOp::create(
-      rewriter, loop.getLoc(), ValueRange{match->reserve.getResult()},
-      ValueRange{match->initialValue}, initialModes);
-
-  Block *body =
-      rewriter.createBlock(&scope.getBody(), {}, match->initialValue.getType(),
-                           SmallVector<Location>{match->initialValue.getLoc()});
-
-  rewriter.moveOpBefore(loop, body, body->end());
-  loop.getInitsMutable()[0].set(body->getArgument(0));
-  rewriter.moveOpBefore(match->finalStore, body, body->end());
-  rewriter.setInsertionPointToEnd(body);
-  YieldOp::create(rewriter, loop.getLoc(), loop->getResults());
-  return success();
-}
 
 /// Return true when `operation` contains a non-accumulating store to the exact
 /// view SSA value. Exact matching is required because this pass does not have
@@ -165,41 +63,44 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
     targetDFB = getAttachedCB(view);
   }
 
-  Block *block = loop->getBlock();
-  if (!block || block->begin() == Block::iterator(loop)) {
-    return AccumulationInitialMode::Overwrite;
-  }
-
   auto isSameDFB = [&](Value cb) { return targetDFB && cb == targetDFB; };
 
-  for (auto iter = Block::reverse_iterator(Block::iterator(loop));
-       iter != block->rend(); ++iter) {
-    Operation *operation = &*iter;
-    if (auto priorStore = dyn_cast<StoreOp>(operation)) {
-      if (priorStore.getView() == view) {
-        if (priorStore.getAccumulate()) {
-          return failure();
+  Operation *cursor = loop.getOperation();
+  while (Block *block = cursor->getBlock()) {
+    for (auto iter = Block::reverse_iterator(Block::iterator(cursor));
+         iter != block->rend(); ++iter) {
+      Operation *operation = &*iter;
+      if (auto priorStore = dyn_cast<StoreOp>(operation)) {
+        if (priorStore.getView() == view) {
+          if (priorStore.getAccumulate()) {
+            return failure();
+          }
+          return AccumulationInitialMode::AccumulateExisting;
         }
-        return AccumulationInitialMode::AccumulateExisting;
+        continue;
       }
-      continue;
-    }
-    if (auto reserve = dyn_cast<CBReserveOp>(operation)) {
-      if (isSameDFB(reserve.getCb())) {
-        return AccumulationInitialMode::Overwrite;
+      if (auto reserve = dyn_cast<CBReserveOp>(operation)) {
+        if (isSameDFB(reserve.getCb())) {
+          return AccumulationInitialMode::Overwrite;
+        }
+        continue;
       }
-      continue;
-    }
-    if (auto push = dyn_cast<CBPushOp>(operation)) {
-      if (isSameDFB(push.getCb())) {
-        return AccumulationInitialMode::Overwrite;
+      if (auto push = dyn_cast<CBPushOp>(operation)) {
+        if (isSameDFB(push.getCb())) {
+          return AccumulationInitialMode::Overwrite;
+        }
+        continue;
       }
-      continue;
+      if (operation->getNumRegions() > 0 &&
+          containsPlainStoreToView(operation, view)) {
+        return failure();
+      }
     }
-    if (operation->getNumRegions() > 0 &&
-        containsPlainStoreToView(operation, view)) {
-      return failure();
+    Operation *parentOp = block->getParentOp();
+    if (!parentOp || isa<func::FuncOp>(parentOp)) {
+      break;
     }
+    cursor = parentOp;
   }
 
   return AccumulationInitialMode::Overwrite;
@@ -238,7 +139,9 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
   if (!stores.empty() && !plainStores.empty()) {
     plainStores.front().emitOpError()
         << "non-accumulating store inside a += loop is not supported (#648); "
-           "move it outside the accumulation loop or split the loop";
+           "packer L1 accumulation state applies to every pack in the loop, "
+           "including stores to other outputs; move the plain store outside "
+           "the accumulation loop or split the loop";
     hadFailure = true;
     return failure();
   }
@@ -254,7 +157,7 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
                                                 bool &hadFailure,
                                                 RewriterBase &rewriter) {
   if (loop->getParentOfType<AccumulationScopeOp>() ||
-      hasCompilerAnnotation(loop)) {
+      hasTTLDialectAttribute(loop)) {
     return failure();
   }
 
@@ -347,10 +250,10 @@ struct TTLInsertAccumulationScopesPass
       TTLInsertAccumulationScopesPass>::TTLInsertAccumulationScopesBase;
 
   void runOnOperation() override {
-    if (kind != "tensor" && kind != "dfb") {
+    if (kind != "dfb") {
       getOperation().emitOpError()
           << "invalid accumulation scope insertion kind `" << kind
-          << "`; expected `tensor` or `dfb`";
+          << "`; expected `dfb`";
       signalPassFailure();
       return;
     }
@@ -363,10 +266,6 @@ struct TTLInsertAccumulationScopesPass
     DominanceInfo domInfo(getOperation());
     bool hadFailure = false;
     for (scf::ForOp loop : loops) {
-      if (kind == "tensor") {
-        (void)insertTensorAccumulationScope(loop, rewriter);
-        continue;
-      }
       (void)insertDFBAccumulationScope(loop, domInfo, hadFailure, rewriter);
       if (hadFailure) {
         signalPassFailure();

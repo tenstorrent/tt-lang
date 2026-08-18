@@ -68,14 +68,16 @@ isContiguousSingleTensorAccumulator(const TensorAccumulationMatch &match) {
   return true;
 }
 
-/// Return true if the requested strategy has at least one legal tensor
-/// lowering.
+/// Return true if formation should wrap the recurrence for `strategy`.
 static bool
-hasLegalTensorAccumulationStrategy(const TensorAccumulationMatch &match,
-                                   const DFBAcquireReleaseIndex &dfbIndex,
-                                   AccumulationStrategy strategy) {
-  if (strategy == AccumulationStrategy::Dst ||
-      strategy == AccumulationStrategy::Auto) {
+shouldFormTensorAccumulationForStrategy(const TensorAccumulationMatch &match,
+                                        const DFBAcquireReleaseIndex &dfbIndex,
+                                        AccumulationStrategy strategy) {
+  if (strategy == AccumulationStrategy::Dst) {
+    return true;
+  }
+
+  if (strategy == AccumulationStrategy::Auto) {
     if (succeeded(analyzeTensorAccumulationForDst(match, dfbIndex))) {
       return true;
     }
@@ -105,7 +107,7 @@ getTensorAccumulationScopeMatch(scf::ForOp loop,
   FailureOr<TensorAccumulationMatch> match =
       matchAdditiveTensorAccumulation(loop, /*resultIndex=*/0);
   if (failed(match) || !isContiguousSingleTensorAccumulator(*match) ||
-      !hasLegalTensorAccumulationStrategy(*match, dfbIndex, strategy)) {
+      !shouldFormTensorAccumulationForStrategy(*match, dfbIndex, strategy)) {
     return failure();
   }
 

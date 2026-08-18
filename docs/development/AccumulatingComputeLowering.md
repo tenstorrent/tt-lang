@@ -296,8 +296,9 @@ estimated_cost = total_dfb_hops * dfb_hop_fixed_cost +
 
 If the trip count is not known, the model still records the feature counts but
 does not compute `estimated_cost`. Candidate comparison then uses the feature
-counts directly in this order: DFB hops, pack/unpack tile traffic, packer
-reconfiguration count, then live DST tiles.
+counts directly in this order: per-iteration DFB hops, one-time DFB hops,
+per-iteration pack/unpack tile traffic, one-time pack/unpack tile traffic,
+packer reconfiguration count, then live DST tiles.
 
 If the target architecture is absent or not calibrated, `estimated_cost` is
 also reported as `unknown`, and the same feature-count ordering is used.
@@ -467,6 +468,10 @@ current L1 metadata represents a static first-update policy: iteration 0
 overwrites or accumulates according to `ttl.l1_acc_initial`. It cannot
 represent "the first dynamically executed update overwrites, later executed
 updates accumulate" when a pack may be skipped by an `scf.if`.
+
+The same pass rejects a loop that contains both a DFB `+=` and a plain store.
+Packer L1 accumulation state applies to every pack in the loop, including packs
+to other outputs, so the plain store could accumulate instead of overwriting.
 
 Future conditional support (#648) should add explicit update-site metadata
 or lowered state transitions before TTKernel L1 insertion. The required
@@ -781,6 +786,11 @@ for iv = lb..ub:
     if iv == lb: pack_reconfig_l1_acc(1)
 pack_reconfig_l1_acc(0)
 ```
+
+If a later non-group pack targets one of the group's output dataflow buffers
+before the corresponding push, the disable is emitted before that pack. Packer
+L1 accumulation state is global, so the later pack must not observe the enabled
+state.
 
 When `ttl.l1_acc_initial = accumulate_existing`, lowering has already
 proved that L1 holds the initial value for the scope. The reconfiguration

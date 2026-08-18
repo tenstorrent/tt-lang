@@ -266,20 +266,17 @@ def TTLInsertAccumulationScopes
     : Pass<"ttl-insert-accumulation-scopes", "::mlir::func::FuncOp"> {
   let summary = "Insert semantic accumulation scopes";
   let description = [{
-    Inserts `ttl.accumulation_scope` regions around accumulation constructs
-    before concrete storage strategy selection. The initial tensor mode
-    recognizes single-output additive tensor recurrences whose loop result is
-    immediately stored to a dataflow buffer reservation. DFB mode recognizes
-    user-written accumulating stores after DFB acquire/release structure is
-    canonical.
+    Inserts `ttl.accumulation_scope` regions around user-written DFB
+    accumulation after DFB acquire/release structure is canonical and before
+    concrete storage strategy selection.
 
     The pass records accumulation policy only. It does not select DST, L1
     packer accumulation, or explicit dataflow buffer state.
   }];
 
   let options = [
-    Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Scope insertion kind: tensor or dfb.">
+    Option<"kind", "kind", "std::string", "\"dfb\"",
+           "Scope insertion kind. Supported value: dfb.">
   ];
 
   let dependentDialects = [
@@ -384,6 +381,9 @@ def TTKernelInsertL1Accumulation
     are excluded because max is not additive.
     Annotated additive loops must pack to output formats supported by packer
     L1 accumulation: f32, f16, bf16, si32, or u8.
+    Every pack operation inside an annotated additive loop is part of the
+    accumulation scope. Mixed non-accumulating packs must be rejected before
+    TTKernel lowering.
 
     Loops are grouped into accumulation scopes by `ttl.l1_acc_scope_id`;
     the pass does not infer scope identity from neighboring TTKernel
@@ -397,7 +397,9 @@ def TTKernelInsertL1Accumulation
       `tile_regs` boundaries).
     - For the second+ loop in a group, an enable before the loop to re-enable
       L1 acc after init ops that may reset packer state.
-    - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
+    - `pack_reconfig_l1_acc(0)` after the scope when no later pack can observe
+      the enabled state, or before a later non-group pack into one of the
+      group's output dataflow buffers.
 
     Loops are identified by the `ttl.l1_acc_loop` (user-written) or
     `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`

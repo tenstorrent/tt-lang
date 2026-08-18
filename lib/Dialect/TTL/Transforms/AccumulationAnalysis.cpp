@@ -105,8 +105,7 @@ static bool backwardSliceUses(Value value, Value root,
     }
   }
 
-  llvm::SmallPtrSet<Operation *, 8> visitedOps;
-  return valueDependsOn(value, root, scope, visitedOps);
+  return false;
 }
 
 static void addDependence(SmallVectorImpl<AccumulationDependence> &dependences,
@@ -420,18 +419,18 @@ bool AccumulationCostModel::isLessCostly(const AccumulationCost &lhs,
     return false;
   }
 
-  int64_t lhsDfbHops = lhs.oneTimeDfbHops + lhs.perIterationDfbHops;
-  int64_t rhsDfbHops = rhs.oneTimeDfbHops + rhs.perIterationDfbHops;
-  if (lhsDfbHops != rhsDfbHops) {
-    return lhsDfbHops < rhsDfbHops;
+  if (lhs.perIterationDfbHops != rhs.perIterationDfbHops) {
+    return lhs.perIterationDfbHops < rhs.perIterationDfbHops;
+  }
+  if (lhs.oneTimeDfbHops != rhs.oneTimeDfbHops) {
+    return lhs.oneTimeDfbHops < rhs.oneTimeDfbHops;
   }
 
-  int64_t lhsTraffic =
-      lhs.oneTimePackUnpackTiles + lhs.perIterationPackUnpackTiles;
-  int64_t rhsTraffic =
-      rhs.oneTimePackUnpackTiles + rhs.perIterationPackUnpackTiles;
-  if (lhsTraffic != rhsTraffic) {
-    return lhsTraffic < rhsTraffic;
+  if (lhs.perIterationPackUnpackTiles != rhs.perIterationPackUnpackTiles) {
+    return lhs.perIterationPackUnpackTiles < rhs.perIterationPackUnpackTiles;
+  }
+  if (lhs.oneTimePackUnpackTiles != rhs.oneTimePackUnpackTiles) {
+    return lhs.oneTimePackUnpackTiles < rhs.oneTimePackUnpackTiles;
   }
 
   if (lhs.packReconfigs != rhs.packReconfigs) {
@@ -449,14 +448,8 @@ planTensorAccumulationStrategy(AccumulationScopeOp scope,
                                const AccumulationCostModel &costModel) {
   AccumulationStrategyPlan plan;
   AccumulationGroupAnalysis groupAnalysis(scope);
-  if (!isLegalSingleSlotGroup(groupAnalysis)) {
-    AccumulationStrategyCandidate candidate;
-    candidate.strategy = requestedStrategy;
-    candidate.reason =
-        "multi-output accumulation groups require grouped lowering";
-    plan.candidates.push_back(std::move(candidate));
-    return failure();
-  }
+  assert(isLegalSingleSlotGroup(groupAnalysis) &&
+         "tensor recurrence strategy planning requires one independent slot");
 
   if (requestedStrategy == AccumulationStrategy::Dst) {
     plan.candidates.push_back(buildDstCandidate(match, dfbIndex, costModel));

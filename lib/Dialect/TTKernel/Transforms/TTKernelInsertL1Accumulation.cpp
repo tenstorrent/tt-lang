@@ -8,7 +8,9 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -116,8 +118,8 @@ static LogicalResult verifyL1AccLoopMetadata(scf::ForOp loop) {
 /// trip counts keep the conditional enable because runtime trip count may
 /// exceed one.
 static bool mayNeedOverwriteModeEnable(scf::ForOp loop) {
-  std::optional<llvm::APInt> tripCount = loop.getStaticTripCount();
-  return !tripCount || tripCount->ugt(1);
+  std::optional<int64_t> tripCount = getStaticAccumulationTripCount(loop);
+  return !tripCount || *tripCount > 1;
 }
 
 /// Return true when the packer can add a packed tile into an existing L1 tile
@@ -136,6 +138,33 @@ static bool isL1AccumulationDataTypeSupported(ttcore::DataType dataType) {
   default:
     return false;
   }
+}
+
+static void addPackCBs(scf::ForOp loop,
+                       llvm::SmallDenseSet<Value, 2> &packCBs) {
+  llvm::SmallDenseSet<Value, 2> loopPackCBs = getPackTileCBs(loop);
+  packCBs.insert(loopPackCBs.begin(), loopPackCBs.end());
+}
+
+static bool packsToAnyCB(scf::ForOp loop,
+                         const llvm::SmallDenseSet<Value, 2> &packCBs) {
+  for (Value cb : getPackTileCBs(loop)) {
+    if (packCBs.contains(cb)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool packsToAnyCB(Operation *operation,
+                         const llvm::SmallDenseSet<Value, 2> &packCBs) {
+  if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+    return packCBs.contains(packOp.getOutCb());
+  }
+  if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+    return packCBs.contains(packOp.getOutCb());
+  }
+  return false;
 }
 
 /// Verify that every pack in an L1 accumulation loop targets a supported output
@@ -177,6 +206,7 @@ static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
 struct L1AccumulationLoopGroup {
   scf::ForOp rootLoop;
   SmallVector<scf::ForOp> loops;
+  llvm::SmallDenseSet<Value, 2> packCBs;
   Operation *scopeEnd = nullptr;
 };
 
@@ -257,6 +287,7 @@ collectL1AccumulationLoopGroups(
     group.rootLoop = *rootLoop;
     group.scopeEnd = group.rootLoop;
     group.loops.push_back(loop);
+    addPackCBs(loop, group.packCBs);
     assignedLoops.insert(loop.getOperation());
 
     llvm::SmallDenseSet<Operation *> groupRootLoops;
@@ -290,6 +321,7 @@ collectL1AccumulationLoopGroups(
           !assignedLoops.contains(siblingLoop.getOperation()) &&
           enablePointPerLoop.count(siblingLoop.getOperation())) {
         group.loops.push_back(siblingLoop);
+        addPackCBs(siblingLoop, group.packCBs);
         assignedLoops.insert(siblingLoop.getOperation());
       }
     }
@@ -306,6 +338,9 @@ collectL1AccumulationLoopGroups(
         // L1-acc state affects subsequent packs, not cb_push_back itself.
         break;
       }
+      if (packsToAnyCB(operation, group.packCBs)) {
+        break;
+      }
 
       auto siblingLoop = dyn_cast<scf::ForOp>(operation);
       if (!siblingLoop) {
@@ -314,6 +349,10 @@ collectL1AccumulationLoopGroups(
       if (groupRootLoops.contains(siblingLoop.getOperation())) {
         group.scopeEnd = operation;
         continue;
+      }
+      if (!isL1AccumulationLoop(siblingLoop) &&
+          packsToAnyCB(siblingLoop, group.packCBs)) {
+        break;
       }
       if (isL1AccumulationLoop(siblingLoop) &&
           !isLoopInScope(siblingLoop, *scopeId)) {

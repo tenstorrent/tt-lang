@@ -45,13 +45,20 @@ struct TensorAccumulationScopeMatch {
 /// Check the structural policy encoded by tensor accumulation scopes. The
 /// scope lowerer relies on this policy before it looks through the contained
 /// loop recurrence.
-static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope) {
+static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope,
+                                                    bool emitDiagnostics) {
   if (scope.getOutputs().size() != 1) {
+    if (!emitDiagnostics) {
+      return failure();
+    }
     return scope.emitOpError(
         "tensor accumulation lowering supports exactly one output; split "
         "multiple accumulators into separate scopes");
   }
   if (scope.getInits().size() != 1) {
+    if (!emitDiagnostics) {
+      return failure();
+    }
     return scope.emitOpError(
         "tensor accumulation lowering requires one init operand");
   }
@@ -59,11 +66,17 @@ static LogicalResult verifySingleAddInitTensorScope(AccumulationScopeOp scope) {
   SmallVector<AccumulationInitialMode> initialModes =
       scope.getAccumulationInitialModes();
   if (initialModes.front() != AccumulationInitialMode::Init) {
+    if (!emitDiagnostics) {
+      return failure();
+    }
     return scope.emitOpError(
         "tensor accumulation lowering requires init initial mode");
   }
 
   if (!scope.getOutputs().front().getDefiningOp<CBReserveOp>()) {
+    if (!emitDiagnostics) {
+      return failure();
+    }
     return scope.emitOpError(
         "tensor accumulation lowering requires output from ttl.cb_reserve");
   }
@@ -110,17 +123,7 @@ getSingleTensorAccumulationLoop(AccumulationScopeOp scope,
 static FailureOr<TensorAccumulationScopeMatch>
 matchTensorAccumulationScope(AccumulationScopeOp scope,
                              bool emitDiagnostics = true) {
-  LogicalResult verified =
-      emitDiagnostics ? verifySingleAddInitTensorScope(scope) : success();
-  if (!emitDiagnostics) {
-    if (scope.getOutputs().size() != 1 || scope.getInits().size() != 1 ||
-        scope.getAccumulationInitialModes().front() !=
-            AccumulationInitialMode::Init ||
-        !scope.getOutputs().front().getDefiningOp<CBReserveOp>()) {
-      verified = failure();
-    }
-  }
-  if (failed(verified)) {
+  if (failed(verifySingleAddInitTensorScope(scope, emitDiagnostics))) {
     return failure();
   }
 
@@ -184,14 +187,6 @@ static void replaceYieldOperandsWithStateArguments(AccumulationScopeOp scope) {
   }
 }
 
-/// Return true when a scope body carries explicit state through region
-/// arguments and `ttl.yield` values.
-static bool hasStatefulBody(AccumulationScopeOp scope) {
-  Block &body = scope.getBody().front();
-  auto yield = cast<YieldOp>(body.getTerminator());
-  return body.getNumArguments() != 0 || !yield.getValues().empty();
-}
-
 /// Return true if the scope already contains an output store owned by the
 /// additive tensor form.
 static bool hasTopLevelOutputStore(AccumulationScopeOp scope) {
@@ -230,7 +225,6 @@ getScopeBlockArgumentReplacements(AccumulationScopeOp scope) {
 
 /// Verify the policy required for tensor stateful scope fallback.
 static LogicalResult verifyStatefulTensorScope(AccumulationScopeOp scope) {
-  assert(hasStatefulBody(scope) && "expected stateful accumulation scope");
   for (auto [outputIndex, output] : llvm::enumerate(scope.getOutputs())) {
     if (!output.getDefiningOp<CBReserveOp>()) {
       return scope.emitOpError(
@@ -397,6 +391,12 @@ static LogicalResult lowerTensorAccumulationScope(
           "accumulation strategy; rewrite the loop or select a required "
           "strategy for a more specific diagnostic");
     }
+    if (strategy == AccumulationStrategy::L1Pack) {
+      return scope.emitOpError(
+          "cannot lower tensor accumulation scope to L1 packer accumulation: "
+          "expected one same-type additive recurrence with one final store; "
+          "select the automatic accumulation strategy or rewrite the loop");
+    }
   } else {
     selectedStrategy = plan->strategy;
   }
@@ -435,13 +435,16 @@ static LogicalResult lowerTensorAccumulationScope(
         "accumulator; select the automatic accumulation strategy or split the "
         "accumulators into separate loops");
   }
-
-  replaceYieldOperandsWithStateArguments(scope);
-  if (failed(lowerTensorAccumulationToL1Pack(recurrence, scopeId, rewriter))) {
+  if (failed(analyzeTensorAccumulationForL1Pack(recurrence))) {
     return emitL1PackError(
         "expected one same-type additive recurrence with one final store; "
         "select the automatic accumulation strategy or rewrite the loop");
   }
+
+  replaceYieldOperandsWithStateArguments(scope);
+  [[maybe_unused]] LogicalResult lowered =
+      lowerTensorAccumulationToL1Pack(recurrence, scopeId, rewriter);
+  assert(succeeded(lowered) && "L1 pack legality was checked before mutation");
   eraseAccumulationScopeWrapper(scope, rewriter,
                                 getScopeBlockArgumentReplacements(scope));
   return success();

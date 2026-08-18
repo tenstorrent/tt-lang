@@ -45,7 +45,7 @@ func.func @plain_store_in_accumulation_loop(
   %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   scf.for %iv = %c0 to %c4 step %c1 {
     %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{non-accumulating store inside a += loop is not supported (#648); move it outside the accumulation loop or split the loop}}
+    // expected-error @below {{non-accumulating store inside a += loop is not supported (#648); packer L1 accumulation state applies to every pack in the loop, including stores to other outputs; move the plain store outside the accumulation loop or split the loop}}
     ttl.store %mm, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %mm, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   }

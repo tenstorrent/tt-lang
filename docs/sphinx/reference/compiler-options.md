@@ -211,7 +211,7 @@ Insert semantic accumulation scopes for user-written accumulation.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `tensor` | Scope insertion kind. Supported values: `tensor`, `dfb`. |
+| `kind` | string | `dfb` | Scope insertion kind. Supported value: `dfb`. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-insert-accumulation-scopes{kind=dfb})'

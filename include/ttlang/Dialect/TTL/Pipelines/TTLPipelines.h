@@ -117,8 +117,6 @@ struct TTLToTTKernelPipelineOptions
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
-void buildTTLTensorRecurrencePipeline(mlir::OpPassManager &pm);
-
 /// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 
