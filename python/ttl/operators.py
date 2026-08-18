@@ -1203,9 +1203,14 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
         )
     lhs_dtype = ttcore.DataType(lhs_tile.data_type_as_int)
     rhs_dtype = ttcore.DataType(rhs_tile.data_type_as_int)
-    if lhs_dtype != rhs_dtype:
+    is_bfloat16_by_bfp_bfloat4 = (
+        not transpose
+        and lhs_dtype == ttcore.DataType.BFloat16
+        and rhs_dtype == ttcore.DataType.BFP_BFloat4
+    )
+    if lhs_dtype != rhs_dtype and not is_bfloat16_by_bfp_bfloat4:
         raise ValueError(
-            "matmul operand tile data types must match, got "
+            "unsupported matmul operand tile data type combination: "
             f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
         )
 
@@ -1222,6 +1227,8 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
     n = rhs_shape[0] if transpose else rhs_shape[1]
     result_shape = [lhs_shape[0], n]
     result_tile_width = rhs_tile_height if transpose else rhs_tile_width
+    # The supported mixed-format operation packs BF16 output, matching its
+    # BF16 activation operand; destination accumulation remains configurable.
     result_tile = ttcore.ir.TileType.get(
         lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
     )
