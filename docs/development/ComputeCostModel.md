@@ -168,7 +168,7 @@ hard-coded in the analysis. The file should include:
 Ranking does not require all of these at once. Candidates are compared graph
 against graph, so operations identical across the candidates cancel, and the
 model needs accurate costs only for the operations that differ between the
-lowerings being ranked — for accumulation, the packs and operand re-reads; for
+lowerings being ranked: for accumulation, the packs and operand re-reads; for
 engine placement, the matrix- and vector-engine work that is swapped. An
 operation present unchanged in every candidate can carry a coarse cost without
 changing the ranking. The data file can therefore grow one decision at a time;
