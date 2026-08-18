@@ -185,6 +185,16 @@ class _FakeTTNN:
         self.synchronize_calls = []
         self.next_address = 0x1000
 
+    class DataType:
+        BFLOAT16 = "BFLOAT16"
+        BFLOAT4_B = "BFLOAT4_B"
+        BFLOAT8_B = "BFLOAT8_B"
+        FLOAT32 = "FLOAT32"
+        INT32 = "INT32"
+        UINT32 = "UINT32"
+        UINT16 = "UINT16"
+        UINT8 = "UINT8"
+
     class TensorAccessorArgs:
         def __init__(self, tensor):
             self.tensor = tensor
@@ -3783,7 +3793,8 @@ def test_emitted_runner_synchronizes_before_owner_destruction(monkeypatch):
     assert semaphore_reference() is None
 
 
-def test_emit_runner_source_accepts_physical_dfb_configs():
+def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[
@@ -3812,7 +3823,8 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
     assert "for i, (num_tiles, block_count" not in source
 
 
-def test_emit_runner_source_omits_tile_descriptor_for_scalar_dfb():
+def test_emit_runner_source_omits_tile_descriptor_for_scalar_dfb(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[PhysicalDFBConfig(0, 128, "float32", 2, 4, None)],
@@ -3825,7 +3837,8 @@ def test_emit_runner_source_omits_tile_descriptor_for_scalar_dfb():
     assert "tile=None" in source
 
 
-def test_physical_dfb_allocation_scales_with_subtile_area():
+def test_physical_dfb_allocation_scales_with_subtile_area(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_tile = kernel_runner._get_dfb_allocation(
         PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, (32, 32))
     )
@@ -3837,7 +3850,8 @@ def test_physical_dfb_allocation_scales_with_subtile_area():
     assert two_half_tiles.total_size == full_tile.total_size
 
 
-def test_physical_dfb_allocation_uses_complete_rank_three_shape():
+def test_physical_dfb_allocation_uses_complete_rank_three_shape(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     allocation = kernel_runner._get_dfb_allocation(
         PhysicalDFBConfig(0, 8, "bfloat16", 2, 2048, (32, 32))
     )
@@ -3872,8 +3886,9 @@ def test_dfb_allocation_requires_finalized_config(monkeypatch):
     ids=["missing-config", "wrong-index"],
 )
 def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(
-    cb_configs, error_type, message
+    monkeypatch, cb_configs, error_type, message
 ):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     with pytest.raises(error_type, match=message):
         kernel_runner.emit_runner_source(
             kernel_specs=[],
@@ -3892,7 +3907,10 @@ def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(
         ("uint8", 1024),
     ],
 )
-def test_emit_runner_source_preserves_physical_dfb_format(data_format, page_size):
+def test_emit_runner_source_preserves_physical_dfb_format(
+    monkeypatch, data_format, page_size
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[
@@ -3914,7 +3932,8 @@ def test_emit_runner_source_preserves_physical_dfb_format(data_format, page_size
     assert f"page_size={page_size}" in source
 
 
-def test_emit_runner_source_rejects_unknown_physical_dfb_format():
+def test_emit_runner_source_rejects_unknown_physical_dfb_format(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     with pytest.raises(ValueError, match="Unrecognized data format"):
         kernel_runner.emit_runner_source(
             kernel_specs=[],

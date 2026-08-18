@@ -34,6 +34,8 @@ def _ensure_ttnn():
     try:
         import ttnn as _ttnn
 
+        if not hasattr(_ttnn, "DataType"):
+            return None
         ttnn = _ttnn
     except (ModuleNotFoundError, ImportError):
         pass
@@ -47,7 +49,7 @@ from .dataflow_buffer import (
     _validate_tensor_backed_dfb_tensor,
 )
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
-from .dtype_utils import format_name_to_ttnn_dtype
+from . import dtype_utils
 from .kernel import Kernel, KernelKind, KernelSelector
 from .runtime_resources import (
     CoreRuntimeArgs,
@@ -55,6 +57,14 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+
+
+def format_name_to_ttnn_dtype(name: str):
+    """Resolve a DFB format name using this module's ttnn binding."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    return dtype_utils.format_name_to_ttnn_dtype(name, ttnn)
 
 
 @dataclass(frozen=True)
