@@ -159,7 +159,7 @@ jobs:
     secrets: inherit
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
-      run_galaxy_tests: false
+      run_galaxy_tests: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
 
   build-docs:
     name: Build documentation
