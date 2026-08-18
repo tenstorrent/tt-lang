@@ -20,6 +20,8 @@ def test_tensor_backed_dfb_is_explicitly_unsupported():
 def test_tensor_backed_dfb_rejection_preserves_simulator_namespace():
     assert ttl.TILE_LAYOUT is not None
     assert ttl.ROW_MAJOR_LAYOUT is not None
-    assert ttl.Program is not None
+    # ttl.operation stands where ttl.Program used to: the specification replaced
+    # the Program entry point with the operation decorator.
+    assert ttl.operation is not None
     assert ttl.block is not None
     assert ttl.math is not None

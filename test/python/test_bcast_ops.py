@@ -1039,6 +1039,7 @@ kern(inp, out)
     return result.stderr
 
 
+@pytest.mark.compile_only
 class TestBcastDimsValidation:
     """Test that out-of-range dims are rejected at compile time."""
 

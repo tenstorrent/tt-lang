@@ -6,4 +6,5 @@ self-hosted-runner:
     - mlir-large-runner-lang
     - n150
     - bh-loudbox-viommu
+    - exabox-multihost-ci-sc1
     - tt-ubuntu-2204-*-stable

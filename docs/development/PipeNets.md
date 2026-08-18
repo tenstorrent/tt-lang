@@ -1620,7 +1620,7 @@ across invocations and keep graph construction deterministic. Completion
 counters are allocated from transfer nodes and their physical receiver sets.
 The `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
-side and before `Program(...)` runs on the simulator side.
+side and before the kernels are scheduled on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
 runs the same `validate()` synchronously, so malformed PipeNets error
 at the construction source location.

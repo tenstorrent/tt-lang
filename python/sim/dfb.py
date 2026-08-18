@@ -17,7 +17,6 @@ from typing import (
     AbstractSet,
     Any,
     Callable,
-    Dict,
     List,
     NamedTuple,
     Optional,
@@ -600,18 +599,22 @@ class Block:
             A temporary Block backed directly by t (no copy).
 
         Raises:
-            ValueError: If a TILE_LAYOUT tensor's dimensions are not tile-aligned.
+            ValueError: If a TILE_LAYOUT tensor's stored dimensions are not
+                tile-aligned.  This is ``padded_shape``, not ``shape``, so a
+                tensor whose logical shape is unaligned is accepted: the
+                simulator stores it padded, and blocks address the storage.
         """
         if t.layout == ROW_MAJOR_LAYOUT:
             return cls(
                 tensor=t,
-                shape=t.shape,
+                shape=t.padded_shape,
                 acquisition=BlockAcquisition.RESERVE,
                 kernel_type=KernelKind.COMPUTE,
                 is_temporary=True,
             )
 
-        elem_shape = t.shape
+        # Tile-geometry validation operates on the physical (padded) extent.
+        elem_shape = t.padded_shape
         if len(elem_shape) == 1:
             w = elem_shape[0]
             if w % TILE_SHAPE[0] != 0:
@@ -668,7 +671,7 @@ class Block:
             f"block {self._shape}",
         )
 
-        if tensor.shape == self._buf.shape:
+        if tensor.padded_shape == self._buf.padded_shape:
             # Fast path: same element shape — copy data in-place
             self._buf.to_torch().copy_(tensor.to_torch())
         else:
@@ -731,7 +734,7 @@ class Block:
             # Skip payload copy; state machine transition above still fires.
             return
 
-        if src_tensor.shape == self._buf.shape:
+        if src_tensor.padded_shape == self._buf.padded_shape:
             # Fast path: same element shape — copy in-place
             self._buf.to_torch().copy_(src_tensor.to_torch())
         else:
@@ -1052,35 +1055,38 @@ class DataflowBuffer:
             # per-pixel block of shape (C,)).
             self._element_shape = shape
         else:
-            # Tiled: validate tile alignment and derive element shape.
-            if len(likeness_tensor.shape) != len(shape):
+            # Tiled: validate tile alignment and derive element shape.  Tile
+            # geometry is a property of the physical (padded) extent, so
+            # validate against padded_shape rather than the logical shape.
+            likeness_elem_shape = likeness_tensor.padded_shape
+            if len(likeness_elem_shape) != len(shape):
                 raise ValueError(
-                    f"Element shape dimensionality {len(likeness_tensor.shape)} does not match "
-                    f"tile shape dimensionality {len(shape)}. Element shape: {likeness_tensor.shape}, "
+                    f"Element shape dimensionality {len(likeness_elem_shape)} does not match "
+                    f"tile shape dimensionality {len(shape)}. Element shape: {likeness_elem_shape}, "
                     f"tile shape: {shape}"
                 )
 
             TILE_SIZE = TILE_SHAPE[0]  # 32
             ndims = len(shape)
-            for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
+            for i, (edim, tdim) in enumerate(zip(likeness_elem_shape, shape)):
                 if i == ndims - 1 or i == ndims - 2:
                     # Last two dimensions are tile dimensions: must be a
                     # multiple of TILE_SIZE per spec (every tile is 32x32).
                     if edim % TILE_SIZE != 0:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                            f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
                     if edim // TILE_SIZE < tdim:
                         raise ValueError(
                             f"Element shape dimension {i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                            f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
                 else:
                     if edim < tdim:
                         raise ValueError(
                             f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                            f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
 
             self._element_shape = tuple(
@@ -1458,20 +1464,6 @@ class DataflowBuffer:
                 f"below is one place to fix:\n"
                 + "\n\n---\n\n".join(f"{i+1}) {err}" for i, err in enumerate(errors))
             )
-
-    def __deepcopy__(self, memo: Dict[int, Any]) -> "DataflowBuffer":
-        """Return a fresh DataflowBuffer with the same configuration.
-
-        Deep-copying a DataflowBuffer yields an independent buffer with the same
-        shape/capacity settings and a clean ring-buffer state.
-        """
-        new_dfb = DataflowBuffer(
-            likeness_tensor=self.likeness_tensor,
-            shape=self._shape,
-            block_count=self._block_count,
-        )
-        memo[id(self)] = new_dfb
-        return new_dfb
 
     def __repr__(self) -> str:
         s = self._state

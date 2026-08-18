@@ -19,7 +19,18 @@ def test_ttl_api_basic():
     assert hasattr(ttl, "operation")
     assert hasattr(ttl, "compute")
     assert hasattr(ttl, "datamovement")
-    assert hasattr(ttl, "Program")
+
+
+def test_ttl_program_entry_point_is_gone():
+    """``Program`` is not part of the API the specification describes.
+
+    Specification 0.2 replaced it with ``@ttl.operation``, and the simulator
+    never exposed it.  Keeping it exported would let a program compile against a
+    name the simulator cannot run.
+    """
+    import ttl
+
+    assert not hasattr(ttl, "Program")
 
 
 def test_ttl_version():

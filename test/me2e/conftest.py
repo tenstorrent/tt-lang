@@ -15,6 +15,8 @@ import pytest
 
 # Add test root to path for shared utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+pytest_plugins = ("hardware_pytest_plugin",)
+
 from ttlang_test_utils import (
     is_hardware_available,
     is_ttnn_available,

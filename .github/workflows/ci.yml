@@ -2,12 +2,24 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: ["main"]
   schedule:
     - cron: "0 22 * * *"
   workflow_dispatch:
+    inputs:
+      run_galaxy_tests:
+        description: "Run hardware tests on a shared Exabox Galaxy."
+        required: false
+        type: boolean
+        default: false
+      run_loudbox_tests:
+        description: "Run hardware tests on the Blackhole loudbox."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -159,8 +171,8 @@ jobs:
     secrets: inherit
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
-      # TODO: re-enable once the Galaxy Blackhole runner is available again.
-      run_galaxy_tests: false
+      run_galaxy_tests: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}
+      run_loudbox_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests }}
 
   build-docs:
     name: Build documentation

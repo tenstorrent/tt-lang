@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Test Program execution framework.
+Test the operation execution framework.
 
-This test verifies the Program class behavior including:
+This test verifies how ``@ttl.operation`` bodies are run, including:
 - Context binding and per-node state isolation
 - Cooperative execution mode
 - Error handling and deadlock detection
 - Multi-node execution
 """
 
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -19,9 +20,10 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from sim import TILE_SHAPE, copy, ttl, ttnn
+from sim.kernel import KernelKind
 from sim.dfb import Block
 from sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
-from sim.program import Program
+from sim.program import _order_kernels  # type: ignore[reportPrivateUsage]
 
 
 class TestBasicExecution:
@@ -64,8 +66,6 @@ class TestBasicExecution:
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 3
         out = make_zeros_tensor(32, 32)
@@ -126,8 +126,6 @@ class TestBasicExecution:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         # Create test data
         a = ttnn.rand((TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4))
         b = ttnn.rand((TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4))
@@ -183,8 +181,6 @@ class TestMultinode:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_ones_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1]) * 5
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
@@ -226,8 +222,6 @@ class TestMultinode:
                 )
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
@@ -277,8 +271,6 @@ class TestContextIsolation:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
         test_kernel(out)
@@ -323,8 +315,6 @@ class TestContextIsolation:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         shared = make_ones_tensor(32, 32) * 10
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
@@ -361,8 +351,6 @@ class TestErrorHandling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_zeros_tensor(32, 32)
 
         with pytest.raises(
@@ -390,8 +378,6 @@ class TestErrorHandling:
             @ttl.datamovement()
             def dm1():
                 pass
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_zeros_tensor(32, 32)
 
@@ -424,12 +410,79 @@ class TestErrorHandling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_zeros_tensor(32, 32)
 
         with pytest.raises(RuntimeError, match="Deadlock detected"):
             test_kernel(a)
+
+
+class TestKernelSetShape:
+    """An operation runs one compute and two data-movement kernels, and no other set.
+
+    Three threads is what the hardware node offers, so the count is not a
+    simulator convenience: a body that writes two compute kernels or forgets one
+    has no execution to model. These are the diagnostics a user meets while
+    writing a multi-kernel body, and they name what is wrong with the set rather
+    than failing later inside the scheduler.
+    """
+
+    def test_a_body_with_too_few_kernels_is_refused(self) -> None:
+        """Two kernels leave a thread with nothing to run."""
+
+        @ttl.operation(grid=(1, 1))
+        def op(a: ttnn.Tensor):
+            @ttl.compute()
+            def compute():
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+        with pytest.raises(ValueError, match="exactly 3 kernels.*got 2"):
+            op(make_zeros_tensor(32, 32))
+
+    def test_a_body_with_two_compute_kernels_is_refused(self) -> None:
+        """A node has one compute thread, so the second has nowhere to run.
+
+        The count is right here and the roles are not, which is why it is worth
+        its own message: the kernels look like a valid set until they are sorted.
+        """
+
+        @ttl.operation(grid=(1, 1))
+        def op(a: ttnn.Tensor):
+            @ttl.compute()
+            def compute():
+                pass
+
+            @ttl.compute()
+            def also_compute():
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+        with pytest.raises(ValueError, match="exactly 1 compute kernel, got 2"):
+            op(make_zeros_tensor(32, 32))
+
+    def test_a_kernel_that_is_neither_role_is_not_counted_as_data_movement(
+        self,
+    ) -> None:
+        """The two data-movement kernels are the ones that say they are.
+
+        No decorator produces a third role today, so this is checked against the
+        ordering directly rather than through a body. It is the reason the count is
+        a count and not "the two that are left": something that arrives without a
+        role must not be handed to a data-movement thread, where it would run as
+        one.
+        """
+        compute = SimpleNamespace(kernel_type=KernelKind.COMPUTE, __name__="compute")
+        dm = SimpleNamespace(kernel_type=KernelKind.DATA_MOVEMENT, __name__="dm0")
+        roleless = SimpleNamespace(kernel_type=None, __name__="stranger")
+
+        with pytest.raises(ValueError, match="exactly 2 datamovement kernels, got 1"):
+            _order_kernels(cast(list, [compute, dm, roleless]))
 
 
 class TestBlockCompletion:
@@ -514,6 +567,43 @@ class TestBlockCompletion:
             match="Kernel execution completed with incomplete DataflowBuffer operations",
         ):
             test_kernel(input_tensor)
+
+    def test_the_failure_names_the_node_it_happened_on(self) -> None:
+        """A buffer left pending is reported against its own node.
+
+        A pipe net leaves nodes out, so the nodes that ran are not 0..n-1: here
+        only nodes 1 and 3 of a 2x2 grid participate, and the one that forgets to
+        pop is node 3.  Counting the contexts instead of carrying the node names
+        it "node1", which is a node that ran and did nothing wrong.
+        """
+        net = ttl.PipeNet([ttl.Pipe(src=(0, 1), dst=(1, 1))])
+
+        @ttl.operation(grid=(2, 2))
+        def test_kernel(input_data: ttnn.Tensor):
+            element = make_ones_tensor(32, 32)
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), block_count=2)
+
+            @ttl.datamovement()
+            def dm0():
+                block = in_dfb.reserve()
+                copy(input_data[0:1, 0:1], block).wait()
+                block.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                if net.is_dst():
+                    # Node 3 alone leaves the block it waited for pending.
+                    data = in_dfb.wait()
+                    _ = data + data
+
+        with pytest.raises(RuntimeError, match=r"node3\.in_dfb") as failure:
+            test_kernel(ttnn.rand((32, 32)))
+
+        assert "node1." not in str(failure.value), str(failure.value)
 
     def test_complete_operations_pass(self) -> None:
         """Test that properly completed operations pass validation."""
@@ -738,8 +828,6 @@ class TestCooperativeScheduling:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_ones_tensor(32, 32) * 7
         out = make_zeros_tensor(32, 32)
 
@@ -785,8 +873,6 @@ class TestCooperativeScheduling:
                     tx.wait()
                     block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = ttnn.Tensor(torch.arange(3 * 32 * 32).reshape(3 * 32, 32).float())
         out = ttnn.empty(a.shape, dtype=torch.float32)
 
@@ -828,8 +914,6 @@ class TestCooperativeScheduling:
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 5
         out = make_zeros_tensor(32, 32)
@@ -873,8 +957,6 @@ class TestCooperativeScheduling:
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 7
         out = make_zeros_tensor(32, 32)
@@ -937,8 +1019,6 @@ class TestCooperativeScheduling:
                     tx.wait()
                     block_out.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
         b = ttnn.Tensor(
             torch.arange(2 * 32 * 32, 4 * 32 * 32).reshape(2 * 32, 32).float()
@@ -983,62 +1063,133 @@ class TestProgramInternals:
 
     def test_empty_generator_completion(self) -> None:
         """Test that generators with only 'pass' are handled correctly."""
-        from sim import ttl
-        from sim.program import Program
 
-        @ttl.datamovement()
-        def dm0() -> None:
-            pass  # Empty generator
+        @ttl.operation(grid=(1, 1))
+        def test_kernel() -> None:
+            @ttl.datamovement()
+            def dm0() -> None:
+                pass  # Empty generator
 
-        @ttl.datamovement()
-        def dm1() -> None:
-            pass  # Empty generator
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass  # Empty generator
 
-        @ttl.compute()
-        def compute() -> None:
-            pass  # Empty generator
+            @ttl.compute()
+            def compute() -> None:
+                pass  # Empty generator
 
-        prog = Program(compute, dm0, dm1, grid=(1, 1))
         # Should complete without error
-        prog()
+        test_kernel()
+
+    def test_a_kernel_may_read_a_name_the_body_never_assigned(self) -> None:
+        """A name the body leaves unset is skipped, not an error.
+
+        The per-node context is built by reading every name a kernel closes over,
+        looking for the buffers and tensors it must be able to reach. A name the
+        body binds only on a path it did not take is closed over all the same and
+        has no value yet, and that is the user's business: the kernels here never
+        read it, so naming it must not fail the run before they start.
+        """
+
+        @ttl.operation(grid=(1, 1))
+        def op(a: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+            if a is None:
+                only_on_the_path_not_taken = 1
+
+            @ttl.compute()
+            def compute() -> None:
+                if a is None:
+                    print(only_on_the_path_not_taken)
+
+            @ttl.datamovement()
+            def dm0() -> None:
+                block = dfb.reserve()
+                copy(a[0:1, 0:1], block).wait()
+                block.push()
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                block = dfb.wait()
+                copy(block, out[0:1, 0:1]).wait()
+                block.pop()
+
+        op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
+
+
+class TestPerNodeKernelAnalysis:
+    """Kernel analysis covers the kernels of every node, not just node 0's.
+
+    The operation body is re-run per node, so a body that chooses its kernels by
+    ``ttl.node()`` hands different nodes different code. Analysing one node's
+    kernels would leave the rest without the copy-wait injection points their
+    code needs, and would not see the patterns their code is refused for.
+    """
+
+    def test_a_pattern_only_a_later_node_writes_is_reported(self) -> None:
+        """A refused ``ttl.copy()`` position on node 1 fails the run."""
+
+        @ttl.operation(grid=(1, 2))
+        def op(a: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass
+
+            if ttl.node(dims=1) == 0:
+
+                @ttl.datamovement()
+                def dm0() -> None:
+                    block = dfb.reserve()
+                    ttl.copy(a[0:1, 0:1], block).wait()
+                    block.push()
+
+            else:
+
+                @ttl.datamovement()
+                def dm0_other_node() -> None:
+                    block = dfb.reserve()
+                    # A copy inside a container is a position the simulator
+                    # refuses; only node 1 reaches this definition.
+                    pending = [ttl.copy(a[0:1, 0:1], block)]
+                    pending[0].wait()
+                    block.push()
+
+        with pytest.raises(RuntimeError, match="unsupported pattern"):
+            op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
+
+    def test_shared_kernel_code_is_reported_once(self) -> None:
+        """Nodes running the same code do not each report the same violation."""
+
+        @ttl.operation(grid=(1, 4))
+        def op(a: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm0() -> None:
+                block = dfb.reserve()
+                pending = [ttl.copy(a[0:1, 0:1], block)]
+                pending[0].wait()
+                block.push()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
+
+        assert "Found 1 unsupported pattern" in str(excinfo.value), str(excinfo.value)
 
 
 if __name__ == "__main__":
-    # Run tests
-    test_basic = TestBasicExecution()
-    test_basic.test_cooperative_mode_basic()
-    test_basic.test_multi_tile_computation()
-
-    test_multi = TestMultinode()
-    test_multi.test_two_node_execution()
-    test_multi.test_four_node_2d_grid()
-
-    test_ctx = TestContextIsolation()
-    test_ctx.test_dataflow_buffers_isolated()
-    test_ctx.test_tensors_shared_across_nodes()
-
-    test_err = TestErrorHandling()
-    test_err.test_error_in_compute()
-    test_err.test_error_in_dm0()
-    test_err.test_deadlock_detection()
-
-    test_rebind = TestRebindFunc()
-    test_rebind.test_rebind_simple_closure()
-    test_rebind.test_rebind_multiple_closures()
-    test_rebind.test_rebind_preserves_unspecified_closures()
-    test_rebind.test_rebind_with_globals()
-
-    test_cell = TestMakeCell()
-    test_cell.test_make_cell_creates_valid_cell()
-    test_cell.test_make_cell_different_types()
-
-    test_coop = TestCooperativeScheduling()
-    test_coop.test_yielding_on_blocking_operations()
-    test_coop.test_multiple_iterations_cooperative()
-    test_coop.test_copy_tensor_to_block_cooperative()
-    test_coop.test_copy_block_to_tensor_cooperative()
-    test_coop.test_copy_block_to_pipe_cooperative()
-    test_coop.test_copy_pipe_operations_not_fully_integrated_in_cooperative_mode()
-    test_coop.test_copy_mixed_pairs_cooperative()
-
-    print("All program.py tests passed!")
+    pytest.main([__file__])

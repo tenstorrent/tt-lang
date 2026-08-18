@@ -16,6 +16,7 @@ setup() {
     PATH="$BIN:$PATH"
     unset TT_VISIBLE_DEVICES
     unset TT_METAL_CACHE
+    unset HW_TEST_WORKERS
 }
 
 write_fake_lit() {
@@ -30,6 +31,23 @@ printf 'env:%s cache:%s exec_root:%s args:%s\n' \
 exit $exit_code
 EOF
     chmod +x "$BIN/llvm-lit"
+}
+
+@test "multi-chip: worker cap limits lit concurrency" {
+    write_fake_lit 0
+
+    HW_LIT_CHIPS=4 HW_TEST_WORKERS=2 run "$SCRIPT" \
+        build/test/python build/test/python-lit-report
+
+    assert_success
+    assert_output --partial "Detected 4 chips: 2 Python lit shards in parallel"
+    run cat "$CALLS"
+    assert_line --partial "env:0"
+    assert_line --partial "--num-shards 2 --run-shard 1"
+    assert_line --partial "env:1"
+    assert_line --partial "--num-shards 2 --run-shard 2"
+    refute_output --partial "env:2"
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "multi-chip: runs one serial lit shard per chip, then multi-device serial" {
@@ -102,4 +120,18 @@ EOF
 
     assert_failure 2
     assert_output --partial "chip count"
+}
+
+@test "rejects invalid worker override" {
+    write_fake_lit 0
+
+    HW_LIT_CHIPS=4 HW_TEST_WORKERS=0 run "$SCRIPT" \
+        build/test/python build/test/python-lit-report
+    assert_failure 2
+    assert_output --partial "worker count must be a positive integer"
+
+    HW_LIT_CHIPS=4 HW_TEST_WORKERS=5 run "$SCRIPT" \
+        build/test/python build/test/python-lit-report
+    assert_failure 2
+    assert_output --partial "worker count 5 exceeds chip count 4"
 }

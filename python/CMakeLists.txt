@@ -158,6 +158,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
+    _src/atom_rules.py
     _src/atom_split.py
     _src/atom_inline.py
     _src/auto_profile.py

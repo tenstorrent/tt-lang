@@ -48,9 +48,9 @@ def _hardware_job(
             }
         )
 
+    caller_job = "test-exabox" if runner_name == "galaxy-bh" else "test-hardware"
     return {
-        "name": f'build / test-hardware ({runner_name}, ["label"]) / '
-        f"Hardware Tests ({runner_name})",
+        "name": f"build / {caller_job} / Hardware Tests ({runner_name})",
         "steps": steps,
     }
 
@@ -136,7 +136,7 @@ def test_both_setup_failures_fail() -> None:
     assert "No hardware runner completed the test suite" in result.stdout
 
 
-@pytest.mark.parametrize("failed_runner", ["n150", "galaxy-bh"])
+@pytest.mark.parametrize("failed_runner", ["n150", "galaxy-bh", "bh-loudbox-viommu"])
 def test_post_setup_failure_fails(failed_runner: str) -> None:
     other_runner = "galaxy-bh" if failed_runner == "n150" else "n150"
     result = _run_check(

@@ -39,6 +39,29 @@ def get_default_grid() -> Shape:
     return get_context().config.default_full_grid
 
 
+def _validate_grid(grid: Shape) -> None:
+    """Reject a grid that names no node, before a body is ever run.
+
+    A grid with a dimension of zero has no nodes, so nothing runs the operation
+    body and the per-node state the run reads is never built; the run then fails
+    on a missing node rather than on the grid that has none.  A negative
+    dimension is worse, because the node count is a product: ``(-1, -2)`` counts
+    two nodes.
+
+    Raises:
+        ValueError: If ``grid`` is empty or has a dimension below one.
+    """
+    if not grid:
+        raise ValueError("ttl.operation() grid must have at least one dimension")
+    bad = [(axis, size) for axis, size in enumerate(grid) if size < 1]
+    if bad:
+        listed = ", ".join(f"dimension {axis} is {size}" for axis, size in bad)
+        raise ValueError(
+            f"ttl.operation() grid {tuple(grid)} names no node: {listed}. "
+            "Every grid dimension must be one or more."
+        )
+
+
 def operation(
     grid: Union[str, Shape] = "full",
     fp32_dest_acc_en: Optional[bool] = None,
@@ -53,6 +76,10 @@ def operation(
     compiler-side code but have no effect in the simulator. Any other
     unrecognised keyword argument raises TypeError to catch user errors early.
 
+    The decorated function's interface is checked against the specification's
+    rules for an operation (no parameter defaults, no ``*args`` / ``**kwargs``, no
+    return), by the same code the compiler checks with.
+
     Args:
         grid: Grid specification. If 'auto' or 'full', uses the default grid
             (configurable via set_default_grid()).
@@ -62,6 +89,11 @@ def operation(
 
     Returns:
         Decorated function with grid configuration
+
+    Raises:
+        TypeError: If an unrecognised keyword argument is passed.
+        ValueError: If ``math_fidelity`` is unsupported, or the grid names no
+            node (see :func:`_validate_grid`).
 
     Example:
         @ttl.operation(grid="full")
@@ -89,84 +121,55 @@ def operation(
             ),
         )
 
+        _validate_grid(actual_grid)
+
         # Create new globals dict that includes grid
         new_globals = func.__globals__.copy()
         new_globals["grid"] = actual_grid
 
-        # Create a new function with the modified globals
-        modified_func = types.FunctionType(
-            func.__code__,
-            new_globals,
-            func.__name__,
-            func.__defaults__,
-            func.__closure__,
+        # A thread-unified operation body (no hand-written @ttl.compute /
+        # @ttl.datamovement kernels) is rewritten into an equivalent
+        # multi-kernel function by reusing the compiler's thread-assignment
+        # splitter; the rest of this decorator then runs it unchanged. A
+        # multi-kernel body keeps the original code (and its source lines).
+        from .unified_operation import (
+            build_multikernel_function,
+            is_unified_body,
+            validate_operation_interface,
         )
 
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Import here to avoid circular dependency
-            from .decorators import clear_kernel_registry, get_registered_kernels
-            from .program import Program
-            from .pipe import build_pipenets, discover_pipe_nets_from_closures
+        # The interface rules apply to every operation, so they are checked before
+        # anything is done with the body, and with the compiler's own wording.
+        validate_operation_interface(func)
 
-            clear_kernel_registry()
-            get_context().kernel_dfb_count = 0
-            get_context().kernel_l1_bytes = 0
-
-            # Call the modified function (grid is already in globals)
-            # This executes the operation body which defines and registers kernels
-            modified_func(*args, **kwargs)
-
-            # Get registered compute/DM kernels
-            kernels = get_registered_kernels()
-
-            # All device operations must register compute, dm0, and dm1.
-            if len(kernels) != 3:
-                raise ValueError(
-                    f"Operation must define exactly 3 kernels (compute, dm0, dm1), got {len(kernels)}"
-                )
-
-            # Sort kernels by role to ensure consistent ordering regardless of definition order
-            # Program expects: compute, dm0, dm1
-            compute_kernels = [
-                t
-                for t in kernels
-                if getattr(t, "kernel_type", None) == KernelKind.COMPUTE
-            ]
-            dm_kernels = [
-                t
-                for t in kernels
-                if getattr(t, "kernel_type", None) == KernelKind.DATA_MOVEMENT
-            ]
-
-            if len(compute_kernels) != 1:
-                raise ValueError(
-                    f"Kernel must define exactly 1 compute kernel, got {len(compute_kernels)}"
-                )
-            if len(dm_kernels) != 2:
-                raise ValueError(
-                    f"Kernel must define exactly 2 datamovement kernels, got {len(dm_kernels)}"
-                )
-
-            # Arrange in expected order: compute, dm0, dm1
-            ordered_kernels = [compute_kernels[0], dm_kernels[0], dm_kernels[1]]
-
-            # Build the operation-level PipeNet graph. PipeNets are discovered
-            # by walking closures of the operation function and each kernel's
-            # body, so captured PipeNets show up identically to body-local
-            # ones. Validation runs against the assembled graph.
-            kernel_funcs = [getattr(t, "__wrapped__", None) for t in ordered_kernels]
-            pipe_nets = discover_pipe_nets_from_closures(modified_func, *kernel_funcs)
-            pipenets = build_pipenets(pipe_nets)
-            pipenets.validate()
-
-            # Execute the program with grid parameter.  After the run,
-            # clean up execution-specific state so subsequent runs start
-            # from a clean slate.  This is the outermost session boundary:
-            # kernel_registry was already consumed by get_registered_kernels()
-            # above, so clearing it here is safe.
+        if is_unified_body(func):
             try:
-                program = Program(*ordered_kernels, grid=actual_grid, pipenets=pipenets)
-                program(*args, **kwargs)
+                modified_func = build_multikernel_function(func, new_globals)
+            except ValueError as error:
+                raise ValueError(f"@ttl.operation({func.__name__}): {error}") from error
+        else:
+            # Create a new function with the modified globals
+            modified_func = types.FunctionType(
+                func.__code__,
+                new_globals,
+                func.__name__,
+                func.__defaults__,
+                func.__closure__,
+            )
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Import here to avoid circular dependency.
+            from .program import run_operation
+
+            # Execute the operation single-phase: the body is re-run once per
+            # node with that node's context injected (so node-dependent setup
+            # such as ttl.node() / ttl.grid_size() works), producing per-node
+            # DataflowBuffers and kernels; run_operation then aggregates the
+            # discovered PipeNets, schedules the active nodes, and runs them.
+            # cleanup_run_context() resets execution-specific state afterwards
+            # so subsequent runs start from a clean slate.
+            try:
+                run_operation(modified_func, actual_grid, args, kwargs)
             finally:
                 cleanup_run_context()
 

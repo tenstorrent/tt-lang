@@ -39,6 +39,14 @@ Selector = Union[Index, slice]
 
 NodeRange = Tuple[Selector, ...]
 
+# ``ttl.Shape``, which the specification defines as ``ttl.Size |
+# Tuple[ttl.Size, ...]``: a bare size for the 1-D case, a tuple otherwise.  Only
+# the tuple form is spelled here, since the sites that also take a bare size are
+# few and say so themselves (``Union[Size, Shape]``, as ``grid_size`` returns),
+# and spelling the union here would make every shape unindexable to a checker.
+#
+# Distinct from ``ttnn.Shape`` (``sim.ttnnsim.Shape``), a class ttnn tensors
+# report their shape as; this is an annotation only, and is not constructible.
 Shape = Tuple[Size, ...]
 
 # Valid key type for Tensor.__getitem__ / __setitem__: a single Selector

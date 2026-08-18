@@ -20,8 +20,14 @@ text editors
 Interactive Research & Development image. Contains the toolchain but *not*
 tt-lang -- developers clone and build tt-lang themselves.
 
-**Contents:** LLVM + tt-metal toolchain + dev tools (ssh, sudo, tmux, vim,
-black, sphinx)
+**Contents:** LLVM + tt-metal toolchain + dev tools (SSH server, sudo, tmux,
+vim, black, sphinx)
+
+The image is also an Exabox worker image. It provides the fixed UID 1001
+`user` account, passwordless sudo, `sshd`, and a system `tt-smi` launcher
+required by the shared Exabox runner. It also installs the controller-matched
+OpenMPI 5.0.7/ULFM runtime under `/opt/openmpi-v5.0.7-ulfm` and provides
+worker-writable tt-metal profiler directories.
 
 ## Building Images Locally
 

@@ -741,8 +741,8 @@ class TestPipeKeywordConstruction:
                 for y in range(grid_y)
             ]
         )
-        assert len(net._pipes) == (grid_x - 1) * grid_y
-        for pipe in net._pipes:
+        assert len(net.pipes) == (grid_x - 1) * grid_y
+        for pipe in net.pipes:
             assert pipe.dst[1] in range(grid_y)
 
 

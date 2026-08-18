@@ -10,7 +10,6 @@ between tests for isolation. This is much faster than subprocess-based testing.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -24,11 +23,9 @@ except ImportError:
     TTNN_AVAILABLE = False
 
 # Import simulator modules
-from sim.context import reset_context, set_dry_run
-from sim.greenlet_scheduler import set_scheduler_algorithm
-from sim.program import set_max_l1_bytes
-from sim.ttlang_sim import execute_script_with_simulator
-import sim
+from sim.context import reset_context
+
+from test_helpers.sim_runner import run_script_in_process
 
 _requires_ttnn_skip = pytest.mark.skipif(
     not TTNN_AVAILABLE,
@@ -68,56 +65,51 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
     ]
 )
 
+# --- Spec-example coverage (single source of truth) ---------------------------
+#
+# Every file under examples/spec/**/*.py must be listed here (or in
+# _SPEC_EXAMPLES_EXPECT_FAILURE). test_all_spec_examples_are_covered enforces
+# this: a spec example added without a simulator test fails the suite. This is
+# how we force each new spec example to ship with a test.
+#
+# _SPEC_EXAMPLES_PASSING: run successfully on the simulator (golden- or
+# structurally-checked); they are parametrized into test_example_cli below.
+_SPEC_EXAMPLES_PASSING = [
+    # Wrapped in @ttl.operation, with a torch golden asserted outside the
+    # spec:begin/end markers, so what the example computes is checked and not
+    # only run.
+    "spec/block/batched_matmul_bias.py",
+    "spec/block/elementwise_broadcast_reduce.py",
+    "spec/copy/group_transfer.py",
+    "spec/operation_function/operation_function.py",
+    "spec/tensor_slice/tensor_slice.py",
+    # Pipe data movement (unicast / multicast / loopback) with goldens.
+    "spec/pipe/scatter.py",
+    "spec/pipe/scatter_gather.py",
+    "spec/pipe/forward_neighbor.py",
+    "spec/pipe/gather.py",
+    # Shape introspection: these assert the shapes they demonstrate.
+    "spec/dataflow_buffer/tiled_tensor_shape.py",
+    "spec/dataflow_buffer/row_major_tensor_shape.py",
+    "spec/dataflow_buffer/dataflow_buffer.py",
+    "spec/operation_function/multi_kernel_operation.py",
+    # Debugging snippets wrapped in @ttl.operation; debug_printing.py also
+    # asserts the text its kernel prints.
+    "spec/performance_and_debugging/debug_printing.py",
+    "spec/performance_and_debugging/signpost.py",
+    # Grid/node introspection: node-dependent setup runs per node, asserted.
+    "spec/grid/grid_size.py",
+    "spec/grid/node.py",
+]
 
-def run_script_in_process(
-    script_path: Path,
-    scheduler: str = "fair",
-    max_l1_bytes: int | None = None,
-    no_float32_promotion: bool = False,
-    dry_run: bool = False,
-) -> tuple[int, str]:
-    """Run a script in-process with simulator backend.
-
-    Args:
-        script_path: Path to the Python file to execute
-        scheduler: Scheduler algorithm ('greedy' or 'fair')
-        max_l1_bytes: Optional L1 memory limit override in bytes; uses the
-            simulator default when None
-        no_float32_promotion: If True, disable the default float32 promotion so
-            the script runs with its declared dtypes (e.g. bfloat16 as bfloat16)
-        dry_run: If True, skip math/data operations and only run structural checks
-
-    Returns:
-        (exit_code, output) tuple where exit_code is 0 on success, 1 on error
-    """
-    set_scheduler_algorithm(scheduler)
-    if max_l1_bytes is not None:
-        set_max_l1_bytes(max_l1_bytes)
-    if no_float32_promotion:
-        sim.ttnn.set_disable_float32_promotion(True)
-    if dry_run:
-        set_dry_run(True)
-
-    # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
-    # Done here so it doesn't interfere with other tests in parallel execution
-    original_modules = {"ttl": sys.modules.get("ttl"), "ttnn": sys.modules.get("ttnn")}
-    sys.modules["ttl"] = sim.ttl  # type: ignore[assignment]
-    sys.modules["ttnn"] = sim.ttnn  # type: ignore[assignment]
-
-    try:
-        # Use the shared execution logic from ttlang_sim
-        return execute_script_with_simulator(
-            script_path, capture_output=True, optimize=dry_run
-        )
-    finally:
-        # Restore original sys.modules to avoid interfering with other tests
-        for name, original in original_modules.items():
-            if original is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = original
-        if no_float32_promotion:
-            sim.ttnn.set_disable_float32_promotion(False)
+# _SPEC_EXAMPLES_EXPECT_FAILURE: exercise an interface that is not implemented
+# in the simulator yet; each is asserted to fail *at that interface* by
+# test_semaphore_examples_fail_at_unimplemented_interface. When the feature
+# lands, that test flips red and the example should move to _SPEC_EXAMPLES_PASSING.
+_SPEC_EXAMPLES_EXPECT_FAILURE = [
+    "spec/semaphore/many_to_one_barrier.py",
+    "spec/semaphore/one_to_many_barrier.py",
+]
 
 
 @pytest.mark.parametrize(
@@ -137,6 +129,8 @@ def run_script_in_process(
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
         "eltwise_pipe_node3.py",
+        # Runnable spec examples (single source of truth: _SPEC_EXAMPLES_PASSING).
+        *_SPEC_EXAMPLES_PASSING,
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),
@@ -316,6 +310,75 @@ def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> Non
     lines = source_file.read_text().splitlines()
     assert "tx_src = ttl.copy(a_block, out[row_slice, col_slice])" in lines[84].strip()
     assert "a_block.store(a_block)" in lines[86].strip()
+
+
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+@pytest.mark.parametrize("script_name", _SPEC_EXAMPLES_EXPECT_FAILURE)
+def test_semaphore_examples_fail_at_unimplemented_interface(
+    script_name: str, scheduler: str
+) -> None:
+    """The ttl.Semaphore barrier API used by these spec examples is not
+    implemented in the simulator (or the compiler) yet: see
+    https://github.com/tenstorrent/tt-lang/issues/176 (simulator),
+    https://github.com/tenstorrent/tt-lang/issues/182 (compiler) and
+    https://github.com/tenstorrent/tt-lang/issues/177 (multi-chip).
+
+    Each example is wrapped so its node-dependent setup runs, but it must fail
+    *specifically* at the ttl.Semaphore() call. A success -- or a failure for
+    any other reason -- means the situation changed (most likely semaphores
+    were implemented) and the example should be promoted to a real,
+    golden-checked test rather than an expect-failure one.
+    """
+    code, out = run_script_in_process(EXAMPLES_DIR / script_name, scheduler)
+    assert code != 0, (
+        f"{script_name} unexpectedly succeeded. The ttl.Semaphore barrier API "
+        f"appears to be implemented now -- promote this to a real golden test.\n"
+        f"Output:\n{out}"
+    )
+    assert "no attribute 'Semaphore'" in out, (
+        f"{script_name} failed, but not at the unimplemented ttl.Semaphore "
+        f"interface. The failure mode changed; investigate and update the "
+        f"example/test.\nOutput:\n{out}"
+    )
+
+
+def test_all_spec_examples_are_covered() -> None:
+    """Enforce that every spec example ships with a simulator test.
+
+    Discovers every ``examples/spec/**/*.py`` on disk and requires each to be
+    registered as a simulator test -- either in ``_SPEC_EXAMPLES_PASSING`` (run
+    + golden/structural check via ``test_example_cli``) or, if it exercises an
+    interface the simulator does not implement yet, in
+    ``_SPEC_EXAMPLES_EXPECT_FAILURE`` (asserted to fail at that interface).
+
+    A new spec example therefore cannot land without a test: this guard fails
+    until the author adds it to one of those lists. It also flags registered
+    entries whose files were removed or renamed.
+    """
+    spec_root = EXAMPLES_DIR / "spec"
+    on_disk = {
+        p.relative_to(EXAMPLES_DIR).as_posix()
+        for p in spec_root.rglob("*.py")
+        if p.name != "__init__.py"
+    }
+    registered = set(_SPEC_EXAMPLES_PASSING) | set(_SPEC_EXAMPLES_EXPECT_FAILURE)
+
+    unregistered = sorted(on_disk - registered)
+    assert not unregistered, (
+        "These spec examples have no simulator test. Every example under "
+        "examples/spec/ must ship with one: add each path to "
+        "_SPEC_EXAMPLES_PASSING (if it runs on the simulator) or to "
+        "_SPEC_EXAMPLES_EXPECT_FAILURE (if it must fail at an unimplemented "
+        "interface) in test_examples.py:\n"
+        + "\n".join(f"  - {s}" for s in unregistered)
+    )
+
+    stale = sorted(registered - on_disk)
+    assert not stale, (
+        "These spec examples are registered in test_examples.py but no longer "
+        "exist on disk (removed or renamed?). Update the lists:\n"
+        + "\n".join(f"  - {s}" for s in stale)
+    )
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

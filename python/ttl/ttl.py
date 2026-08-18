@@ -21,7 +21,7 @@ Math operations:
     ttl.math.sqrt(), ttl.math.exp(), etc.
 """
 
-from .ttl_api import compute, datamovement, Program
+from .ttl_api import compute, datamovement
 from .atom import operation, DFB
 from .kernel import Kernel, KernelKind
 from .dataflow_buffer import (
@@ -50,7 +50,6 @@ __all__ = [
     "KernelKind",
     "compute",
     "datamovement",
-    "Program",
     "make_dataflow_buffer_like",
     "make_dfb",
     "make_tensor_backed_dfb",

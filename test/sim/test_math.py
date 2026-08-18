@@ -130,7 +130,8 @@ def test_broadcast_within_tile_col_regression_601():
 
     src_col = torch.arange(32, dtype=torch.float32).reshape(32, 1)
     t = from_torch(src_col)
-    assert t.shape == (32, 32), "auto-pad should yield tile-aligned storage"
+    assert t.shape == (32, 1)
+    assert t.padded_shape == (32, 32), "auto-pad should yield tile-aligned storage"
 
     block = Block.from_tensor(t)
     assert block.shape == (1, 1)
@@ -158,7 +159,8 @@ def test_broadcast_within_tile_row_regression_601():
 
     src_row = torch.arange(32, dtype=torch.float32).reshape(1, 32)
     t = from_torch(src_row)
-    assert t.shape == (32, 32)
+    assert t.shape == (1, 32)
+    assert t.padded_shape == (32, 32)
 
     block = Block.from_tensor(t)
     assert block.shape == (1, 1)
@@ -185,7 +187,8 @@ def test_broadcast_within_tile_scalar_regression_601():
     from sim.ttnnsim import from_torch
 
     t = from_torch(torch.tensor([[3.5]], dtype=torch.float32))
-    assert t.shape == (32, 32)
+    assert t.shape == (1, 1)
+    assert t.padded_shape == (32, 32)
 
     block = Block.from_tensor(t)
     assert block.shape == (1, 1)
