@@ -157,3 +157,40 @@ def test_fill_shape_from_expression(device):
 
     expected = torch.full((32, 32), 7.0, dtype=torch.bfloat16)
     assert_allclose(result, expected, rtol=1e-2, atol=1e-2)
+
+
+@ttl.operation(grid=(1, 1))
+def fill_tiny_tile_kernel(out):
+    """Fill an 8x32 physical tile rather than the default 32x32 tile."""
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_dfb.reserve() as block:
+            block.store(ttl.block.fill(3.0, shape=block.shape, tile=(8, 32)))
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as block:
+            ttl.copy(block, out[0, 0]).wait()
+
+
+def test_fill_tiny_tile(device):
+    """The explicit tile geometry must match a tiny-tile destination."""
+    expected = torch.full((8, 32), 3.0, dtype=torch.bfloat16)
+    out = ttnn.from_torch(
+        torch.zeros_like(expected),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile((8, 32)),
+        device=device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+    )
+
+    fill_tiny_tile_kernel(out)
+
+    assert_allclose(ttnn.to_torch(out), expected, rtol=1e-2, atol=1e-2)
