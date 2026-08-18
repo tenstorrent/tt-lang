@@ -1718,14 +1718,37 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _resolve_static_int(self, node, param_name):
         """Resolve a statically known Python integer without emitting SSA."""
-        literal = self._signed_int_literal(node)
-        if literal is not None:
-            return literal
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
         if isinstance(node, ast.Name):
             for namespace in (self.captures, self.fn_globals):
-                value = namespace.get(node.id)
-                if type(value) is int:
-                    return value
+                if node.id in namespace:
+                    value = namespace[node.id]
+                    if type(value) is int:
+                        return value
+                    break
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            operand = self._resolve_static_int(node.operand, param_name)
+            return operand if isinstance(node.op, ast.UAdd) else -operand
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod)
+        ):
+            lhs = self._resolve_static_int(node.left, param_name)
+            rhs = self._resolve_static_int(node.right, param_name)
+            if isinstance(node.op, (ast.FloorDiv, ast.Mod)) and rhs == 0:
+                self._raise_error(
+                    node.right,
+                    f"ttl.call_extern_func() {param_name} divisor must be nonzero",
+                )
+            if isinstance(node.op, ast.Add):
+                return lhs + rhs
+            if isinstance(node.op, ast.Sub):
+                return lhs - rhs
+            if isinstance(node.op, ast.Mult):
+                return lhs * rhs
+            if isinstance(node.op, ast.FloorDiv):
+                return lhs // rhs
+            return lhs % rhs
         self._raise_error(
             node,
             f"ttl.call_extern_func() {param_name} must be a statically "

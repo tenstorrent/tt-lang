@@ -48,7 +48,7 @@ def external_effect_operation(lhs, rhs, result):
             ttl.DFBEffect.repeat(
                 1,
                 [
-                    ttl.DFBEffect.reserve(result_dfb, tiles=1),
+                    ttl.DFBEffect.reserve(result_dfb, tiles=TILE // TILE),
                     ttl.DFBEffect.wait(lhs_dfb, tiles=1),
                     ttl.DFBEffect.wait(rhs_dfb, tiles=1),
                     ttl.DFBEffect.pop(lhs_dfb, tiles=1),
