@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""BF16 activation by BFP4_B weight matmul coverage."""
+"""BF16 activation by block-float weight matmul coverage."""
 
 import pytest
 import torch
@@ -61,7 +61,18 @@ def mixed_dtype_matmul(activation, weights, output):
             output_copy.wait()
 
 
-def _host_tensors():
+@pytest.fixture(
+    params=(
+        (ttnn.bfloat4_b, "bfp_bf4", 576),
+        (ttnn.bfloat8_b, "bfp_bf8", 1088),
+    ),
+    ids=("bfp4", "bfp8"),
+)
+def weight_format(request):
+    return request.param
+
+
+def _host_tensors(weight_dtype):
     row_tiles, contraction_tiles, column_tiles = MATMUL_TILE_SHAPE
     activation = ttnn.from_torch(
         torch.randn(
@@ -78,7 +89,7 @@ def _host_tensors():
             column_tiles * TILE_SIZE,
             dtype=torch.bfloat16,
         ),
-        dtype=ttnn.bfloat4_b,
+        dtype=weight_dtype,
         layout=ttnn.TILE_LAYOUT,
     )
     output = ttnn.from_torch(
@@ -93,31 +104,32 @@ def _host_tensors():
     return activation, weights, output
 
 
-def test_mixed_dtype_matmul_compile_only(tmp_path, monkeypatch, capsys):
+def test_mixed_dtype_matmul_compile_only(tmp_path, monkeypatch, capsys, weight_format):
+    weight_dtype, mlir_dtype, page_size = weight_format
     initial_mlir = tmp_path / "initial.mlir"
     final_mlir = tmp_path / "final.mlir"
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     monkeypatch.setenv("TTLANG_INITIAL_MLIR", str(initial_mlir))
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
 
-    mixed_dtype_matmul(*_host_tensors())
+    mixed_dtype_matmul(*_host_tensors(weight_dtype))
 
     initial_text = initial_mlir.read_text()
     final_text = final_mlir.read_text()
     capsys.readouterr()
     assert "ttl.matmul" in initial_text
     assert "!ttcore.tile<32x32, bf16>" in initial_text
-    assert "!ttcore.tile<32x32, bfp_bf4>" in initial_text
+    assert f"!ttcore.tile<32x32, {mlir_dtype}>" in initial_text
     assert "ttl.matmul" not in final_text
-    assert "!ttcore.tile<32x32, bfp_bf4>" in final_text
-    assert "page_size = 576" in final_text
+    assert f"!ttcore.tile<32x32, {mlir_dtype}>" in final_text
+    assert f"page_size = {page_size}" in final_text
 
 
-def _make_weight_tensor(weights_torch, device, memory_config):
-    # BFP4_B must be requested explicitly because its Torch source is BF16.
+def _make_weight_tensor(weights_torch, weight_dtype, device, memory_config):
+    # Block-float dtype must be explicit because its Torch source is BF16.
     return ttnn.from_torch(
         weights_torch,
-        dtype=ttnn.bfloat4_b,
+        dtype=weight_dtype,
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=memory_config,
@@ -126,7 +138,8 @@ def _make_weight_tensor(weights_torch, device, memory_config):
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize("memory", ["dram", "l1"])
-def test_mixed_dtype_matmul_device(device, memory):
+def test_mixed_dtype_matmul_device(device, memory, weight_format):
+    weight_dtype, _mlir_dtype, _page_size = weight_format
     row_tiles, contraction_tiles, column_tiles = MATMUL_TILE_SHAPE
     activation_torch = torch.randn(
         row_tiles * TILE_SIZE,
@@ -147,7 +160,7 @@ def test_mixed_dtype_matmul_device(device, memory):
     tensor_factory = to_l1 if memory == "l1" else to_dram
     memory_config = ttnn.L1_MEMORY_CONFIG if memory == "l1" else ttnn.DRAM_MEMORY_CONFIG
     activation = tensor_factory(activation_torch, device)
-    weights = _make_weight_tensor(weights_torch, device, memory_config)
+    weights = _make_weight_tensor(weights_torch, weight_dtype, device, memory_config)
     output = tensor_factory(output_torch, device)
     quantized_weights = ttnn.to_torch(weights).float()
 
