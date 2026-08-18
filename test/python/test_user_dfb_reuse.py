@@ -724,8 +724,8 @@ def _make_repeated_synchronized_reset_kernel(
         reset_allocation = ttl.make_dfb_allocation_group()
         stale_dfb = ttl.make_dfb(
             data_format,
-            shape=(1, 1),
-            block_count=3,
+            shape=(1, 2),
+            block_count=1,
             allocation_group=reset_allocation,
         )
         current_dfb = ttl.make_dfb(
@@ -738,7 +738,7 @@ def _make_repeated_synchronized_reset_kernel(
 
         for _reset_iteration in range(4):
             with stale_dfb.reserve() as stale_destination:
-                ttl.copy(input_tensor[0, 0], stale_destination).wait()
+                ttl.copy(input_tensor[0:1, 0:2], stale_destination).wait()
             reset_dfb(stale_dfb)
 
         with current_dfb.reserve() as current_destination:
@@ -1699,25 +1699,28 @@ def test_repeated_synchronized_reset_run(
         data_format, enter_semaphore, exit_semaphore, all_local
     )
 
-    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    element_indices = torch.arange(TILE * TILE * 2, dtype=torch.float32).reshape(
+        TILE, TILE * 2
+    )
     input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
     input_tensor = to_device(input_host, device)
-    output_tensor = to_device(torch.zeros_like(input_host), device)
+    output_tensor = to_device(torch.zeros((TILE, TILE), dtype=dtype), device)
 
     final_mlir_path = tmp_path / "repeated_synchronized_reset.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
     operation(
         input_tensor,
         output_tensor,
-        options=("--ttl-reuse-user-dfbs " "--ttl-unsafe-assume-dfb-allocation-groups"),
+        options="--ttl-reuse-user-dfbs",
     )
 
-    # Repeated reset validation permits the explicit allocation-group policy;
-    # safe epoch inference remains conservative for repeated boundaries.
+    # Each two-tile producer interval begins at cursor zero. Without repeated
+    # reset lifetime normalization, the second interval crosses the shared
+    # three-tile allocation even though the runtime resets it every iteration.
     assert _count_final_dfb_allocations(final_mlir_path) == 2
 
     actual = ttnn.to_torch(output_tensor).float()
-    expected = input_host.float()
+    expected = input_host[:, :TILE].float()
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
