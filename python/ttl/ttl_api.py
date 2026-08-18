@@ -734,6 +734,7 @@ class CompiledTTNNKernel:
         opaque_include_paths=None,
         kernel_pipe_computed_address_dfb_indices=None,
         kernel_logical_selectors=None,
+        kernel_used_dfb_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -764,6 +765,8 @@ class CompiledTTNNKernel:
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
             kernel_logical_selectors: Logical selector for each compiled kernel.
+            kernel_used_dfb_indices: Physical DFB indices referenced by each
+                final specialized kernel. None entries are conservative.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -787,6 +790,11 @@ class CompiledTTNNKernel:
         self.kernel_logical_selectors = kernel_logical_selectors or [
             None for _ in kernel_paths
         ]
+        self.kernel_used_dfb_indices = (
+            kernel_used_dfb_indices
+            if kernel_used_dfb_indices is not None
+            else [None for _ in kernel_paths]
+        )
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
 
@@ -822,6 +830,7 @@ class CompiledTTNNKernel:
                 ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
                 logical_kernel=self.kernel_logical_selectors[kernel_idx],
+                used_dfb_indices=self.kernel_used_dfb_indices[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -956,18 +965,24 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     return list(attr)
 
 
-def _get_optional_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
-    """Read an optional `DenseI32ArrayAttr` kernel attribute."""
+def _read_optional_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
+    """Read an optional `DenseI32ArrayAttr`, preserving a missing attribute."""
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
-        return []
+        return None
     if not isinstance(attr, DenseI32ArrayAttr):
         raise ValueError(
             f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
             f"'{kernel_name}', got {attr}"
         )
     return list(attr)
+
+
+def _get_optional_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
+    """Read an optional `DenseI32ArrayAttr`, returning empty when absent."""
+    values = _read_optional_kernel_i32_array_attr(module, kernel_name, attr_name)
+    return [] if values is None else values
 
 
 def _get_kernel_core_coords(module, kernel_name: str):
@@ -1229,6 +1244,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
+    kernel_used_dfb_indices = []
     # Per-kernel single-core ranges (specialization path) and tensor indices
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
@@ -1257,6 +1273,9 @@ def _compile_ttnn_kernel(
             _get_optional_kernel_i32_array_attr(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
+        )
+        kernel_used_dfb_indices.append(
+            _read_optional_kernel_i32_array_attr(module, name, "ttl.used_dfb_indices")
         )
 
         # The specialized clone's launch coordinates (None on the default,
@@ -1348,6 +1367,7 @@ def _compile_ttnn_kernel(
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
         kernel_logical_selectors=kernel_logical_selectors,
+        kernel_used_dfb_indices=kernel_used_dfb_indices,
     )
 
     if verbose:
@@ -1370,6 +1390,7 @@ def _compile_ttnn_kernel(
                 ],
                 core_ranges=kernel_core_ranges[kernel_idx],
                 logical_kernel=kernel_logical_selectors[kernel_idx],
+                used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -2384,6 +2405,7 @@ def _lower_program_to_kernel(
                 "ttkernel-specialize-cores",
                 "canonicalize",
                 "cse",
+                "ttkernel-annotate-dfb-use",
             ]
         pipeline_passes += [
             "convert-ttkernel-to-emitc",

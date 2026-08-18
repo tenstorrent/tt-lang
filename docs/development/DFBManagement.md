@@ -90,7 +90,14 @@ ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
 ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
+ttkernel-specialize-cores      (Module)   Clone coordinate-dependent kernels
+canonicalize, cse              (Module)   Remove untaken coordinate branches
+ttkernel-annotate-dfb-use      (Module)   Record surviving physical DFB uses
 ```
+
+The final three entries run only when per-core specialization is enabled.
+Annotation follows canonicalization so an eliminated branch cannot keep an
+otherwise-unused DFB live on that clone's launch node.
 
 `ttl-finalize-dfb-indices` must precede
 `ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.
@@ -104,6 +111,36 @@ finalization. Guard verification uses the read-only logical identity analysis,
 which assigns temporary IDs to compiler-created DFBs without modifying IR.
 Schedule verification uses exact transfer provenance and does not depend on DFB
 allocation.
+
+### Per-core descriptor specialization
+
+Per-core kernel specialization can remove different DFB operations on
+different launch nodes. Each final TTKernel function records the physical
+indices still referenced by its compile-time arguments in
+`ttl.used_dfb_indices`. Direct helper calls contribute their transitive uses.
+An unresolved call or missing annotation is conservative and keeps every DFB
+available on the affected function's launch nodes.
+
+The runtime unions these sets for every kernel dispatched to a logical core.
+It then intersects the result with the finalized storage segments for each
+physical DFB. Static storage, tensor-backed ranges, and PipeNet
+computed-address backing therefore use only cores where a surviving kernel can
+access that physical index. A tensor-backed or finalized static segment remains
+restricted to its allocation domain.
+
+Descriptor construction partitions launch nodes by their complete DFB storage
+signature. Every node in one partition receives the same ordered descriptor
+sequence; different partitions receive disjoint descriptors. This preserves
+TT-Metal's static allocation cursor invariant while allowing each partition to
+omit unused allocations. Sparse partitions allocate one tensor shard per
+selected core rather than the area of their bounding rectangle.
+
+The runtime computes static DFB bytes independently for every selected core and
+compares them with that core's remaining L1. Tensor-backed and already
+allocated computed-address storage are excluded from the static sum. The
+correctness invariant is that every surviving DFB access has one compatible
+descriptor on its launch core; conservative metadata preserves the
+whole-program descriptor behavior when this cannot be proved.
 
 `ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
 `bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The

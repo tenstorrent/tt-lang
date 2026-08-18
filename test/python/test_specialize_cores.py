@@ -43,7 +43,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import torch
 
 import ttl
-from ttlang_test_utils import assert_pcc, to_dram
+from ttlang_test_utils import assert_pcc, to_dram, to_l1
 
 TILE_SIZE = 32
 
@@ -201,6 +201,90 @@ def _make_branch_swap_op():
 
 branch_swap_default = _make_branch_swap_op()
 branch_swap_specialized = _make_branch_swap_op()
+
+
+def _make_core_local_dfb_op():
+    @ttl.operation(grid=(2, 1))
+    def core_local_dfb(input_tensor, output_tensor):
+        left_input = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        left_output = ttl.make_dataflow_buffer_like(
+            output_tensor, shape=(1, 1), block_count=2
+        )
+        right_input = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        right_output = ttl.make_dataflow_buffer_like(
+            output_tensor, shape=(1, 1), block_count=2
+        )
+
+        @ttl.compute()
+        def compute_fn():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with (
+                    left_input.wait() as input_block,
+                    left_output.reserve() as output_block,
+                ):
+                    output_block.store(input_block)
+            else:
+                with (
+                    right_input.wait() as input_block,
+                    right_output.reserve() as output_block,
+                ):
+                    output_block.store(input_block)
+
+        @ttl.datamovement()
+        def dm_read():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with left_input.reserve() as input_block:
+                    ttl.copy(input_tensor[0, 0], input_block).wait()
+            else:
+                with right_input.reserve() as input_block:
+                    ttl.copy(input_tensor[0, 1], input_block).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with left_output.wait() as output_block:
+                    ttl.copy(output_block, output_tensor[0, 0]).wait()
+            else:
+                with right_output.wait() as output_block:
+                    ttl.copy(output_block, output_tensor[0, 1]).wait()
+
+    return core_local_dfb
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_specialize_cores_scopes_dfb_descriptors(
+    device, memory_config, to_device, dtype
+):
+    """Each specialized core receives only the DFBs used by its kernels."""
+    element_indices = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64)
+    input_host = ((element_indices.remainder(127) - 63) / 32).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    _make_core_local_dfb_op()(
+        input_tensor,
+        output_tensor,
+        options="--ttl-specialize-cores --no-ttl-reuse-user-dfbs",
+    )
+
+    threshold = 0.999 if dtype == torch.bfloat16 else 0.999999
+    assert_pcc(
+        input_host.float(),
+        ttnn.to_torch(output_tensor).float(),
+        threshold=threshold,
+    )
 
 
 def _make_swap_inputs(device):
