@@ -16,7 +16,7 @@ from .kernel import Kernel, KernelKind
 
 @dataclass(frozen=True, eq=False)
 class DFBReset:
-    """One worker-local synchronized DFB reset instance.
+    """One worker-local synchronized DFB reset declaration.
 
     ``participants`` contains one compute ``Kernel`` and two data movement
     ``Kernel`` handles created in the same enclosing operation factory. A call
