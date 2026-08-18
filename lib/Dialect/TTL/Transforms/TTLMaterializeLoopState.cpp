@@ -6,14 +6,16 @@
 // TTL Materialize Loop State
 //===----------------------------------------------------------------------===//
 //
-// Eliminates tensor-valued scf.for iter_args before compute lowering. Tensor
-// state lowers through compiler-allocated DFB slots.
+// Eliminates tensor-valued scf.for iter_args before compute lowering. Remaining
+// tensor state lowers through compiler-allocated DFB slots; accumulation
+// strategies are selected and lowered before this pass.
 //
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -51,7 +53,7 @@ static SmallVector<TensorLoopState> collectTensorLoopStates(scf::ForOp loop) {
   SmallVector<TensorLoopState> states;
   for (unsigned resultIndex = 0; resultIndex < loop.getNumResults();
        ++resultIndex) {
-    if (!isa<RankedTensorType>(loop.getInitArgs()[resultIndex].getType())) {
+    if (!isTensorLoopState(loop, resultIndex)) {
       continue;
     }
 
