@@ -3,15 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Run the hardware Python pytest suite, parallelizing single-device tests across
-# every available chip and running multi_device (fabric mesh) tests serially.
+# available chips and running compile_only and multi_device tests serially.
 #
 # Chip count is the number of digit-named nodes under /dev/tenstorrent (matching
 # test/lit.cfg.py). With more than one chip, single-device tests run under
-# pytest-xdist (-n <chips>) with each worker restricted to one chip through
-# TT_VISIBLE_DEVICES. The multi_device tests then run serially. With one chip the
-# whole suite runs serially.
+# pytest-xdist with each worker restricted to one chip through
+# TT_VISIBLE_DEVICES. Compile-only tests then run without xdist so concurrent
+# compiler subprocesses do not contend for host resources. The multi_device
+# tests run serially after that. With one chip the whole suite runs serially.
 #
 # Env: HW_PYTEST_CHIPS overrides the detected chip count.
+# Env: HW_TEST_WORKERS caps xdist concurrency at no more than the chip count.
+# Env: HW_PYTEST_TIMEOUT overrides the per-test timeout in seconds (default 300).
 # Env: HW_SERIAL_TEST_VISIBLE_DEVICES restricts device visibility for serial
 #      phases that need multiple devices. Unset means every chip remains visible.
 #
@@ -31,11 +34,36 @@ chips="$(resolve_tt_chip_count "${HW_PYTEST_CHIPS:-}")" || {
     exit 2
 }
 
-# The thread timeout method interrupts C-level device deadlocks; SIGALRM cannot.
+timeout_seconds="${HW_PYTEST_TIMEOUT:-300}"
+case "$timeout_seconds" in
+    0 | *[!0-9]*)
+        echo "run-hardware-pytests.sh: timeout must be a positive integer, got '$timeout_seconds'" >&2
+        exit 2
+        ;;
+esac
+
+workers="$chips"
+if [ -n "${HW_TEST_WORKERS:-}" ]; then
+    workers="$HW_TEST_WORKERS"
+    case "$workers" in
+        0 | *[!0-9]*)
+            echo "run-hardware-pytests.sh: worker count must be a positive integer, got '$workers'" >&2
+            exit 2
+            ;;
+    esac
+    [ "$workers" -le "$chips" ] || {
+        echo "run-hardware-pytests.sh: worker count $workers exceeds chip count $chips" >&2
+        exit 2
+    }
+fi
+
+# The thread timeout method terminates a process stuck in a C-level device call;
+# SIGALRM cannot interrupt those calls.
 # --reruns retries a flaky test up to 3 times (pytest-rerunfailures) before
-# reporting failure. A worker segfault is a crash, not a rerunnable failure, so
-# it is unaffected.
-common=(-v --tb=long --timeout=300 --timeout-method=thread --reruns 3)
+# reporting failure. The shared pytest plugin makes abnormal xdist worker
+# termination fail the session because pytest-rerunfailures otherwise hides it.
+# A persistent timeout can consume four timeout intervals across all attempts.
+common=(-v --tb=long --timeout="$timeout_seconds" --timeout-method=thread --reruns 3)
 pytest_config="$(absolute_path "$(dirname "$REPORT_PREFIX")/pytest.ini")"
 if [ -f "$pytest_config" ]; then
     common=(-c "$pytest_config" --rootdir="${REPO_ROOT}/test" "${common[@]}")
@@ -64,23 +92,23 @@ run_multi_device_phase() {
 }
 
 if [ "$chips" -gt 1 ]; then
-    echo "Detected ${chips} chips: single-device tests in parallel (-n ${chips}), multi_device serial"
+    echo "Detected ${chips} chips: single-device tests in parallel (-n ${workers}), compile_only and multi_device serial"
     unset TT_VISIBLE_DEVICES
     cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
     rc=0
-    # Workers are pinned 1:1 to chips by index (see pin_xdist_worker_to_device).
-    # Disable xdist's crash-restart: a replacement worker gets the next index
-    # (e.g. gw8 on an 8-chip host), which maps to a nonexistent device and turns
-    # one crash into a flood of "Invalid device ID" errors.
+    # Abnormal worker termination must fail the session. A replacement can hide
+    # the original crash and invalidate the crash guard's completeness check.
     TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
         TTLANG_XDIST_TT_METAL_CACHE_ROOT="$cache_root" \
-        run_pytest_phase "$TEST_DIR" -m "not multi_device" -n "$chips" \
+        run_pytest_phase "$TEST_DIR" -m "not multi_device and not compile_only" -n "$workers" \
         --max-worker-restart=0 "${common[@]}" \
         --junitxml="${REPORT_PREFIX}-parallel.xml" || rc=1
+    run_pytest_phase "$TEST_DIR" -m compile_only \
+        "${common[@]}" --junitxml="${REPORT_PREFIX}-compile-only.xml" || rc=1
     run_multi_device_phase "$TEST_DIR" -m multi_device \
         "${common[@]}" --junitxml="${REPORT_PREFIX}-multidevice.xml" || rc=1
     if [ "$selected_phase_count" -eq 0 ]; then
-        echo "No tests selected by either hardware pytest phase" >&2
+        echo "No tests selected by any hardware pytest phase" >&2
         exit 5
     fi
     exit "$rc"
