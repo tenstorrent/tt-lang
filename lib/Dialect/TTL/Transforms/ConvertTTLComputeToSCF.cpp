@@ -146,6 +146,7 @@ static scf::LoopNest generateAccumulatingLoops(
   // output now avoids consulting the replaced compute during publication.
   Block &bodyBlock = op.getBody().front();
   SmallVector<StoreInfo> storeInfos;
+  SmallVector<TileReductionInitOp> reductionInitializers;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
@@ -155,6 +156,9 @@ static scf::LoopNest generateAccumulatingLoops(
              "verified store must map to one formal compute output");
       storeInfos.push_back(
           {store, dstIdx ? static_cast<int32_t>(*dstIdx) : 0, *outputIndex});
+    }
+    if (auto initializer = dyn_cast<TileReductionInitOp>(&bodyOp)) {
+      reductionInitializers.push_back(initializer);
     }
   }
 
@@ -176,7 +180,8 @@ static scf::LoopNest generateAccumulatingLoops(
 
   // Generate tile ops (excluding stores) inside the reduction loop body.
   auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
-                                 ValueRange fullIVs) {
+                                 ValueRange fullIVs,
+                                 ValueRange initializedAccumulators) {
     size_t numInputs = op.getInputs().size();
     auto extractedInputs = extractTilesAtIndices(
         builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
@@ -185,9 +190,13 @@ static scf::LoopNest generateAccumulatingLoops(
 
     IRMapping mapping;
     mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
+    for (auto [initializer, accumulator] :
+         llvm::zip_equal(reductionInitializers, initializedAccumulators)) {
+      mapping.map(initializer.getResult(), accumulator);
+    }
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
+      if (isa<IterIndexOp, TileReductionInitOp, TileStoreOp>(&bodyOp)) {
         continue;
       }
       builder.clone(bodyOp, mapping);
@@ -205,6 +214,22 @@ static scf::LoopNest generateAccumulatingLoops(
         OpBuilder secBuilder(&sectionBody,
                              Block::iterator(sectionBody.getTerminator()));
 
+        // Initialize inter-tile accumulators once per output tile, before the
+        // reduction loops. Their DST slots then persist for every input tile.
+        SmallVector<Value> initializedAccumulators;
+        initializedAccumulators.reserve(reductionInitializers.size());
+        for (TileReductionInitOp initializer : reductionInitializers) {
+          std::optional<int64_t> dstIndex =
+              getConstantIntValue(initializer.getDstIndex());
+          assert(dstIndex &&
+                 "reduction initializer must have a constant DST index");
+          Value clonedDstIndex =
+              arith::ConstantIndexOp::create(secBuilder, parLoc, *dstIndex);
+          initializedAccumulators.push_back(TileReductionInitOp::create(
+              secBuilder, parLoc, initializer.getResult().getType(),
+              initializer.getReduceTypeAttr(), clonedDstIndex));
+        }
+
         // Inner: reduction loops.
         scf::LoopNest redNest = scf::buildLoopNest(
             secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
@@ -212,7 +237,8 @@ static scf::LoopNest generateAccumulatingLoops(
                 ValueRange) -> scf::ValueVector {
               SmallVector<Value> fullIVs =
                   buildFullIVs(parallelIVs, reductionIVs);
-              generateTileOpsOnly(redBuilder, redLoc, fullIVs);
+              generateTileOpsOnly(redBuilder, redLoc, fullIVs,
+                                  initializedAccumulators);
               return {};
             });
 
@@ -311,13 +337,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
-    bool isAccumulating = op.getBody()
-                              .walk([](Operation *inner) {
-                                return inner->hasTrait<TTLAccumulatingOpTrait>()
-                                           ? WalkResult::interrupt()
-                                           : WalkResult::advance();
-                              })
-                              .wasInterrupted();
+    bool isAccumulating =
+        op.getBody()
+            .walk([](Operation *inner) {
+              return inner->hasTrait<TTLAccumulatingOpTrait>() ||
+                             isa<TileReductionInitOp>(inner)
+                         ? WalkResult::interrupt()
+                         : WalkResult::advance();
+            })
+            .wasInterrupted();
 
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
@@ -362,15 +390,19 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       // TODO: reduce_max without dst-accumulation could use a compiler-
       // introduced intermediate DFB for L1-based max accumulation.
       if (isAccumulating) {
-        bool hasReduceMax =
+        bool requiresDstAccumulation =
             op.getBody()
-                .walk([](TileReduceOp reduce) {
-                  return reduce.getReduceType() == ReduceType::Max
+                .walk([](Operation *operation) {
+                  if (isa<TileReductionInitOp>(operation)) {
+                    return WalkResult::interrupt();
+                  }
+                  auto reduce = dyn_cast<TileReduceOp>(operation);
+                  return reduce && reduce.getReduceType() == ReduceType::Max
                              ? WalkResult::interrupt()
                              : WalkResult::advance();
                 })
                 .wasInterrupted();
-        if (dstAccumulation || hasReduceMax) {
+        if (dstAccumulation || requiresDstAccumulation) {
           usedDstAccumulation = true;
           return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
                                            indexingMaps, iterTypes, lowerBounds,

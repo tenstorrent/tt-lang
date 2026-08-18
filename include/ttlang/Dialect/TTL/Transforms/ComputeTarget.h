@@ -32,7 +32,7 @@ struct ReductionCapability {
   ttcore::TileType scalerType;
   ttcore::TileType resultType;
   ReduceType reduceType;
-  ttkernel::ReduceDim reduceDimension;
+  std::optional<ttkernel::ReduceDim> reduceDimension;
 };
 
 /// Immutable LLK capabilities for one compute target.

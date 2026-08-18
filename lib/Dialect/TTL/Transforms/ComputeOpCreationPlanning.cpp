@@ -102,19 +102,26 @@ static RankedTensorType getTensorType(Value value) {
   return dyn_cast<RankedTensorType>(value.getType());
 }
 
-static AffineMap buildBroadcastInputMap(
+static AffineMap buildProjectedPermutationMap(
     MLIRContext *context, int64_t rank,
-    const llvm::SmallDenseSet<int64_t> &broadcastDimensions) {
+    const llvm::SmallDenseSet<int64_t> &constantDimensions) {
   // Mapping a broadcast dimension to zero repeats one input tile instead of
   // requiring the input tensor to match the output iteration-domain extent.
   SmallVector<AffineExpr> expressions;
   expressions.reserve(rank);
   for (int64_t dimension = 0; dimension < rank; ++dimension) {
-    expressions.push_back(broadcastDimensions.contains(dimension)
+    expressions.push_back(constantDimensions.contains(dimension)
                               ? getAffineConstantExpr(0, context)
                               : getAffineDimExpr(dimension, context));
   }
   return AffineMap::get(rank, 0, expressions, context);
+}
+
+static AffineMap buildZeroMap(MLIRContext *context, int64_t domainRank,
+                              int64_t resultRank) {
+  SmallVector<AffineExpr> expressions(resultRank,
+                                      getAffineConstantExpr(0, context));
+  return AffineMap::get(domainRank, 0, expressions, context);
 }
 
 static AffineMap
@@ -803,7 +810,7 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
         normalizeDimsToSet(broadcast.getDims(), inputType.getRank());
     plan.tileBroadcast =
         getTileBroadcastType(broadcast.getDims(), inputType.getRank());
-    plan.iteration.inputMaps = {buildBroadcastInputMap(
+    plan.iteration.inputMaps = {buildProjectedPermutationMap(
         plan.source->getContext(), inputType.getRank(), dimensions)};
     plan.iteration.outputMap = AffineMap::getMultiDimIdentityMap(
         plan.resultType.getRank(), plan.source->getContext());
@@ -833,44 +840,36 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
   if (auto reduce = dyn_cast<ReduceOp>(plan.source)) {
     plan.recipe = ComputeOpCreationRecipe::Reduce;
     RankedTensorType inputType = getTensorType(reduce.getInput());
-    if (!inputType || inputType.getRank() != 2) {
-      failureReason = "reduce requires a rank-2 input";
+    if (!inputType || inputType.getRank() < 2) {
+      failureReason = "reduce requires an input of rank 2 or greater";
       return failure();
     }
+    int64_t rank = inputType.getRank();
+    RankedTensorType scalerType = getTensorType(reduce.getScaler());
+    if (!scalerType) {
+      failureReason = "reduce scaler is not a ranked tensor";
+      return failure();
+    }
+    llvm::SmallDenseSet<int64_t> dimensions =
+        normalizeDimsToSet(reduce.getDims(), rank);
     FailureOr<ttkernel::ReduceDim> reduceDimension =
-        getReduceDimension(reduce.getDims(), inputType.getRank());
-    if (failed(reduceDimension)) {
-      failureReason = "unsupported reduction dimensions";
-      return failure();
+        getReduceDimension(reduce.getDims(), rank);
+    if (succeeded(reduceDimension)) {
+      plan.reduceDimension = *reduceDimension;
     }
-    plan.reduceDimension = *reduceDimension;
     plan.reduceType = reduce.getReduceType();
     MLIRContext *context = plan.source->getContext();
-    AffineExpr dimensionM = getAffineDimExpr(0, context);
-    AffineExpr dimensionN = getAffineDimExpr(1, context);
-    AffineExpr constantZero = getAffineConstantExpr(0, context);
-    AffineMap inputMap = AffineMap::getMultiDimIdentityMap(2, context);
-    switch (*reduceDimension) {
-    case ttkernel::ReduceDim::Col:
-      plan.iteration.outputMap =
-          AffineMap::get(2, 0, {constantZero, dimensionN}, context);
-      plan.iteration.iteratorTypes = {utils::IteratorType::reduction,
-                                      utils::IteratorType::parallel};
-      break;
-    case ttkernel::ReduceDim::Row:
-      plan.iteration.outputMap =
-          AffineMap::get(2, 0, {dimensionM, constantZero}, context);
-      plan.iteration.iteratorTypes = {utils::IteratorType::parallel,
-                                      utils::IteratorType::reduction};
-      break;
-    case ttkernel::ReduceDim::Scalar:
-      plan.iteration.outputMap =
-          AffineMap::get(2, 0, {constantZero, constantZero}, context);
-      plan.iteration.iteratorTypes = {utils::IteratorType::reduction,
-                                      utils::IteratorType::reduction};
-      break;
+    AffineMap inputMap = AffineMap::getMultiDimIdentityMap(rank, context);
+    plan.iteration.outputMap =
+        buildProjectedPermutationMap(context, rank, dimensions);
+    AffineMap scalerMap = buildZeroMap(context, rank, scalerType.getRank());
+    plan.iteration.inputMaps = {inputMap, scalerMap};
+    plan.iteration.iteratorTypes.reserve(rank);
+    for (int64_t dimension = 0; dimension < rank; ++dimension) {
+      plan.iteration.iteratorTypes.push_back(
+          dimensions.contains(dimension) ? utils::IteratorType::reduction
+                                         : utils::IteratorType::parallel);
     }
-    plan.iteration.inputMaps = {inputMap, plan.iteration.outputMap};
     return success();
   }
   if (isa<MulUnaryConstOp>(plan.source)) {
