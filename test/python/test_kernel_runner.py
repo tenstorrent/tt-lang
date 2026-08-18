@@ -2931,18 +2931,18 @@ def _descriptor_cores(descriptor):
     }
 
 
-def _specialized_spec(core_ranges, used_cb_indices):
+def _specialized_spec(core_ranges, used_dfb_indices):
     return kernel_runner.KernelSpec(
         path="/tmp/specialized.cpp",
         thread_type="compute",
         tensor_indices=[],
         config=object(),
         core_ranges=core_ranges,
-        used_cb_indices=used_cb_indices,
+        used_dfb_indices=used_dfb_indices,
     )
 
 
-def test_specialized_cb_descriptor_follows_active_kernel_core(monkeypatch):
+def test_specialized_dfb_descriptor_follows_active_kernel_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     active = _FakeExplicitCoreRanges((0, 0), (0, 0))
@@ -2962,7 +2962,7 @@ def test_specialized_cb_descriptor_follows_active_kernel_core(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(0, 0)}
 
 
-def test_unannotated_kernel_keeps_whole_grid_cb_descriptor(monkeypatch):
+def test_unannotated_kernel_keeps_whole_grid_dfb_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
 
@@ -2997,7 +2997,7 @@ def test_unannotated_kernel_remains_conservative_with_annotated_peer(monkeypatch
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
-def test_specialized_cb_descriptors_allow_sparse_physical_ids(monkeypatch):
+def test_specialized_dfb_descriptors_allow_sparse_physical_ids(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (0, 0))
     configs = [
@@ -3016,7 +3016,7 @@ def test_specialized_cb_descriptors_allow_sparse_physical_ids(monkeypatch):
     ] == [2]
 
 
-def test_specialized_cb_budget_is_computed_per_core(monkeypatch):
+def test_specialized_dfb_budget_is_computed_per_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 2048)
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
@@ -3043,7 +3043,7 @@ def test_specialized_cb_budget_is_computed_per_core(monkeypatch):
     }
 
 
-def test_specialized_cb_budget_uses_each_cores_remaining_l1(monkeypatch):
+def test_specialized_dfb_budget_uses_each_cores_remaining_l1(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
         kernel_runner,
@@ -3072,7 +3072,7 @@ def test_specialized_cb_budget_uses_each_cores_remaining_l1(monkeypatch):
         )
 
 
-def test_computed_address_backing_uses_specialized_cb_cores(monkeypatch):
+def test_computed_address_backing_uses_specialized_dfb_cores(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     allocations = []
     monkeypatch.setattr(
@@ -3135,7 +3135,7 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     assert empty_calls[0][0] == (2, 512)
 
 
-def test_specialized_cb_use_intersects_storage_segments(monkeypatch):
+def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     active = _FakeExplicitCoreRanges((0, 0), (0, 0))
@@ -3946,7 +3946,7 @@ def test_emit_runner_source_omits_program_hash_by_default():
     assert "PROGRAM_HASH = None" in source
 
 
-def test_emit_runner_source_preserves_specialized_cb_use(monkeypatch):
+def test_emit_runner_source_preserves_specialized_dfb_use(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     source = kernel_runner.emit_runner_source(
         kernel_specs=[
@@ -3955,7 +3955,7 @@ def test_emit_runner_source_preserves_specialized_cb_use(monkeypatch):
                 thread_type="compute",
                 tensor_indices=[],
                 config=object(),
-                used_cb_indices=[2],
+                used_dfb_indices=[2],
             )
         ],
         cb_configs=[],
@@ -3964,9 +3964,9 @@ def test_emit_runner_source_preserves_specialized_cb_use(monkeypatch):
         num_tensors=1,
     )
 
-    assert "KERNEL_USED_CB_INDICES = [" in source
+    assert "KERNEL_USED_DFB_INDICES = [" in source
     assert "    [2],  # compute" in source
-    assert "used_cb_indices=KERNEL_USED_CB_INDICES[kernel_idx]" in source
+    assert "used_dfb_indices=KERNEL_USED_DFB_INDICES[kernel_idx]" in source
     assert "kernel_specs=kernel_specs" in source
     compile(source, "<emitted-runner>", "exec")
 

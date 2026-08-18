@@ -4,7 +4,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   TTKernelInsertInits.cpp
   TTKernelInsertL1Accumulation.cpp
   TTKernelLowerScalarFpTypes.cpp
-  TTKernelAnnotateCBUse.cpp
+  TTKernelAnnotateDFBUse.cpp
   TTKernelSpecializeCores.cpp
 
   DEPENDS

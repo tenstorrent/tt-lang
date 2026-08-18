@@ -168,7 +168,7 @@ def get_min_remaining_l1_for_device(
 def _get_remaining_l1_by_core_for_device(
     device, cores: set[tuple[int, int]]
 ) -> dict[tuple[int, int], int]:
-    """Return each requested logical core's remaining static-CB budget."""
+    """Return each requested logical core's remaining static DFB budget."""
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
@@ -204,9 +204,9 @@ class KernelSpec:
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
         logical_kernel: Target-independent selector retained across kernel cloning.
-        used_cb_indices: Physical CB slots referenced by the final kernel body.
-            None means metadata is unavailable and conservatively uses every CB;
-            an empty list means this kernel uses no CBs.
+        used_dfb_indices: Physical DFB slots referenced by the final kernel body.
+            None means metadata is unavailable and conservatively uses every DFB;
+            an empty list means this kernel uses no DFBs.
     """
 
     path: str
@@ -217,7 +217,7 @@ class KernelSpec:
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
     logical_kernel: Optional[KernelSelector] = None
-    used_cb_indices: Optional[List[int]] = None
+    used_dfb_indices: Optional[List[int]] = None
 
 
 @dataclass(frozen=True)
@@ -1325,7 +1325,7 @@ def build_pipe_computed_address_dfb_tensors(
         raise RuntimeError("ttnn is not available")
 
     device = device if device is not None else _first_device(tensors)
-    used_by_core = _used_cb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
+    used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
     backing_tensors = {}
     for dfb_index in dfb_indices:
         if dfb_index < 0 or dfb_index >= len(cb_configs):
@@ -1651,14 +1651,14 @@ def _core_range_coordinates(core_ranges: Any, *, label: str) -> set[Tuple[int, i
     return coordinates
 
 
-def _used_cb_indices_by_core(
+def _used_dfb_indices_by_core(
     kernel_specs: Optional[List[KernelSpec]],
     program_core_ranges: Any,
-    num_cbs: int,
+    num_dfbs: int,
 ) -> Optional[Dict[Tuple[int, int], set[int]]]:
-    """Union specialized kernel CB use on each logical core."""
+    """Union specialized kernel DFB use on each logical core."""
     if not kernel_specs or not any(
-        spec.used_cb_indices is not None for spec in kernel_specs
+        spec.used_dfb_indices is not None for spec in kernel_specs
     ):
         return None
 
@@ -1666,7 +1666,7 @@ def _used_cb_indices_by_core(
         program_core_ranges, label="program core ranges"
     )
     used_by_core = {core: set() for core in program_cores}
-    all_indices = set(range(num_cbs))
+    all_indices = set(range(num_dfbs))
     for spec_index, spec in enumerate(kernel_specs):
         spec_ranges = (
             spec.core_ranges if spec.core_ranges is not None else program_core_ranges
@@ -1682,14 +1682,14 @@ def _used_cb_indices_by_core(
             )
         indices = (
             all_indices
-            if spec.used_cb_indices is None
-            else {int(index) for index in spec.used_cb_indices}
+            if spec.used_dfb_indices is None
+            else {int(index) for index in spec.used_dfb_indices}
         )
-        invalid = sorted(index for index in indices if index < 0 or index >= num_cbs)
+        invalid = sorted(index for index in indices if index < 0 or index >= num_dfbs)
         if invalid:
             raise ValueError(
-                f"kernel spec {spec_index} uses CB ids outside "
-                f"[0, {num_cbs}): {invalid}"
+                f"kernel spec {spec_index} uses DFB ids outside "
+                f"[0, {num_dfbs}): {invalid}"
             )
         for core in spec_cores:
             used_by_core[core].update(indices)
@@ -1810,25 +1810,25 @@ def _validate_tensor_backing_aliases(
             bindings.append((config.dfb_index, nodes, absolute_start, absolute_end))
 
 
-def _specialized_cb_placements(
+def _specialized_dfb_placements(
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
     backing_tensors: Dict[int, Any],
     kernel_specs: Optional[List[KernelSpec]],
 ) -> Optional[List[Dict[Tuple[int, int], Tuple[str, Optional[int]]]]]:
-    """Resolve the storage source for each used ``(CB, core)`` pair."""
-    used_by_core = _used_cb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
+    """Resolve the storage source for each used ``(DFB, core)`` pair."""
+    used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
     if used_by_core is None:
         return None
 
     program_cores = set(used_by_core)
     placements = []
-    for cb_index, config in enumerate(cb_configs):
+    for dfb_index, config in enumerate(cb_configs):
         candidates: Dict[Tuple[int, int], Tuple[str, Optional[int]]] = {}
-        if cb_index in backing_tensors:
+        if dfb_index in backing_tensors:
             if config.storage_segments:
                 raise ValueError(
-                    f"DFB[{cb_index}] cannot combine PipeNet computed-address "
+                    f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
                     "storage with finalized storage segments"
                 )
             candidates = {core: ("computed", None) for core in program_cores}
@@ -1843,12 +1843,12 @@ def _specialized_cb_placements(
                 for core in segment.nodes:
                     if core not in program_cores:
                         raise ValueError(
-                            f"DFB[{cb_index}] storage segment claims core "
+                            f"DFB[{dfb_index}] storage segment claims core "
                             f"{core} outside the program grid"
                         )
                     if core in candidates:
                         raise ValueError(
-                            f"DFB[{cb_index}] has overlapping storage segments "
+                            f"DFB[{dfb_index}] has overlapping storage segments "
                             f"on core {core}"
                         )
                     candidates[core] = source
@@ -1856,7 +1856,7 @@ def _specialized_cb_placements(
             {
                 core: source
                 for core, source in candidates.items()
-                if cb_index in used_by_core[core]
+                if dfb_index in used_by_core[core]
             }
         )
     return placements
@@ -1876,7 +1876,7 @@ def _cb_format_descriptor(cb_index: int, allocation: _DFBAllocation) -> Any:
     )
 
 
-def _build_specialized_cb_descriptors(
+def _build_specialized_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     allocations: List[_DFBAllocation],
@@ -1884,13 +1884,13 @@ def _build_specialized_cb_descriptors(
     backing_tensors: Dict[int, Any],
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
 ) -> List[Any]:
-    """Build descriptors on disjoint core partitions after CB-use filtering."""
+    """Build descriptors on disjoint core partitions after DFB-use filtering."""
     all_cores = sorted({core for placement in placements for core in placement})
     bytes_by_core = {core: 0 for core in all_cores}
-    for cb_index, placement in enumerate(placements):
+    for dfb_index, placement in enumerate(placements):
         for core, (kind, _) in placement.items():
             if kind == "static":
-                bytes_by_core[core] += allocations[cb_index].total_size
+                bytes_by_core[core] += allocations[dfb_index].total_size
 
     overflow_cores = [
         core
@@ -1903,8 +1903,8 @@ def _build_specialized_cb_descriptors(
             key=lambda item: bytes_by_core[item] - remaining_bytes_by_core[item],
         )
         static_indices = [
-            cb_index
-            for cb_index, placement in enumerate(placements)
+            dfb_index
+            for dfb_index, placement in enumerate(placements)
             if placement.get(core, (None, None))[0] == "static"
         ]
         breakdown = "\n".join(
@@ -1916,7 +1916,7 @@ def _build_specialized_cb_descriptors(
             for index in sorted(static_indices)
         )
         raise ValueError(
-            f"Per-core circular buffer allocation on core {core} ("
+            f"Per-core DFB allocation on core {core} ("
             f"{bytes_by_core[core]} bytes) exceeds L1 budget "
             f"({remaining_bytes_by_core[core]} bytes).\n"
             + breakdown
@@ -1936,20 +1936,20 @@ def _build_specialized_cb_descriptors(
     descriptors = []
     for signature, partition_cores in cores_by_signature.items():
         partition_ranges = _make_node_core_ranges(tuple(sorted(partition_cores)))
-        for cb_index, source in enumerate(signature):
+        for dfb_index, source in enumerate(signature):
             if source is None:
                 continue
             kind, segment_index = source
-            allocation = allocations[cb_index]
-            cb_format = _cb_format_descriptor(cb_index, allocation)
+            allocation = allocations[dfb_index]
+            cb_format = _cb_format_descriptor(dfb_index, allocation)
             if kind == "tensor":
                 assert segment_index is not None
-                segment = cb_configs[cb_index].storage_segments[segment_index]
+                segment = cb_configs[dfb_index].storage_segments[segment_index]
                 tensor_index = segment.tensor_index
                 assert tensor_index is not None
                 descriptors.append(
                     ttnn.cb_descriptor_from_sharded_tensor(
-                        cb_index,
+                        dfb_index,
                         tensors[tensor_index],
                         address_offset=segment.byte_offset,
                         total_size=allocation.total_size,
@@ -1965,8 +1965,8 @@ def _build_specialized_cb_descriptors(
             )
             if kind == "computed":
                 backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
-                    cb_index,
-                    backing_tensors[cb_index],
+                    dfb_index,
+                    backing_tensors[dfb_index],
                     total_size=allocation.total_size,
                     core_ranges=partition_ranges,
                 )
@@ -1993,7 +1993,7 @@ def build_cb_descriptors(
         core_ranges: ttnn.CoreRangeSet for DFB allocation.
         pipe_computed_address_backing_tensors: Hidden L1 backing tensors for DFBs whose
             receiver base is passed as a common runtime argument.
-        kernel_specs: Final per-kernel launch ranges and surviving CB-use sets.
+        kernel_specs: Final per-kernel launch ranges and surviving DFB-use sets.
 
     Returns:
         List of ttnn.CBDescriptor objects. A configuration with storage
@@ -2044,7 +2044,7 @@ def build_cb_descriptors(
                 continue
             break
 
-    placements = _specialized_cb_placements(
+    placements = _specialized_dfb_placements(
         cb_configs, core_ranges, backing_tensors, kernel_specs
     )
     if placements is not None:
@@ -2056,7 +2056,7 @@ def build_cb_descriptors(
             if device is not None
             else {core: DEFAULT_L1_CB_BUDGET_BYTES for core in placement_cores}
         )
-        return _build_specialized_cb_descriptors(
+        return _build_specialized_dfb_descriptors(
             tensors,
             cb_configs,
             allocations,
@@ -2631,9 +2631,9 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
-    lines.append("KERNEL_USED_CB_INDICES = [")
+    lines.append("KERNEL_USED_DFB_INDICES = [")
     for spec in kernel_specs:
-        lines.append(f"    {spec.used_cb_indices!r},  # {spec.thread_type}")
+        lines.append(f"    {spec.used_dfb_indices!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
 
@@ -2746,7 +2746,7 @@ def emit_runner_source(
         "                logical_kernel=_logical_kernel_from_spec("
         "KERNEL_LOGICAL_IDENTITIES[kernel_idx]),"
     )
-    lines.append("                used_cb_indices=KERNEL_USED_CB_INDICES[kernel_idx],")
+    lines.append("                used_dfb_indices=KERNEL_USED_DFB_INDICES[kernel_idx],")
     lines.append("            )")
     lines.append("        )")
     lines.append("    return run_kernel_on_device(")
