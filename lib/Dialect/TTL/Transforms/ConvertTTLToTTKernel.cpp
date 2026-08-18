@@ -67,10 +67,6 @@ namespace {
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
-// Maps local args to global tensor indices for common runtime args (buffer
-// addresses). CRTA is filtered per-thread, containing only addresses for
-// tensors this thread uses.
-constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 // Duplicating up to four callback bodies avoids table lookups for small nets.
@@ -1254,15 +1250,16 @@ getBaseCTAAndGlobalTensorIdx(unsigned argIdx, Operation *op) {
            << kBaseCTAIndexAttrName << " attribute";
   }
 
-  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
+  auto crtaIndicesAttr =
+      parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndicesAttr) {
     return op->emitError("function missing ")
-           << kCRTAIndicesAttr << " attribute";
+           << kCRTAIndicesAttrName << " attribute";
   }
 
   if (argIdx >= crtaIndicesAttr.size()) {
     return op->emitError("argument index out of range for ")
-           << kCRTAIndicesAttr;
+           << kCRTAIndicesAttrName;
   }
 
   int32_t baseCTA = static_cast<int32_t>(baseCTAAttr.getInt());

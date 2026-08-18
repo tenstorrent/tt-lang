@@ -279,6 +279,11 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
 
+/// Additional equality proof for runtime values at two launch locations.
+using LaunchValueEqualityProof =
+    llvm::function_ref<bool(Value, const LaunchExecutionLocation &, Value,
+                            const LaunchExecutionLocation &)>;
+
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch locations.
 bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
@@ -288,7 +293,8 @@ bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
-        resolveRhsFunctionArgument);
+        resolveRhsFunctionArgument,
+    LaunchValueEqualityProof proveAdditionalValueEquality = {});
 
 /// Prove equivalent unresolved control between each operation and an
 /// exclusive ancestor whose invocation count is accounted for separately.
@@ -302,7 +308,8 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
-        resolveRhsFunctionArgument);
+        resolveRhsFunctionArgument,
+    LaunchValueEqualityProof proveAdditionalValueEquality = {});
 
 /// Prove that two operations have the same unresolved conditional execution
 /// at their launch nodes. Same-function conditions may share SSA values;
@@ -313,6 +320,14 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
 bool proveEquivalentConditionalExecutionAtLaunchNodes(
     Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
     LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state);
+
+/// Prove that two operations are restricted by equivalent unresolved branch
+/// predicates at their launch nodes. Loop multiplicity is intentionally not
+/// compared; callers must verify protocol counts separately.
+bool proveEquivalentConditionalGuardsAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality = {});
 
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share
@@ -327,7 +342,8 @@ bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
 bool proveEqualExecutionCountAtLaunchLocations(
     Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
     const LaunchExecutionLocation &rhsLocation,
-    const LaunchNodeDomainState &state);
+    const LaunchNodeDomainState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality = {});
 
 /// Return the operation with the earlier source location.
 ///

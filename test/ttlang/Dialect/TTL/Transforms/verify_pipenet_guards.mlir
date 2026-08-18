@@ -6,6 +6,101 @@
 // Each split module includes the finalization metadata required by the
 // verifier; its descriptor contents are irrelevant to guard analysis.
 
+// Distinct RISC kernels may condition a producer and consumer with values read
+// from the same global tensor element. CRTA indices establish the shared tensor
+// identity without requiring the per-kernel SSA arguments to be identical.
+
+#sharedCountLayout = #ttl.layout<
+    shape = [32, 32], element_type = !ttcore.tile<32x32, f32>,
+    buffer = l1, grid = [1, 1], memory = interleaved>
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @runtime_guarded_producer
+  // CHECK: scf.if
+  // CHECK: ttl.cb_push
+  func.func @runtime_guarded_producer(
+      %count_tensor: tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>)
+      attributes {ttl.crta_indices = [0 : i32],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %count_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %payload_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %count_slot = ttl.cb_reserve %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    %count_slice = ttl.tensor_slice %count_tensor[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>
+    %count_copy = ttl.copy %count_slice, %count_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %count_copy : !ttl.transfer_handle<read>
+    ttl.cb_push %count_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %count_block = ttl.cb_wait %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %count = ttl.read_index %count_block[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    %core_x = ttl.core_x : index
+    %active = arith.cmpi slt, %core_x, %count : index
+    scf.if %active {
+      ttl.cb_push %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @runtime_guarded_consumer
+  // CHECK: scf.if
+  // CHECK: ttl.cb_wait
+  func.func @runtime_guarded_consumer(
+      %count_tensor: tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>)
+      attributes {ttl.crta_indices = [0 : i32],
+                  ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %count_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %payload_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %count_slot = ttl.cb_reserve %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    %count_slice = ttl.tensor_slice %count_tensor[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>
+    %count_copy = ttl.copy %count_slice, %count_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #sharedCountLayout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %count_copy : !ttl.transfer_handle<read>
+    ttl.cb_push %count_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %count_block = ttl.cb_wait %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %count = ttl.read_index %count_block[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    %core_x = ttl.core_x : index
+    %active = arith.cmpi slt, %core_x, %count : index
+    scf.if %active {
+      %payload = ttl.cb_wait %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A copy into a pipe is valid only on the source node. A copy out of a pipe is
 // valid only on destination nodes. Existing ttl.if_src/ttl.if_dst regions
 // provide those execution domains.

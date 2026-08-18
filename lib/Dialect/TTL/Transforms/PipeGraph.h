@@ -558,7 +558,8 @@ private:
                                  const PipeTransferIndex &transferIndex,
                                  PipeGraphAnalysisState &state);
 
-  LogicalResult rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
+  LogicalResult rebuildEndpointGraph(ModuleOp mod,
+                                     const PipeTransferIndex &transferIndex,
                                      PipeGraphAnalysisState &state);
 
   LogicalResult proveReceiverProducerStreams(PipeGraphAnalysisState &state);

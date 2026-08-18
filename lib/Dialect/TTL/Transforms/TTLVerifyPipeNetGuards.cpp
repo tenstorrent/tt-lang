@@ -11,6 +11,8 @@
 // wait-for cycles in execution order.
 //===----------------------------------------------------------------------===//
 
+#include "PipeNetScalarOriginAnalysis.h"
+
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -69,6 +71,12 @@ struct WaitUse {
   CBWaitOp op;
   LaunchNodeDomain domain;
   int64_t dfbId;
+};
+
+/// A dataflow buffer push and the launch-node domain where it executes.
+struct PushUse {
+  CBPushOp op;
+  LaunchNodeDomain domain;
 };
 
 /// Pipe synchronization event used by the wait-for graph verifier.
@@ -151,28 +159,23 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
 
 /// Mutable facts recorded during one verifier pass.
 struct ModuleState {
-  /// Constructs state for schedule verification.
-  ModuleState(const PipeTransferIndex &transfers,
-              const LaunchNodeDomainState &launchDomains,
-              ValueOriginAnalysis &valueOrigins)
-      : transfers(transfers), launchDomains(launchDomains),
-        valueOrigins(valueOrigins) {}
-
-  /// Constructs state for guard verification with resolved DFB identities.
-  ModuleState(const PipeTransferIndex &transfers,
+  /// Constructs verifier state with resolved logical DFB identities.
+  ModuleState(ModuleOp module, const PipeTransferIndex &transfers,
               const LaunchNodeDomainState &launchDomains,
               ValueOriginAnalysis &valueOrigins,
               const DFBLogicalIdentityAnalysis &dfbIdentities)
-      : transfers(transfers), launchDomains(launchDomains),
+      : module(module), transfers(transfers), launchDomains(launchDomains),
         valueOrigins(valueOrigins), dfbIdentities(&dfbIdentities) {}
 
+  ModuleOp module;
   const PipeTransferIndex &transfers;
   const LaunchNodeDomainState &launchDomains;
   ValueOriginAnalysis &valueOrigins;
-  /// Logical identities required by guard verification.
+  /// Logical identities required by DFB ownership and scalar-origin proofs.
   const DFBLogicalIdentityAnalysis *dfbIdentities = nullptr;
   bool sawError = false;
   llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
+  llvm::DenseMap<int64_t, SmallVector<PushUse>> dfbProducerUses;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, SmallVector<std::size_t>> pipeEventIndices;
@@ -659,6 +662,7 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         assert(succeeded(dfbId) && "DFB operands were verified");
         state.dfbProducerDomains[*dfbId] =
             state.dfbProducerDomains[*dfbId].unionWith(domain);
+        state.dfbProducerUses[*dfbId].push_back({push, domain});
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
         FailureOr<int64_t> dfbId =
@@ -684,6 +688,28 @@ void recordScheduleOperation(Operation *op, const LaunchNodeDomain &domain,
 // for the same dataflow buffer. Errors when the wait's lattice domain is not
 // covered by any producer (deadlock-prone IR).
 void verifyCBWaits(ModuleState &state) {
+  PipeNetScalarOriginAnalysis scalarOrigins(
+      state.module, state.launchDomains,
+      [&](Value value) -> std::optional<int64_t> {
+        Value dfb = isa<CircularBufferType>(value.getType())
+                        ? value
+                        : getAttachedCB(value);
+        if (!dfb) {
+          return std::nullopt;
+        }
+        FailureOr<int64_t> logicalId = state.dfbIdentities->getLogicalId(dfb);
+        return failed(logicalId) ? std::nullopt
+                                 : std::optional<int64_t>(*logicalId);
+      },
+      [&](Operation *operation, const LaunchExecutionLocation &location) {
+        return getExactExecutionCountAtLaunchLocation(operation, location,
+                                                      state.launchDomains);
+      },
+      [](Operation *, const LaunchExecutionLocation &,
+         CBPushOp) -> std::optional<PipeNetScalarTransportSource> {
+        return std::nullopt;
+      });
+
   for (WaitUse &use : state.waitUses) {
     auto it = state.dfbProducerDomains.find(use.dfbId);
     if (it == state.dfbProducerDomains.end()) {
@@ -693,6 +719,76 @@ void verifyCBWaits(ModuleState &state) {
              "`@ttl.datamovement()` thread reserves and pushes the same "
              "buffer";
       state.sawError = true;
+      continue;
+    }
+    if (use.domain.isUpperBoundSubsetOf(it->second)) {
+      continue;
+    }
+
+    const std::set<LaunchNodeCoord> *waitNodes =
+        use.domain.getUpperBoundNodes();
+    auto producerIt = state.dfbProducerUses.find(use.dfbId);
+    bool proven = waitNodes && producerIt != state.dfbProducerUses.end();
+    if (!proven) {
+      checkKnownSubset(use.op, use.domain, it->second,
+                       /*unanalyzableOp=*/nullptr,
+                       "this `cb_wait` runs on launched nodes where no "
+                       "thread pushes data to the buffer (would deadlock); "
+                       "guard the wait with the same `if net.is_active(): "
+                       "...` predicate the producer uses",
+                       /*roles=*/{}, state);
+      continue;
+    }
+    for (LaunchNodeCoord node : *waitNodes) {
+      LaunchExecutionLocation location(node);
+      std::optional<std::uint64_t> waitCount =
+          getExactExecutionCountAtLaunchLocation(use.op, location,
+                                                 state.launchDomains);
+      if (waitCount && *waitCount == 0) {
+        continue;
+      }
+
+      const PushUse *candidate = nullptr;
+      for (const PushUse &producer : producerIt->second) {
+        const std::set<LaunchNodeCoord> *producerNodes =
+            producer.domain.getUpperBoundNodes();
+        if (!producerNodes ||
+            producerNodes->find(node) == producerNodes->end()) {
+          continue;
+        }
+        std::optional<std::uint64_t> producerCount =
+            getExactExecutionCountAtLaunchLocation(producer.op, location,
+                                                   state.launchDomains);
+        if (producerCount && *producerCount == 0) {
+          continue;
+        }
+        if (candidate) {
+          candidate = nullptr;
+          proven = false;
+          break;
+        }
+        candidate = &producer;
+      }
+      if (!proven || !candidate ||
+          (!proveEqualExecutionCountAtLaunchLocations(
+               candidate->op, location, use.op, location, state.launchDomains,
+               [&](Value lhsValue, const LaunchExecutionLocation &lhsLocation,
+                   Value rhsValue, const LaunchExecutionLocation &rhsLocation) {
+                 return scalarOrigins.proveEqual(lhsValue, lhsLocation,
+                                                 rhsValue, rhsLocation);
+               }) &&
+           !proveEquivalentConditionalGuardsAtLaunchNodes(
+               candidate->op, node, use.op, node, state.launchDomains,
+               [&](Value lhsValue, const LaunchExecutionLocation &lhsLocation,
+                   Value rhsValue, const LaunchExecutionLocation &rhsLocation) {
+                 return scalarOrigins.proveEqual(lhsValue, lhsLocation,
+                                                 rhsValue, rhsLocation);
+               }))) {
+        proven = false;
+        break;
+      }
+    }
+    if (proven) {
       continue;
     }
     checkKnownSubset(use.op, use.domain, it->second,
@@ -1351,10 +1447,151 @@ std::optional<Value> resolveFunctionArgument(BlockArgument argument,
   return call.getOperand(argument.getArgNumber());
 }
 
+/// Proves equality of scalar DFB reads whose contents derive from one verified
+/// exact-one PipeNet transport.
+class PipeTransportScalarEqualityAnalysis {
+public:
+  PipeTransportScalarEqualityAnalysis(
+      ArrayRef<PipeScheduleNode> nodes,
+      const llvm::DenseMap<PipeScheduleNodeId, PipeScheduleNodeId>
+          &completingSendByPost,
+      const llvm::DenseMap<Operation *, SmallVector<PipeScheduleNodeId>>
+          &receivePostNodesByOperation,
+      ModuleState &state)
+      : nodes(nodes), completingSendByPost(completingSendByPost),
+        receivePostNodesByOperation(receivePostNodesByOperation), state(state),
+        scalarOrigins(
+            state.module, state.launchDomains,
+            [this](Value value) { return getLogicalDFBId(value); },
+            [this](Operation *operation,
+                   const LaunchExecutionLocation &location) {
+              return getOperationCount(operation, location);
+            },
+            [this](Operation *producer, const LaunchExecutionLocation &location,
+                   CBPushOp receiverPush) {
+              return getTransportSource(producer, location, receiverPush);
+            }) {
+    assert(state.dfbIdentities &&
+           "PipeNet scalar equality requires logical DFB identities");
+  }
+
+  bool proveEqual(Value lhs, const LaunchExecutionLocation &lhsLocation,
+                  Value rhs, const LaunchExecutionLocation &rhsLocation) const {
+    return scalarOrigins.proveEqual(lhs, lhsLocation, rhs, rhsLocation);
+  }
+
+private:
+  std::optional<int64_t> getLogicalDFBId(Value value) const {
+    Value dfb =
+        isa<CircularBufferType>(value.getType()) ? value : getAttachedCB(value);
+    if (!dfb) {
+      return std::nullopt;
+    }
+    FailureOr<int64_t> logicalId = state.dfbIdentities->getLogicalId(dfb);
+    return failed(logicalId) ? std::nullopt
+                             : std::optional<int64_t>(*logicalId);
+  }
+
+  const PipeScheduleNode *
+  findScheduleContext(Operation *operation,
+                      const LaunchExecutionLocation &location) const {
+    Operation *foreachOp = operation->getParentOfType<PipeNetForeachSrcOp>();
+    if (!foreachOp) {
+      foreachOp = operation->getParentOfType<PipeNetForeachDstOp>();
+    }
+    const PipeScheduleNode *result = nullptr;
+    for (const PipeScheduleNode &node : nodes) {
+      if (!(node.location == location) ||
+          (node.op != operation &&
+           (!foreachOp || !foreachOp->isProperAncestor(node.op)))) {
+        continue;
+      }
+      if (result) {
+        return nullptr;
+      }
+      result = &node;
+    }
+    return result;
+  }
+
+  std::optional<std::uint64_t>
+  getOperationCount(Operation *operation,
+                    const LaunchExecutionLocation &location) const {
+    if (const PipeScheduleNode *context =
+            findScheduleContext(operation, location)) {
+      return getExactPipeExecutionCount(operation, location, context->callSites,
+                                        context->activeRecords, state);
+    }
+    return getExactExecutionCountAtLaunchLocation(operation, location,
+                                                  state.launchDomains);
+  }
+
+  std::optional<PipeScheduleNodeId>
+  findReceivePostNode(CopyOp receive,
+                      const LaunchExecutionLocation &location) const {
+    auto postIt = receivePostNodesByOperation.find(receive.getOperation());
+    if (postIt == receivePostNodesByOperation.end()) {
+      return std::nullopt;
+    }
+    std::optional<PipeScheduleNodeId> result;
+    for (PipeScheduleNodeId nodeId : postIt->second) {
+      if (!(nodes[nodeId].location == location)) {
+        continue;
+      }
+      if (result) {
+        return std::nullopt;
+      }
+      result = nodeId;
+    }
+    return result;
+  }
+
+  bool executesExactlyOnce(const PipeScheduleNode &node) const {
+    return getExactPipeExecutionCount(node.op, node.location, node.callSites,
+                                      node.activeRecords, state) == 1;
+  }
+
+  std::optional<PipeNetScalarTransportSource>
+  getTransportSource(Operation *producer,
+                     const LaunchExecutionLocation &location,
+                     CBPushOp /*receiverPush*/) const {
+    auto receive = dyn_cast<CopyOp>(producer);
+    if (!receive || !isPipeReceiveCopy(receive)) {
+      return std::nullopt;
+    }
+    std::optional<PipeScheduleNodeId> postNodeId =
+        findReceivePostNode(receive, location);
+    if (!postNodeId || !executesExactlyOnce(nodes[*postNodeId])) {
+      return std::nullopt;
+    }
+    auto sendIt = completingSendByPost.find(*postNodeId);
+    if (sendIt == completingSendByPost.end()) {
+      return std::nullopt;
+    }
+    const PipeScheduleNode &sendNode = nodes[sendIt->second];
+    auto sendCopy = dyn_cast<CopyOp>(sendNode.op);
+    if (!sendCopy || !isPipeSendCopy(sendCopy) ||
+        !executesExactlyOnce(sendNode)) {
+      return std::nullopt;
+    }
+    return PipeNetScalarTransportSource{sendCopy.getSrc(), sendNode.location,
+                                        sendCopy};
+  }
+
+  ArrayRef<PipeScheduleNode> nodes;
+  const llvm::DenseMap<PipeScheduleNodeId, PipeScheduleNodeId>
+      &completingSendByPost;
+  const llvm::DenseMap<Operation *, SmallVector<PipeScheduleNodeId>>
+      &receivePostNodesByOperation;
+  ModuleState &state;
+  PipeNetScalarOriginAnalysis scalarOrigins;
+};
+
 /// Prove equal dynamic counts for two call-site-specific schedule nodes.
-bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
-                                      const PipeScheduleNode &rhs,
-                                      ModuleState &state) {
+bool proveEqualPipeScheduleNodeCounts(
+    const PipeScheduleNode &lhs, const PipeScheduleNode &rhs,
+    ModuleState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality = {}) {
   std::optional<PipeExecutionCountExpression> maybeLhs =
       getPipeExecutionCountExpression(lhs, state);
   std::optional<PipeExecutionCountExpression> maybeRhs =
@@ -1391,7 +1628,7 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
             rhsFactor.op, rhsFactor.exclusiveAncestor, rhs.location,
             state.launchDomains, evaluateLhsContextValue,
             evaluateRhsContextValue, resolveLhsFunctionArgument,
-            resolveRhsFunctionArgument);
+            resolveRhsFunctionArgument, proveAdditionalValueEquality);
       });
 }
 
@@ -1424,9 +1661,11 @@ public:
           &completingSendByPost,
       const llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
           &waitsByPost,
+      const PipeTransportScalarEqualityAnalysis &scalarEquality,
       ModuleState &state)
       : nodes(nodes), completingSendByPost(completingSendByPost),
-        waitsByPost(waitsByPost), state(state) {}
+        waitsByPost(waitsByPost), scalarEquality(scalarEquality), state(state) {
+  }
 
   /// Verify one receiver's posts in static execution order.
   LogicalResult verify(ArrayRef<PipeScheduleNodeId> postNodes) const {
@@ -1457,7 +1696,13 @@ private:
            haveSamePipeCallSites(post.callSites, completion.callSites) &&
            post.op->getBlock() == completion.op->getBlock() &&
            post.op->isBeforeInBlock(completion.op) &&
-           proveEqualPipeScheduleNodeCounts(post, completion, state);
+           proveEqualPipeScheduleNodeCounts(
+               post, completion, state,
+               [&](Value lhsValue, const LaunchExecutionLocation &lhsLocation,
+                   Value rhsValue, const LaunchExecutionLocation &rhsLocation) {
+                 return scalarEquality.proveEqual(lhsValue, lhsLocation,
+                                                  rhsValue, rhsLocation);
+               });
   }
 
   LogicalResult verifyRepeatedPost(PipeScheduleNodeId postNodeId) const {
@@ -1524,6 +1769,7 @@ private:
       &completingSendByPost;
   const llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
       &waitsByPost;
+  const PipeTransportScalarEqualityAnalysis &scalarEquality;
   ModuleState &state;
 };
 
@@ -1582,21 +1828,25 @@ void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
 /// Pair predecessor and successor operations at the same traversal position.
 /// Repeated pairs must have equal execution counts under equivalent control
 /// conditions.
-LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
-                                     ArrayRef<PipeScheduleNodeId> predecessors,
-                                     ArrayRef<PipeScheduleNodeId> successors,
-                                     PipeScheduleEdgeKind kind,
-                                     StringRef predecessorName,
-                                     StringRef successorName,
-                                     LaunchNodeCoord receiverCoord,
-                                     ModuleState &state,
-                                     bool requireEqualOccurrences = true) {
+LogicalResult addPipeOccurrenceEdges(
+    SmallVectorImpl<PipeScheduleNode> &nodes,
+    ArrayRef<PipeScheduleNodeId> predecessors,
+    ArrayRef<PipeScheduleNodeId> successors, PipeScheduleEdgeKind kind,
+    StringRef predecessorName, StringRef successorName,
+    LaunchNodeCoord receiverCoord,
+    const PipeTransportScalarEqualityAnalysis &scalarEquality,
+    ModuleState &state, bool requireEqualOccurrences = true) {
   assert(!haveInvalidPipeOccurrenceCount(predecessors, successors,
                                          requireEqualOccurrences) &&
          "static occurrence counts must be validated before pairing");
   for (auto [predecessor, successor] : llvm::zip(predecessors, successors)) {
-    if (!proveEqualPipeScheduleNodeCounts(nodes[predecessor], nodes[successor],
-                                          state)) {
+    if (!proveEqualPipeScheduleNodeCounts(
+            nodes[predecessor], nodes[successor], state,
+            [&](Value lhsValue, const LaunchExecutionLocation &lhsLocation,
+                Value rhsValue, const LaunchExecutionLocation &rhsLocation) {
+              return scalarEquality.proveEqual(lhsValue, lhsLocation, rhsValue,
+                                               rhsLocation);
+            })) {
       auto diag = nodes[successor].op->emitOpError()
                   << "cannot prove a one-to-one synchronization schedule on "
                      "PipeNet "
@@ -2040,6 +2290,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   llvm::DenseSet<PipeScheduleNodeId> postsWithInvalidCorrespondence;
   llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
       waitsByPost;
+  PipeTransportScalarEqualityAnalysis scalarEquality(
+      nodes, completingSendByPost, receivePostNodesByOperation, state);
 
   for (const auto &[pipeIdentity, occurrences] : pipeOccurrences) {
     LaunchNodeDomain destinations = getPipeDestinationLaunchNodeDomain(
@@ -2093,7 +2345,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
         if (failed(addPipeOccurrenceEdges(
                 nodes, posts, occurrences.sends,
                 PipeScheduleEdgeKind::ReceivePostEnablesSend, "receiver post",
-                "send", coord, state))) {
+                "send", coord, scalarEquality, state))) {
           postsWithInvalidCorrespondence.insert(posts.begin(), posts.end());
           break;
         }
@@ -2145,8 +2397,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     waitsByPost[*maybePostNode].push_back(waitNodeId);
   }
 
-  PipeRendezvousLifetimeAnalysis lifetimeAnalysis(nodes, completingSendByPost,
-                                                  waitsByPost, state);
+  PipeRendezvousLifetimeAnalysis lifetimeAnalysis(
+      nodes, completingSendByPost, waitsByPost, scalarEquality, state);
   for (const auto &postNodes : llvm::make_second_range(receivePostNodes)) {
     if (failed(lifetimeAnalysis.verify(postNodes))) {
       state.sawError = true;
@@ -2311,7 +2563,7 @@ struct TTLVerifyPipeNetGuardsPass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers, launchDomains, valueOrigins,
+    ModuleState state(module, **maybeTransfers, launchDomains, valueOrigins,
                       dfbIdentities);
 
     module.walk([&](Operation *op) {
@@ -2361,6 +2613,13 @@ struct TTLVerifyPipeNetSchedulePass
       return;
     }
 
+    const DFBLogicalIdentityAnalysis &dfbIdentities =
+        getAnalysis<DFBLogicalIdentityAnalysis>();
+    if (failed(verifyGuardDFBIdentities(module, dfbIdentities))) {
+      signalPassFailure();
+      return;
+    }
+
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
     FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
         PipeTransferIndex::create(module, valueOrigins);
@@ -2368,7 +2627,8 @@ struct TTLVerifyPipeNetSchedulePass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers, launchDomains, valueOrigins);
+    ModuleState state(module, **maybeTransfers, launchDomains, valueOrigins,
+                      dfbIdentities);
 
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =

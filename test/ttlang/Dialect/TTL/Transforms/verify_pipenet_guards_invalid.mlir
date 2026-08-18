@@ -2,6 +2,186 @@
 
 // Summary: Negative tests for ttl-verify-pipenet-guards diagnostics.
 
+// Matching predicate syntax cannot equate scalar reads from different global
+// tensors. Each RISC function's CRTA index identifies its original operand.
+
+#mismatchedCrtaLayout = #ttl.layout<
+    shape = [32, 32], element_type = !ttcore.tile<32x32, f32>,
+    buffer = l1, grid = [1, 1], memory = interleaved>
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @mismatched_crta_producer(
+      %count_tensor: tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>)
+      attributes {ttl.crta_indices = [0 : i32],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %count_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %payload_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %count_slot = ttl.cb_reserve %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    %count_slice = ttl.tensor_slice %count_tensor[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>
+    %count_copy = ttl.copy %count_slice, %count_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %count_copy : !ttl.transfer_handle<read>
+    ttl.cb_push %count_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %count_block = ttl.cb_wait %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %count = ttl.read_index %count_block[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    %core_x = ttl.core_x : index
+    %active = arith.cmpi slt, %core_x, %count : index
+    scf.if %active {
+      ttl.cb_push %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @mismatched_crta_consumer(
+      %count_tensor: tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>)
+      attributes {ttl.crta_indices = [1 : i32],
+                  ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %count_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %payload_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %count_slot = ttl.cb_reserve %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    %count_slice = ttl.tensor_slice %count_tensor[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>
+    %count_copy = ttl.copy %count_slice, %count_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCrtaLayout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %count_copy : !ttl.transfer_handle<read>
+    ttl.cb_push %count_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %count_block = ttl.cb_wait %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %count = ttl.read_index %count_block[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    %core_x = ttl.core_x : index
+    %active = arith.cmpi slt, %core_x, %count : index
+    scf.if %active {
+      // expected-error @below {{could not statically analyze the PipeNet guard around this op}}
+      %payload = ttl.cb_wait %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Reads of different scalar coordinates are not interchangeable predicate
+// sources even when both derive from the same global tensor tile.
+
+#mismatchedCoordsLayout = #ttl.layout<
+    shape = [32, 32], element_type = !ttcore.tile<32x32, f32>,
+    buffer = l1, grid = [1, 1], memory = interleaved>
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @mismatched_scalar_coordinates(
+      %count_tensor: tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCoordsLayout>)
+      attributes {ttl.crta_indices = [0 : i32],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %count_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %payload_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %count_slot = ttl.cb_reserve %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %count_slice = ttl.tensor_slice %count_tensor[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCoordsLayout>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCoordsLayout>
+    %count_copy = ttl.copy %count_slice, %count_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #mismatchedCoordsLayout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %count_copy : !ttl.transfer_handle<read>
+    ttl.cb_push %count_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %count_block = ttl.cb_wait %count_dfb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %producer_count = ttl.read_index %count_block[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    %consumer_count = ttl.read_index %count_block[%zero, %one]
+        : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    %core_x = ttl.core_x : index
+    %producer_active = arith.cmpi slt, %core_x, %producer_count : index
+    scf.if %producer_active {
+      ttl.cb_push %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    %consumer_active = arith.cmpi slt, %core_x, %consumer_count : index
+    scf.if %consumer_active {
+      // expected-error @below {{could not statically analyze the PipeNet guard around this op}}
+      %payload = ttl.cb_wait %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Two possible pushes are ambiguous even when both use the consumer's runtime
+// condition. One unique producer occurrence is required for the proof.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @multiple_runtime_pushes(%runtime_count: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %payload_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %active = arith.cmpi slt, %core_x, %runtime_count : index
+    scf.if %active {
+      ttl.cb_push %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.cb_push %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    scf.if %active {
+      // expected-error @below {{could not statically analyze the PipeNet guard around this op}}
+      %payload = ttl.cb_wait %payload_dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // PipeNet predicates must reference a declaration even when the module has no
 // ttl.create_pipe operation.
 

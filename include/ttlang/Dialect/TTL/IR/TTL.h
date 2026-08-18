@@ -192,6 +192,10 @@ constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 /// TTKernel body after per-core specialization and canonicalization.
 constexpr llvm::StringLiteral kUsedCBIndicesAttrName("ttl.used_cb_indices");
 
+/// Function attribute mapping local tensor arguments to global common runtime
+/// argument indices.
+constexpr llvm::StringLiteral kCRTAIndicesAttrName("ttl.crta_indices");
+
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
 class TTLDataMovementOpTrait

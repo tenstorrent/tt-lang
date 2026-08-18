@@ -172,6 +172,12 @@ getUnknownDomainWithBound(std::set<LaunchNodeCoord> boundNodes) {
 
 LaunchNodeDomain
 LaunchNodeDomain::unionWith(const LaunchNodeDomain &rhs) const {
+  if (known && rhs.isUpperBoundSubsetOf(*this)) {
+    return *this;
+  }
+  if (rhs.known && isUpperBoundSubsetOf(rhs)) {
+    return rhs;
+  }
   LaunchNodeDomain result =
       known && rhs.known ? LaunchNodeDomain{} : LaunchNodeDomain::unknown();
   const std::set<LaunchNodeCoord> *lhsBound = getUpperBoundNodes();
@@ -1013,6 +1019,7 @@ static bool proveEqualValuesAtLaunchLocations(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument,
     const LaunchNodeDomainState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality,
     llvm::DenseMap<std::pair<Value, Value>, bool> &cache) {
   std::pair<Value, Value> cacheKey{lhsValue, rhsValue};
   if (auto it = cache.find(cacheKey); it != cache.end()) {
@@ -1021,6 +1028,13 @@ static bool proveEqualValuesAtLaunchLocations(
   cache[cacheKey] = false;
 
   if (lhsValue == rhsValue && lhsLocation == rhsLocation) {
+    cache[cacheKey] = true;
+    return true;
+  }
+
+  if (proveAdditionalValueEquality &&
+      proveAdditionalValueEquality(lhsValue, lhsLocation, rhsValue,
+                                   rhsLocation)) {
     cache[cacheKey] = true;
     return true;
   }
@@ -1081,7 +1095,8 @@ static bool proveEqualValuesAtLaunchLocations(
       bool equal = proveEqualValuesAtLaunchLocations(
           *maybeLhsOperand, lhsLocation, lhsContextValueEvaluator,
           resolveLhsFunctionArgument, *maybeRhsOperand, rhsLocation,
-          rhsContextValueEvaluator, resolveRhsFunctionArgument, state, cache);
+          rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+          proveAdditionalValueEquality, cache);
       cache[cacheKey] = equal;
       return equal;
     }
@@ -1095,16 +1110,17 @@ static bool proveEqualValuesAtLaunchLocations(
             lhsForOp.getLowerBound(), lhsLocation, lhsContextValueEvaluator,
             resolveLhsFunctionArgument, rhsForOp.getLowerBound(), rhsLocation,
             rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
-            cache) &&
+            proveAdditionalValueEquality, cache) &&
         proveEqualValuesAtLaunchLocations(
             lhsForOp.getUpperBound(), lhsLocation, lhsContextValueEvaluator,
             resolveLhsFunctionArgument, rhsForOp.getUpperBound(), rhsLocation,
             rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
-            cache) &&
+            proveAdditionalValueEquality, cache) &&
         proveEqualValuesAtLaunchLocations(
             lhsForOp.getStep(), lhsLocation, lhsContextValueEvaluator,
             resolveLhsFunctionArgument, rhsForOp.getStep(), rhsLocation,
-            rhsContextValueEvaluator, resolveRhsFunctionArgument, state, cache);
+            rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+            proveAdditionalValueEquality, cache);
     cache[cacheKey] = equal;
     return equal;
   }
@@ -1129,7 +1145,8 @@ static bool proveEqualValuesAtLaunchLocations(
     return proveEqualValuesAtLaunchLocations(
         lhsOperand, lhsLocation, lhsContextValueEvaluator,
         resolveLhsFunctionArgument, rhsOperand, rhsLocation,
-        rhsContextValueEvaluator, resolveRhsFunctionArgument, state, cache);
+        rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+        proveAdditionalValueEquality, cache);
   };
   if (lhsDefiningOp != rhsDefiningOp &&
       !OperationEquivalence::isEquivalentTo(
@@ -1256,10 +1273,15 @@ static bool proveEquivalentUnresolvedExecutionContexts(
     const IntegerExpressionEvaluator::ValueEvaluator &rhsContextValueEvaluator,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument,
-    const LaunchNodeDomainState &state, bool requireConditionalExecution) {
+    const LaunchNodeDomainState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality,
+    bool requireConditionalExecution) {
   bool sameFunction = lhsContext.function == rhsContext.function;
+  bool allowCrossFunctionValueProof =
+      !requireConditionalExecution && proveAdditionalValueEquality;
   if (lhsContext.frames.size() != rhsContext.frames.size() ||
-      (!requireConditionalExecution && !sameFunction) ||
+      (!sameFunction && !allowCrossFunctionValueProof &&
+       !requireConditionalExecution) ||
       (requireConditionalExecution && !sameFunction &&
        !(lhsLocation == rhsLocation))) {
     return false;
@@ -1280,13 +1302,14 @@ static bool proveEquivalentUnresolvedExecutionContexts(
     }
     for (auto &&[lhsValue, rhsValue] :
          llvm::zip_equal(lhsFrame.controlValues, rhsFrame.controlValues)) {
-      bool equalValue = sameFunction &&
-                        proveEqualValuesAtLaunchLocations(
-                            lhsValue, lhsLocation, lhsContextValueEvaluator,
-                            resolveLhsFunctionArgument, rhsValue, rhsLocation,
-                            rhsContextValueEvaluator,
-                            resolveRhsFunctionArgument, state, equalValueCache);
-      if (!equalValue && lhsLocation == rhsLocation &&
+      bool equalValue =
+          (sameFunction || allowCrossFunctionValueProof) &&
+          proveEqualValuesAtLaunchLocations(
+              lhsValue, lhsLocation, lhsContextValueEvaluator,
+              resolveLhsFunctionArgument, rhsValue, rhsLocation,
+              rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+              proveAdditionalValueEquality, equalValueCache);
+      if (!equalValue && sameFunction && lhsLocation == rhsLocation &&
           requireConditionalExecution &&
           lhsFrame.kind == UnresolvedControlFrameKind::ScfIf) {
         equalValue = proveEquivalentDispatchConditionExpressions(
@@ -1322,12 +1345,13 @@ bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
-        resolveRhsFunctionArgument) {
+        resolveRhsFunctionArgument,
+    LaunchValueEqualityProof proveAdditionalValueEquality) {
   return proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
       lhs, nullptr, lhsLocation, rhs, nullptr, rhsLocation, state,
       IntegerExpressionEvaluator::ValueEvaluator(),
       IntegerExpressionEvaluator::ValueEvaluator(), resolveLhsFunctionArgument,
-      resolveRhsFunctionArgument);
+      resolveRhsFunctionArgument, proveAdditionalValueEquality);
 }
 
 bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
@@ -1340,7 +1364,8 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
-        resolveRhsFunctionArgument) {
+        resolveRhsFunctionArgument,
+    LaunchValueEqualityProof proveAdditionalValueEquality) {
   std::optional<UnresolvedExecutionCountContext> maybeLhsContext =
       getUnresolvedExecutionCountContext(lhs, lhsLocation, state,
                                          lhsContextValueEvaluator,
@@ -1356,6 +1381,7 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
       *maybeLhsContext, lhsLocation, lhsContextValueEvaluator,
       resolveLhsFunctionArgument, *maybeRhsContext, rhsLocation,
       rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+      proveAdditionalValueEquality,
       /*requireConditionalExecution=*/false);
 }
 
@@ -1381,8 +1407,78 @@ bool proveEquivalentConditionalExecutionAtLaunchNodes(
       IntegerExpressionEvaluator::ValueEvaluator(), resolveNoFunctionArguments,
       *maybeRhsContext, LaunchExecutionLocation(rhsCoord),
       IntegerExpressionEvaluator::ValueEvaluator(), resolveNoFunctionArguments,
-      state,
+      state, LaunchValueEqualityProof(),
       /*requireConditionalExecution=*/true);
+}
+
+bool proveEquivalentConditionalGuardsAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality) {
+  LaunchExecutionLocation lhsLocation(lhsCoord);
+  LaunchExecutionLocation rhsLocation(rhsCoord);
+  std::optional<UnresolvedExecutionCountContext> maybeLhsContext =
+      getUnresolvedExecutionCountContext(
+          lhs, lhsLocation, state,
+          IntegerExpressionEvaluator::ValueEvaluator());
+  std::optional<UnresolvedExecutionCountContext> maybeRhsContext =
+      getUnresolvedExecutionCountContext(
+          rhs, rhsLocation, state,
+          IntegerExpressionEvaluator::ValueEvaluator());
+  if (!maybeLhsContext || !maybeRhsContext ||
+      (!(maybeLhsContext->function == maybeRhsContext->function) &&
+       !(lhsLocation == rhsLocation))) {
+    return false;
+  }
+  bool sameFunction = maybeLhsContext->function == maybeRhsContext->function;
+
+  SmallVector<const UnresolvedControlFrame *> lhsBranches;
+  SmallVector<const UnresolvedControlFrame *> rhsBranches;
+  auto collectBranches =
+      [](const UnresolvedExecutionCountContext &context,
+         SmallVectorImpl<const UnresolvedControlFrame *> &branches) {
+        for (const UnresolvedControlFrame &frame : context.frames) {
+          if (frame.kind != UnresolvedControlFrameKind::ScfFor) {
+            branches.push_back(&frame);
+          }
+        }
+      };
+  collectBranches(*maybeLhsContext, lhsBranches);
+  collectBranches(*maybeRhsContext, rhsBranches);
+  if (lhsBranches.empty() || lhsBranches.size() != rhsBranches.size()) {
+    return false;
+  }
+
+  auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
+    return std::nullopt;
+  };
+  llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
+  for (auto [lhsFrame, rhsFrame] : llvm::zip_equal(lhsBranches, rhsBranches)) {
+    if (lhsFrame->kind != rhsFrame->kind ||
+        lhsFrame->regionNumber != rhsFrame->regionNumber ||
+        lhsFrame->affinePredicate != rhsFrame->affinePredicate ||
+        lhsFrame->controlValues.size() != rhsFrame->controlValues.size()) {
+      return false;
+    }
+    for (auto [lhsValue, rhsValue] :
+         llvm::zip_equal(lhsFrame->controlValues, rhsFrame->controlValues)) {
+      bool equal = proveEqualValuesAtLaunchLocations(
+          lhsValue, lhsLocation, IntegerExpressionEvaluator::ValueEvaluator(),
+          resolveNoFunctionArguments, rhsValue, rhsLocation,
+          IntegerExpressionEvaluator::ValueEvaluator(),
+          resolveNoFunctionArguments, state, proveAdditionalValueEquality,
+          equalValueCache);
+      if (!equal && sameFunction && lhsLocation == rhsLocation &&
+          lhsFrame->kind == UnresolvedControlFrameKind::ScfIf) {
+        equal = proveEquivalentDispatchConditionExpressions(lhsValue, true,
+                                                            rhsValue, true);
+      }
+      if (!equal) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
@@ -1398,7 +1494,8 @@ bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
 bool proveEqualExecutionCountAtLaunchLocations(
     Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
     const LaunchExecutionLocation &rhsLocation,
-    const LaunchNodeDomainState &state) {
+    const LaunchNodeDomainState &state,
+    LaunchValueEqualityProof proveAdditionalValueEquality) {
   std::optional<std::uint64_t> maybeLhsCount =
       getExactExecutionCountAtLaunchLocation(lhs, lhsLocation, state);
   std::optional<std::uint64_t> maybeRhsCount =
@@ -1411,7 +1508,7 @@ bool proveEqualExecutionCountAtLaunchLocations(
   };
   return proveEqualUnresolvedExecutionCountAtLaunchLocations(
       lhs, lhsLocation, rhs, rhsLocation, state, resolveNoFunctionArguments,
-      resolveNoFunctionArguments);
+      resolveNoFunctionArguments, proveAdditionalValueEquality);
 }
 
 /// Find a source file location through common composed MLIR location wrappers.
