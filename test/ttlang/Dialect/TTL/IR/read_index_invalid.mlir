@@ -13,13 +13,14 @@ func.func @read_index_without_kernel_thread(
 
 // -----
 
-// ttl.read_index is unavailable in compute threads.
-func.func @read_index_in_compute_thread(
-    %block: tensor<1x1x!ttcore.tile<32x32, f32>>)
+// Compute threads distribute scalar values through the tile-unpack interface.
+func.func @read_index_row_major_in_compute_thread()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %zero = arith.constant 0 : index
-  // expected-error @below {{is only allowed in data movement (noc) threads}}
-  %index = ttl.read_index %block[%zero, %zero] : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[32], ui16, 2>
+  %block = ttl.cb_wait %cb : <[32], ui16, 2> -> tensor<32xui16>
+  %position = arith.constant 0 : index
+  // expected-error @below {{compute-thread index reads require a tiled dataflow buffer}}
+  %index = ttl.read_index %block[%position] : tensor<32xui16> -> index
   func.return
 }
 

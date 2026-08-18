@@ -2071,9 +2071,12 @@ def TTL_ReadIndexOp : TTL_Op<"read_index", [MemoryEffects<[MemRead]>]> {
     preconditions are violated. This operation is intended for
     tensor-provided offsets such as table indices and positions.
 
-    This operation is available in data movement and compute threads. This
-    permits a data movement producer to publish an integer control value
-    through a dataflow buffer for a compute consumer.
+    This operation is available in data movement and compute threads. Data
+    movement threads may read tiled or row-major dataflow buffers. Compute
+    threads require a tiled dataflow buffer because the value is distributed
+    to every compute processor through the tile-unpack interface. This permits
+    a data movement producer to publish an integer control value for a compute
+    consumer.
 
     Example:
     ```mlir
