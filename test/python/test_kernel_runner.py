@@ -173,6 +173,10 @@ class _FakeTTNN:
         return [_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(1, 0)]
 
     @staticmethod
+    def get_dram_alignment():
+        return 64
+
+    @staticmethod
     def generic_op(tensors, program):
         return {
             "tensors": tensors,
@@ -795,6 +799,115 @@ def test_specialized_dfb_budget_is_computed_per_core(monkeypatch):
         (0, 0),
         (1, 0),
     }
+
+
+@pytest.mark.parametrize(
+    ("budget_bytes", "expected_order"),
+    [(16000, [0, 2, 1]), (18000, [0, 1, 2])],
+    ids=["reordered", "already-fits"],
+)
+def test_static_dfb_descriptors_are_ordered_to_fit_l1(
+    monkeypatch, budget_bytes, expected_order
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", budget_bytes)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (11, 9))
+    sparse_nodes = tuple(
+        (node_x, node_y)
+        for node_y, row_end_x in ((0, 7), (1, 7), (4, 7), (9, 0))
+        for node_x in range(row_end_x + 1)
+    )
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            32,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=((0, 6),),
+        ),
+        PhysicalDFBConfig(
+            1,
+            128,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=tuple(
+                (node_x, node_y) for node_y in range(10) for node_x in range(12)
+            ),
+        ),
+        PhysicalDFBConfig(
+            2,
+            112,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=sparse_nodes,
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    # The physical order requires 17,408 bytes because the full-grid DFB
+    # inherits the singleton DFB frontier. Independent DFBs first need 15,360.
+    assert [
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
+    ] == expected_order
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 6)}
+    assert _descriptor_cores(descriptors_by_index[1]) == {
+        (node_x, node_y) for node_y in range(10) for node_x in range(12)
+    }
+    assert _descriptor_cores(descriptors_by_index[2]) == set(sparse_nodes)
+
+
+def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    configs = [
+        PhysicalDFBConfig(
+            physical_index,
+            64,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=allocation_nodes,
+        )
+        for physical_index, allocation_nodes in enumerate(
+            (
+                ((0, 0), (1, 0)),
+                ((1, 0), (2, 0)),
+                ((0, 0), (2, 0)),
+            )
+        )
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "the best candidate requires 12288 bytes on core .* where 10240 bytes "
+            "remain, and exceeds the L1 budget by 2048 bytes"
+        ),
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=configs,
+            core_ranges=full_grid,
+            kernel_specs=[_specialized_spec(full_grid, None)],
+        )
 
 
 def test_specialized_dfb_budget_uses_each_cores_remaining_l1(monkeypatch):

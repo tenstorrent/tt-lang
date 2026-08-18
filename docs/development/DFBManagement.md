@@ -134,12 +134,21 @@ access that physical index. A computed-address DFB with an empty effective
 domain retains one hidden backing shard because the PipeNet ABI still requires
 a receiver address, but no launch core installs its descriptor.
 
-Descriptor construction partitions launch nodes by their complete DFB storage
-signature. Every node in one partition receives the same ordered descriptor
-sequence; different partitions receive disjoint descriptors. This preserves
-TT-Metal's static allocation cursor invariant while allowing each partition to
-omit unused allocations. Sparse partitions allocate one tensor shard per
-selected core rather than the area of their bounding rectangle.
+Descriptor construction creates one descriptor for each physical DFB storage
+source and restricts it to the exact launch nodes using that source. Sparse
+domains allocate one tensor shard per selected core rather than the area of
+their bounding rectangle.
+
+TT-Metal allocates static descriptor storage in descriptor order. It maintains
+one allocation frontier per core, and a descriptor shared by several cores
+starts at the greatest frontier among those cores. The runtime simulates these
+frontiers with TT-Metal's address alignment and the remaining L1 on each core.
+It preserves the physical-index order when that order fits. Otherwise, it
+evaluates deterministic node-count orders and improving pairwise exchanges.
+Only an order whose simulated allocation fits every selected core is emitted.
+If the bounded candidate set finds no fitting order, program construction fails
+conservatively and reports the best candidate's overflow; this does not prove
+that every possible order exceeds L1.
 
 The runtime computes static DFB bytes independently for every selected core and
 compares them with that core's remaining L1. Tensor-backed and already
