@@ -8,10 +8,10 @@ import pytest
 
 from test_utils import make_ones_tile
 
-from sim.blockstate import KernelType
 from sim.context import set_current_kernel_type
 from sim.copy import ReceiveRequest, copy, wait_any
 from sim.dfb import Block, DataflowBuffer
+from sim.kernel import KernelKind
 from sim.pipe import Pipe
 
 
@@ -25,7 +25,7 @@ def make_ready_requests(
     count: int, ready_indices: tuple[int, ...] | None = None
 ) -> tuple[tuple[ReceiveRequest, ...], tuple[Block, ...]]:
     """Create distinct receives and send one message to selected pipes."""
-    set_current_kernel_type(KernelType.DM)
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
     pipes = tuple(Pipe(0, pipe_index + 1) for pipe_index in range(count))
     landing_dfbs = tuple(
         DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
