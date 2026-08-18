@@ -178,11 +178,12 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
   ttcore::DataType resultDataType = resultType.getDataType();
   bool hasMatchingDataTypes =
       lhsDataType == rhsDataType && lhsDataType == resultDataType;
-  bool isBFloat16ByBFPBFloat4 = !transposeRhs &&
-                                lhsDataType == ttcore::DataType::BFloat16 &&
-                                rhsDataType == ttcore::DataType::BFP_BFloat4 &&
-                                resultDataType == ttcore::DataType::BFloat16;
-  if (!hasMatchingDataTypes && !isBFloat16ByBFPBFloat4) {
+  bool isBFloat16ByBFP = !transposeRhs &&
+                         lhsDataType == ttcore::DataType::BFloat16 &&
+                         (rhsDataType == ttcore::DataType::BFP_BFloat4 ||
+                          rhsDataType == ttcore::DataType::BFP_BFloat8) &&
+                         resultDataType == ttcore::DataType::BFloat16;
+  if (!hasMatchingDataTypes && !isBFloat16ByBFP) {
     diagnostic << "unsupported matmul element data type combination: lhs has "
                << lhsType << ", rhs has " << rhsType << ", and result has "
                << resultType;

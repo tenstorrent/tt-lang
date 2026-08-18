@@ -94,6 +94,22 @@ func.func @matmul_transposed_bfp4_rhs(
 
 // -----
 
+// Mixed-format matmul does not support a transposed packed rhs because the
+// Blackhole unpacker contract used by the generated primitive is non-transposed.
+func.func @matmul_transposed_bfp8_rhs(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<4x3x!ttcore.tile<32x32, bfp_bf8>>)
+    -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{unsupported matmul element data type combination: lhs has !ttcore.tile<32x32, bf16>, rhs has !ttcore.tile<32x32, bfp_bf8>, and result has !ttcore.tile<32x32, bf16>}}
+  %r = ttl.matmul %a, %b {transpose_rhs}
+      : tensor<2x3x!ttcore.tile<32x32, bf16>>,
+        tensor<4x3x!ttcore.tile<32x32, bfp_bf8>>
+        -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
 // Test: transpose_rhs K mismatch. RHS is [N, K]=[4, 5] so its K (5) does not
 // match lhs K (3).
 func.func @matmul_transpose_k_mismatch(
