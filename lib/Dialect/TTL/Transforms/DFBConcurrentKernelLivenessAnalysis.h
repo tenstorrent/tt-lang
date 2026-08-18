@@ -146,6 +146,7 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
 
 /// Protocol state proved for one access interval between lifecycle boundaries.
 struct DFBLifecycleEpoch {
+  std::uint64_t executionCount = 1;
   SmallVector<unsigned> accessOccurrenceIndices;
   SmallVector<unsigned> earliestEntryEvents;
   SmallVector<unsigned> terminalCompletionEvents;

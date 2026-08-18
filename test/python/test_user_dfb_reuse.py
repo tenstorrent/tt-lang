@@ -877,17 +877,17 @@ def _make_repeated_synchronized_reset_kernel(data_format, reset_all):
         reset_allocation = ttl.make_dfb_allocation_group()
         stale_dfb = ttl.make_dfb(
             data_format,
-            shape=(1, 1),
+            shape=(1, 2),
             block_count=1,
             allocation_group=reset_allocation,
         )
         current_dfb = ttl.make_dfb(
             data_format,
             shape=(1, 1),
-            block_count=1,
+            block_count=3,
             allocation_group=reset_allocation,
         )
-        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
 
         @ttl.compute(kernel=compute_kernel)
         def compute():
@@ -904,13 +904,13 @@ def _make_repeated_synchronized_reset_kernel(data_format, reset_all):
         def read():
             for _reset_iteration in range(4):
                 with stale_dfb.reserve() as stale_destination:
-                    ttl.copy(input_tensor[0, 0], stale_destination).wait()
+                    ttl.copy(input_tensor[0:1, 0:2], stale_destination).wait()
                 if reset_all:
                     ttl.reset_all_dfbs(reset)
                 else:
                     ttl.reset_dfbs(reset, dfbs=[stale_dfb])
             with current_dfb.reserve() as current_destination:
-                ttl.copy(input_tensor[0, 1], current_destination).wait()
+                ttl.copy(input_tensor[0, 0], current_destination).wait()
 
         @ttl.datamovement(kernel=writer_kernel)
         def write():
@@ -1718,14 +1718,11 @@ def test_repeated_synchronized_reset_run(
         operation(
             input_tensor,
             output_tensor,
-            options=(
-                "--ttl-reuse-user-dfbs "
-                "--ttl-unsafe-assume-dfb-allocation-groups"
-            ),
+            options="--ttl-reuse-user-dfbs",
         )
 
         actual = ttnn.to_torch(output_tensor).float()
-        expected = input_host[:, TILE:].float()
+        expected = input_host[:, :TILE].float()
         if dtype == torch.bfloat16:
             assert_allclose(actual, expected, rtol=0.05, atol=1.0)
         else:
