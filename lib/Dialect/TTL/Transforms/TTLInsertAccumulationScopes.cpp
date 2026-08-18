@@ -1,0 +1,280 @@
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// TTL Insert Accumulation Scopes
+//===----------------------------------------------------------------------===//
+//
+// Inserts semantic accumulation regions before a later strategy-selection pass
+// chooses DST, L1 packer, or explicit dataflow buffer state lowering.
+//
+//===----------------------------------------------------------------------===//
+
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
+
+#include <optional>
+
+#define DEBUG_TYPE "ttl-insert-accumulation-scopes"
+
+namespace mlir::tt::ttl {
+
+#define GEN_PASS_DEF_TTLINSERTACCUMULATIONSCOPES
+#include "ttlang/Dialect/TTL/Passes.h.inc"
+
+namespace {
+
+/// Return true when `operation` contains a non-accumulating store to the exact
+/// view SSA value. Exact matching is required because this pass does not have
+/// alias metadata for proving that two different slice values identify the
+/// same output tile set.
+static bool containsPlainStoreToView(Operation *operation, Value view) {
+  bool found = false;
+  operation->walk([&](StoreOp store) {
+    if (!store.getAccumulate() && store.getView() == view) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
+/// Determine whether iteration 0 should overwrite L1 or accumulate onto a value
+/// produced by a preceding non-accumulating store to the same output view.
+static FailureOr<AccumulationInitialMode>
+getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
+  Value view = store.getView();
+  Value targetDFB;
+  if (auto reserve = findCBReserveForView(view)) {
+    targetDFB = reserve.getCb();
+  } else {
+    targetDFB = getAttachedCB(view);
+  }
+
+  auto isSameDFB = [&](Value cb) { return targetDFB && cb == targetDFB; };
+
+  Operation *cursor = loop.getOperation();
+  while (Block *block = cursor->getBlock()) {
+    for (auto iter = Block::reverse_iterator(Block::iterator(cursor));
+         iter != block->rend(); ++iter) {
+      Operation *operation = &*iter;
+      if (auto priorStore = dyn_cast<StoreOp>(operation)) {
+        if (priorStore.getView() == view) {
+          if (priorStore.getAccumulate()) {
+            return failure();
+          }
+          return AccumulationInitialMode::AccumulateExisting;
+        }
+        continue;
+      }
+      if (auto reserve = dyn_cast<CBReserveOp>(operation)) {
+        if (isSameDFB(reserve.getCb())) {
+          return AccumulationInitialMode::Overwrite;
+        }
+        continue;
+      }
+      if (auto push = dyn_cast<CBPushOp>(operation)) {
+        if (isSameDFB(push.getCb())) {
+          return AccumulationInitialMode::Overwrite;
+        }
+        continue;
+      }
+      if (operation->getNumRegions() > 0 &&
+          containsPlainStoreToView(operation, view)) {
+        return failure();
+      }
+    }
+    Operation *parentOp = block->getParentOp();
+    if (!parentOp || isa<func::FuncOp>(parentOp)) {
+      break;
+    }
+    cursor = parentOp;
+  }
+
+  return AccumulationInitialMode::Overwrite;
+}
+
+/// Collect direct accumulating stores whose nearest enclosing loop is `loop`.
+/// Conditional accumulation is rejected before inserting scopes because the L1
+/// packer enable point is tied to loop iteration 0, not to dynamic control flow
+/// inside the loop.
+static FailureOr<SmallVector<StoreOp, 2>>
+collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
+  SmallVector<StoreOp, 2> stores;
+  SmallVector<StoreOp, 2> plainStores;
+  loop->walk([&](StoreOp store) {
+    if (store->getParentOfType<scf::ForOp>() != loop) {
+      return WalkResult::advance();
+    }
+    if (!store.getAccumulate()) {
+      plainStores.push_back(store);
+      return WalkResult::advance();
+    }
+    if (store->getParentOp() != loop.getOperation()) {
+      store.emitOpError()
+          << "+= inside a conditional is not supported (#504); move the "
+             "condition outside the accumulation loop or use a separate loop "
+             "for the conditional branch";
+      hadFailure = true;
+      return WalkResult::interrupt();
+    }
+    stores.push_back(store);
+    return WalkResult::advance();
+  });
+  if (hadFailure) {
+    return failure();
+  }
+  if (!stores.empty() && !plainStores.empty()) {
+    plainStores.front().emitOpError()
+        << "non-accumulating store inside a += loop is not supported (#648); "
+           "packer L1 accumulation state applies to every pack in the loop, "
+           "including stores to other outputs; move the plain store outside "
+           "the accumulation loop or split the loop";
+    hadFailure = true;
+    return failure();
+  }
+  return stores;
+}
+
+/// Insert a semantic accumulation scope around one user-written DFB
+/// accumulation loop. The scope carries the initial-mode decision so later
+/// lowering does not rediscover it from neighboring stores or dataflow buffer
+/// operations.
+static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
+                                                DominanceInfo &domInfo,
+                                                bool &hadFailure,
+                                                RewriterBase &rewriter) {
+  if (loop->getParentOfType<AccumulationScopeOp>() ||
+      hasTTLDialectAttribute(loop)) {
+    return failure();
+  }
+
+  FailureOr<SmallVector<StoreOp, 2>> stores =
+      collectDFBAccumulationStores(loop, hadFailure);
+  if (failed(stores)) {
+    return failure();
+  }
+  if (stores->empty()) {
+    return failure();
+  }
+
+  MLIRContext *context = loop.getContext();
+  SmallVector<Value, 2> outputs;
+  SmallVector<Attribute, 2> initialModes;
+  llvm::DenseSet<Value> seenOutputs;
+  std::optional<AccumulationInitialMode> loopMode;
+
+  for (StoreOp store : *stores) {
+    Operation *reserveOp = nullptr;
+    if (auto reserve = findCBReserveForView(store.getView())) {
+      reserveOp = reserve.getOperation();
+    } else {
+      reserveOp = store.getView().getDefiningOp();
+    }
+
+    // The reserve must dominate the loop so every iteration updates the same
+    // output slot.
+    if (reserveOp && !domInfo.properlyDominates(reserveOp, loop)) {
+      hadFailure = true;
+      return store.emitOpError(
+          "accumulating store requires an output reserve that dominates the "
+          "accumulation loop; move the reserve before the loop");
+    }
+
+    if (!seenOutputs.insert(store.getView()).second) {
+      hadFailure = true;
+      return store.emitOpError(
+          "multiple accumulating stores to the same output view in one loop "
+          "are not supported; combine the updates before storing or split them "
+          "into separate loops");
+    }
+
+    FailureOr<AccumulationInitialMode> mode =
+        getInitialModeForAccumulatingStore(store, loop);
+    if (failed(mode)) {
+      hadFailure = true;
+      return store.emitOpError(
+          "cannot determine L1 accumulation initial mode; keep initialization "
+          "as a straight-line store before the loop or split the loop");
+    }
+    if (!loopMode) {
+      loopMode = *mode;
+    } else if (*loopMode != *mode) {
+      hadFailure = true;
+      return loop.emitOpError()
+             << "has accumulating stores requiring different L1 initial modes; "
+                "split outputs with different initialization requirements into "
+                "separate loops";
+    }
+
+    outputs.push_back(store.getView());
+    initialModes.push_back(AccumulationInitialModeAttr::get(context, *mode));
+  }
+
+  rewriter.setInsertionPoint(loop);
+  auto scope = AccumulationScopeOp::create(rewriter, loop.getLoc(), outputs,
+                                           ValueRange{},
+                                           rewriter.getArrayAttr(initialModes));
+
+  SmallVector<Type, 2> outputTypes;
+  SmallVector<Location, 2> outputLocs;
+  for (Value output : outputs) {
+    outputTypes.push_back(output.getType());
+    outputLocs.push_back(output.getLoc());
+  }
+  Block *body =
+      rewriter.createBlock(&scope.getBody(), {}, outputTypes, outputLocs);
+
+  rewriter.moveOpBefore(loop, body, body->end());
+  rewriter.setInsertionPointToEnd(body);
+  YieldOp::create(rewriter, loop.getLoc(), body->getArguments());
+  return success();
+}
+
+struct TTLInsertAccumulationScopesPass
+    : public impl::TTLInsertAccumulationScopesBase<
+          TTLInsertAccumulationScopesPass> {
+  using impl::TTLInsertAccumulationScopesBase<
+      TTLInsertAccumulationScopesPass>::TTLInsertAccumulationScopesBase;
+
+  void runOnOperation() override {
+    if (kind != "dfb") {
+      getOperation().emitOpError()
+          << "invalid accumulation scope insertion kind `" << kind
+          << "`; expected `dfb`";
+      signalPassFailure();
+      return;
+    }
+
+    SmallVector<scf::ForOp> loops;
+    getOperation().walk<WalkOrder::PostOrder>(
+        [&](scf::ForOp loop) { loops.push_back(loop); });
+
+    IRRewriter rewriter(&getContext());
+    DominanceInfo domInfo(getOperation());
+    bool hadFailure = false;
+    for (scf::ForOp loop : loops) {
+      (void)insertDFBAccumulationScope(loop, domInfo, hadFailure, rewriter);
+      if (hadFailure) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+};
+
+} // namespace
+
+} // namespace mlir::tt::ttl

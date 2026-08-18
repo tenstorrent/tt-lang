@@ -12,7 +12,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -23,7 +25,44 @@
 
 namespace mlir::tt::ttl {
 
+int64_t getNextL1AccScopeId(Operation *root) {
+  int64_t nextScopeId = 0;
+  root->walk([&](Operation *operation) {
+    auto attr = operation->getAttrOfType<IntegerAttr>(kL1AccScopeIdAttrName);
+    if (!attr) {
+      return;
+    }
+    int64_t candidateScopeId = attr.getInt() + 1;
+    if (candidateScopeId > nextScopeId) {
+      nextScopeId = candidateScopeId;
+    }
+  });
+  return nextScopeId;
+}
+
+FailureOr<AccumulationScopeKind> parseAccumulationScopeKind(StringRef kind) {
+  if (kind == "tensor") {
+    return AccumulationScopeKind::Tensor;
+  }
+  if (kind == "dfb") {
+    return AccumulationScopeKind::DFB;
+  }
+  return failure();
+}
+
 namespace {
+
+/// Accept frontend-emitted index casts around integer literals when computing
+/// static loop bounds before canonicalization.
+static std::optional<int64_t> getConstantIntThroughIndexCast(Value value) {
+  if (auto constantValue = getConstantIntValue(value)) {
+    return *constantValue;
+  }
+  if (auto indexCast = value.getDefiningOp<arith::IndexCastOp>()) {
+    return getConstantIntThroughIndexCast(indexCast.getIn());
+  }
+  return std::nullopt;
+}
 
 /// Return the wait that produces the matched contribution tensor. When the
 /// recurrence uses an attached tensor view, report the attach separately so DST
@@ -199,6 +238,41 @@ static Value createTilePlaceholder(RewriterBase &rewriter, Location loc,
 }
 
 } // namespace
+
+bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex) {
+  return isa<RankedTensorType>(loop.getInitArgs()[resultIndex].getType());
+}
+
+std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop) {
+  if (std::optional<llvm::APInt> tripCount = loop.getStaticTripCount()) {
+    if (tripCount->getActiveBits() > 63) {
+      return std::nullopt;
+    }
+    return static_cast<int64_t>(tripCount->getZExtValue());
+  }
+
+  std::optional<int64_t> lowerBound =
+      getConstantIntThroughIndexCast(loop.getLowerBound());
+  std::optional<int64_t> upperBound =
+      getConstantIntThroughIndexCast(loop.getUpperBound());
+  std::optional<int64_t> step = getConstantIntThroughIndexCast(loop.getStep());
+  if (!lowerBound || !upperBound || !step || *step <= 0) {
+    return std::nullopt;
+  }
+
+  if (*upperBound <= *lowerBound) {
+    return 0;
+  }
+
+  uint64_t distance =
+      static_cast<uint64_t>(*upperBound) - static_cast<uint64_t>(*lowerBound);
+  uint64_t stepValue = static_cast<uint64_t>(*step);
+  uint64_t tripCount = 1 + (distance - 1) / stepValue;
+  if (tripCount > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<int64_t>(tripCount);
+}
 
 FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     scf::ForOp loop, unsigned resultIndex,
@@ -382,11 +456,46 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
   }
 
   return TensorDstAccumulationInfo{
-      *unitTileCount,          initialValue,
-      contributionResidency,   contributionWait,
-      attachedContribution,    contributionType,
-      residentContributionPop, residentContributionLastUse,
+      getStaticAccumulationTripCount(loop),
+      *unitTileCount,
+      initialValue,
+      contributionResidency,
+      contributionWait,
+      attachedContribution,
+      contributionType,
+      residentContributionPop,
+      residentContributionLastUse,
   };
+}
+
+FailureOr<TensorL1PackAccumulationInfo>
+analyzeTensorAccumulationForL1Pack(const TensorAccumulationMatch &match) {
+  scf::ForOp loop = match.loop;
+  if (match.contribution.getType() != match.tensorType ||
+      loop.getNumResults() != 1 || match.resultIndex != 0) {
+    return failure();
+  }
+
+  bool hasLoopLocalStore = false;
+  loop->walk([&](StoreOp) {
+    hasLoopLocalStore = true;
+    return WalkResult::interrupt();
+  });
+  if (hasLoopLocalStore) {
+    return failure();
+  }
+
+  std::optional<int64_t> unitTileCount;
+  if (auto contributionType =
+          dyn_cast<RankedTensorType>(match.contribution.getType())) {
+    FailureOr<int64_t> tileCount = getStaticTensorTileCount(contributionType);
+    if (succeeded(tileCount)) {
+      unitTileCount = *tileCount;
+    }
+  }
+
+  return TensorL1PackAccumulationInfo{getStaticAccumulationTripCount(loop),
+                                      unitTileCount};
 }
 
 void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
@@ -401,11 +510,11 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
     rewriter.moveOpBefore(outputReserve, loop);
   }
 
-  OpBuilder::InsertionGuard sectionGuard(rewriter);
   rewriter.setInsertionPoint(loop);
   auto dstSection = DstSectionOp::create(rewriter, loc);
   Block &sectionBody = dstSection.getBody().front();
 
+  OpBuilder::InsertionGuard sectionGuard(rewriter);
   rewriter.setInsertionPoint(sectionBody.getTerminator());
 
   Type tileType = match.tensorType.getElementType();
@@ -512,6 +621,69 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
     rewriter.eraseOp(attach);
   }
   rewriter.eraseOp(loop);
+}
+
+LogicalResult
+lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
+                                int64_t scopeId, RewriterBase &rewriter) {
+  if (failed(analyzeTensorAccumulationForL1Pack(match))) {
+    return failure();
+  }
+
+  scf::ForOp loop = match.loop;
+  CBReserveOp outputReserve = match.reserve;
+  if (outputReserve->getBlock() == loop->getBlock() &&
+      !outputReserve->isBeforeInBlock(loop)) {
+    rewriter.moveOpBefore(outputReserve, loop);
+  }
+
+  AddOp add = match.add;
+  StoreOp finalStore = match.finalStore;
+
+  rewriter.setInsertionPoint(loop);
+  StoreOp::create(rewriter, finalStore.getLoc(), match.initialValue,
+                  outputReserve.getResult(), /*accumulate=*/nullptr);
+  auto newLoop =
+      scf::ForOp::create(rewriter, loop.getLoc(), loop.getLowerBound(),
+                         loop.getUpperBound(), loop.getStep(), ValueRange{});
+  for (NamedAttribute attr : loop->getAttrs()) {
+    newLoop->setAttr(attr.getName(), attr.getValue());
+  }
+  newLoop->setAttr(kL1AccLoopAttrName, rewriter.getUnitAttr());
+  newLoop->setAttr(
+      kL1AccInitialAttrName,
+      AccumulationInitialModeAttr::get(
+          rewriter.getContext(), AccumulationInitialMode::AccumulateExisting));
+  newLoop->setAttr(kL1AccScopeIdAttrName, rewriter.getI64IntegerAttr(scopeId));
+
+  Block *newBody = newLoop.getBody();
+  if (!newBody->empty() && isa<scf::YieldOp>(newBody->back())) {
+    rewriter.eraseOp(&newBody->back());
+  }
+
+  IRMapping mapper;
+  mapper.map(loop.getInductionVar(), newLoop.getInductionVar());
+  rewriter.setInsertionPointToEnd(newBody);
+  bool emittedAccumulatingStore = false;
+  for (Operation &bodyOp : loop.getBody()->without_terminator()) {
+    if (&bodyOp == add.getOperation()) {
+      Value contribution = mapper.lookupOrDefault(match.contribution);
+      StoreOp::create(rewriter, bodyOp.getLoc(), contribution,
+                      outputReserve.getResult(), rewriter.getUnitAttr());
+      emittedAccumulatingStore = true;
+      continue;
+    }
+    rewriter.clone(bodyOp, mapper);
+  }
+  assert(emittedAccumulatingStore && "match must contain a loop-local add");
+  scf::YieldOp::create(rewriter, loop.getBody()->getTerminator()->getLoc());
+
+  rewriter.eraseOp(match.finalStore);
+  for (AttachCBOp attach : match.deadReserveAttachOps) {
+    rewriter.eraseOp(attach);
+  }
+  rewriter.eraseOp(loop);
+  return success();
 }
 
 } // namespace mlir::tt::ttl
