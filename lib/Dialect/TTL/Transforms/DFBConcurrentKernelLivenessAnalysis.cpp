@@ -1847,10 +1847,20 @@ static bool tryAddCumulativeQueueEdges(
      bool includeUnknownDomains);
 
 static bool
-hasRepeatedEffectOperation(ArrayRef<const AccessRun *> protocolRuns) {
+hasRepeatedOpaqueEffectOperation(ArrayRef<const AccessRun *> protocolRuns) {
   DenseSet<Operation *> operations;
   return llvm::any_of(protocolRuns, [&](const AccessRun *run) {
-    return !operations.insert(run->access->operation).second;
+    Operation *operation = run->access->operation;
+    return isa<OpaqueCallOp>(operation) && !operations.insert(operation).second;
+  });
+}
+
+static bool
+supportsCumulativeQueueProof(ArrayRef<const AccessRun *> protocolRuns) {
+  return !protocolRuns.empty() &&
+         llvm::all_of(protocolRuns, [](const AccessRun *run) {
+           return run->executionCount == 1 &&
+                  isa<OpaqueCallOp>(run->access->operation);
   });
 }
 
@@ -1863,26 +1873,40 @@ static void addProtocolSynchronizationEdges(
     LaunchNodeCoord node, const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains) {
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    SmallVector<const AccessRun *> reserves;
     SmallVector<const AccessRun *> pushes;
     SmallVector<const AccessRun *> waits;
+    SmallVector<const AccessRun *> pops;
     for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
       auto runIt = accessRuns.find(&access);
       if (runIt == accessRuns.end()) {
         continue;
       }
-      if (access.protocolEffect == DFBProtocolEffectKind::Push) {
+      if (access.protocolEffect == DFBProtocolEffectKind::Reserve) {
+        reserves.push_back(&runIt->second);
+      } else if (access.protocolEffect == DFBProtocolEffectKind::Push) {
         pushes.push_back(&runIt->second);
       } else if (access.protocolEffect == DFBProtocolEffectKind::Wait) {
         waits.push_back(&runIt->second);
+      } else if (access.protocolEffect == DFBProtocolEffectKind::Pop) {
+        pops.push_back(&runIt->second);
       }
     }
 
+    SmallVector<const AccessRun *> producerProtocolRuns;
+    llvm::append_range(producerProtocolRuns, reserves);
+    llvm::append_range(producerProtocolRuns, pushes);
+    SmallVector<const AccessRun *> consumerProtocolRuns;
+    llvm::append_range(consumerProtocolRuns, waits);
+    llvm::append_range(consumerProtocolRuns, pops);
+
     // Repeated effects in one opaque call share one completion event. Exact
     // matching would impose an all-before-all relation; cumulative analysis
-    // instead determines whether the internal producer/consumer schedule can
-    // make progress.
-    if (hasRepeatedEffectOperation(pushes) ||
-        hasRepeatedEffectOperation(waits)) {
+    // can replace those edges only when it supports both complete schedules.
+    if (supportsCumulativeQueueProof(producerProtocolRuns) &&
+        supportsCumulativeQueueProof(consumerProtocolRuns) &&
+        (hasRepeatedOpaqueEffectOperation(pushes) ||
+         hasRepeatedOpaqueEffectOperation(waits))) {
       continue;
     }
 
@@ -2410,8 +2434,9 @@ isSingleOpaqueCallQueueScheduleFeasible(const CumulativeQueueSide &producer,
       producer.orderedRuns.front()->access->operation;
   Operation *consumerOperation =
       consumer.orderedRuns.front()->access->operation;
-  bool hasRepeatedEffects = hasRepeatedEffectOperation(producer.orderedRuns) ||
-                            hasRepeatedEffectOperation(consumer.orderedRuns);
+  bool hasRepeatedEffects =
+      hasRepeatedOpaqueEffectOperation(producer.orderedRuns) ||
+      hasRepeatedOpaqueEffectOperation(consumer.orderedRuns);
   if (producerOperation == consumerOperation || !hasRepeatedEffects) {
     return false;
   }
@@ -2754,12 +2779,6 @@ static DFBQuiescenceProof computeProtocolLifetime(
   SmallVector<const AccessRun *> consumerProtocolRuns;
   llvm::append_range(consumerProtocolRuns, waits);
   llvm::append_range(consumerProtocolRuns, pops);
-  auto supportsCumulativeQueueProof = [](ArrayRef<const AccessRun *> runs) {
-    return llvm::all_of(runs, [](const AccessRun *run) {
-      return run->executionCount == 1 &&
-             isa<OpaqueCallOp>(run->access->operation);
-    });
-  };
   bool useCumulativeQueueProof =
       !resetTerminatedProducer &&
       supportsCumulativeQueueProof(producerProtocolRuns) &&
