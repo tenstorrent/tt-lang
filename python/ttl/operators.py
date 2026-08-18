@@ -53,7 +53,13 @@ def call_extern_func(
 
 
 class DFBEffect:
-    """Ordered synchronous DFB actions performed by an external call."""
+    """Ordered synchronous DFB actions performed by an external call.
+
+    Tile and repeat counts accept static integer expressions over literals,
+    integer captures, and module globals using ``+``, ``-``, ``*``, ``//``,
+    and ``%``. Runtime values and booleans are invalid counts. Floor-division
+    and modulo divisors must be nonzero.
+    """
 
     @staticmethod
     def repeat(count: int, effects, /):

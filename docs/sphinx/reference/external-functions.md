@@ -223,6 +223,11 @@ dfb_effects=[
 ]
 ```
 
+Tile and repeat counts may use integer literals, integer captures, and
+module-level integer variables combined with unary `+` or `-` and the binary
+operators `+`, `-`, `*`, `//`, and `%`. Booleans and runtime SSA values are not
+static integer counts. Floor-division and modulo divisors must be nonzero.
+
 Every listed action occurs on every execution of the call, and list order is
 execution order. Conditional actions must use TTL control flow around both the
 matching acquisition and a call with an unconditional summary, execute

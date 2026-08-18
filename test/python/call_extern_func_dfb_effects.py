@@ -22,6 +22,7 @@ import ttnn
 
 
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
+EFFECT_TILES = 5
 reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
 
 
@@ -36,18 +37,18 @@ def make_external_stage(transaction_count):
             dfb_dependencies=[destination],
             dfb_effects=[
                 ttl.DFBEffect.repeat(
-                    transaction_count,
+                    -(-transaction_count),
                     [
-                        ttl.DFBEffect.wait(source, tiles=2),
-                        ttl.DFBEffect.pop(source, tiles=2),
+                        ttl.DFBEffect.wait(source, tiles=(EFFECT_TILES + 1) // 3),
+                        ttl.DFBEffect.pop(source, tiles=EFFECT_TILES - 3),
                     ],
                 ),
                 ttl.DFBEffect.repeat(
                     0,
                     [ttl.DFBEffect.wait(destination, tiles=99)],
                 ),
-                ttl.DFBEffect.reserve(destination, tiles=1),
-                ttl.DFBEffect.push(destination, tiles=1),
+                ttl.DFBEffect.reserve(destination, tiles=(EFFECT_TILES * 2) % 3),
+                ttl.DFBEffect.push(destination, tiles=+(EFFECT_TILES % 2)),
             ],
             unknown_dfb_access=True,
             kernel=reader,

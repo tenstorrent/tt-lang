@@ -59,7 +59,7 @@ def make_invalid_repeated_effect(mode):
                 dfb_dependencies=[source],
                 dfb_effects=[
                     ttl.DFBEffect.repeat(
-                        node_x,
+                        node_x + 1,
                         [ttl.DFBEffect.wait(source, tiles=1)],
                     )
                 ],
