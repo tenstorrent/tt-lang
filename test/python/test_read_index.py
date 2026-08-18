@@ -18,46 +18,81 @@ SLOT_TILES = 2
 SLOT_COUNT = 4
 
 
-@ttl.operation(grid=(1, 1))
-def compute_controlled_arithmetic(index_tensor, activation, output):
-    index_dfb = ttl.make_dataflow_buffer_like(index_tensor, shape=(1, 1), block_count=1)
-    activation_dfb = ttl.make_dataflow_buffer_like(
-        activation, shape=(1, 1), block_count=1
-    )
-    output_dfb = ttl.make_dataflow_buffer_like(output, shape=(1, 1), block_count=1)
+def _make_compute_controlled_arithmetic(expected_index, read_column):
+    @ttl.operation(grid=(1, 1))
+    def compute_controlled_arithmetic(index_tensor, activation, output):
+        index_dfb = ttl.make_dataflow_buffer_like(
+            index_tensor, shape=(1, 1), block_count=1
+        )
+        activation_dfb = ttl.make_dataflow_buffer_like(
+            activation, shape=(1, 1), block_count=1
+        )
+        output_dfb = ttl.make_dataflow_buffer_like(output, shape=(1, 1), block_count=1)
 
-    with index_dfb.reserve() as index_destination:
-        ttl.copy(index_tensor[0, 0], index_destination).wait()
-    with activation_dfb.reserve() as activation_destination:
-        ttl.copy(activation[0, 0], activation_destination).wait()
+        with index_dfb.reserve() as index_destination:
+            ttl.copy(index_tensor[0, 0], index_destination).wait()
+        with activation_dfb.reserve() as activation_destination:
+            ttl.copy(activation[0, 0], activation_destination).wait()
 
-    with (
-        index_dfb.wait() as index_block,
-        activation_dfb.wait() as activation_block,
-        output_dfb.reserve() as output_block,
-    ):
-        runtime_index = ttl.read_index(index_block, 0, 0)
-        if runtime_index == 0:
-            output_block.store(activation_block + activation_block)
-        else:
-            output_block.store(activation_block * activation_block)
+        with (
+            index_dfb.wait() as index_block,
+            activation_dfb.wait() as activation_block,
+            output_dfb.reserve() as output_block,
+        ):
+            runtime_index = ttl.read_index(index_block, 0, read_column)
+            if runtime_index == expected_index:
+                output_block.store(activation_block + activation_block)
+            else:
+                output_block.store(activation_block * activation_block)
 
-    with output_dfb.wait() as published_output_block:
-        ttl.copy(published_output_block, output[0, 0]).wait()
+        with output_dfb.wait() as published_output_block:
+            ttl.copy(published_output_block, output[0, 0]).wait()
+
+    return compute_controlled_arithmetic
 
 
 @pytest.mark.parametrize(
-    "index_dtype",
-    [torch.bfloat16, torch.float32, torch.uint8, torch.uint16, torch.uint32],
-    ids=["bf16", "fp32", "ui8", "ui16", "ui32"],
+    "index_dtype,stored_index,expected_index,read_column",
+    [
+        (torch.bfloat16, 130, 130, 3),
+        (torch.bfloat16, 0, 130, 3),
+        (torch.float32, 8388610, 8388610, 5),
+        (torch.float32, 0, 8388610, 5),
+        (torch.uint8, 255, 255, 7),
+        (torch.uint8, 0, 255, 7),
+        (torch.uint16, 65535, 65535, 7),
+        (torch.uint16, 0, 65535, 7),
+        (torch.uint32, 2147483647, 2147483647, 9),
+        (torch.uint32, 0, 2147483647, 9),
+    ],
+    ids=[
+        "bf16-match",
+        "bf16-mismatch",
+        "fp32-match",
+        "fp32-mismatch",
+        "ui8-match",
+        "ui8-mismatch",
+        "ui16-match",
+        "ui16-mismatch",
+        "ui32-match",
+        "ui32-mismatch",
+    ],
 )
 @pytest.mark.parametrize("memory", ["dram", "l1"])
-@pytest.mark.parametrize("runtime_index", [0, 1])
-def test_read_index_controls_compute(device, index_dtype, memory, runtime_index):
+def test_read_index_controls_compute(
+    device,
+    index_dtype,
+    stored_index,
+    expected_index,
+    read_column,
+    memory,
+):
     """A DFB-provided integer predicates compute-thread tile arithmetic."""
 
     tensor_factory = to_dram if memory == "dram" else to_l1
-    index_host = torch.full((TILE_SIZE, TILE_SIZE), runtime_index, dtype=index_dtype)
+    background_index = expected_index if stored_index != expected_index else 0
+    index_host = torch.full((TILE_SIZE, TILE_SIZE), background_index, dtype=index_dtype)
+    index_host[0, read_column] = stored_index
     activation_host = (
         torch.arange(TILE_SIZE * TILE_SIZE, dtype=torch.float32)
         .remainder(17)
@@ -70,10 +105,12 @@ def test_read_index_controls_compute(device, index_dtype, memory, runtime_index)
     activation = tensor_factory(activation_host, device)
     output = tensor_factory(output_host, device)
 
-    compute_controlled_arithmetic(index_tensor, activation, output)
+    _make_compute_controlled_arithmetic(expected_index, read_column)(
+        index_tensor, activation, output
+    )
 
     actual = ttnn.to_torch(output).float()
-    if runtime_index == 0:
+    if stored_index == expected_index:
         expected = activation_host.float() + activation_host.float()
     else:
         expected = activation_host.float() * activation_host.float()

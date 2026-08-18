@@ -2901,6 +2901,14 @@ mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
   if (failed(scalarTy)) {
     return failure();
   }
+  auto kernel = getEnclosingKernelThread(getOperation());
+  auto threadAttr =
+      kernel->getAttrOfType<ttkernel::ThreadTypeAttr>(kKernelThreadAttrName);
+  if (threadAttr.getValue() == ttkernel::ThreadType::Compute &&
+      !mlir::isa<ttcore::TileType>(blockTy.getElementType())) {
+    return emitOpError()
+           << "compute-thread index reads require a tiled dataflow buffer";
+  }
   auto integerType = mlir::dyn_cast<IntegerType>(*scalarTy);
   bool isSupportedUnsignedInteger =
       integerType && integerType.isUnsigned() &&
