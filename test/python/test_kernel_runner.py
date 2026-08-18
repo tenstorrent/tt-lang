@@ -600,6 +600,157 @@ def test_unannotated_kernel_is_conservative_with_annotated_peer(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
+def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                allocation_nodes=((1, 0),),
+            )
+        ],
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(1, 0)}
+
+
+def test_empty_allocation_nodes_omit_dfb_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                allocation_nodes=(),
+            )
+        ],
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert descriptors == []
+
+
+@pytest.mark.parametrize(
+    ("allocation_nodes", "message"),
+    [
+        (((0, 0), (0, 0)), "contains duplicates"),
+        (([0, 0],), "must be a nonnegative integer"),
+        (((True, 0),), "must be a nonnegative integer"),
+        (((-1, 0),), "must be a nonnegative integer"),
+    ],
+    ids=["duplicate", "non-tuple", "non-integer", "negative"],
+)
+def test_invalid_allocation_nodes_are_rejected(monkeypatch, allocation_nodes, message):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        allocation_nodes=allocation_nodes,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[config],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        )
+
+
+def test_allocation_nodes_must_cover_storage_segments(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        allocation_nodes=((1, 0),),
+    )
+
+    with pytest.raises(ValueError, match="must cover its exact allocation nodes"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[config],
+            core_ranges=full_grid,
+        )
+
+
+def test_allocation_nodes_outside_program_grid_are_rejected(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match="outside the program grid"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[
+                PhysicalDFBConfig(
+                    0,
+                    1,
+                    "bfloat16",
+                    1,
+                    2048,
+                    (32, 32),
+                    allocation_nodes=((2, 0),),
+                )
+            ],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        )
+
+
+def test_allocation_nodes_compute_dfb_budget_per_core(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 2048)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[
+            PhysicalDFBConfig(
+                index,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                allocation_nodes=((index, 0),),
+            )
+            for index in range(2)
+        ],
+        core_ranges=full_grid,
+    )
+
+    assert len(descriptors) == 2
+    assert {_descriptor_cores(descriptor).pop() for descriptor in descriptors} == {
+        (0, 0),
+        (1, 0),
+    }
+
+
 def test_specialized_dfb_descriptors_allow_sparse_physical_indices(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (0, 0))
@@ -708,6 +859,75 @@ def test_computed_address_backing_uses_specialized_dfb_cores(monkeypatch):
     ) == {(0, 0)}
     assert allocated_bytes == 2048
     assert allocated_device is device
+
+
+def test_computed_address_backing_resolves_each_dfb_from_full_grid(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    allocations = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda ranges, size, device: allocations.append((ranges, size, device))
+        or object(),
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    core_1 = _FakeExplicitCoreRanges((1, 0), (1, 0))
+
+    kernel_runner.build_pipe_computed_address_dfb_tensors(
+        tensors=[],
+        cb_configs=[
+            PhysicalDFBConfig(index, 1, "bfloat16", 1, 2048, (32, 32))
+            for index in range(2)
+        ],
+        core_ranges=full_grid,
+        pipe_computed_address_dfb_indices=[0, 1],
+        device=object(),
+        kernel_specs=[
+            _specialized_spec(core_0, [0]),
+            _specialized_spec(core_1, [1]),
+        ],
+    )
+
+    assert [
+        _descriptor_cores(type("Allocation", (), {"core_ranges": ranges})())
+        for ranges, _, _ in allocations
+    ] == [{(0, 0)}, {(1, 0)}]
+
+
+def test_computed_address_backing_uses_allocation_nodes(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    allocations = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda ranges, size, device: allocations.append((ranges, size, device))
+        or object(),
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    kernel_runner.build_pipe_computed_address_dfb_tensors(
+        tensors=[],
+        cb_configs=[
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                allocation_nodes=((1, 0),),
+            )
+        ],
+        core_ranges=full_grid,
+        pipe_computed_address_dfb_indices=[0],
+        device=object(),
+    )
+
+    allocated_ranges, _, _ = allocations[0]
+    assert _descriptor_cores(
+        type("Allocation", (), {"core_ranges": allocated_ranges})()
+    ) == {(1, 0)}
 
 
 def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
@@ -1192,6 +1412,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
                 block_count=2,
                 page_size=32,
                 tile=(1, 16),
+                allocation_nodes=((0, 0),),
             )
         ],
         grid_cols=1,
@@ -1206,6 +1427,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
     assert "block_count=2" in source
     assert "page_size=32" in source
     assert "tile=(1, 16)" in source
+    assert "allocation_nodes=((0, 0),)" in source
     assert "cb_descriptors = build_cb_descriptors(" in source
     assert "for i, (num_tiles, block_count" not in source
 

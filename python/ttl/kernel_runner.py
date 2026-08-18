@@ -66,6 +66,25 @@ def _validate_physical_dfb_config(
             f"DFB config at physical index {physical_index} has dfb_index "
             f"{config.dfb_index}"
         )
+    allocation_nodes = None
+    if config.allocation_nodes is not None:
+        for node_position, node in enumerate(config.allocation_nodes):
+            if (
+                not isinstance(node, tuple)
+                or len(node) != 2
+                or any(type(coordinate) is not int for coordinate in node)
+                or node[0] < 0
+                or node[1] < 0
+            ):
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] allocation node "
+                    f"{node_position} must be a nonnegative integer (x, y) tuple"
+                )
+        allocation_nodes = set(config.allocation_nodes)
+        if len(allocation_nodes) != len(config.allocation_nodes):
+            raise ValueError(
+                f"DFB[{config.dfb_index}] allocation_nodes contains duplicates"
+            )
     seen_nodes = set()
     for segment_position, segment in enumerate(config.storage_segments):
         if not segment.nodes:
@@ -80,6 +99,15 @@ def _validate_physical_dfb_config(
                     "multiple storage segments"
                 )
             seen_nodes.add(node)
+    if (
+        allocation_nodes is not None
+        and config.storage_segments
+        and seen_nodes != allocation_nodes
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] storage segments must cover its exact "
+            "allocation nodes"
+        )
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
@@ -472,6 +500,9 @@ def build_pipe_computed_address_dfb_tensors(
 
     device = device if device is not None else _first_device(tensors)
     used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
+    program_cores = set(
+        _core_range_coordinates(core_ranges, label="program core ranges")
+    )
     backing_tensors = {}
     for dfb_index in dfb_indices:
         if dfb_index < 0 or dfb_index >= len(cb_configs):
@@ -481,17 +512,28 @@ def build_pipe_computed_address_dfb_tensors(
         config = cb_configs[dfb_index]
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, dfb_index)
-        backing_core_ranges = core_ranges
-        if used_by_core is not None:
-            backing_cores = tuple(
-                sorted(
-                    core
-                    for core, used_indices in used_by_core.items()
-                    if dfb_index in used_indices
-                )
+        backing_cores = (
+            set(program_cores)
+            if config.allocation_nodes is None
+            else set(config.allocation_nodes)
+        )
+        outside_program = backing_cores - program_cores
+        if outside_program:
+            raise ValueError(
+                f"DFB[{dfb_index}] allocation nodes {sorted(outside_program)} "
+                "are outside the program grid"
             )
-            if backing_cores:
-                backing_core_ranges = _make_node_core_ranges(backing_cores)
+        if used_by_core is not None:
+            backing_cores.intersection_update(
+                core
+                for core, used_indices in used_by_core.items()
+                if dfb_index in used_indices
+            )
+        if not backing_cores:
+            # The PipeNet ABI requires a receiver address even when analysis
+            # proves that no launch node installs the corresponding descriptor.
+            backing_cores = {min(program_cores, key=lambda core: (core[1], core[0]))}
+        backing_core_ranges = _make_node_core_ranges(tuple(sorted(backing_cores)))
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             backing_core_ranges, allocation.total_size, device
         )
@@ -769,20 +811,39 @@ def _validate_tensor_backing_aliases(
             bindings.append((config.dfb_index, nodes, absolute_start, absolute_end))
 
 
-def _specialized_dfb_placements(
+def _resolve_dfb_placements(
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
     backing_tensors: Dict[int, Any],
     kernel_specs: Optional[List[KernelSpec]],
 ) -> Optional[List[Dict[Tuple[int, int], Tuple[str, Optional[int]]]]]:
-    """Resolve the storage source for each used DFB and logical core."""
+    """Resolve the storage source for each allocated DFB and logical core."""
     used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
-    if used_by_core is None:
+    has_allocation_domains = any(
+        config.allocation_nodes is not None for config in cb_configs
+    )
+    if used_by_core is None and not has_allocation_domains:
         return None
 
-    program_cores = set(used_by_core)
+    program_cores = set(
+        _core_range_coordinates(core_ranges, label="program core ranges")
+    )
+    if used_by_core is None:
+        all_indices = set(range(len(cb_configs)))
+        used_by_core = {core: set(all_indices) for core in program_cores}
     placements = []
     for dfb_index, config in enumerate(cb_configs):
+        allocation_cores = (
+            program_cores
+            if config.allocation_nodes is None
+            else set(config.allocation_nodes)
+        )
+        outside_program = allocation_cores - program_cores
+        if outside_program:
+            raise ValueError(
+                f"DFB[{dfb_index}] allocation nodes {sorted(outside_program)} "
+                "are outside the program grid"
+            )
         candidates: Dict[Tuple[int, int], Tuple[str, Optional[int]]] = {}
         if dfb_index in backing_tensors:
             if config.storage_segments:
@@ -790,9 +851,9 @@ def _specialized_dfb_placements(
                     f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
                     "storage with finalized storage segments"
                 )
-            candidates = {core: ("computed", None) for core in program_cores}
+            candidates = {core: ("computed", None) for core in allocation_cores}
         elif not config.storage_segments:
-            candidates = {core: ("static", None) for core in program_cores}
+            candidates = {core: ("static", None) for core in allocation_cores}
         else:
             for segment_index, segment in enumerate(config.storage_segments):
                 source = (
@@ -835,7 +896,7 @@ def _dfb_format_descriptor(dfb_index: int, allocation: _DFBAllocation) -> Any:
     )
 
 
-def _build_specialized_dfb_descriptors(
+def _build_partitioned_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     allocations: List[_DFBAllocation],
@@ -1005,7 +1066,7 @@ def build_cb_descriptors(
                 continue
             break
 
-    placements = _specialized_dfb_placements(
+    placements = _resolve_dfb_placements(
         cb_configs, core_ranges, backing_tensors, kernel_specs
     )
     if placements is not None:
@@ -1017,7 +1078,7 @@ def build_cb_descriptors(
             if device is not None
             else {core: DEFAULT_L1_CB_BUDGET_BYTES for core in placement_cores}
         )
-        return _build_specialized_dfb_descriptors(
+        return _build_partitioned_dfb_descriptors(
             tensors,
             cb_configs,
             allocations,
@@ -1420,6 +1481,8 @@ def emit_runner_source(
         lines.append(f"        block_count={config.block_count},")
         lines.append(f"        page_size={config.page_size},")
         lines.append(f"        tile={config.tile!r},")
+        if config.allocation_nodes is not None:
+            lines.append(f"        allocation_nodes={config.allocation_nodes!r},")
         if config.storage_segments:
             lines.append("        storage_segments=(")
             for segment in config.storage_segments:
