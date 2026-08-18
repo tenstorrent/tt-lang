@@ -14,8 +14,8 @@
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 1 : i64
 // CHECK-LABEL: func.func @sender_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender,
-// CHECK-SAME: interferingIntervals = >, #ttl.fabric_manager_interval<identity = "generated.2", kind = generated_sender,
-// CHECK-SAME: interferingIntervals = >]
+// CHECK-SAME: interferingIntervals = []>, #ttl.fabric_manager_interval<identity = "generated.2", kind = generated_sender,
+// CHECK-SAME: interferingIntervals = []>]
 // CHECK: %[[SENDER_COUNTER:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[SENDER_COUNTER]]
 // CHECK: memref.load %[[SENDER_COUNTER]]
@@ -24,8 +24,8 @@
 // CHECK: memref.store {{.*}}, %[[SENDER_COUNTER]]
 // CHECK-LABEL: func.func @receiver_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver,
-// CHECK-SAME: interferingIntervals = >, #ttl.fabric_manager_interval<identity = "generated.3", kind = generated_receiver,
-// CHECK-SAME: interferingIntervals = >]
+// CHECK-SAME: interferingIntervals = []>, #ttl.fabric_manager_interval<identity = "generated.3", kind = generated_receiver,
+// CHECK-SAME: interferingIntervals = []>]
 // CHECK: %[[RECEIVER_COUNTER:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[RECEIVER_COUNTER]]
 // CHECK: memref.load %[[RECEIVER_COUNTER]]

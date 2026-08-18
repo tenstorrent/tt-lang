@@ -14,10 +14,10 @@
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @sender_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
-// CHECK-SAME: interferingIntervals = "generated.
+// CHECK-SAME: interferingIntervals = ["generated.
 // CHECK-LABEL: func.func @receiver_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
-// CHECK-SAME: interferingIntervals = "generated.
+// CHECK-SAME: interferingIntervals = ["generated.
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @idle_compute() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {
