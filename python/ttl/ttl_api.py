@@ -1575,6 +1575,25 @@ def _parse_mlir_element_type(
     )
 
 
+def _extract_dfb_node_coordinates(
+    nodes_attr, *, context: str, allow_empty: bool
+) -> tuple[tuple[int, int], ...]:
+    nodes = []
+    for node_position, node_attr in enumerate(nodes_attr):
+        node = ArrayAttr(node_attr)
+        if len(node) != 2:
+            raise ValueError(f"{context}[{node_position}] must contain [x, y]")
+        coordinate = tuple(int(IntegerAttr(component).value) for component in node)
+        if coordinate[0] < 0 or coordinate[1] < 0:
+            raise ValueError(f"{context} contains negative coordinate {coordinate}")
+        if coordinate in nodes:
+            raise ValueError(f"{context} contains duplicate coordinate {coordinate}")
+        nodes.append(coordinate)
+    if not allow_empty and not nodes:
+        raise ValueError(f"{context} must not be empty")
+    return tuple(sorted(nodes))
+
+
 def _extract_dfb_allocations(module):
     """Read `ttl.dfb_allocations` and require dense physical indices."""
     attribute_name = "ttl.dfb_allocations"
@@ -1631,6 +1650,14 @@ def _extract_dfb_allocations(module):
                 f"got {page_size}"
             )
 
+        allocation_nodes = None
+        if "allocation_nodes" in entry:
+            allocation_nodes = _extract_dfb_node_coordinates(
+                entry["allocation_nodes"],
+                context=f"{attribute_name}[{position}].allocation_nodes",
+                allow_empty=True,
+            )
+
         storage_segments = []
         seen_nodes = set()
         if "storage_segments" in entry:
@@ -1640,35 +1667,21 @@ def _extract_dfb_allocations(module):
                         f"{attribute_name}[{position}].storage_segments"
                         f"[{segment_position}] is missing 'nodes'"
                     )
-                nodes = []
-                for node_position, node_attr in enumerate(segment["nodes"]):
-                    node = ArrayAttr(node_attr)
-                    if len(node) != 2:
-                        raise ValueError(
-                            f"{attribute_name}[{position}].storage_segments"
-                            f"[{segment_position}].nodes[{node_position}] must "
-                            "contain [x, y]"
-                        )
-                    coord = tuple(
-                        int(IntegerAttr(component).value) for component in node
-                    )
-                    if coord[0] < 0 or coord[1] < 0:
-                        raise ValueError(
-                            f"{attribute_name}[{position}] contains negative "
-                            f"launch-node coordinate {coord}"
-                        )
-                    if coord in seen_nodes:
+                nodes = _extract_dfb_node_coordinates(
+                    segment["nodes"],
+                    context=(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}].nodes"
+                    ),
+                    allow_empty=False,
+                )
+                for coordinate in nodes:
+                    if coordinate in seen_nodes:
                         raise ValueError(
                             f"{attribute_name}[{position}] assigns launch node "
-                            f"{coord} to multiple storage segments"
+                            f"{coordinate} to multiple storage segments"
                         )
-                    seen_nodes.add(coord)
-                    nodes.append(coord)
-                if not nodes:
-                    raise ValueError(
-                        f"{attribute_name}[{position}].storage_segments"
-                        f"[{segment_position}].nodes must not be empty"
-                    )
+                    seen_nodes.add(coordinate)
 
                 tensor_index = None
                 byte_offset = 0
@@ -1694,7 +1707,7 @@ def _extract_dfb_allocations(module):
                         )
                 storage_segments.append(
                     DFBStorageSegment(
-                        nodes=tuple(sorted(nodes)),
+                        nodes=nodes,
                         tensor_index=tensor_index,
                         byte_offset=byte_offset,
                         byte_size=byte_size,
@@ -1711,6 +1724,7 @@ def _extract_dfb_allocations(module):
                 page_size=page_size,
                 tile=tile,
                 storage_segments=tuple(storage_segments),
+                allocation_nodes=allocation_nodes,
             )
         )
 

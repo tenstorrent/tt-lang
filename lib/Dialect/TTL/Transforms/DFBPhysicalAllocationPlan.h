@@ -49,6 +49,9 @@ struct DFBPhysicalAllocationDescriptor {
   Type elementType;
   int32_t pageSize = 0;
   int32_t blockCount = 0;
+  /// Exact union of nodes that access this index. An unknown domain requires
+  /// conservative whole-grid runtime allocation.
+  LaunchNodeDomain allocationDomain = LaunchNodeDomain::unknown();
   SmallVector<DFBPhysicalStorageSegment> storageSegments;
 };
 
