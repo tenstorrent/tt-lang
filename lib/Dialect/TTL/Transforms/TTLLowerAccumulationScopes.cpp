@@ -6,8 +6,8 @@
 // TTL Lower Accumulation Scopes
 //===----------------------------------------------------------------------===//
 //
-// Lowers semantic tensor accumulation scopes to recurrence sections whose
-// accumulator stays resident in DST across the source loop.
+// Lowers semantic accumulation scopes to concrete storage strategy metadata or
+// operations.
 //
 //===----------------------------------------------------------------------===//
 

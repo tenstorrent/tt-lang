@@ -2293,7 +2293,9 @@ def _lower_program_to_kernel(
             compiler_options.dfb_exact_coloring_search_limit
         )
         tensor_recurrence_pipeline = (
-            "ttl-form-accumulation-scopes,"
+            "ttl-form-accumulation-scopes{"
+            f"strategy={accumulation_strategy}"
+            "},"
             f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}},"
             "ttl-materialize-loop-state"
         )

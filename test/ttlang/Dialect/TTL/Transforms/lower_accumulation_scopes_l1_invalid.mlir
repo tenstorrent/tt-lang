@@ -1,7 +1,7 @@
 // Verifies tensor L1 packer accumulation lowering rejects malformed scopes that
 // contain loop-local stores outside the recurrence.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{kind=tensor strategy=l1-pack}))' --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{kind=tensor strategy=l1-pack}))' --verify-diagnostics --split-input-file
 
 func.func @tensor_scope_with_loop_local_store() {
   %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

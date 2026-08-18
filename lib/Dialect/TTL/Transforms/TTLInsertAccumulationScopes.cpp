@@ -222,9 +222,10 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
       return WalkResult::advance();
     }
     if (store->getParentOp() != loop.getOperation()) {
-      store->emitError("+= inside a conditional is not supported (#504); move "
-                       "the condition outside the accumulation loop or use a "
-                       "separate loop for the conditional branch");
+      store.emitOpError()
+          << "+= inside a conditional is not supported (#504); move the "
+             "condition outside the accumulation loop or use a separate loop "
+             "for the conditional branch";
       hadFailure = true;
       return WalkResult::interrupt();
     }
@@ -235,9 +236,9 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
     return failure();
   }
   if (!stores.empty() && !plainStores.empty()) {
-    plainStores.front()->emitError(
-        "non-accumulating store inside a += loop is not supported (#648); "
-        "move it outside the accumulation loop or split the loop");
+    plainStores.front().emitOpError()
+        << "non-accumulating store inside a += loop is not supported (#648); "
+           "move it outside the accumulation loop or split the loop";
     hadFailure = true;
     return failure();
   }
@@ -284,14 +285,14 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
     // output slot.
     if (reserveOp && !domInfo.properlyDominates(reserveOp, loop)) {
       hadFailure = true;
-      return store.emitError(
+      return store.emitOpError(
           "accumulating store requires an output reserve that dominates the "
           "accumulation loop; move the reserve before the loop");
     }
 
     if (!seenOutputs.insert(store.getView()).second) {
       hadFailure = true;
-      return store.emitError(
+      return store.emitOpError(
           "multiple accumulating stores to the same output view in one loop "
           "are not supported; combine the updates before storing or split them "
           "into separate loops");
@@ -301,7 +302,7 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
         getInitialModeForAccumulatingStore(store, loop);
     if (failed(mode)) {
       hadFailure = true;
-      return store.emitError(
+      return store.emitOpError(
           "cannot determine L1 accumulation initial mode; keep initialization "
           "as a straight-line store before the loop or split the loop");
     }

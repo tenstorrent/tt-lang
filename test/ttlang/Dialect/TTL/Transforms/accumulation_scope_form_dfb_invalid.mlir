@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=dfb}))' --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=dfb}))' --verify-diagnostics --split-input-file
 
 // Summary: Verifies the reserved DFB accumulation scope kind emits an
 // unsupported diagnostic.

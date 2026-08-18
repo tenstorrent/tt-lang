@@ -1,8 +1,8 @@
 // Summary: Verify tensor accumulation scope formation across multi-tile
 // recurrences and non-additive work inside the recurrence loop.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes))' --split-input-file | FileCheck %s --check-prefix=DST
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state))' --split-input-file | FileCheck %s --check-prefix=FALLBACK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=dst}, ttl-lower-accumulation-scopes))' --split-input-file | FileCheck %s --check-prefix=DST
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=dst}, ttl-lower-accumulation-scopes, ttl-materialize-loop-state))' --split-input-file | FileCheck %s --check-prefix=FALLBACK
 
 // Multi-tile additive recurrence lowers to one streaming DST section. Each
 // iteration consumes one 2x2 contribution block while the accumulator stays in

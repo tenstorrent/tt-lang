@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=unknown}))' --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{kind=unknown}))' --verify-diagnostics --split-input-file
 
 // Summary: Verifies accumulation scope creation rejects unknown scope kinds.
 

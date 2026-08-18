@@ -199,14 +199,15 @@ def TTLFormAccumulationScopes
     ```
 
     The tensor form requires an init-backed recurrence, one final
-    non-accumulating store to a dataflow buffer reservation, a streamed or
-    resident dataflow-buffer-backed contribution, and an output tile count that
-    fits in one streaming DST section.
+    non-accumulating store to a dataflow buffer reservation, and at least one
+    legal lowering for the requested accumulation strategy.
   }];
 
   let options = [
     Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Accumulation scope form to create. `dfb` is reserved and unsupported.">
+           "Accumulation scope form to create. `dfb` is reserved and unsupported.">,
+    Option<"strategy", "strategy", "std::string", "\"auto\"",
+           "Tensor recurrence accumulation strategy used to filter scopes: auto, dst, or l1-pack.">
   ];
 
   let dependentDialects = [
@@ -299,8 +300,8 @@ def TTLLowerAccumulationScopes
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
     metadata for TTKernel packer reconfiguration placement.
 
-    For additive tensor scopes, `strategy=auto` selects DST when the recurrence
-    satisfies the DST legality rules and otherwise uses L1 packer accumulation.
+    For additive tensor scopes, `strategy=auto` compares legal DST and L1
+    packer accumulation candidates with the accumulation cost model.
     `strategy=dst` requires DST and emits an error when the tensor scope is not
     DST-compatible. `strategy=l1-pack` always uses the L1 packer strategy.
     Stateful tensor scopes lower only in `strategy=auto`.

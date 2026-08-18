@@ -82,9 +82,6 @@ itself cannot carry the information.
   `GEN_PASS_DEF_...`, derive from the generated `...Base`, implement
   `runOnOperation()`, and rely on the generated `create*Pass()` (no manual
   constructors).
-- Prefer declarative ODS constraints, traits, interfaces, and `assemblyFormat`
-  over custom C++ verifiers, parsers, and printers. Add custom op code only
-  when TableGen cannot express the invariant or syntax.
 - **Transforms layout**: Dialect-specific pass definitions in `include/ttlang/<Dialect>/Passes.td`,
   headers in `include/ttlang/Dialect/<Dialect>/{IR,Transforms,TransformOps,Utils}` and
   implementations in `lib/Dialect/<Dialect>/{IR,Transforms,TransformOps,Utils}`.

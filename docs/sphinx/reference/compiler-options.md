@@ -13,7 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
-| `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select tensor recurrence accumulation storage. `auto` uses DST when legal and otherwise uses L1 packer accumulation. |
+| `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select tensor recurrence accumulation storage. `auto` compares legal DST and L1 packer candidates with the accumulation cost model. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
@@ -34,7 +34,7 @@ python my_kernel.py --no-ttl-maximize-dst
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
 but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
 mantissa); deep f32 recurrences therefore do not retain full f32 precision.
-`auto` selects `dst` for DST-compatible recurrences and inherits the same limit.
+When `auto` selects `dst`, it inherits the same limit.
 Use `l1-pack` when full f32 accumulation precision is required; it accumulates
 in f32 L1.
 
@@ -154,8 +154,8 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
-- `ttl-form-accumulation-scopes` -- form semantic accumulation scopes for eligible tensor recurrences
-- `ttl-lower-accumulation-scopes` -- lower tensor accumulation scopes with `strategy=<accumulation-strategy>`
+- `ttl-form-accumulation-scopes{strategy=<accumulation-strategy>}` -- form semantic accumulation scopes for eligible tensor recurrences
+- `ttl-lower-accumulation-scopes{strategy=<accumulation-strategy>}` -- lower tensor accumulation scopes
 - `ttl-materialize-loop-state` -- replace remaining ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-auto-sync` -- run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
@@ -191,16 +191,30 @@ The pipeline runs these passes in order:
 Each pass can also be run standalone for testing. Only passes with configurable
 options are listed; the remaining passes have no options.
 
+#### `ttl-form-accumulation-scopes`
+
+Form semantic accumulation scopes for eligible tensor recurrences before
+concrete strategy selection.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `tensor` | Scope formation kind. Supported value: `tensor`. `dfb` is reserved. |
+| `strategy` | string | `auto` | Tensor recurrence accumulation strategy used to filter scopes. Supported values: `auto`, `dst`, `l1-pack`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-form-accumulation-scopes{strategy=auto})'
+```
+
 #### `ttl-insert-accumulation-scopes`
 
-Insert semantic accumulation scopes before concrete strategy selection.
+Insert semantic accumulation scopes for user-written accumulation.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | `tensor` | Scope insertion kind. Supported values: `tensor`, `dfb`. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-insert-accumulation-scopes{kind=tensor})'
+ttlang-opt input.mlir -p 'func.func(ttl-insert-accumulation-scopes{kind=dfb})'
 ```
 
 #### `ttl-lower-accumulation-scopes`

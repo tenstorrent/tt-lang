@@ -1,9 +1,8 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes))' --split-input-file | FileCheck %s --implicit-check-not='ttl.accumulation_scope'
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=dst}))' --split-input-file | FileCheck %s --implicit-check-not='ttl.accumulation_scope'
 
 // Summary: Additive recurrences that are structurally matched but DST-illegal
-// must be left unformed for ttl-materialize-loop-state. Formation is
-// conservative and non-diagnostic: each case keeps its scf.for and forms no
-// ttl.accumulation_scope (enforced by --implicit-check-not).
+// must be left unformed under the DST strategy. Each case keeps its scf.for and
+// forms no ttl.accumulation_scope, as enforced by --implicit-check-not.
 
 // A contribution wait with a num_tiles attribute is not the default-block
 // protocol used by DST-resident recurrence lowering.

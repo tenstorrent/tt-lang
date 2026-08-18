@@ -1,7 +1,7 @@
 // Verifies ttl-lower-accumulation-scopes rejects a required DST strategy when
 // the scoped tensor recurrence is not DST-compatible.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{kind=tensor strategy=dst}))' --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-accumulation-scopes{kind=tensor strategy=dst}))' --verify-diagnostics --split-input-file
 
 // The contribution dataflow buffer cannot hold the coalesced three-tile wait
 // required by the DST strategy.

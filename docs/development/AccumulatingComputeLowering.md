@@ -12,16 +12,16 @@ program semantics and different thread-local data movement:
 
 1. Keep the partial value in the destination register file (DST). This
    avoids intermediate L1 traffic while the computation fits in one acquired
-   DST lifetime, and matches the preferred form in handwritten tt-blaze
-   kernels when live DST capacity is sufficient.
+   DST lifetime, and matches the preferred form in handwritten kernels when
+   live DST capacity is sufficient.
 2. Add packed output tiles into L1 through the packer. This uses hardware L1
    accumulation for additive recurrences that must persist across separate DST
    lifetimes.
 3. Carry the partial value through an explicit compiler-managed dataflow
    buffer (DFB). This is the general lowering, but additive recurrences pay an
-   L1 wait/store cost on each iteration. Handwritten tt-blaze kernels use
-   scratch DFBs for intermediates that must be reused by later compute stages
-   or cannot remain live in one DST lifetime.
+   L1 wait/store cost on each iteration. Handwritten kernels use scratch DFBs
+   for intermediates that must be reused by later compute stages or cannot
+   remain live in one DST lifetime.
 
 DST residency and L1 packer accumulation use hardware accumulation
 mechanisms. Explicit DFB state is the general lowering for recurrences that
@@ -44,9 +44,8 @@ The compiler recognizes these accumulation forms and initial-state cases:
 
 - Loop-carried additive recurrences inside an `scf.for` (`acc = acc +
   x` or `acc = x + acc`, plain tensor target) use accumulation-scope IR
-  before general tensor state materialization. Strategy lowering keeps them
-  in DST when legal and otherwise uses L1 packer accumulation seeded by a
-  pre-loop store.
+  before general tensor state materialization. Strategy lowering compares
+  legal DST and L1 packer candidates with the accumulation cost model.
 
 - General tensor recurrences that are not recognized as additive
   accumulation use explicit compiler-managed DFB state.
@@ -209,26 +208,27 @@ contract without forcing reductions to be wrapped in `ttl.accumulation_scope`.
 
 The TTL-to-TTKernel pipeline handles accumulation in this order:
 
-1. `ttl-form-accumulation-scopes{kind=tensor}` runs before
+1. `ttl-form-accumulation-scopes{strategy=<accumulation-strategy>}` runs before
    `ttl-materialize-loop-state`. It forms semantic scopes around recognized
-   single-output additive tensor recurrences and records `init` initial mode.
+   single-output additive tensor recurrences when at least one legal lowering
+   exists for `accumulation-strategy`, and records `init` initial mode.
 
-2. `ttl-lower-accumulation-scopes{kind=tensor}` consumes those scopes. It
-   selects DST or L1 packer accumulation according to
-   `accumulation-strategy`. Stateful scopes with yielded state lower in
-   `auto` mode by emitting one final `ttl.store` per yielded value and leaving
-   tensor loop-carried state for explicit DFB materialization. Required `dst`
-   or `l1-pack` strategy reports an error for stateful scopes until stateful
-   DST or L1 packer lowering is implemented. The pass removes the semantic
-   wrapper before general loop-state materialization.
+2. `ttl-lower-accumulation-scopes{strategy=<accumulation-strategy>}` consumes
+   those scopes. It selects DST or L1 packer accumulation according to
+   `accumulation-strategy`. Stateful scopes with yielded state lower in `auto`
+   mode by emitting one final `ttl.store` per yielded value and leaving tensor
+   loop-carried state for explicit DFB materialization. Required `dst` or
+   `l1-pack` strategy reports an error for stateful scopes until stateful DST
+   or L1 packer lowering is implemented. The pass removes the semantic wrapper
+   before general loop-state materialization.
 
 3. `ttl-materialize-loop-state` handles remaining tensor `scf.for`
    iter_args through compiler-allocated DFB state. Additive recurrences
    recognized by scope insertion do not reach this pass.
 
-4. DFB canonicalization and synchronization run:
-   `ttl-insert-intermediate-dfbs`, `ttl-insert-copy-wait`, and
-   `ttl-auto-sync`.
+4. `ttl-insert-copy-wait` and `ttl-auto-sync` run before DFB `+=`
+   detection, so scope insertion sees canonical DFB acquire/release
+   structure and required copy waits.
 
 5. `ttl-insert-accumulation-scopes{kind=dfb}` inserts semantic scopes around
    user-written accumulating stores. It computes `overwrite` versus
@@ -239,8 +239,9 @@ The TTL-to-TTKernel pipeline handles accumulation in this order:
    implementation because the source construct updates an output block, not a
    loop-carried tensor value.
 
-7. Compute conversion, DST assignment, optional subblocking, and
-   `ttl-lower-to-loops` run. Reduction-capable `ttl.compute` uses
+7. `ttl-create-producer-compute`, `ttl-insert-intermediate-dfbs`, compute
+   conversion, DST assignment, optional subblocking, and `ttl-lower-to-loops`
+   run. Reduction-capable `ttl.compute` uses
    `AccumulationScopeOpInterface` to emit L1 metadata when it lowers to the
    L1 reduction form.
 
@@ -313,7 +314,7 @@ selected strategy:
 
 ```text
 accumulation cost model target_arch=wormhole_b0
-  candidate strategy=dst legal=true estimated_cost=1116 ...
+  candidate strategy=dst legal=true estimated_cost=2546 ...
   candidate strategy=l1-pack legal=true estimated_cost=2954 ...
   selected strategy=dst
 ```
@@ -565,7 +566,9 @@ described below.
 ### Lowering Strategies
 
 Additive tensor recurrences use `ttl-form-accumulation-scopes` followed
-by `ttl-lower-accumulation-scopes`.
+by `ttl-lower-accumulation-scopes`. Formation records semantic accumulation
+for recurrences that have a legal requested strategy. Lowering selects the
+concrete storage strategy.
 
 **DST strategy:** when the recurrence satisfies the DST legality rules,
 the lowering creates a reduction-style `ttl.compute` with
@@ -827,11 +830,8 @@ Hardware statements about DST registers, L1 packer accumulation, and
 - [Matrix engine technical report](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tech_reports/matrix_engine/matrix_engine.md).
 - [L1 accumulation FP32 analysis](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/docs/L1_ACCUMULATION_FP32_ANALYSIS.md).
 
-The handwritten-kernel observations are based on these commit-pinned
-tt-blaze references:
-
-- [Fused matmul-SwiGLU kernel](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/blaze/ops/matmul_swiglu/kernels/op.hpp).
-- [SoftmaxK kernel](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/blaze/ops/softmax_k/kernels/op.hpp).
+Handwritten-kernel observations are based on internal kernel audits and
+benchmark notes.
 
 ## IR Trace: 2x2 reduce_sum along dim 0
 
