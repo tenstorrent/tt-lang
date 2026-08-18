@@ -45,12 +45,13 @@ struct MeasuredCost {
 
 /// Which measured rows describe one operation on one engine.
 ///
-/// A slice of `kMeasured`, and nothing more: the table carries measurements alone,
-/// so a slot has no number of its own to fall back on.
+/// A slice of `kMeasured`, and nothing more: the table carries measurements
+/// alone, so a slot has no number of its own to fall back on.
 ///
-/// `count == 0` means the operation occupies the engine and nothing has timed it,
-/// which is distinct from a measurement existing that a given kernel cannot match:
-/// the first is missing data, the second a configuration no sweep presented.
+/// `count == 0` means the operation occupies the engine and nothing has timed
+/// it, which is distinct from a measurement existing that a given kernel cannot
+/// match: the first is missing data, the second a configuration no sweep
+/// presented.
 struct EngineCost {
   unsigned first = 0;
   unsigned count = 0;
@@ -78,7 +79,8 @@ llvm::ArrayRef<MeasuredCost> measuredRows(const EngineCost &slot) {
 
 /// The slot an operation uses for `engine`, or nullopt when it does not run
 /// there.
-const std::optional<EngineCost> &engineSlot(const OpCost &entry, Engine engine) {
+const std::optional<EngineCost> &engineSlot(const OpCost &entry,
+                                            Engine engine) {
   switch (engine) {
   case Engine::Dm:
     return entry.dm;
@@ -94,9 +96,9 @@ const std::optional<EngineCost> &engineSlot(const OpCost &entry, Engine engine) 
 
 /// The cost table for one architecture, keyed by operation name.
 ///
-/// Built once instead of binary-searched, because a lookup happens per placement
-/// and a kernel whose loops unroll places hundreds of thousands of them. The
-/// entries point at static data; nothing is copied.
+/// Built once instead of binary-searched, because a lookup happens per
+/// placement and a kernel whose loops unroll places hundreds of thousands of
+/// them. The entries point at static data; nothing is copied.
 ///
 /// Wormhole has no table yet, and answers empty rather than borrowing
 /// Blackhole's -- costs do not transfer between architectures.
@@ -121,9 +123,9 @@ const OpCost *findOp(llvm::StringRef op, Arch arch) {
 /// Whether the caller can answer for every knob an entry was measured under.
 ///
 /// Purely a string match against `KernelConfig::knobs`; nothing here knows what
-/// any knob means. A row naming one the caller did not supply cannot be matched,
-/// which is what stops a measurement taken in a configuration we cannot describe
-/// from answering anyway.
+/// any knob means. A row naming one the caller did not supply cannot be
+/// matched, which is what stops a measurement taken in a configuration we
+/// cannot describe from answering anyway.
 bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
   while (!variant.empty()) {
     auto [entry, rest] = variant.split(';');
@@ -145,9 +147,9 @@ bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
 
 /// Every field has to agree, `variant` included.
 ///
-/// An empty field on the row matches any value: it is how a benchmark that never
-/// varied something stays reachable, rather than demanding a value it never
-/// measured.
+/// An empty field on the row matches any value: it is how a benchmark that
+/// never varied something stays reachable, rather than demanding a value it
+/// never measured.
 bool keyMatches(const MeasuredCost &row, llvm::StringRef inFormat,
                 const KernelConfig &config) {
   return row.inFormat == inFormat && row.outFormat == config.outFormat &&
@@ -157,9 +159,9 @@ bool keyMatches(const MeasuredCost &row, llvm::StringRef inFormat,
 
 /// The one measured row matching this configuration, or nothing.
 ///
-/// Rows agreeing to within a hair collapse to one answer; rows that disagree are
-/// treated as no match, since two rows matching one key means the key is missing
-/// a field the measurement depended on.
+/// Rows agreeing to within a hair collapse to one answer; rows that disagree
+/// are treated as no match, since two rows matching one key means the key is
+/// missing a field the measurement depended on.
 std::optional<Cost> matchRow(const EngineCost &slot, llvm::StringRef inFormat,
                              const KernelConfig &config) {
   std::optional<Cost> found;
