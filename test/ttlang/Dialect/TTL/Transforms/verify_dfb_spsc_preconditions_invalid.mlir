@@ -1,6 +1,7 @@
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
+// Summary: Negative tests for finalized DFB verifier preconditions.
 
-// Summary: Negative tests for finalized DFB identity preconditions.
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
+// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
 
 // SPSC verification requires the allocation metadata emitted by DFB
 // finalization, even when the frontend already assigned a logical ID.
@@ -31,6 +32,43 @@ module attributes {
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     // expected-error @below {{`ttl-verify-dfb-spsc` requires every `ttl.bind_cb` to have `dfb_id` after finalization}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// Relaxed domain verification still requires a launch grid.
+
+// expected-error @below {{ttl-verify-dfb-spsc requires a `ttl.launch_grid` module attribute}}
+module attributes {ttl.dfb_allocations = []} {
+  func.func @missing_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// Relaxed domain verification still requires a valid launch grid.
+
+// expected-error @below {{ttl-verify-dfb-spsc requires a `ttl.launch_grid` module attribute}}
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [0 : i64, 1 : i64]
+} {
+  func.func @malformed_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %block = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
