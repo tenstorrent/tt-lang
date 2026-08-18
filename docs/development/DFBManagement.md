@@ -151,11 +151,15 @@ conservatively and reports the best candidate's overflow; this does not prove
 that every possible order exceeds L1.
 
 The runtime computes static DFB bytes independently for every selected core and
-compares them with that core's remaining L1. Tensor-backed and already
-allocated computed-address storage are excluded from the static sum. The
-correctness invariant is that every surviving DFB access has one compatible
-descriptor on its launch core; conservative metadata preserves the
-whole-program descriptor behavior when this cannot be proved.
+compares them with that core's remaining L1 interval. Static descriptors grow
+from the configured DFB allocator base, while tensor allocations grow from
+higher addresses. The lowest live L1 tensor page therefore bounds the interval;
+subtracting only allocated page sizes would ignore allocator gaps and could
+overestimate the available range. Tensor-backed and already allocated
+computed-address storage are excluded from the static sum. The correctness
+invariant is that every surviving DFB access has one compatible descriptor on
+its launch core; conservative metadata preserves the whole-program descriptor
+behavior when this cannot be proved.
 
 `ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
 `bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The

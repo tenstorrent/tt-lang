@@ -161,8 +161,9 @@ def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
     Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
-    Queries ``cb_limit`` (the hardware CB budget) and subtracts the maximum
-    per-core L1 buffer usage reported by the device.
+    TT-Metal allocates tensors from high L1 addresses and static DFBs from
+    ``address_at_first_l1_cb_buffer``. The usable interval therefore ends at
+    the lowest live tensor page address, not at the total allocated byte count.
 
     ``get_buffer_pages`` is called on the original device rather than on
     per-coordinate submeshes because ``create_submesh`` produces a new
@@ -177,17 +178,16 @@ def get_min_remaining_l1_for_device(device):
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    info = ttnn._ttnn.reports.get_device_info(device)
-    budget_bytes = info.cb_limit
-
-    bytes_per_core: dict[tuple[int, int], int] = {}
+    device_info = ttnn._ttnn.reports.get_device_info(device)
+    static_dfb_base_address = device_info.address_at_first_l1_cb_buffer
+    minimum_remaining_bytes = device_info.cb_limit
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type == ttnn.BufferType.L1:
-            key = (page.core_y, page.core_x)
-            bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
-
-    max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
-    return max(0, budget_bytes - max_core_bytes)
+            minimum_remaining_bytes = min(
+                minimum_remaining_bytes,
+                max(0, page.page_address - static_dfb_base_address),
+            )
+    return minimum_remaining_bytes
 
 
 def _get_remaining_l1_by_core_for_device(
@@ -198,16 +198,17 @@ def _get_remaining_l1_by_core_for_device(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    budget_bytes = ttnn._ttnn.reports.get_device_info(device).cb_limit
-    used_bytes = {core: 0 for core in cores}
+    device_info = ttnn._ttnn.reports.get_device_info(device)
+    static_dfb_base_address = device_info.address_at_first_l1_cb_buffer
+    remaining_bytes = {core: device_info.cb_limit for core in cores}
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         core = (page.core_x, page.core_y)
-        if page.buffer_type == ttnn.BufferType.L1 and core in used_bytes:
-            used_bytes[core] += page.page_size
-    return {
-        core: max(0, budget_bytes - core_used_bytes)
-        for core, core_used_bytes in used_bytes.items()
-    }
+        if page.buffer_type == ttnn.BufferType.L1 and core in remaining_bytes:
+            remaining_bytes[core] = min(
+                remaining_bytes[core],
+                max(0, page.page_address - static_dfb_base_address),
+            )
+    return remaining_bytes
 
 
 @dataclass
