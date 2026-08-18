@@ -64,7 +64,7 @@ def test_exabox_configuration_remains_available() -> None:
     assert "timeout: 90" in test_exabox
 
 
-def test_hardware_matrix_adds_optional_blackhole_loudbox() -> None:
+def test_hardware_matrix_adds_manual_blackhole_loudbox() -> None:
     call_build = CALL_BUILD.read_text()
     hardware_workflow = CALL_TEST_HARDWARE.read_text()
 
@@ -73,7 +73,7 @@ def test_hardware_matrix_adds_optional_blackhole_loudbox() -> None:
     assert "matrix.hardware == 'bh-loudbox-viommu'" in call_build
     assert "tt-ubuntu-2204-bh-loudbox-viommu-stable" in call_build
     assert "tt-ubuntu-2204-n150-stable" in call_build
-    assert "--optional-runner bh-loudbox-viommu" in call_build
+    assert "--optional-runner" not in call_build
     assert "inputs.run_galaxy_tests && 3 || 2" in call_build
     assert "inputs.run_galaxy_tests && 2 || 1" in call_build
     assert 'name: "Hardware Tests (${{ inputs.hardware }})"' in hardware_workflow

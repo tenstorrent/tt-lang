@@ -191,5 +191,4 @@ jobs:
                   gh api --paginate \
                       "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" |
                       python3 .github/scripts/check-hardware-job-results.py \
-                          --expected-job-count "${{ inputs.run_loudbox_tests && (inputs.run_galaxy_tests && 3 || 2) || (inputs.run_galaxy_tests && 2 || 1) }}" \
-                          --optional-runner bh-loudbox-viommu
+                          --expected-job-count "${{ inputs.run_loudbox_tests && (inputs.run_galaxy_tests && 3 || 2) || (inputs.run_galaxy_tests && 2 || 1) }}"

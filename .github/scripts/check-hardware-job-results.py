@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Collection
 from enum import Enum
 from typing import Any
 
@@ -104,23 +103,7 @@ def _hardware_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [job for job in jobs if HARDWARE_JOB_NAME_MARKER in str(job.get("name", ""))]
 
 
-def _runner_name(job: dict[str, Any]) -> str | None:
-    job_name = str(job.get("name", ""))
-    runner_start = job_name.find(HARDWARE_JOB_NAME_MARKER)
-    if runner_start == -1:
-        return None
-    runner_start += len(HARDWARE_JOB_NAME_MARKER)
-    runner_end = job_name.find(")", runner_start)
-    if runner_end == -1:
-        return None
-    return job_name[runner_start:runner_end]
-
-
-def check_hardware_jobs(
-    jobs: list[dict[str, Any]],
-    expected_job_count: int,
-    optional_runners: Collection[str] = (),
-) -> bool:
+def check_hardware_jobs(jobs: list[dict[str, Any]], expected_job_count: int) -> bool:
     hardware_jobs = _hardware_jobs(jobs)
     if len(hardware_jobs) != expected_job_count:
         print(
@@ -129,19 +112,13 @@ def check_hardware_jobs(
         )
         return False
 
-    successful_required_jobs = 0
+    successful_jobs = 0
     post_setup_failures = 0
     for job in sorted(hardware_jobs, key=lambda hardware_job: hardware_job["name"]):
         job_name = job["name"]
         result, description = _classify_job(job)
-        if _runner_name(job) in optional_runners:
-            if result is HardwareJobResult.SUCCESS:
-                print(f"{job_name}: {description} (optional).")
-            else:
-                print(f"::warning::{job_name}: {description}; optional hardware job.")
-            continue
         if result is HardwareJobResult.SUCCESS:
-            successful_required_jobs += 1
+            successful_jobs += 1
             print(f"{job_name}: {description}.")
         elif result is HardwareJobResult.RUNNER_SETUP_FAILURE:
             print(f"::warning::{job_name}: {description}; hardware tests did not run.")
@@ -151,8 +128,8 @@ def check_hardware_jobs(
 
     if post_setup_failures:
         return False
-    if successful_required_jobs == 0:
-        print("::error::No required hardware runner completed the test suite.")
+    if successful_jobs == 0:
+        print("::error::No hardware runner completed the test suite.")
         return False
 
     return True
@@ -168,12 +145,6 @@ def main() -> int:
         required=True,
         help="Number of hardware matrix jobs expected in the workflow run.",
     )
-    parser.add_argument(
-        "--optional-runner",
-        action="append",
-        default=[],
-        help="Hardware configuration whose failure does not fail the aggregate check.",
-    )
     arguments = parser.parse_args()
 
     try:
@@ -181,13 +152,7 @@ def main() -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
 
-    return (
-        0
-        if check_hardware_jobs(
-            jobs, arguments.expected_job_count, arguments.optional_runner
-        )
-        else 1
-    )
+    return 0 if check_hardware_jobs(jobs, arguments.expected_job_count) else 1
 
 
 if __name__ == "__main__":

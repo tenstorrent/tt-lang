@@ -59,7 +59,6 @@ def _run_check(
     jobs: list[dict[str, object]],
     *,
     expected_job_count: int = 2,
-    optional_runners: list[str] | None = None,
     separate_pages: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if separate_pages:
@@ -68,16 +67,13 @@ def _run_check(
         )
     else:
         jobs_json = json.dumps([{"total_count": len(jobs), "jobs": jobs}])
-    command = [
-        sys.executable,
-        str(CHECK_HARDWARE_JOB_RESULTS),
-        "--expected-job-count",
-        str(expected_job_count),
-    ]
-    for optional_runner in optional_runners or []:
-        command.extend(["--optional-runner", optional_runner])
     return subprocess.run(
-        command,
+        [
+            sys.executable,
+            str(CHECK_HARDWARE_JOB_RESULTS),
+            "--expected-job-count",
+            str(expected_job_count),
+        ],
         input=jobs_json,
         text=True,
         capture_output=True,
@@ -137,51 +133,10 @@ def test_both_setup_failures_fail() -> None:
     )
 
     assert result.returncode == 1
-    assert "No required hardware runner completed the test suite" in result.stdout
+    assert "No hardware runner completed the test suite" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "optional_job",
-    [
-        _hardware_job(
-            "bh-loudbox-viommu",
-            setup_conclusion="failure",
-            tests_complete=False,
-        ),
-        _hardware_job(
-            "bh-loudbox-viommu",
-            tests_complete=False,
-            failed_step_name="Build tt-lang",
-        ),
-        _hardware_job("bh-loudbox-viommu", tests_complete=False),
-        _hardware_job("bh-loudbox-viommu", complete_runner_conclusion="failure"),
-    ],
-    ids=["setup", "test-step", "incomplete", "runner-completion"],
-)
-def test_optional_runner_failure_succeeds(optional_job: dict[str, object]) -> None:
-    result = _run_check(
-        [_hardware_job("n150"), optional_job],
-        optional_runners=["bh-loudbox-viommu"],
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "optional hardware job" in result.stdout
-
-
-def test_optional_runner_does_not_replace_required_success() -> None:
-    result = _run_check(
-        [
-            _hardware_job("n150", setup_conclusion="failure", tests_complete=False),
-            _hardware_job("bh-loudbox-viommu"),
-        ],
-        optional_runners=["bh-loudbox-viommu"],
-    )
-
-    assert result.returncode == 1
-    assert "No required hardware runner completed the test suite" in result.stdout
-
-
-@pytest.mark.parametrize("failed_runner", ["n150", "galaxy-bh"])
+@pytest.mark.parametrize("failed_runner", ["n150", "galaxy-bh", "bh-loudbox-viommu"])
 def test_post_setup_failure_fails(failed_runner: str) -> None:
     other_runner = "galaxy-bh" if failed_runner == "n150" else "n150"
     result = _run_check(
