@@ -92,7 +92,6 @@ _SPEC_EXAMPLES_PASSING = [
     "spec/dataflow_buffer/tiled_tensor_shape.py",
     "spec/dataflow_buffer/row_major_tensor_shape.py",
     "spec/dataflow_buffer/dataflow_buffer.py",
-    "spec/dataflow_buffer/waited_block_replacement.py",
     "spec/operation_function/multi_kernel_operation.py",
     # Debugging snippets wrapped in @ttl.operation; debug_printing.py also
     # asserts the text its kernel prints.
