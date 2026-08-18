@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state, ttl-insert-copy-wait, ttl-annotate-l1-acc-loops, ttl-create-producer-compute, ttl-insert-intermediate-dfbs, convert-ttl-to-compute, ttl-auto-sync))' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state, ttl-insert-copy-wait, ttl-auto-sync, ttl-insert-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb}, ttl-create-producer-compute, ttl-insert-intermediate-dfbs, convert-ttl-to-compute, ttl-auto-sync))' | FileCheck %s
 
 // Verify that a recurrence rejected from DST-resident accumulation uses
 // intermediate DFB materialization instead.

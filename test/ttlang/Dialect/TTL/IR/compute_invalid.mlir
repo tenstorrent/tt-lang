@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -split-input-file -verify-diagnostics
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics
 // Negative tests for ttl.compute verifier with tensor-only operands and
 // CB associations via ttl.attach_cb.
 
