@@ -21,6 +21,16 @@ INSTALL_EXABOX_WORKER = (
 UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
 
 
+def test_pull_request_ci_targets_main_only() -> None:
+    ci_workflow = CI_WORKFLOW.read_text()
+
+    assert (
+        '  pull_request:\n    branches: ["main"]\n'
+        "    types: [opened, synchronize, reopened, ready_for_review, edited]"
+        in ci_workflow
+    )
+
+
 def test_galaxy_tests_run_only_for_pull_requests_targeting_main() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
     call_build = CALL_BUILD.read_text()
