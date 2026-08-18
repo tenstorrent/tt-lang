@@ -7,8 +7,10 @@
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s dynamic 2>&1 | FileCheck %s --check-prefix=DYNAMIC
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s empty 2>&1 | FileCheck %s --check-prefix=EMPTY
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s expression 2>&1 | FileCheck %s --check-prefix=EXPRESSION
+# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s limit 2>&1 | FileCheck %s --check-prefix=LIMIT
+# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s nested_limit 2>&1 | FileCheck %s --check-prefix=NESTED-LIMIT
 
-"""Verify that repeated external DFB effects require a static nonempty list."""
+"""Verify repeated external DFB effect syntax and expansion limits."""
 
 import os
 import sys
@@ -97,6 +99,51 @@ def make_invalid_repeated_effect(mode):
                 kernel=ttl.KernelKind.DATA_MOVEMENT,
             )
 
+    elif mode == "limit":
+
+        @ttl.operation(grid=(1, 1))
+        def invalid_repeated_effect(input_tensor):
+            source = ttl.make_dataflow_buffer_like(
+                input_tensor, shape=(1, 1), block_count=2
+            )
+            ttl.call_extern_func(
+                FAKE_HEADER,
+                "repeated_effect",
+                dfb_dependencies=[source],
+                dfb_effects=[
+                    ttl.DFBEffect.repeat(
+                        4097,
+                        [ttl.DFBEffect.wait(source, tiles=1)],
+                    )
+                ],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+    elif mode == "nested_limit":
+
+        @ttl.operation(grid=(1, 1))
+        def invalid_repeated_effect(input_tensor):
+            source = ttl.make_dataflow_buffer_like(
+                input_tensor, shape=(1, 1), block_count=2
+            )
+            ttl.call_extern_func(
+                FAKE_HEADER,
+                "repeated_effect",
+                dfb_dependencies=[source],
+                dfb_effects=[
+                    ttl.DFBEffect.repeat(
+                        65,
+                        [
+                            ttl.DFBEffect.repeat(
+                                64,
+                                [ttl.DFBEffect.wait(source, tiles=1)],
+                            )
+                        ],
+                    )
+                ],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
@@ -110,6 +157,8 @@ invalid_repeated_effect = make_invalid_repeated_effect(MODE)
 # DYNAMIC: TTLangCompileError: error: ttl.call_extern_func() effect repeat count must be a statically resolvable integer
 # EMPTY: TTLangCompileError: error: ttl.DFBEffect.repeat() effects must not be empty
 # EXPRESSION: TTLangCompileError: error: ttl.call_extern_func() dfb_effects and ttl.DFBEffect.repeat() effects must be lists
+# LIMIT: TTLangCompileError: error: ttl.call_extern_func() dfb_effects may contain at most 4096 expanded effects
+# NESTED-LIMIT: TTLangCompileError: error: ttl.call_extern_func() dfb_effects may contain at most 4096 expanded effects
 
 
 if __name__ == "__main__":
