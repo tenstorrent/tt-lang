@@ -46,7 +46,12 @@ def reduce_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
-            out_blk.store({scaler_expr} * ttl.math.{reduce_fn}(inp_blk, dims={dims}))
+            out_blk.store(
+                {scaler_expr}
+                * ttl.math.{reduce_fn}(
+                    inp_blk, dims={dims}, shape=({out_rows}, {out_cols})
+                )
+            )
 
     @ttl.datamovement()
     def dm_read():

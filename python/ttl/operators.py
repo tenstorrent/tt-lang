@@ -893,6 +893,7 @@ def _reduce_impl(
     input: TensorBlock,
     dims: List[int],
     reduce_type: int,
+    shape=None,
 ) -> TensorBlock:
     """Shared implementation for reduce_sum and reduce_max."""
     from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
@@ -913,7 +914,25 @@ def _reduce_impl(
             )
     norm_dims = sorted({d % rank for d in dims})
 
-    result_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    expected_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    if shape is None:
+        # Keep accepting the legacy compiler spelling while supporting the
+        # explicit result shape required by the language specification.
+        result_shape = expected_shape
+    else:
+        result_shape = [_get_constant_int(s) for s in shape]
+        if len(result_shape) != rank:
+            raise ValueError(
+                f"reduce shape {tuple(result_shape)} has {len(result_shape)} "
+                f"dimensions but input has rank {rank}"
+            )
+        if result_shape != expected_shape:
+            raise ValueError(
+                f"reduce shape {tuple(result_shape)} does not match expected "
+                f"result shape {tuple(expected_shape)} (input shape "
+                f"{tuple(input_shape)}, reducing dims {dims})"
+            )
+
     result_type = RankedTensorType.get(
         result_shape, input_type.element_type, input_type.encoding
     )
@@ -930,21 +949,29 @@ def _reduce_impl(
 
 
 @syntax("reduce_sum")
-def reduce_sum(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+def reduce_sum(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBlock:
     """Sum reduction over specified dimensions.
+
+    ``shape`` is the result shape required by the language specification. It
+    must be 1 in reduced dimensions and match the input in all other
+    dimensions. When omitted, it is inferred for backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_sum(x, dims=...)`.
     """
-    return _reduce_impl(input, dims, reduce_type=0)
+    return _reduce_impl(input, dims, reduce_type=0, shape=shape)
 
 
 @syntax("reduce_max")
-def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+def reduce_max(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBlock:
     """Max reduction over specified dimensions.
+
+    ``shape`` is the result shape required by the language specification. It
+    must be 1 in reduced dimensions and match the input in all other
+    dimensions. When omitted, it is inferred for backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_max(x, dims=...)`.
     """
-    return _reduce_impl(input, dims, reduce_type=1)
+    return _reduce_impl(input, dims, reduce_type=1, shape=shape)
 
 
 def _resolve_transpose_flag(val) -> bool:
