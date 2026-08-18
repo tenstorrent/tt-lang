@@ -1374,9 +1374,10 @@ def TTKernelAnnotateDFBUse
     every DFB before tensor-accessor arguments, including DFB ids passed to
     opaque externs as scalar values.
 
-    Direct function calls are analyzed transitively. An unresolved call is
-    handled conservatively by recording every DFB compile-time argument below
-    `ttl.base_cta_index`.
+    Calls are resolved through the MLIR call graph. Uses are propagated from
+    callees to callers in SCC order, including recursive calls. An unknown or
+    external callee is handled conservatively by recording every DFB
+    compile-time argument below `ttl.base_cta_index`.
   }];
 
   let dependentDialects = [];

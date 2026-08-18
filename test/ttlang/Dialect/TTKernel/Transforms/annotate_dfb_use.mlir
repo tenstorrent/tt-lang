@@ -1,7 +1,8 @@
 // RUN: ttlang-opt %s -ttkernel-annotate-dfb-use | FileCheck %s
 
 // Records physical DFB compile-time argument indices on each function after
-// walking get_compile_time_arg_val uses and transitively following calls.
+// walking get_compile_time_arg_val uses and propagating through the call graph,
+// including recursive SCCs.
 
 // CHECK-LABEL: func.func private @unknown()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32>
@@ -13,6 +14,15 @@
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
 
 // CHECK-LABEL: func.func @calls_unknown()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
+
+// CHECK-LABEL: func.func @recursive()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
+
+// CHECK-LABEL: func.func @cycle_a()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
+
+// CHECK-LABEL: func.func @cycle_b()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
 
 module {
@@ -36,6 +46,26 @@ module {
 
   func.func @calls_unknown() attributes {ttl.base_cta_index = 2 : i32} {
     func.call @unknown() : () -> ()
+    return
+  }
+
+  // Self-recursive call stays in one SCC and keeps the local DFB use.
+  func.func @recursive() attributes {ttl.base_cta_index = 2 : i32} {
+    %0 = ttkernel.get_compile_time_arg_val(0) : () -> i32
+    func.call @recursive() : () -> ()
+    return
+  }
+
+  // Mutually recursive pair inherits each other's local DFB uses.
+  func.func @cycle_a() attributes {ttl.base_cta_index = 2 : i32} {
+    %0 = ttkernel.get_compile_time_arg_val(0) : () -> i32
+    func.call @cycle_b() : () -> ()
+    return
+  }
+
+  func.func @cycle_b() attributes {ttl.base_cta_index = 2 : i32} {
+    %0 = ttkernel.get_compile_time_arg_val(1) : () -> i32
+    func.call @cycle_a() : () -> ()
     return
   }
 }

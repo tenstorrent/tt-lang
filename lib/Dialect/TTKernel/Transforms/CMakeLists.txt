@@ -11,6 +11,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   TTLangTTLTransformsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRAnalysis
   MLIRArithDialect
   MLIRFuncDialect
   MLIRFuncTransforms
