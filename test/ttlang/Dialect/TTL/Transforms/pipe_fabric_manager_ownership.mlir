@@ -20,16 +20,16 @@
 // GLOBAL-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // GLOBAL-LABEL: func.func @sender_node
 // GLOBAL-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender,
-// GLOBAL-SAME: interferingIntervals = "generated.1">]
+// GLOBAL-SAME: interferingIntervals = ["generated.1"]>]
 // GLOBAL-LABEL: func.func @receiver_node
 // GLOBAL-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver,
-// GLOBAL-SAME: interferingIntervals = "generated.0">]
+// GLOBAL-SAME: interferingIntervals = ["generated.0"]>]
 
 // The sender waits for the receiver to release the manager, sends the payload,
 // closes the manager, and publishes the pair's completed generation.
 // CHECK-LABEL: func.func @sender_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.0", kind = generated_sender,
-// CHECK-SAME: interferingIntervals = >]
+// CHECK-SAME: interferingIntervals = []>]
 // CHECK-DAG: %[[SENDER_GENERATION_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[SENDER_GENERATION_2:.*]] = arith.constant 2 : i32
 // CHECK-DAG: %[[SENDER_INDEX_0:.*]] = arith.constant 0 : index
@@ -47,7 +47,7 @@
 // ownership wait.
 // CHECK-LABEL: func.func @receiver_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver,
-// CHECK-SAME: interferingIntervals = >]
+// CHECK-SAME: interferingIntervals = []>]
 // CHECK-DAG: %[[RECEIVER_GENERATION_0:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[RECEIVER_GENERATION_1:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[RECEIVER_INDEX_0:.*]] = arith.constant 0 : index

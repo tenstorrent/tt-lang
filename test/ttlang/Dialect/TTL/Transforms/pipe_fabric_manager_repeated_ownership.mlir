@@ -13,7 +13,7 @@
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 1 : i64
 // CHECK-LABEL: func.func @sender_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
-// CHECK-SAME: interferingIntervals = >
+// CHECK-SAME: interferingIntervals = []>
 // CHECK: %[[SENDER_COUNTER:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[SENDER_COUNTER]]
 // CHECK: scf.for
@@ -28,7 +28,7 @@
 // CHECK: memref.store %[[SENDER_NEXT]], %[[SENDER_COUNTER]]
 // CHECK-LABEL: func.func @receiver_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
-// CHECK-SAME: interferingIntervals = >
+// CHECK-SAME: interferingIntervals = []>
 // CHECK: %[[RECEIVER_COUNTER:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[RECEIVER_COUNTER]]
 // CHECK: scf.for
