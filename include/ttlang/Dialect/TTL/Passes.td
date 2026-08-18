@@ -846,6 +846,12 @@ def TTLVerifyDFBSPSC
     `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
     must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
     must also carry a valid `ttl.launch_grid` attribute.
+
+    Setting `TTL_RELAX_DFB_SPSC` disables producer and consumer launch-domain
+    analysis for externally synchronized programs whose ownership contract is
+    not represented in the IR. Finalized DFB identity, physical-index, and
+    launch-grid preconditions remain mandatory. Strict verification is the
+    default.
   }];
 
   let dependentDialects = [];
