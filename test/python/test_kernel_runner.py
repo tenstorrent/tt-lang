@@ -3199,6 +3199,33 @@ def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(0, 0)}
 
 
+def test_specialized_dfb_use_requires_storage_segment_coverage(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    active = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"DFB\[0\] is used on cores \[\(0, 0\)\] that are not covered "
+        r"by any storage segment",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[config],
+            core_ranges=full_grid,
+            kernel_specs=[_specialized_spec(active, [0])],
+        )
+
+
 def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

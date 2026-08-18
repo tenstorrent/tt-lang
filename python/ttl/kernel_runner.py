@@ -1813,7 +1813,10 @@ def _specialized_dfb_placements(
     backing_tensors: Dict[int, Any],
     kernel_specs: Optional[List[KernelSpec]],
 ) -> Optional[List[Dict[Tuple[int, int], Tuple[str, Optional[int]]]]]:
-    """Resolve the storage source for each used ``(DFB, core)`` pair."""
+    """Resolve the storage source for each used ``(DFB, core)`` pair.
+
+    A DFB with ``storage_segments`` must cover every core that still uses it.
+    """
     used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
     if used_by_core is None:
         return None
@@ -1849,12 +1852,18 @@ def _specialized_dfb_placements(
                             f"on core {core}"
                         )
                     candidates[core] = source
+        used_cores = {
+            core for core, indices in used_by_core.items() if dfb_index in indices
+        }
+        if config.storage_segments:
+            uncovered = sorted(core for core in used_cores if core not in candidates)
+            if uncovered:
+                raise ValueError(
+                    f"DFB[{dfb_index}] is used on cores {uncovered} that are "
+                    f"not covered by any storage segment"
+                )
         placements.append(
-            {
-                core: source
-                for core, source in candidates.items()
-                if dfb_index in used_by_core[core]
-            }
+            {core: candidates[core] for core in used_cores if core in candidates}
         )
     return placements
 
