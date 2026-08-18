@@ -452,6 +452,14 @@ MULTI_TILE_CONFIGS = [
         1.0,
         "sum_2x2_both",
     ),
+    (
+        "reduce_sum",
+        (2, 2),
+        [-1],
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
+        1.0,
+        "sum_2x2_neg1_random",
+    ),
     # Random multi-tile.
     (
         "reduce_sum",
@@ -484,6 +492,14 @@ MULTI_TILE_CONFIGS = [
         lambda dtype: torch.rand(64, 64, dtype=dtype),
         1.0,
         "max_2x2_both_random",
+    ),
+    (
+        "reduce_max",
+        (2, 2),
+        [-2],
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
+        1.0,
+        "max_2x2_neg2_random",
     ),
     # Large block (4x4).
     (
