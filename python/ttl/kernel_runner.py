@@ -1230,13 +1230,7 @@ def _allocate_l1_sharded_storage_tensor(
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, 32)
     elements_per_core = max(1, aligned_bytes // 4)
-    if hasattr(core_ranges, "ranges"):
-        num_cores = len(
-            _core_range_coordinates(core_ranges, label="L1 storage core ranges")
-        )
-    else:
-        grid_size = core_ranges.bounding_box().grid_size()
-        num_cores = grid_size.x * grid_size.y
+    num_cores = core_ranges.num_cores()
     shard_spec = ttnn.ShardSpec(
         core_ranges,
         (1, elements_per_core),
@@ -1635,27 +1629,20 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
 
 
 def _core_range_coordinates(core_ranges: Any, *, label: str) -> set[Tuple[int, int]]:
-    """Expand a CoreRangeSet-like object into logical ``(x, y)`` pairs."""
-    if core_ranges is None or not hasattr(core_ranges, "ranges"):
-        raise ValueError(f"{label} must be a CoreRangeSet with ranges")
-    ranges = core_ranges.ranges
-    if callable(ranges):
-        ranges = ranges()
+    """Expand a CoreRangeSet into logical ``(x, y)`` pairs."""
+    if core_ranges is None:
+        raise ValueError(f"{label} must be a CoreRangeSet")
+    try:
+        cores = ttnn.corerange_to_cores(core_ranges)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a CoreRangeSet") from exc
 
     coordinates = set()
-    for core_range in ranges:
+    for core in cores:
         try:
-            start_x = int(core_range.start.x)
-            start_y = int(core_range.start.y)
-            end_x = int(core_range.end.x)
-            end_y = int(core_range.end.y)
+            coordinates.add((int(core.x), int(core.y)))
         except (AttributeError, TypeError, ValueError) as exc:
-            raise ValueError(f"{label} contains an invalid core range") from exc
-        if end_x < start_x or end_y < start_y:
-            raise ValueError(f"{label} contains an inverted core range")
-        for y in range(start_y, end_y + 1):
-            for x in range(start_x, end_x + 1):
-                coordinates.add((x, y))
+            raise ValueError(f"{label} contains an invalid core") from exc
     if not coordinates:
         raise ValueError(f"{label} must cover at least one core")
     return coordinates

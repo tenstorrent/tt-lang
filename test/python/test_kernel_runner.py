@@ -170,12 +170,15 @@ class _MalformedCoreRanges:
     def ranges(self):
         return (object(),)
 
+    @staticmethod
+    def num_cores():
+        return 1
 
-class _FakeExplicitCoreRanges:
-    def __init__(self, start, end):
-        self.ranges = (
-            _FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(*start), _FakeTTNN.CoreCoord(*end)),
-        )
+
+def _FakeExplicitCoreRanges(start, end):
+    return _FakeTTNN.CoreRangeSet(
+        (_FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(*start), _FakeTTNN.CoreCoord(*end)),)
+    )
 
 
 class _FakeTTNN:
@@ -285,9 +288,36 @@ class _FakeTTNN:
             self.start = start
             self.end = end
 
+        def num_cores(self):
+            return (self.end.x - self.start.x + 1) * (self.end.y - self.start.y + 1)
+
     class CoreRangeSet:
         def __init__(self, ranges):
-            self.ranges = tuple(ranges)
+            self._ranges = tuple(ranges)
+
+        def ranges(self):
+            return self._ranges
+
+        def num_cores(self):
+            return sum(core_range.num_cores() for core_range in self._ranges)
+
+    @staticmethod
+    def corerange_to_cores(core_range_set, max_cores=None, row_wise=False):
+        cores = []
+        for core_range in core_range_set.ranges():
+            xs = range(int(core_range.start.x), int(core_range.end.x) + 1)
+            ys = range(int(core_range.start.y), int(core_range.end.y) + 1)
+            if row_wise:
+                for y in ys:
+                    for x in xs:
+                        cores.append(_FakeTTNN.CoreCoord(x, y))
+            else:
+                for x in xs:
+                    for y in ys:
+                        cores.append(_FakeTTNN.CoreCoord(x, y))
+            if max_cores is not None and len(cores) >= max_cores:
+                return cores[:max_cores]
+        return cores
 
         def bounding_box(self):
             return _FakeBoundingBox(self.ranges)
@@ -2930,14 +2960,9 @@ def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
 
 
 def _descriptor_cores(descriptor):
-    ranges = descriptor.core_ranges.ranges
-    if callable(ranges):
-        ranges = ranges()
     return {
-        (x, y)
-        for core_range in ranges
-        for y in range(core_range.start.y, core_range.end.y + 1)
-        for x in range(core_range.start.x, core_range.end.x + 1)
+        (int(core.x), int(core.y))
+        for core in kernel_runner.ttnn.corerange_to_cores(descriptor.core_ranges)
     }
 
 
@@ -3212,7 +3237,7 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
     assert descriptor["total_size"] == 2048
     selected = [
         (core_range.start.x, core_range.start.y)
-        for core_range in descriptor["core_ranges"].ranges
+        for core_range in descriptor["core_ranges"].ranges()
     ]
     assert selected == [(0, 0), (1, 0)]
 
