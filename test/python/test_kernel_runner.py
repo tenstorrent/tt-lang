@@ -874,6 +874,50 @@ def test_static_dfb_descriptors_are_ordered_to_fit_l1(
     assert _descriptor_cores(descriptors_by_index[2]) == set(sparse_nodes)
 
 
+def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    plan_nodes = (
+        ((1, 0),),
+        ((0, 0), (3, 0)),
+        ((1, 0),),
+        ((0, 0), (1, 0)),
+        ((0, 0), (1, 0), (2, 0)),
+    )
+    plan_sizes = (96, 80, 256, 128, 24)
+    descriptor_plans = [
+        kernel_runner._DFBDescriptorPlan(
+            descriptor=object(),
+            physical_index=physical_index,
+            total_size=plan_sizes[physical_index],
+            nodes=plan_nodes[physical_index],
+            has_static_storage=True,
+        )
+        for physical_index in range(len(plan_nodes))
+    ]
+    remaining_bytes_by_core = {
+        (0, 0): 336,
+        (1, 0): 544,
+        (2, 0): 216,
+        (3, 0): 272,
+    }
+
+    ordered_plans = kernel_runner._order_static_dfb_descriptor_plans(
+        descriptor_plans, remaining_bytes_by_core
+    )
+
+    frontiers = {core: 0 for core in remaining_bytes_by_core}
+    for plan in ordered_plans:
+        address = kernel_runner._align_up(
+            max(frontiers[core] for core in plan.nodes), 64
+        )
+        for core in plan.nodes:
+            frontiers[core] = address + plan.total_size
+    assert all(
+        frontiers[core] <= remaining_bytes
+        for core, remaining_bytes in remaining_bytes_by_core.items()
+    )
+
+
 def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)

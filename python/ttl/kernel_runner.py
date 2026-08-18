@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
+_STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
+
 
 def _ensure_ttnn():
     """Lazy import of ttnn."""
@@ -1074,22 +1076,162 @@ def _order_static_dfb_descriptor_plans(
             break
         current_score, current_order, current_result = next_candidate
 
-    if current_score[0] > 0:
-        overflow_core = current_result.overflow_core
-        assert overflow_core is not None
-        required_bytes = current_result.required_bytes_on_overflow_core
-        available_bytes = remaining_bytes_by_core[overflow_core]
-        raise ValueError(
-            "Static DFB descriptor packing did not find a fitting deterministic "
-            f"order; the best candidate requires {required_bytes} bytes on core "
-            f"{overflow_core}, where {available_bytes} bytes remain, and exceeds "
-            f"the L1 budget by {required_bytes - available_bytes} bytes"
-        )
+    def apply_order(order: Tuple[int, ...]) -> List[_DFBDescriptorPlan]:
+        ordered_plans = list(descriptor_plans)
+        for destination_index, source_index in zip(static_plan_indices, order):
+            ordered_plans[destination_index] = descriptor_plans[source_index]
+        return ordered_plans
 
-    ordered_plans = list(descriptor_plans)
-    for destination_index, source_index in zip(static_plan_indices, current_order):
-        ordered_plans[destination_index] = descriptor_plans[source_index]
-    return ordered_plans
+    if current_score[0] == 0:
+        return apply_order(current_order)
+
+    search_state_count = 0
+    search_limit_reached = False
+    nondominated_frontiers: Dict[int, List[Tuple[int, ...]]] = {}
+    plan_position_by_index = {
+        plan_index: plan_position
+        for plan_position, plan_index in enumerate(static_plan_indices)
+    }
+    plan_index_by_position = tuple(static_plan_indices)
+    allocator_indices_by_position = tuple(
+        allocator_indices_by_plan[plan_index] for plan_index in static_plan_indices
+    )
+    plan_sizes = tuple(
+        descriptor_plans[plan_index].total_size for plan_index in static_plan_indices
+    )
+    preferred_positions = tuple(
+        plan_position_by_index[plan_index] for plan_index in current_order
+    )
+    preferred_rank = {
+        plan_position: rank for rank, plan_position in enumerate(preferred_positions)
+    }
+
+    def remaining_allocation_exceeds_budget(
+        remaining_mask: int, allocator_frontiers: Tuple[int, ...]
+    ) -> bool:
+        for allocator_index, available_bytes in enumerate(available_bytes_by_allocator):
+            remaining_sizes = [
+                plan_sizes[plan_position]
+                for plan_position in range(len(plan_sizes))
+                if remaining_mask & (1 << plan_position)
+                and allocator_index in allocator_indices_by_position[plan_position]
+            ]
+            if not remaining_sizes:
+                continue
+            aligned_sizes = [
+                _align_up(size, address_alignment) for size in remaining_sizes
+            ]
+            maximum_final_padding = max(
+                aligned_size - size
+                for aligned_size, size in zip(aligned_sizes, remaining_sizes)
+            )
+            minimum_final_frontier = (
+                _align_up(allocator_frontiers[allocator_index], address_alignment)
+                + sum(aligned_sizes)
+                - maximum_final_padding
+            )
+            if minimum_final_frontier > available_bytes:
+                return True
+        return False
+
+    def is_dominated(remaining_mask: int, allocator_frontiers: Tuple[int, ...]) -> bool:
+        existing_frontiers = nondominated_frontiers.setdefault(remaining_mask, [])
+        if any(
+            all(
+                existing <= current
+                for existing, current in zip(existing_state, allocator_frontiers)
+            )
+            for existing_state in existing_frontiers
+        ):
+            return True
+        existing_frontiers[:] = [
+            existing_state
+            for existing_state in existing_frontiers
+            if not all(
+                current <= existing
+                for current, existing in zip(allocator_frontiers, existing_state)
+            )
+        ]
+        existing_frontiers.append(allocator_frontiers)
+        return False
+
+    def find_fitting_order(
+        remaining_mask: int, allocator_frontiers: Tuple[int, ...]
+    ) -> Optional[Tuple[int, ...]]:
+        nonlocal search_limit_reached, search_state_count
+        if remaining_mask == 0:
+            return ()
+        if search_state_count >= _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT:
+            search_limit_reached = True
+            return None
+        search_state_count += 1
+        if is_dominated(remaining_mask, allocator_frontiers):
+            return None
+        if remaining_allocation_exceeds_budget(remaining_mask, allocator_frontiers):
+            return None
+
+        candidate_positions = [
+            plan_position
+            for plan_position in preferred_positions
+            if remaining_mask & (1 << plan_position)
+        ]
+        candidate_positions.sort(
+            key=lambda plan_position: (
+                -len(allocator_indices_by_position[plan_position]),
+                preferred_rank[plan_position],
+            )
+        )
+        seen_equivalent_plans = set()
+        for plan_position in candidate_positions:
+            allocator_indices = allocator_indices_by_position[plan_position]
+            equivalent_plan = (allocator_indices, plan_sizes[plan_position])
+            if equivalent_plan in seen_equivalent_plans:
+                continue
+            seen_equivalent_plans.add(equivalent_plan)
+            address = _align_up(
+                max(allocator_frontiers[index] for index in allocator_indices),
+                address_alignment,
+            )
+            end_address = address + plan_sizes[plan_position]
+            if any(
+                end_address > available_bytes_by_allocator[allocator_index]
+                for allocator_index in allocator_indices
+            ):
+                continue
+            next_frontiers = list(allocator_frontiers)
+            for allocator_index in allocator_indices:
+                next_frontiers[allocator_index] = end_address
+            suffix = find_fitting_order(
+                remaining_mask & ~(1 << plan_position), tuple(next_frontiers)
+            )
+            if suffix is not None:
+                return (plan_index_by_position[plan_position],) + suffix
+            if search_limit_reached:
+                return None
+        return None
+
+    fitting_order = find_fitting_order(
+        (1 << len(static_plan_indices)) - 1,
+        (0,) * len(allocator_cores),
+    )
+    if fitting_order is not None:
+        return apply_order(fitting_order)
+
+    overflow_core = current_result.overflow_core
+    assert overflow_core is not None
+    required_bytes = current_result.required_bytes_on_overflow_core
+    available_bytes = remaining_bytes_by_core[overflow_core]
+    search_context = (
+        "Static DFB descriptor packing reached its "
+        f"{_STATIC_DFB_PACKING_SEARCH_STATE_LIMIT}-state search limit;"
+        if search_limit_reached
+        else "No static DFB descriptor order fits;"
+    )
+    raise ValueError(
+        f"{search_context} the best candidate requires {required_bytes} bytes "
+        f"on core {overflow_core}, where {available_bytes} bytes remain, and "
+        f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
+    )
 
 
 def _build_dfb_descriptors(

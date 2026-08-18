@@ -144,11 +144,12 @@ one allocation frontier per core, and a descriptor shared by several cores
 starts at the greatest frontier among those cores. The runtime simulates these
 frontiers with TT-Metal's address alignment and the remaining L1 on each core.
 It preserves the physical-index order when that order fits. Otherwise, it
-evaluates deterministic node-count orders and improving pairwise exchanges.
-Only an order whose simulated allocation fits every selected core is emitted.
-If the bounded candidate set finds no fitting order, program construction fails
-conservatively and reports the best candidate's overflow; this does not prove
-that every possible order exceeds L1.
+evaluates deterministic node-count orders and improving pairwise exchanges. If
+those orders do not fit, a bounded exact search prunes states whose per-core
+frontiers are dominated or whose remaining minimum allocation exceeds L1. Only
+an order whose simulated allocation fits every selected core is emitted. Search
+exhaustion proves that no order fits; reaching the state limit reports a
+conservative failure and the best candidate's overflow.
 
 The runtime computes static DFB bytes independently for every selected core and
 compares them with that core's remaining L1 interval. Static descriptors grow
