@@ -2798,7 +2798,10 @@ static DFBQuiescenceProof computeProtocolLifetime(
     const LaunchNodeDomainState &domainState, bool reportExecutionCounts,
     bool includeUnknownDomains = false,
     ArrayRef<const DFBAccessOccurrence *> selectedAccesses = {},
-    bool hasCanonicalResetTerminator = false) {
+    bool hasCanonicalResetTerminator = false,
+    std::uint64_t executionCountDivisor = 1) {
+  assert(executionCountDivisor > 0 &&
+         "execution-count divisor must be positive");
   DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
   lifetime.node = node;
   SmallVector<const AccessRun *> reserves;
@@ -2973,10 +2976,23 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
     lifetime.conditionalExecutionProven = true;
   }
-  auto getTransactionCount = [](ArrayRef<const AccessRun *> runs) {
+  auto getIntervalExecutionCount =
+      [executionCountDivisor](
+          const AccessRun &run) -> std::optional<std::uint64_t> {
+    if (run.executionCount % executionCountDivisor != 0) {
+      return std::nullopt;
+    }
+    return run.executionCount / executionCountDivisor;
+  };
+  auto getTransactionCount = [&](ArrayRef<const AccessRun *> runs) {
     std::optional<std::uint64_t> total = 0;
     for (const AccessRun *run : runs) {
-      total = llvm::checkedAddUnsigned(*total, run->executionCount);
+      std::optional<std::uint64_t> intervalCount =
+          getIntervalExecutionCount(*run);
+      if (!intervalCount) {
+        return std::optional<std::uint64_t>();
+      }
+      total = llvm::checkedAddUnsigned(*total, *intervalCount);
       if (!total) {
         break;
       }
@@ -3011,7 +3027,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
   llvm::append_range(consumerProtocolRuns, waits);
   llvm::append_range(consumerProtocolRuns, pops);
   bool useCumulativeQueueProof =
-      !resetTerminatedProducer &&
+      executionCountDivisor == 1 && !resetTerminatedProducer &&
       supportsCumulativeQueueProof(producerProtocolRuns) &&
       supportsCumulativeQueueProof(consumerProtocolRuns);
   if (!countsMatch && !useCumulativeQueueProof) {
@@ -3152,8 +3168,14 @@ static DFBQuiescenceProof computeProtocolLifetime(
     if (resetTerminatedProducer) {
       std::uint64_t occupiedTiles = 0;
       for (const AccessRun *reserve : reserves) {
+        std::optional<std::uint64_t> intervalCount =
+            getIntervalExecutionCount(*reserve);
+        if (!intervalCount) {
+          return {DFBQuiescenceFailureReason::MismatchedTransaction,
+                  reserve->access->operation};
+        }
         std::optional<std::uint64_t> runTiles = llvm::checkedMulUnsigned(
-            reserve->executionCount,
+            *intervalCount,
             static_cast<std::uint64_t>(reserve->access->numTiles));
         if (!runTiles) {
           return {DFBQuiescenceFailureReason::MismatchedTransaction,
@@ -3167,7 +3189,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
                   reserve->access->operation};
         }
         occupiedTiles = *updatedTiles;
-        appendTransactionRun(lifetime.transactionRuns, reserve->executionCount,
+        appendTransactionRun(lifetime.transactionRuns, *intervalCount,
                              reserve->access->numTiles);
       }
     } else {
@@ -3189,18 +3211,26 @@ static DFBQuiescenceProof computeProtocolLifetime(
           return {DFBQuiescenceFailureReason::MismatchedTransaction,
                   reserve.access->operation};
         }
+        std::optional<std::uint64_t> reserveIntervalCount =
+            getIntervalExecutionCount(reserve);
+        std::optional<std::uint64_t> waitIntervalCount =
+            getIntervalExecutionCount(wait);
+        if (!reserveIntervalCount || !waitIntervalCount) {
+          return {DFBQuiescenceFailureReason::MismatchedTransaction,
+                  reserve.access->operation};
+        }
         std::uint64_t matchedCount =
-            std::min(reserve.executionCount - reserveOffset,
-                     wait.executionCount - waitOffset);
+            std::min(*reserveIntervalCount - reserveOffset,
+                     *waitIntervalCount - waitOffset);
         appendTransactionRun(lifetime.transactionRuns, matchedCount,
                              reserve.access->numTiles);
         reserveOffset += matchedCount;
         waitOffset += matchedCount;
-        if (reserveOffset == reserve.executionCount) {
+        if (reserveOffset == *reserveIntervalCount) {
           ++reserveIndex;
           reserveOffset = 0;
         }
-        if (waitOffset == wait.executionCount) {
+        if (waitOffset == *waitIntervalCount) {
           ++waitIndex;
           waitOffset = 0;
         }
@@ -3311,6 +3341,165 @@ static DFBQuiescenceProof computeProtocolLifetime(
   return {};
 }
 
+static std::optional<std::pair<Operation *, const StaticIterationDomain *>>
+getParticipantIteration(const ValidatedSynchronizedReset &reset,
+                        Operation *accessOperation) {
+  func::FuncOp accessFunction =
+      accessOperation->getParentOfType<func::FuncOp>();
+  if (!accessFunction) {
+    return std::nullopt;
+  }
+  for (auto [participant, iterationDomain] : llvm::zip_equal(
+           reset.participantOperations, reset.participantIterationDomains)) {
+    if (participant &&
+        participant->getParentOfType<func::FuncOp>() == accessFunction) {
+      return std::make_pair(participant, &iterationDomain);
+    }
+  }
+  return std::nullopt;
+}
+
+/// Models one representative interval when every access and its terminating
+/// collective reset execute once per iteration of the same sequential loop.
+/// The reset restores canonical cursor state, so physical allocation validates
+/// the per-iteration transactions rather than their dispatch-wide sum.
+static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
+    DFBLogicalLifecycle &logicalDFB, unsigned logicalIndex,
+    LaunchNodeCoord node, SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
+    ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
+    const ResetBoundaryEvents &resetBoundaryEvents,
+    const HappensBeforeGraph &graph,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
+    const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
+    const LaunchNodeDomainState &domainState,
+    const StructuralOperationOrder &structuralOrder, bool reportExecutionCounts,
+    bool includeUnknownDomains) {
+  SmallVector<const DFBAccessOccurrence *> activeAccesses;
+  for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+    if (!mayContainLaunchNode(access.launchDomain, node,
+                              includeUnknownDomains)) {
+      continue;
+    }
+    auto executionCountIt = executionCounts.find(&access);
+    assert(executionCountIt != executionCounts.end() &&
+           "every DFB access must have an execution-count fact");
+    if (executionCountIt->second && *executionCountIt->second == 0) {
+      continue;
+    }
+    activeAccesses.push_back(&access);
+  }
+  if (activeAccesses.empty()) {
+    return std::nullopt;
+  }
+
+  SmallVector<const ValidatedSynchronizedReset *> candidates;
+  for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
+    if (reset.executionCount <= 1 || reset.conditionalExecution ||
+        !llvm::is_contained(reset.targetLogicalIndices, logicalIndex)) {
+      continue;
+    }
+    auto resetEventsIt = resetBoundaryEvents.find(reset.reset);
+    if (resetEventsIt == resetBoundaryEvents.end()) {
+      continue;
+    }
+    bool terminatesEveryAccess =
+        llvm::all_of(activeAccesses, [&](const DFBAccessOccurrence *access) {
+          auto runIt = accessRuns.find(access);
+          std::optional<std::pair<Operation *, const StaticIterationDomain *>>
+              participant = getParticipantIteration(reset, access->operation);
+          std::optional<AccessEventSpan> events =
+              getAccessEventSpan(*access, operationEvents, accessEvents);
+          if (runIt == accessRuns.end() || !participant || !events ||
+              runIt->second.conditionalExecution ||
+              runIt->second.executionCount != reset.executionCount ||
+              !(runIt->second.iterationDomain == *participant->second) ||
+              !structuralOrder.precedes(access->operation,
+                                        participant->first)) {
+            return false;
+          }
+          const AccessEventSpan &resetEvents = resetEventsIt->second;
+          return graph.strictlyPrecedes(events->first.completion,
+                                        resetEvents.first.entry) &&
+                 graph.strictlyPrecedes(events->last.completion,
+                                        resetEvents.last.entry);
+        });
+    if (terminatesEveryAccess) {
+      candidates.push_back(&reset);
+    }
+  }
+  if (candidates.empty()) {
+    return std::nullopt;
+  }
+
+  const ValidatedSynchronizedReset *terminator = nullptr;
+  for (const ValidatedSynchronizedReset *candidate : candidates) {
+    const AccessEventSpan &candidateEvents =
+        resetBoundaryEvents.at(candidate->reset);
+    bool precedesEveryOtherCandidate =
+        llvm::all_of(candidates, [&](const ValidatedSynchronizedReset *other) {
+          if (candidate == other) {
+            return true;
+          }
+          const AccessEventSpan &otherEvents =
+              resetBoundaryEvents.at(other->reset);
+          return graph.strictlyPrecedes(candidateEvents.first.completion,
+                                        otherEvents.first.entry) &&
+                 graph.strictlyPrecedes(candidateEvents.last.completion,
+                                        otherEvents.last.entry);
+        });
+    if (precedesEveryOtherCandidate) {
+      terminator = candidate;
+      break;
+    }
+  }
+  if (!terminator) {
+    return std::nullopt;
+  }
+
+  SmallVector<DFBPerNodeLifetime, 0> intervalLifetimes;
+  DFBQuiescenceProof proof = computeProtocolLifetime(
+      logicalDFB, node, intervalLifetimes, graph, operationEvents, accessEvents,
+      executionCounts, accessRuns, domainState, reportExecutionCounts,
+      includeUnknownDomains, activeAccesses,
+      /*hasCanonicalResetTerminator=*/true, terminator->executionCount);
+  assert(intervalLifetimes.size() == 1 &&
+         "one repeated interval must produce one protocol lifetime");
+  lifetimes.push_back(std::move(intervalLifetimes.front()));
+  DFBPerNodeLifetime &lifetime = lifetimes.back();
+  lifetime.quiescence = proof;
+  if (!proof.proven()) {
+    return proof;
+  }
+
+  const AccessEventSpan &terminatorEvents =
+      resetBoundaryEvents.at(terminator->reset);
+  lifetime.terminalCompletionEvents = {terminatorEvents.last.completion};
+  lifetime.terminalStateCanonical = true;
+
+  DFBLifecycleEpoch epoch;
+  epoch.executionCount = terminator->executionCount;
+  for (const DFBAccessOccurrence *access : activeAccesses) {
+    epoch.accessOccurrenceIndices.push_back(
+        static_cast<unsigned>(access - logicalDFB.accesses.data()));
+  }
+  epoch.earliestEntryEvents = lifetime.earliestEntryEvents;
+  epoch.terminalCompletionEvents = lifetime.terminalCompletionEvents;
+  epoch.transactionRuns = lifetime.transactionRuns;
+  epoch.writeCursorRuns = lifetime.writeCursorRuns;
+  epoch.readCursorRuns = lifetime.readCursorRuns;
+  epoch.writePointerOwner = lifetime.writePointerOwner;
+  epoch.readPointerOwner = lifetime.readPointerOwner;
+  epoch.terminalWritePointerOwner = lifetime.terminalWritePointerOwner;
+  epoch.terminalReadPointerOwner = lifetime.terminalReadPointerOwner;
+  epoch.terminalResetOrdinal = terminator->reset.getOrdinal();
+  epoch.inspectionOnly = lifetime.inspectionOnly;
+  epoch.terminalStateCanonical = true;
+  epoch.quiescence = proof;
+  lifetime.resetEpochs.push_back(std::move(epoch));
+  return proof;
+}
+
 struct OrderedResetBoundary {
   const ValidatedSynchronizedReset *reset = nullptr;
   EventPair events;
@@ -3328,8 +3517,18 @@ static DFBQuiescenceProof computePerNodeLifetime(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
-    const LaunchNodeDomainState &domainState, bool reportExecutionCounts,
+    const LaunchNodeDomainState &domainState,
+    const StructuralOperationOrder &structuralOrder, bool reportExecutionCounts,
     bool includeUnknownDomains = false) {
+  if (std::optional<DFBQuiescenceProof> repeatedResetProof =
+          tryComputeRepeatedResetLifetime(
+              logicalDFB, logicalIndex, node, lifetimes, synchronizedResets,
+              resetBoundaryEvents, graph, operationEvents, accessEvents,
+              executionCounts, accessRuns, domainState, structuralOrder,
+              reportExecutionCounts, includeUnknownDomains)) {
+    return *repeatedResetProof;
+  }
+
   SmallVector<OrderedResetBoundary> boundaries;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
     if (!reset.isModeledLifetimeBoundary()) {
@@ -4052,7 +4251,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           logicalDFB, logicalIndex, node, logicalDFB.nodeLifetimes,
           validatedResets, resetBoundaryEvents, graph, operationEvents,
           accessEvents, executionCounts, accessRuns, domainState,
-          collectAllocationDiagnostics);
+          structuralOrder, collectAllocationDiagnostics);
       logicalDFB.nodeLifetimes.back().quiescence = proof;
     }
 
@@ -4108,7 +4307,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           logicalDFB, logicalIndex, node, logicalDFB.possibleNodeLifetimes,
           validatedResets, possibleResetBoundaryEvents, possibleGraph,
           possibleOperationEvents, possibleAccessEvents, executionCounts,
-          possibleAccessRuns, domainState,
+          possibleAccessRuns, domainState, structuralOrder,
           /*reportExecutionCounts=*/collectAllocationDiagnostics,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
