@@ -124,6 +124,9 @@ public:
     return logicalDFBs;
   }
 
+  /// Return whether launch domains use the complete runtime launch grid.
+  bool hasExactLaunchGrid() const { return exactLaunchGrid; }
+
   ArrayRef<LaunchNodeCoord> getLaunchNodes() const { return launchNodes; }
 
   /// Returns true when one indexed lifetime ends before another on `node`.
@@ -135,6 +138,7 @@ private:
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
+  bool exactLaunchGrid = false;
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   Operation *errorOperation = nullptr;
