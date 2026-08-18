@@ -66,8 +66,9 @@ def test_remaining_l1_budget_matches_live_tensor_addresses(device):
     input_tensor = to_l1(input_host, device)
     assert input_tensor is not None
 
-    device_info = ttnn._ttnn.reports.get_device_info(device)
-    static_dfb_base_address = device_info.address_at_first_l1_cb_buffer
+    static_dfb_base_address = ttnn.get_allocator_base_address(
+        device, ttnn.BufferType.L1
+    )
     l1_pages = [
         page
         for page in ttnn._ttnn.reports.get_buffer_pages(device)
