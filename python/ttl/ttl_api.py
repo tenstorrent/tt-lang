@@ -2553,12 +2553,7 @@ def _lower_program_to_kernel(
             "ttl-lower-signpost-to-emitc",
         ]
         if compiler_options.specialize_cores:
-            pipeline_passes += [
-                "ttkernel-specialize-cores",
-                "canonicalize",
-                "cse",
-                "ttkernel-annotate-dfb-use",
-            ]
+            pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
         pipeline_passes += [
             "convert-ttkernel-to-emitc",
             "symbol-dce",

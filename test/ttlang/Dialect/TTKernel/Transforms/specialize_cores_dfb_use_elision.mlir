@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-cores,canonicalize,cse,ttkernel-annotate-dfb-use)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' | FileCheck %s
 
 // This characterizes the kernel half of per-core specialization. Core (0, 0)
 // retains its DFB use while core (0, 1) has the complete DFB-dependent branch
