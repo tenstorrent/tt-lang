@@ -7,8 +7,10 @@
 // What one TTKernel operation costs on one execution engine.
 //
 // The data comes from LLK perf sweeps scoped to the configurations tt-lang can
-// generate (llk-perf/), turned into a table by scripts/gen_cost_table.py. This
-// header is the whole public surface; the table itself is generated and private.
+// generate, run and turned into a table by llk-perf/ in the tt-lang-ops-and-models
+// repository -- the measurement pipeline needs a device and a tt-llk harness, so
+// it lives outside this tree and this table is one of its outputs. This header is
+// the whole public surface; the table itself is generated and private.
 //
 // Deliberately depends on LLVM Support alone -- no MLIR, no dialect. Recovering
 // a KernelConfig from IR is the caller's job, which keeps this library usable
@@ -80,10 +82,11 @@ struct KernelConfig {
 
   bool destAcc = false;
 
-  /// Kernel-wide, from the compute descriptor. Empty matches any.
-  llvm::StringRef fidelity;
-
-  /// "Half" or "Full". Empty matches any.
+  /// "Half" or "Full".
+  ///
+  /// Not consulted: the mode changes DST capacity and the granularity of the
+  /// math-to-pack handoff, neither of which alters an operation's isolated work
+  /// time, so no measurement is keyed on it.
   llvm::StringRef dstSync;
 
   /// Faces per tile. 4 is a full 32x32 tile.
@@ -123,15 +126,6 @@ struct Cost {
   double fixed = 0.0;
   Unit unit = Unit::PerCall;
 
-  /// True when this came from a perf measurement, false when it is the table's
-  /// invented placeholder.
-  ///
-  /// Worth checking rather than assuming. 125 of 333 slots are measured, so a
-  /// caller that ignores this is often reporting a guess, and the guesses are not
-  /// close: `copy_tile` on math was invented at 150 and measures 19,
-  /// `compute_kernel_hw_startup` on pack at 140 against 207.
-  bool measured = false;
-
   /// Whether this can be charged as a flat number. False when `fixed` is
   /// non-zero, which a caller with no tile count has nowhere to put.
   bool isScalar() const { return fixed == 0.0; }
@@ -151,32 +145,20 @@ bool runsOnEngine(llvm::StringRef op, Engine engine,
 /// Whether `op` occupies no engine at all: known, and costing nothing.
 bool runsNowhere(llvm::StringRef op, Arch arch = Arch::Blackhole);
 
-/// The measured cost, or nothing.
+/// The cost of this operation on this engine in this configuration, or nothing.
 ///
-/// Returns a value only when a perf row matches this configuration exactly. Use
-/// this when reporting an absolute number to a user, where "unknown" is a better
-/// answer than a guess.
+/// The only query the library has, because there is only one kind of answer it can
+/// give. The table holds measurements alone: an operation on an engine nothing
+/// timed, or in a configuration no sweep presented, answers nothing rather than an
+/// invented number. A caller that needs a figure for every operation supplies its
+/// own fallback and knows that it did.
 ///
 /// Rows that disagree by more than a hair are treated as no match: two rows
 /// matching one key means the key is missing a field the measurement depended
 /// on, which is how an unverifiable number would otherwise reach a report.
-std::optional<Cost> lookupMeasured(llvm::StringRef op, Engine engine,
-                                   llvm::StringRef inFormat,
-                                   const KernelConfig &config,
-                                   Arch arch = Arch::Blackhole);
-
-/// The measured cost if one matches and is scalar, otherwise the placeholder.
-///
-/// Returns nothing only when the operation does not run on this engine. Check
-/// `Cost::measured` before treating the result as fact -- with most slots
-/// unmeasured, a caller that ignores it is usually reporting a guess.
-///
-/// Use this when ranking candidates against each other, where a consistent
-/// invented number beats a hole.
-std::optional<Cost> lookupOrPlaceholder(llvm::StringRef op, Engine engine,
-                                        llvm::StringRef inFormat,
-                                        const KernelConfig &config,
-                                        Arch arch = Arch::Blackhole);
+std::optional<Cost> lookup(llvm::StringRef op, Engine engine,
+                           llvm::StringRef inFormat, const KernelConfig &config,
+                           Arch arch = Arch::Blackhole);
 
 /// How many operations and measured rows back an architecture's table, for
 /// reports that want to state their own provenance.
@@ -199,7 +181,7 @@ llvm::ArrayRef<llvm::StringRef> getOperations(Arch arch = Arch::Blackhole);
 /// Zero means no measurement exists for that slot at all, which is a different
 /// thing from one existing that a particular kernel cannot match -- the first is
 /// missing data, the second is a key mismatch, and only the caller's config
-/// decides the second. `lookupMeasured` answers the second; this answers the
+/// decides the second. `lookup` answers the second; this answers the
 /// first, and is what a coverage report needs.
 unsigned getMeasurementCount(llvm::StringRef op, Engine engine,
                              Arch arch = Arch::Blackhole);

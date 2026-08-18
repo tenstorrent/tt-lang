@@ -32,8 +32,6 @@ struct MeasuredCost {
   llvm::StringRef inFormat;
   llvm::StringRef outFormat;
   bool destAcc;
-  llvm::StringRef fidelity;
-  llvm::StringRef dstSync;
   unsigned faces;
   llvm::StringRef variant;
   Unit unit;
@@ -45,16 +43,15 @@ struct MeasuredCost {
   double fixed;
 };
 
-/// What one operation costs on one engine.
+/// Which measured rows describe one operation on one engine.
 ///
-/// `placeholder` is always present and always invented -- measurements live only
-/// in `kMeasured`, so there is never a question which of the two a number is.
+/// A slice of `kMeasured`, and nothing more: the table carries measurements alone,
+/// so a slot has no number of its own to fall back on.
 ///
-/// `count == 0` means no measurement exists for this (operation, engine) at all,
-/// as distinct from one existing that a given kernel cannot match.
+/// `count == 0` means the operation occupies the engine and nothing has timed it,
+/// which is distinct from a measurement existing that a given kernel cannot match:
+/// the first is missing data, the second a configuration no sweep presented.
 struct EngineCost {
-  uint64_t placeholder;
-  Unit unit;
   unsigned first = 0;
   unsigned count = 0;
 };
@@ -155,8 +152,6 @@ bool keyMatches(const MeasuredCost &row, llvm::StringRef inFormat,
                 const KernelConfig &config) {
   return row.inFormat == inFormat && row.outFormat == config.outFormat &&
          row.destAcc == config.destAcc && row.faces == config.faces &&
-         (row.dstSync.empty() || row.dstSync == config.dstSync) &&
-         (row.fidelity.empty() || row.fidelity == config.fidelity) &&
          variantMatches(row.variant, config);
 }
 
@@ -175,7 +170,7 @@ std::optional<Cost> matchRow(const EngineCost &slot, llvm::StringRef inFormat,
     if (found && std::abs(found->value - row.cost) > 0.01 * found->value) {
       return std::nullopt;
     }
-    found = Cost{row.cost, row.fixed, row.unit, /*measured=*/true};
+    found = Cost{row.cost, row.fixed, row.unit};
   }
   return found;
 }
@@ -196,9 +191,9 @@ bool runsNowhere(llvm::StringRef op, Arch arch) {
   return entry && !entry->dm && !entry->unpack && !entry->math && !entry->pack;
 }
 
-std::optional<Cost> lookupMeasured(llvm::StringRef op, Engine engine,
-                                   llvm::StringRef inFormat,
-                                   const KernelConfig &config, Arch arch) {
+std::optional<Cost> lookup(llvm::StringRef op, Engine engine,
+                           llvm::StringRef inFormat, const KernelConfig &config,
+                           Arch arch) {
   const OpCost *entry = findOp(op, arch);
   if (!entry) {
     return std::nullopt;
@@ -208,30 +203,6 @@ std::optional<Cost> lookupMeasured(llvm::StringRef op, Engine engine,
     return std::nullopt;
   }
   return matchRow(*slot, inFormat, config);
-}
-
-std::optional<Cost> lookupOrPlaceholder(llvm::StringRef op, Engine engine,
-                                        llvm::StringRef inFormat,
-                                        const KernelConfig &config, Arch arch) {
-  const OpCost *entry = findOp(op, arch);
-  if (!entry) {
-    return std::nullopt;
-  }
-  const std::optional<EngineCost> &slot = engineSlot(*entry, engine);
-  if (!slot) {
-    return std::nullopt;
-  }
-  // A measured row wins only if it can be charged as a flat number. One carrying
-  // an intercept describes `value * tiles + fixed`, which a caller asking for a
-  // single figure has nowhere to put -- so the placeholder answers instead, and
-  // `lookupMeasured` remains the way to reach the affine form.
-  if (std::optional<Cost> measured = matchRow(*slot, inFormat, config)) {
-    if (measured->isScalar()) {
-      return measured;
-    }
-  }
-  return Cost{static_cast<double>(slot->placeholder), 0.0, slot->unit,
-              /*measured=*/false};
 }
 
 TableStats getTableStats(Arch arch) {

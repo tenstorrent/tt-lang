@@ -2,7 +2,6 @@
 # (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
 add_subdirectory(lib/Analysis)
-add_subdirectory(lib/OpCost)
 
 # Generate pytest.ini with correct build directory paths. Keep the configured
 # file in the build tree so independent build directories do not overwrite each
@@ -32,7 +31,6 @@ set(TTLANG_TEST_DEPENDS
   ttlang-dfb-allocation-oracle-test
   ttlang-launch-node-domain-test
   ttlang-op-stats
-  ttlang-opcost-report
   ttlang-value-origin-test
   ttlang-opt
   ttlang-translate
