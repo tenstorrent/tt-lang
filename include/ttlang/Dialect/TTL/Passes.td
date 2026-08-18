@@ -1379,10 +1379,7 @@ def TTKernelAnnotateDFBUse
     `ttl.base_cta_index`.
   }];
 
-  let dependentDialects = [
-    "::mlir::func::FuncDialect",
-    "::mlir::tt::ttkernel::TTKernelDialect"
-  ];
+  let dependentDialects = [];
 }
 
 def TTKernelCombinePackTiles
