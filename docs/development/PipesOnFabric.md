@@ -613,6 +613,14 @@ not interpret or modify the external manager's runtime arguments. The complete
 plan is validated before program descriptors, semaphores, or runtime arguments
 are modified.
 
+An external scoped manager call inside structured control flow records its
+compiler-proven launch-node domain. Runtime binding resolves each kernel
+descriptor independently, verifies that the recorded nodes are contained by
+that descriptor, and unions the per-descriptor domains for the claim. An absent
+domain means the complete descriptor executes the interval; a present empty
+domain means no node executes it. The external binding must cover the resulting
+node set exactly.
+
 The compiler serializes an ordered sequence of generated receiver and sender
 manager intervals only when corresponding intervals each contain one protocol
 operation, implement the same transfers at the same device and TENSIX node,

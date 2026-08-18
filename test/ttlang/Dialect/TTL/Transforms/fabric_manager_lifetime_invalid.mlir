@@ -27,10 +27,10 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>} {
     %condition = arith.constant true
     scf.if %condition {
-      // expected-error @below {{fabric manager effects must be in the logical kernel's straight-line entry block}}
+      // expected-error @below {{fabric manager effects must be in the logical kernel's straight-line entry block unless the effect is scoped}}
       ttl.opaque_call "run" () {
           fabric_manager_effects = [#ttl.fabric_manager_effect<
-              claim = "manager", kind = scoped>],
+              claim = "manager", kind = acquire>],
           header = "fabric.hpp"} : () -> ()
     }
     return

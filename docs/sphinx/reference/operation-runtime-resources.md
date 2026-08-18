@@ -125,8 +125,10 @@ execute on the compiler-owned PipeNet source kernel.
 Ownership begins at entry to the acquire call because that opaque call may open
 connections. It ends after the release call returns. Every `use()` must occur
 strictly between one acquire and release. `scoped()` declares one opaque call
-that acquires, uses, and releases the manager. Effects must occur in the
-selected logical kernel's straight-line entry block.
+that acquires, uses, and releases the manager. Acquire, use, and release
+effects must occur in the selected logical kernel's straight-line entry block.
+A scoped effect may occur in structured control flow when the compiler proves
+its exact launch-node domain.
 
 An expand-only operation forwards captured claims to the final grid-bearing
 operation. Acquire, use, and release effects may therefore reside in separate
@@ -135,12 +137,15 @@ reusing the same claim in two independent grid-bearing operations is invalid.
 
 The runtime resource factory supplies one `FabricConnectionBinding` for every
 captured claim. Its requirements must cover every active logical-device and
-worker-node instance of the selected kernel. `fixed_link_index` is an external
-ABI constraint, not a preference; target binding rejects it when the active
-control plane does not expose that link for the destination. The compiler
-places external and generated manager intervals in one interference graph,
-validates every link assignment before descriptor mutation, and reserves the
-external link without interpreting or modifying external runtime arguments.
+worker-node instance of the selected kernel. A conditional scoped effect uses
+its proven launch-node domain instead of the complete executable descriptor;
+a proven empty domain requires no worker binding. `fixed_link_index` is an
+external ABI constraint, not a preference; target binding rejects it when the
+active control plane does not expose that link for the destination. The
+compiler places external and generated manager intervals in one interference
+graph, validates every link assignment before descriptor mutation, and
+reserves the external link without interpreting or modifying external runtime
+arguments.
 
 The claim identity, `abi_identity`, logical endpoints, worker nodes, and fixed
 links participate in program-cache identity. Objects in the binding's

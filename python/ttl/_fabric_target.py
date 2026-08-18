@@ -524,11 +524,20 @@ def _assign_fabric_links(
 def _build_interval_interference(
     kernel_intervals: List[Tuple[FabricManagerIntervalSpec, ...]],
 ) -> Dict[str, frozenset[str]]:
+    def specialization_invariant(interval: FabricManagerIntervalSpec):
+        return (
+            interval.identity,
+            interval.kind,
+            interval.claim,
+            interval.route_indices,
+            interval.interfering_intervals,
+        )
+
     intervals_by_identity = {}
     for intervals in kernel_intervals:
         for interval in intervals:
             existing = intervals_by_identity.setdefault(interval.identity, interval)
-            if existing != interval:
+            if specialization_invariant(existing) != specialization_invariant(interval):
                 raise ValueError(
                     f"fabric manager interval {interval.identity!r} has "
                     "inconsistent specialized records"
@@ -823,36 +832,29 @@ def build_fabric_target_binding_plan(
                 "to one manager interval"
             )
         interval_identity = next(iter(interval_identities))
-        descriptor_nodes = set()
-        explicit_launch_domains = set()
+        interval_nodes = set()
         for kernel_index, interval in interval_matches:
-            descriptor_nodes.update(
+            descriptor_nodes = {
                 (node_x, node_y)
                 for node_y in range(grid_rows)
                 for node_x in range(grid_cols)
                 if program_descriptor.kernels[kernel_index].core_ranges.contains(
                     ttnn_api.CoreCoord(node_x, node_y)
                 )
+            }
+            descriptor_interval_nodes = (
+                descriptor_nodes
+                if interval.launch_nodes is None
+                else set(interval.launch_nodes)
             )
-            if interval.launch_nodes is not None:
-                explicit_launch_domains.add(frozenset(interval.launch_nodes))
-        if len(explicit_launch_domains) > 1:
-            raise ValueError(
-                f"external fabric interval {interval_identity!r} has "
-                "inconsistent launch-node domains across kernel descriptors"
-            )
-        interval_nodes = (
-            descriptor_nodes
-            if not explicit_launch_domains
-            else set(next(iter(explicit_launch_domains)))
-        )
-        outside_nodes = interval_nodes - descriptor_nodes
-        if outside_nodes:
-            raise ValueError(
-                f"external fabric interval {interval_identity!r} has launch "
-                "nodes outside its kernel descriptors: "
-                f"{tuple(sorted(outside_nodes))}"
-            )
+            outside_nodes = descriptor_interval_nodes - descriptor_nodes
+            if outside_nodes:
+                raise ValueError(
+                    f"external fabric interval {interval_identity!r} has "
+                    f"launch nodes outside kernel descriptor {kernel_index}: "
+                    f"{tuple(sorted(outside_nodes))}"
+                )
+            interval_nodes.update(descriptor_interval_nodes)
         expected_external_nodes.setdefault(interval_identity, set()).update(
             interval_nodes
         )
