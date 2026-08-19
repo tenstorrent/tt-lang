@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Analysis/CallGraph.h"
@@ -146,6 +147,9 @@ struct TTKernelAnnotateDFBUsePass
     }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+      if (!getKernelThreadType(func)) {
+        continue;
+      }
       Operation *key = func.getOperation();
       SmallVector<int32_t> sorted(usedDFBs[key].begin(), usedDFBs[key].end());
       llvm::sort(sorted);

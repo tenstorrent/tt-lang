@@ -1,14 +1,12 @@
 // RUN: ttlang-opt %s -ttkernel-annotate-dfb-use | FileCheck %s
 
-// Records physical DFB compile-time argument indices on each function after
-// walking get_compile_time_arg_val uses and propagating through the call graph,
-// including recursive SCCs.
+// Records physical DFB compile-time argument indices on ttkernel.thread
+// functions after walking get_compile_time_arg_val uses and propagating
+// through the call graph, including recursive SCCs. Helpers remain in the
+// analysis; declarations are not annotated.
 
-// CHECK-LABEL: func.func private @unknown()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32>
-
-// CHECK-LABEL: func.func @helper()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
+// CHECK: func.func private @unknown()
+// CHECK-NEXT: func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
 
 // CHECK-LABEL: func.func @calls_helper()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
@@ -39,31 +37,41 @@ module {
     return
   }
 
-  func.func @calls_helper() attributes {ttl.base_cta_index = 3 : i32} {
+  func.func @calls_helper() attributes {
+      ttl.base_cta_index = 3 : i32,
+      ttkernel.thread = #ttkernel.thread<compute>} {
     func.call @helper() : () -> ()
     return
   }
 
-  func.func @calls_unknown() attributes {ttl.base_cta_index = 2 : i32} {
+  func.func @calls_unknown() attributes {
+      ttl.base_cta_index = 2 : i32,
+      ttkernel.thread = #ttkernel.thread<noc>} {
     func.call @unknown() : () -> ()
     return
   }
 
   // Self-recursive call stays in one SCC and keeps the local DFB use.
-  func.func @recursive() attributes {ttl.base_cta_index = 2 : i32} {
+  func.func @recursive() attributes {
+      ttl.base_cta_index = 2 : i32,
+      ttkernel.thread = #ttkernel.thread<compute>} {
     %0 = ttkernel.get_compile_time_arg_val(0) : () -> i32
     func.call @recursive() : () -> ()
     return
   }
 
   // Mutually recursive pair inherits each other's local DFB uses.
-  func.func @cycle_a() attributes {ttl.base_cta_index = 2 : i32} {
+  func.func @cycle_a() attributes {
+      ttl.base_cta_index = 2 : i32,
+      ttkernel.thread = #ttkernel.thread<compute>} {
     %0 = ttkernel.get_compile_time_arg_val(0) : () -> i32
     func.call @cycle_b() : () -> ()
     return
   }
 
-  func.func @cycle_b() attributes {ttl.base_cta_index = 2 : i32} {
+  func.func @cycle_b() attributes {
+      ttl.base_cta_index = 2 : i32,
+      ttkernel.thread = #ttkernel.thread<compute>} {
     %0 = ttkernel.get_compile_time_arg_val(1) : () -> i32
     func.call @cycle_a() : () -> ()
     return
