@@ -14,9 +14,9 @@
 // generated and private.
 //
 // Deliberately depends on LLVM Support alone -- no MLIR, no dialect. Recovering
-// a KernelConfig from IR is the caller's job, which keeps this library usable
-// from anything and keeps a dependency edge from TTKernel back to here from
-// ever existing.
+// an OpKey and a KernelConfig from IR is the caller's job, which keeps this
+// library usable from anything and keeps a dependency edge from TTKernel back
+// to here from ever existing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,12 +66,17 @@ struct Knob {
   llvm::StringRef value;
 };
 
-/// The configuration a measured cost is keyed on.
+/// The half of a measurement's key that holds for a whole kernel.
 ///
 /// A cost is only meaningful for the configuration it was taken in -- the same
 /// LLK at 2 faces against 4 differs by roughly half, and an FPU multiply spans
 /// 22 to 88 cycles across math fidelities -- so a query that cannot supply a
 /// field it needs misses rather than borrowing a neighbouring configuration.
+///
+/// Every field here is a property of the kernel rather than of any operation in
+/// it, so a caller recovers this once and reuses it across every lookup that
+/// kernel makes. What one operation supplies is `OpKey`; keeping the two apart
+/// is what stops a value belonging to one operation being asked about another.
 ///
 /// An empty string matches any value: it is how a caller says "this kernel does
 /// not constrain that", and how rows measured by benchmarks that never varied a
@@ -79,6 +84,10 @@ struct Knob {
 struct KernelConfig {
   /// Format the packer wrote. Empty when the kernel packs more than one, so a
   /// mixed-format kernel misses rather than picking one of them.
+  ///
+  /// The kernel's rather than the operation's because it cannot be anything
+  /// else: a compute operation like `add_tiles` has no output buffer among its
+  /// operands, while the measurement was keyed on what the packer wrote.
   llvm::StringRef outFormat;
 
   bool destAcc = false;
@@ -92,16 +101,38 @@ struct KernelConfig {
 
   /// Faces per tile. 4 is a full 32x32 tile.
   unsigned faces = 4;
+};
+
+/// The half of a measurement's key that belongs to the operation being asked
+/// about.
+///
+/// Separate from `KernelConfig` because these change from one query to the next
+/// inside a single kernel, and a stale value here is a wrong answer rather than
+/// a miss: charging one operation's format or one buffer's route to another
+/// produces a number that looks like data.
+struct OpKey {
+  /// Format the engine read, from the buffer this operation reads. Empty when
+  /// the caller cannot tell, which misses rather than guessing.
+  ///
+  /// Unlike `KernelConfig::outFormat` this one is on the operation: `copy_tile`
+  /// and `add_tiles` name the buffers they unpack from. An operation that names
+  /// none -- every SFPU operation, which reads DST -- leaves the caller to say
+  /// what reached DST, or to leave this empty and get no answer.
+  llvm::StringRef inFormat;
 
   /// Everything else a row can be keyed on, whatever its origin.
   ///
   /// The library does not know what these mean and deliberately does not: some
-  /// are kernel-wide (`approx_mode`, `iterations`), some belong to a circular
-  /// buffer (`unpack_to_dest`), and some are attributes of the operation being
-  /// asked about (`mathop` and `reduce_pool_type` for a reduce, whose math cost
-  /// spans 19 to 133 cycles across their six combinations). Only the caller
-  /// knows where each comes from, and a table that gains a knob then needs no
-  /// change here.
+  /// are kernel-wide (`math_fidelity`, `approx_mode`), some belong to a
+  /// circular buffer (`unpack_to_dest`), and some are attributes of the
+  /// operation being asked about (`mathop` and `reduce_pool_type` for a reduce,
+  /// whose math cost spans 19 to 133 cycles across their six combinations).
+  /// Only the caller knows where each comes from, and a table that gains a knob
+  /// then needs no change here.
+  ///
+  /// They live on this side because the ones that vary do so per operation, and
+  /// a knob whose value is fixed for the kernel costs a caller nothing to
+  /// repeat.
   ///
   /// `unpack_to_dest` is the one most easily mistaken for kernel-wide. It is a
   /// per-buffer decision (`ttl.unpack_to_dest_fp32` holds a list of CB
@@ -158,7 +189,7 @@ bool runsNowhere(llvm::StringRef op, Arch arch = Arch::Blackhole);
 /// matching one key means the key is missing a field the measurement depended
 /// on, which is how an unverifiable number would otherwise reach a report.
 std::optional<Cost> lookup(llvm::StringRef op, Engine engine,
-                           llvm::StringRef inFormat, const KernelConfig &config,
+                           const OpKey &opKey, const KernelConfig &config,
                            Arch arch = Arch::Blackhole);
 
 /// How many operations and measured rows back an architecture's table, for

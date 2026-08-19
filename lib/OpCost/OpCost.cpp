@@ -122,17 +122,17 @@ const OpCost *findOp(llvm::StringRef op, Arch arch) {
 
 /// Whether the caller can answer for every knob an entry was measured under.
 ///
-/// Purely a string match against `KernelConfig::knobs`; nothing here knows what
-/// any knob means. A row naming one the caller did not supply cannot be
-/// matched, which is what stops a measurement taken in a configuration we
-/// cannot describe from answering anyway.
-bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
+/// Purely a string match against `OpKey::knobs`; nothing here knows what any
+/// knob means. A row naming one the caller did not supply cannot be matched,
+/// which is what stops a measurement taken in a configuration we cannot
+/// describe from answering anyway.
+bool variantMatches(llvm::StringRef variant, llvm::ArrayRef<Knob> knobs) {
   while (!variant.empty()) {
     auto [entry, rest] = variant.split(';');
     variant = rest;
     auto [knob, value] = entry.split('=');
     const Knob *supplied = nullptr;
-    for (const Knob &k : config.knobs) {
+    for (const Knob &k : knobs) {
       if (k.name == knob) {
         supplied = &k;
         break;
@@ -150,11 +150,11 @@ bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
 /// An empty field on the row matches any value: it is how a benchmark that
 /// never varied something stays reachable, rather than demanding a value it
 /// never measured.
-bool keyMatches(const MeasuredCost &row, llvm::StringRef inFormat,
+bool keyMatches(const MeasuredCost &row, const OpKey &opKey,
                 const KernelConfig &config) {
-  return row.inFormat == inFormat && row.outFormat == config.outFormat &&
+  return row.inFormat == opKey.inFormat && row.outFormat == config.outFormat &&
          row.destAcc == config.destAcc && row.faces == config.faces &&
-         variantMatches(row.variant, config);
+         variantMatches(row.variant, opKey.knobs);
 }
 
 /// The one measured row matching this configuration, or nothing.
@@ -162,11 +162,11 @@ bool keyMatches(const MeasuredCost &row, llvm::StringRef inFormat,
 /// Rows agreeing to within a hair collapse to one answer; rows that disagree
 /// are treated as no match, since two rows matching one key means the key is
 /// missing a field the measurement depended on.
-std::optional<Cost> matchRow(const EngineCost &slot, llvm::StringRef inFormat,
+std::optional<Cost> matchRow(const EngineCost &slot, const OpKey &opKey,
                              const KernelConfig &config) {
   std::optional<Cost> found;
   for (const MeasuredCost &row : measuredRows(slot)) {
-    if (!keyMatches(row, inFormat, config)) {
+    if (!keyMatches(row, opKey, config)) {
       continue;
     }
     if (found && std::abs(found->value - row.cost) > 0.01 * found->value) {
@@ -194,7 +194,7 @@ bool runsNowhere(llvm::StringRef op, Arch arch) {
 }
 
 std::optional<Cost> lookup(llvm::StringRef op, Engine engine,
-                           llvm::StringRef inFormat, const KernelConfig &config,
+                           const OpKey &opKey, const KernelConfig &config,
                            Arch arch) {
   const OpCost *entry = findOp(op, arch);
   if (!entry) {
@@ -204,7 +204,7 @@ std::optional<Cost> lookup(llvm::StringRef op, Engine engine,
   if (!slot) {
     return std::nullopt;
   }
-  return matchRow(*slot, inFormat, config);
+  return matchRow(*slot, opKey, config);
 }
 
 TableStats getTableStats(Arch arch) {
