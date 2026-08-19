@@ -28,7 +28,7 @@ from python.sim_stats.cycles.model import (
     total_memory_bytes,
     total_matmul_flop,
 )
-from python.sim_stats.cycles.parse import extract_kernel_work
+from python.sim_stats.cycles.parse import CONSUMED_EVENTS, extract_kernel_work
 from python.sim_stats.cycles.report import (
     load_estimate,
     print_detailed,
@@ -83,6 +83,34 @@ def test_extract_kernel_work_emits_movement_op_per_locality() -> None:
         ("dram", 1),
     ]
     assert all(o.kind == "movement" for o in kw.ops)
+
+
+def test_pipe_recv_becomes_remote_l1_movement() -> None:
+    # A multicast receive is counted as per-node remote_l1 movement.
+    events = [
+        TraceEvent(0, "kernel_start", "node0-compute", {}),
+        TraceEvent(5, "pipe_recv", "node0-compute", {"pipe": "pipe_0_to_1", "tiles": 3}),
+        TraceEvent(6, "kernel_end", "node0-compute", {}),
+    ]
+    kw = extract_kernel_work(events)["node0-compute"]
+    assert [(o.kind, o.op_type, o.locality, o.tiles) for o in kw.ops] == [
+        ("movement", "mcast", "remote_l1", 3)
+    ]
+
+
+def test_pipe_recv_movement_is_priced_at_remote_l1_rate() -> None:
+    # The mcast movement uses the profile's remote_l1 bandwidth + latency.
+    hw = _hw()  # remote_l1: 4.0 B/cyc, 0 latency; bytes_per_tile 2.0
+    events = [
+        TraceEvent(5, "pipe_recv", "node0-compute", {"pipe": "p", "tiles": 4}),
+    ]
+    kw = extract_kernel_work(events)["node0-compute"]
+    # 4 tiles * 2 B/tile / 4 B/cyc = 2.0 cycles
+    assert op_cycles(kw.ops[0], hw) == 2.0
+
+
+def test_pipe_recv_is_a_consumed_event() -> None:
+    assert "pipe_recv" in CONSUMED_EVENTS
 
 
 def test_movement_op_cost_is_tiles_times_bytes_over_bandwidth() -> None:

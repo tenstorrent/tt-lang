@@ -12,7 +12,7 @@ from ..utils import as_int, iter_events
 
 # Trace events this reader consumes. Defined by the producer in sim/trace.py;
 # pinned against its registry by test/sim/test_trace_contract.py.
-CONSUMED_EVENTS: frozenset[str] = frozenset({"compute_op", "copy_end"})
+CONSUMED_EVENTS: frozenset[str] = frozenset({"compute_op", "copy_end", "pipe_recv"})
 
 
 def parse_trace(path: Path) -> list[TraceEvent]:
@@ -37,9 +37,11 @@ def parse_trace(path: Path) -> list[TraceEvent]:
 def extract_kernel_work(events: list[TraceEvent]) -> dict[str, KernelWork]:
     """Build per-kernel work records from trace events.
 
-    Reads two event kinds:
+    Reads three event kinds:
       - ``copy_end``   -> movement OpWork, one per non-zero locality tile count.
       - ``compute_op`` -> compute OpWork (op_type, dtype, tiles).
+      - ``pipe_recv``  -> ``remote_l1`` movement OpWork (a multicast receive: the
+        receiver ingests ``tiles`` into its L1 over the NoC).
 
     ``compute_op`` events are emitted by the simulator once per math op. When a
     trace lacks them (e.g. generated before the instrumentation), the compute path
@@ -83,6 +85,18 @@ def extract_kernel_work(events: list[TraceEvent]) -> dict[str, KernelWork]:
                             direction=direction,
                         )
                     )
+        elif ev.event == "pipe_recv":
+            # Multicast receive -> per-node remote_l1 movement.
+            tiles = as_int(ev.data.get("tiles", 0))
+            if tiles > 0:
+                kw.ops.append(
+                    OpWork(
+                        kind="movement",
+                        op_type="mcast",
+                        tiles=tiles,
+                        locality="remote_l1",
+                    )
+                )
 
     return work
 
