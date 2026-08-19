@@ -891,6 +891,18 @@ public:
     }
   }
 
+  StringRef
+  getEltwiseBinaryType(ttkernel::EltwiseBinaryType eltwiseBinaryType) const {
+    switch (eltwiseBinaryType) {
+    case ttkernel::EltwiseBinaryType::Add:
+      return "EltwiseBinaryType::ELWADD";
+    case ttkernel::EltwiseBinaryType::Sub:
+      return "EltwiseBinaryType::ELWSUB";
+    case ttkernel::EltwiseBinaryType::Mul:
+      return "EltwiseBinaryType::ELWMUL";
+    }
+  }
+
   StringRef getInputClamping(ttkernel::InputClamping inputClamping) const {
     switch (inputClamping) {
     case ttkernel::InputClamping::None:
@@ -970,6 +982,19 @@ public:
           op.getContext(), getBroadcastType(op.getBcastType())));
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::BinaryBcastInitOp> ||
+                         std::is_same_v<SourceOp,
+                                        ttkernel::BinaryBcastTileOp>) {
+      // init_bcast<EltwiseBinaryType, BroadcastType>(icb0, icb1, ocb)
+      // any_tiles_bcast<EltwiseBinaryType, BroadcastType>(icb0, icb1, itile0,
+      //                                                   itile1, idst)
+      SmallVector<Attribute, 2> template_args;
+      template_args.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), getEltwiseBinaryType(op.getEltwiseBinaryType())));
+      template_args.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), getBroadcastType(op.getBcastType())));
+      return ArrayAttr::get(op.getContext(), template_args);
+    } else if constexpr (std::is_same_v<SourceOp,
                                         ttkernel::GetNocAddrFromBankIDOp>) {
       SmallVector<Attribute, 1> template_args;
 
@@ -1010,20 +1035,8 @@ public:
                          std::is_same_v<SourceOp,
                                         ttkernel::BinaryDestReuseTilesOp>) {
       SmallVector<Attribute, 2> template_args;
-      StringRef eltwiseType;
-      switch (op.getEltwiseBinaryType()) {
-      case ttkernel::EltwiseBinaryType::Add:
-        eltwiseType = "EltwiseBinaryType::ELWADD";
-        break;
-      case ttkernel::EltwiseBinaryType::Sub:
-        eltwiseType = "EltwiseBinaryType::ELWSUB";
-        break;
-      case ttkernel::EltwiseBinaryType::Mul:
-        eltwiseType = "EltwiseBinaryType::ELWMUL";
-        break;
-      }
-      template_args.push_back(
-          emitc::OpaqueAttr::get(op.getContext(), eltwiseType));
+      template_args.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), getEltwiseBinaryType(op.getEltwiseBinaryType())));
       StringRef reuseType =
           op.getReuseType() == ttkernel::BinaryDestReuseType::DestToSrcA
               ? "EltwiseBinaryReuseDestType::DEST_TO_SRCA"
@@ -3420,6 +3433,13 @@ public:
 
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
         typeConverter, context, "pack_tile");
+
+    // The fused binary broadcast ops keep dialect-level names while metal
+    // exposes them as init_bcast/any_tiles_bcast, so the callee is overridden.
+    patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryBcastInitOp>>(
+        typeConverter, context, "init_bcast");
+    patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryBcastTileOp>>(
+        typeConverter, context, "any_tiles_bcast");
 
     patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(

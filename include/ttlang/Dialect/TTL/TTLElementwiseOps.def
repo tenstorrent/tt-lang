@@ -66,6 +66,12 @@
 #define TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
+// CB[src0], CB[src1] -> DST[dst] ops with attributes, where one source is
+// broadcast during unpack. These fuse a broadcast and a binary op.
+#ifndef TTL_CB_BINARY_ATTR_OP
+#define TTL_CB_BINARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#endif
+
 // Binary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
 // These use the standard 3-arg binary template: DST[odst] = op(DST[src0], DST[src1])
 TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
@@ -115,6 +121,9 @@ TTL_UNARY_TILE_OP(Trunc, TruncTileOp, RoundingTileInitOp, TruncTileOp)
 // CB -> DST ops with attribute
 TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)
 
+// CB, CB -> DST ops with attributes
+TTL_CB_BINARY_ATTR_OP(BinaryBcast, TileBinaryBcastOp, BinaryBcastInitOp, BinaryBcastTileOp)
+
 // FPU binary: read from CB, write to DST
 TTL_FPU_BINARY_TILE_OP(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
 TTL_FPU_BINARY_TILE_OP(Sub, SubTileOp, SubTilesInitOp, SubTilesOp)
@@ -123,5 +132,6 @@ TTL_FPU_BINARY_TILE_OP(Mul, MulTileOp, MulTilesInitOp, MulTilesOp)
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
 #undef TTL_CB_UNARY_ATTR_OP
+#undef TTL_CB_BINARY_ATTR_OP
 #undef TTL_BINARY_TILE_OP_MINMAX
 #undef TTL_FPU_BINARY_TILE_OP
