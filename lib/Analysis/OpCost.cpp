@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ttlang/OpCost/OpCost.h"
+#include "ttlang/Analysis/OpCost.h"
 
 #include <cmath>
 #include <iterator>
@@ -235,6 +235,28 @@ unsigned getMeasurementCount(llvm::StringRef op, Engine engine, Arch arch) {
   }
   const std::optional<EngineCost> &slot = engineSlot(*entry, engine);
   return slot ? slot->count : 0;
+}
+
+void forEachMeasurement(Arch arch,
+                        llvm::function_ref<void(const Measurement &)> visit) {
+  if (arch != Arch::Blackhole) {
+    return;
+  }
+  static constexpr Engine kEngines[] = {Engine::Dm, Engine::Unpack,
+                                        Engine::Math, Engine::Pack};
+  for (const OpCost &entry : kCostTable) {
+    for (Engine engine : kEngines) {
+      const std::optional<EngineCost> &slot = engineSlot(entry, engine);
+      if (!slot) {
+        continue;
+      }
+      for (const MeasuredCost &row : measuredRows(*slot)) {
+        visit(Measurement{entry.op, engine, row.inFormat, row.outFormat,
+                          row.destAcc, row.faces, row.variant,
+                          Cost{row.cost, row.fixed, row.unit}});
+      }
+    }
+  }
 }
 
 llvm::StringRef getEngineName(Engine engine) {

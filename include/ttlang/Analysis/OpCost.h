@@ -20,13 +20,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef TTLANG_OPCOST_OPCOST_H
-#define TTLANG_OPCOST_OPCOST_H
+#ifndef TTLANG_ANALYSIS_OPCOST_H
+#define TTLANG_ANALYSIS_OPCOST_H
 
 #include <cstdint>
 #include <optional>
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir::tt::opcost {
@@ -41,11 +42,11 @@ enum class Arch { Blackhole, Wormhole };
 
 /// The execution engines a TTKernel operation can occupy.
 ///
-/// Not the same thing as the estimator's five timelines. Those are instruction
-/// streams (NCRISC, TRISC0-2, BRISC); these are the units that do the work. The
-/// mapping is the caller's: NCRISC and BRISC both read `Dm`, because an
-/// operation does not choose which data-movement core runs it --
-/// `ttl.noc_index` on the enclosing function does.
+/// Not the instruction streams that issue the work -- NCRISC, TRISC0-2 and
+/// BRISC -- but the units that do it. Mapping one to the other is the caller's
+/// job: NCRISC and BRISC both read `Dm`, because an operation does not choose
+/// which data-movement core runs it -- `ttl.noc_index` on the enclosing
+/// function does.
 enum class Engine { Dm, Unpack, Math, Pack };
 
 /// What a cost is charged per.
@@ -221,6 +222,36 @@ unsigned getMeasurementCount(llvm::StringRef op, Engine engine,
 /// Name of an engine, for diagnostics.
 llvm::StringRef getEngineName(Engine engine);
 
+/// One measured row, for a caller checking the table rather than costing a
+/// kernel: the cost, and the key it was measured at.
+///
+/// The key is handed back in the shape a lookup takes it, except for `knobs`,
+/// which stays the packed `name=value;name=value` string the table stores. A
+/// caller that wants to query with it splits it; one that wants to report on
+/// the data does not have to.
+struct Measurement {
+  llvm::StringRef op;
+  Engine engine;
+  llvm::StringRef inFormat;
+  llvm::StringRef outFormat;
+  bool destAcc = false;
+  unsigned faces = 4;
+  llvm::StringRef knobs;
+  Cost cost;
+};
+
+/// Every measured row backing one architecture, in table order.
+///
+/// The data behind every answer `lookup` gives, which is what makes the table
+/// checkable from outside: a row rebuilt into a key has to find itself, and two
+/// rows that share a key have to agree. Neither property can be seen through
+/// `lookup` alone, because a caller cannot ask a question it cannot spell.
+///
+/// Enumeration rather than an array so the packed rows stay private; nothing is
+/// copied but the row being visited.
+void forEachMeasurement(Arch arch,
+                        llvm::function_ref<void(const Measurement &)> visit);
+
 } // namespace mlir::tt::opcost
 
-#endif // TTLANG_OPCOST_OPCOST_H
+#endif // TTLANG_ANALYSIS_OPCOST_H

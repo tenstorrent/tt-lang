@@ -23,7 +23,7 @@
 //   tt-lang's tt-metal      ea042c4ad  tt-llk and the perf harness
 //
 // Included into a scope that defines `MeasuredCost`, `EngineCost` and `OpCost`;
-// this file is data only. See include/ttlang/OpCost/OpCost.h. What the table
+// this file is data only. See include/ttlang/Analysis/OpCost.h. What the table
 // answers and what it does not is reported by llk-perf/coverage_report.py.
 //
 // Each entry is one engine of one benchmark's loop body, attributed to the
