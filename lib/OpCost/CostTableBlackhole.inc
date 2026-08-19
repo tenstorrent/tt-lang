@@ -16,13 +16,23 @@
 // sweeps cover configurations no tt-lang kernel produces. Costs are not
 // transferable across architectures.
 //
-// Source data: 11222 CSV rows from 7 benchmark(s), against tt-metal
-// ea042c4ad. The CSVs are not in the tree: they are large, regenerable from
-// llk-perf/ in tt-lang-ops-and-models, and only meaningful against the revision
-// that produced them. That revision is recorded here because it is the one thing
-// about them that cannot be recovered later -- the same benchmark across two
-// tt-llk revisions differs by up to 2x on init zones. What this table answers and
-// what it does not is reported by llk-perf/coverage_report.py.
+// Source data: 11222 CSV rows from 7 benchmark(s). The CSVs are not in the
+// tree: they are large, regenerable from llk-perf/ in tt-lang-ops-and-models, and
+// only meaningful against the revisions that produced them -- which is why those
+// are recorded below, being the one thing about the CSVs that cannot be recovered
+// later. The same benchmark across two tt-llk revisions differs by up to 2x on
+// init zones. What this table answers and what it does not is reported by
+// llk-perf/coverage_report.py.
+//
+// Generated 2026-08-19 22:00:14 UTC, from:
+//   tt-lang-ops-and-models  e3b89291   the sweeps, the harness patches, this script
+//   tt-lang                 ae2fdf4de  the dialect this table is keyed against
+//   tt-lang's tt-metal      ea042c4ad  tt-llk, and the perf harness the sweeps run
+//
+// A `-dirty` suffix means that checkout had uncommitted changes under the paths
+// that determine this file, so its revision alone does not reproduce it. The
+// timestamp is the only line that changes when the same data is regenerated, so a
+// regeneration that leaves the measurements alone shows up as a one-line diff.
 //
 // Included into a scope that defines `MeasuredCost`, `EngineCost` and `OpCost`;
 // this file is data only. See include/ttlang/OpCost/OpCost.h.
