@@ -2966,6 +2966,13 @@ def _descriptor_cores(descriptor):
     }
 
 
+def _descriptor_placement(descriptor):
+    return (
+        descriptor.format_descriptors[0].buffer_index,
+        frozenset(_descriptor_cores(descriptor)),
+    )
+
+
 def _specialized_spec(core_ranges, used_dfb_indices):
     return kernel_runner.KernelSpec(
         path="/tmp/specialized.cpp",
@@ -2975,6 +2982,35 @@ def _specialized_spec(core_ranges, used_dfb_indices):
         core_ranges=core_ranges,
         used_dfb_indices=used_dfb_indices,
     )
+
+
+def test_specialized_dfb_descriptors_partition_overlapping_use(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    core_1 = _FakeExplicitCoreRanges((1, 0), (1, 0))
+    core_2 = _FakeExplicitCoreRanges((2, 0), (2, 0))
+    configs = [
+        PhysicalDFBConfig(index, 1, "bfloat16", 1, 2048, (32, 32)) for index in range(2)
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[
+            _specialized_spec(core_0, [0]),
+            _specialized_spec(core_1, [0, 1]),
+            _specialized_spec(core_2, [1]),
+        ],
+    )
+
+    assert {_descriptor_placement(descriptor) for descriptor in descriptors} == {
+        (0, frozenset({(0, 0)})),
+        (0, frozenset({(1, 0)})),
+        (1, frozenset({(1, 0)})),
+        (1, frozenset({(2, 0)})),
+    }
 
 
 def test_specialized_dfb_descriptor_follows_active_kernel_core(monkeypatch):
@@ -2993,8 +3029,9 @@ def test_specialized_dfb_descriptor_follows_active_kernel_core(monkeypatch):
         ],
     )
 
-    assert len(descriptors) == 1
-    assert _descriptor_cores(descriptors[0]) == {(0, 0)}
+    assert {_descriptor_placement(descriptor) for descriptor in descriptors} == {
+        (0, frozenset({(0, 0)})),
+    }
 
 
 def test_unannotated_kernel_keeps_whole_grid_dfb_descriptor(monkeypatch):
@@ -3071,10 +3108,9 @@ def test_specialized_dfb_budget_is_computed_per_core(monkeypatch):
         ],
     )
 
-    assert len(descriptors) == 2
-    assert {_descriptor_cores(descriptor).pop() for descriptor in descriptors} == {
-        (0, 0),
-        (1, 0),
+    assert {_descriptor_placement(descriptor) for descriptor in descriptors} == {
+        (0, frozenset({(0, 0)})),
+        (1, frozenset({(1, 0)})),
     }
 
 
