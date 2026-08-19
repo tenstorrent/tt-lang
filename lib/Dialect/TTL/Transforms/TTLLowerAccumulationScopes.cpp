@@ -397,7 +397,8 @@ emitTensorStrategyPlanningFailure(AccumulationScopeOp scope,
 
 static LogicalResult
 verifyTensorL1PackLowering(AccumulationScopeOp scope,
-                           const TensorAccumulationMatch &recurrence) {
+                           const TensorAccumulationMatch &recurrence,
+                           const DFBAcquireReleaseIndex &dfbIndex) {
   auto emitL1PackError = [&](StringRef reason) {
     return scope.emitOpError()
            << "cannot lower tensor accumulation scope to L1 packer "
@@ -416,7 +417,7 @@ verifyTensorL1PackLowering(AccumulationScopeOp scope,
         "accumulator; select the automatic accumulation strategy or split the "
         "accumulators into separate loops");
   }
-  if (failed(analyzeTensorAccumulationForL1Pack(recurrence))) {
+  if (failed(analyzeTensorAccumulationForL1Pack(recurrence, &dfbIndex))) {
     return emitL1PackError(
         "expected one same-type additive recurrence with one final store; "
         "select the automatic accumulation strategy or rewrite the loop");
@@ -479,7 +480,7 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
   }
 
   if (strategyPlan->strategy == AccumulationStrategy::L1Pack) {
-    if (failed(verifyTensorL1PackLowering(scope, recurrence))) {
+    if (failed(verifyTensorL1PackLowering(scope, recurrence, dfbIndex))) {
       return failure();
     }
     loweringPlan.kind = TensorAccumulationScopeLoweringKind::L1Pack;
@@ -516,7 +517,8 @@ static void assignResidentContributionReleases(
 
 /// Lower one tensor accumulation scope according to the selected strategy.
 static LogicalResult lowerTensorAccumulationScope(
-    const TensorAccumulationScopeLoweringPlan &plan, RewriterBase &rewriter) {
+    const TensorAccumulationScopeLoweringPlan &plan,
+    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter) {
   AccumulationScopeOp scope = plan.scope;
   if (plan.kind == TensorAccumulationScopeLoweringKind::Stateful) {
     return lowerStatefulTensorAccumulationScope(scope, rewriter);
@@ -538,7 +540,8 @@ static LogicalResult lowerTensorAccumulationScope(
   }
 
   [[maybe_unused]] LogicalResult lowered =
-      lowerTensorAccumulationToL1Pack(recurrence, plan.scopeId, rewriter);
+      lowerTensorAccumulationToL1Pack(recurrence, plan.scopeId, dfbIndex,
+                                      rewriter);
   assert(succeeded(lowered) && "L1 pack legality was checked before mutation");
   eraseAccumulationScopeWrapper(scope, rewriter,
                                 getScopeBlockArgumentReplacements(scope));
@@ -610,7 +613,7 @@ struct TTLLowerAccumulationScopesPass
       }
       assignResidentContributionReleases(plans);
       for (const TensorAccumulationScopeLoweringPlan &plan : plans) {
-        if (failed(lowerTensorAccumulationScope(plan, rewriter))) {
+        if (failed(lowerTensorAccumulationScope(plan, *dfbIndex, rewriter))) {
           signalPassFailure();
           return;
         }
