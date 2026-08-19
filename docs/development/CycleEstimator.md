@@ -55,7 +55,7 @@ T_program    = max(node_bound, memory_floor)
 
 `node_bound` and `memory_floor` model different resources (per-core throughput vs shared bandwidth), so the program takes the `max`. The reported `bound` is `memory` when the shared floor wins, otherwise the busiest node's `compute`/`movement`. Without the ceiling, a K-sweep matmul stays `compute` at every K because each of N active cores is (incorrectly) given a private DRAM lane; the aggregate ceiling flips memory-heavy points to `memory`.
 
-Under ideal-peak with full pipelining, connected producer/consumer kernels overlap in steady state, so there is no serial sum along a dependency chain. The roofline **is** the estimate — the model adds no serial-sum slack on top. Being ideal-peak, it is a lower bound (`measured ≥ estimate`, see [Hardware Validation](#hardware-validation)); how *tight* the bound is depends on the workload and is not yet fully characterized.
+Under ideal-peak with full pipelining, connected producer/consumer kernels overlap in steady state, so there is no serial sum along a dependency chain. The roofline **is** the estimate — the model adds no serial-sum slack on top. Being ideal-peak, it is a lower bound (`measured ≥ estimate`); how *tight* depends on the workload — see [Hardware Validation](#hardware-validation).
 
 **Fill/drain — reported, not folded into the bound.**
 Pure throughput ignores a pipeline's fill (first item through read→compute→write) and drain (last item). A deterministic estimate of that overhead treats a node's kernels as stages with cycles `C_i` and `N` pipeline items (the write kernel's movement-op count; `N ≥ 1`):
@@ -86,7 +86,7 @@ The per-kernel `max(compute, movement)` is the time-domain form of the classic [
 - **DRAM BW is per chip:** N300 is 576 GB/s per card → 288/chip; P100a is 448 GB/s (7 of 8 GDDR6).
 - **Ridge AI** = peak compute ÷ peak BW — below it memory-bound, above it compute-bound.
 
-The report emits this per board when the profile sets `tensix_cores` (see [Output](#output)). Two caveats: FLOP counts **matmul only** (the SFPU rate is a placeholder), and the compute roof is the fixed **bf16/HiFi4** reference — a BFP8 (LoFi) kernel runs ~4× faster, so its `compute util` can exceed 100%.
+The report emits this per board when the profile sets `tensix_cores` (see [Output](#output)). Two caveats: FLOP counts **matmul only** (the SFPU rate is an ideal-floor assumption), and the compute roof is the fixed **bf16/HiFi4** reference — a BFP8 (LoFi) kernel runs ~4× faster, so its `compute util` can exceed 100%.
 
 **Vocabulary.** `memory` is the roofline's off-chip bandwidth roof (the shared GDDR6 pool, the classic model's "memory bandwidth"); a per-node `movement` bound is one core's data-movement path (L1 + NoC + off-chip). The trace-level `dram` *locality* is a separate, lower-level tag and keeps its name.
 
@@ -145,18 +145,19 @@ All values are sourced from tt-metal and the Wormhole ISA docs:
 
 Known simplifications: `noc_bw` uses one measured asymptote for all localities (local L1 ≈ 2× remote, DRAM ≈ 24 B/cyc per channel); fidelity is fixed at HiFi4.
 
-The bundled `blackhole_p100a` profile mirrors this structure with Blackhole P100a values: 1.35 GHz, 448 GB/s aggregate DRAM (7/8 GDDR6), 60.9 B/cyc NoC.
+The bundled `blackhole_p100a` profile mirrors this structure with Blackhole P100a values: 1.35 GHz, 448 GB/s aggregate DRAM (7/8 GDDR6), 60.9 B/cyc NoC. Its `noc_latency` (293) is **placeholder data copied from Wormhole** — `noc_latencies.yaml` has no BH table.
 
 ### Simulator trace — the consumed contract
 
-The estimator reads two event kinds and ignores all others:
+The estimator reads three event kinds and ignores all others:
 
 | Event | Category | Fields read | Produces |
 |---|---|---|---|
 | `compute_op` | `compute` | `op_type`, `dtype`, `tiles` | one compute `OpWork` |
 | `copy_end` | `copy` | `local_l1`, `remote_l1`, `dram` (tile counts) | one movement `OpWork` per non-zero locality |
+| `pipe_recv` | `pipe` | `tiles` | one `remote_l1` movement `OpWork` (multicast receive) |
 
-`compute_op` is emitted once per math op. `copy_end` carries per-locality tile counts for Tensor↔Block copies; pipe- or block-only copies carry no locality fields and contribute no movement work.
+`compute_op` is emitted once per math op. `copy_end` carries per-locality tile counts for Tensor↔Block copies. `pipe_recv` is a multicast receive: the receiver ingests `tiles` into its L1 over the NoC, charged as per-node `remote_l1` movement.
 
 The consumed set is declared as `parse.CONSUMED_EVENTS` and pinned against the producer's registry (`sim/trace.py`) by `test/sim/test_trace_contract.py`, so a producer-side rename fails a test rather than silently zeroing the estimate.
 
@@ -279,18 +280,33 @@ python/
 
 ## Hardware Validation
 
-Program-level accuracy is checked against device cycles on a matmul K-sweep (Wormhole N300, Blackhole P100a): `measured ≥ estimate` at every point. **Caveat:** every point is memory-bound, on `step_4` (which re-reads operands), so this validates the DRAM ceiling — not the compute roof — and the 1.2–1.7× gap reflects the kernel's access inefficiency as much as the model.
+Program-level accuracy is checked against device cycles on Wormhole N300 (grid 8×8, 64 cores) across the roofline's three movement regimes — memory-bound re-read, compute-bound reuse, and NoC-bound multicast — plus a Blackhole P100a compute spot-check. `measured ≥ estimate` at every point (the estimate is an ideal-peak lower bound); how *tight* the bound is depends on which resource the kernel actually stresses.
 
-Achieved DRAM utilization ~57–67% (WH) / ~82–92% (BH); tt-npe confirms both are DRAM-dominant, not NoC-bound (0% congestion). The compute branch is exercised only on a small reuse-matmul (P100a); dtype movement scaling and the fp32 `fp32_dest_acc_en` penalty (~7%) are device-confirmed.
+![Four matmul movement regimes on the Wormhole N300 roofline: estimate markers vs device (red ×). Memory, blocked, and compute regimes sit tight (~1.5× the estimate); fine-grained multicast sits far below (5.7×).](roofline-regimes.png)
 
-A two-regime validation (memory- and compute-bound) against a well-tuned kernel — the test that would show the estimate is a *tight* ideal-peak reference, not just a lower bound — is still pending (see [Current Limitations & Deferred Work](#current-limitations--deferred-work)).
+**Regime sweep (Wormhole N300).** Each kernel is a matmul that isolates one movement strategy, swept across problem size and compared to its ideal-peak estimate:
+
+| Regime | Kernel (nature) | AI (FLOP/B) | Bound | device ÷ estimate |
+|---|---|---|---|---|
+| Memory | pure re-read (no blocking) | 15 | memory | ~1.5× |
+| Memory | blocked re-read (`step_4`) | 43–63 | memory | ~1.4× |
+| **Compute** | full reuse (per-node big block, cube M=N=K) | up to **241** | **compute** | **1.59×** |
+| Movement | 2D multicast (fine-grained) | 85 | movement | **5.7×** |
+
+- **The memory and compute roofs are both tight.** The DRAM roof (pure re-read, AI 15) and the compute roof (full reuse, AI 241 — a cube M=N=K sweep whose per-node block grows until AI crosses the ridge) both land at **1.4–1.7× the estimate**, so the ideal-peak model is a *tight* lower bound once a kernel saturates a roof.
+- **Multicast exposes the movement model's gap.** A fine-grained (1-tile) 2D multicast runs at **5.7× the estimate** (a stable multiplier across sizes): the movement term prices the broadcast's bytes but not the fixed **per-transfer latency** that dominates thousands of small NoC transfers  (see [Limitations](#current-limitations--deferred-work)).
+
+Achieved DRAM utilization ~57–67% (WH) / ~82–92% (BH); tt-npe confirms the memory regime is DRAM-dominant, not NoC-bound (0% congestion). dtype movement scaling and the fp32 `fp32_dest_acc_en` penalty (~7%) are device-confirmed.
 
 ---
 
 ## Current Limitations & Deferred Work
 
-- **Multicast movement is uncounted** — pipe copies contribute zero bytes, so multicast-heavy kernels (reuse/mcast matmul) are under-counted.
-- **Broadcast / transpose** — not charged as compute.
-- **SFPU rate is a placeholder** — an ideal 1-instruction floor, not a calibrated per-op peak (matmul is solid).
-- **Two-regime validation** — validate compute- *and* memory-bound points against a well-tuned kernel (not `step_4`) to show the estimate is a *tight* ideal-peak reference, not just a lower bound. The available example kernels are per-node latency-bound (roof utilization <20%), so they exercise the roofline math but do not saturate either roof.
-- **Unified `sim_stats` entry** — one `stats|cycles` subcommand instead of two (needs discussion).
+- **Multicast under-counted (~5.7×,** [Hardware Validation](#hardware-validation)**)** — `pipe_recv` uses the flat unicast latency, missing fan-out latency and a shared-NoC ceiling. Not a value swap: needs a size × fan-out *table lookup* (the model uses a scalar), `pipe_recv` must start emitting the fan-out (producer-side change), and it's WH-only in-tree + needs device re-validation.
+*Source:* tt-metal `noc_estimator/noc_latencies.yaml` (a 55-way mcast of a 2 KB tile is ~10× unicast)
+- **Dry-run emits `dtype: fp32` (producer-side)** — `--dry-run` stubs tensors as f32. Bytes and AI use the profile's `bytes_per_tile`, so only the dtype-keyed **compute rate** is affected: a compute-bound estimate gets the fp32 matmul rate (1/68.5 vs bf16's 1/64), ~7% high for a pure-bf16 kernel. Fix in the dry-run stub (carry the declared dtype into the trace).
+- **Broadcast / transpose — not charged as compute.** They emit no `compute_op`, so the fix is producer-side instrumentation *plus* a per-tile rate (derivable from LLK `tt_llk_*`) — not a value swap. Open question first: whether they're material vs matmul (layout ops are typically small — broadcast often folds into the unpacker); charge only if so. 
+*Source:* LLK pack/unpack/transpose (`tt_llk_*`), a per-tile derivation
+- **SFPU rate is an ideal-floor assumption** — 1/32 (one instruction per 32-elem slot) under-counts multi-instruction ops (`exp`/`gelu`/`sigmoid` cost more than `relu`). 
+*Source:* derivable per-op from LLK instruction sequences × Tensix SFPU ISA issue rate (`llk_sfpu` + SFPU ISA, per board)
+- **Unified `sim_stats` entry** — one `stats|cycles` subcommand instead of two (`tt-lang-sim-cycles` + `tt-lang-sim-stats`); needs discussion.
