@@ -204,11 +204,6 @@ def TTLFormAccumulationScopes
     fits in one streaming DST section.
   }];
 
-  let options = [
-    Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Accumulation scope form to create. `dfb` is reserved and unsupported.">
-  ];
-
   let dependentDialects = [
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttl::TTLDialect"
@@ -225,11 +220,6 @@ def TTLLowerAccumulationScopes
     that copies the init tiles into accumulator slots, preserves the source
     recurrence loop, and packs the final tiles once after the loop.
   }];
-
-  let options = [
-    Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Accumulation scope form to lower. `dfb` is reserved and unsupported.">
-  ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",

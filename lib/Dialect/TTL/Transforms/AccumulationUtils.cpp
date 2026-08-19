@@ -23,16 +23,6 @@
 
 namespace mlir::tt::ttl {
 
-FailureOr<AccumulationScopeKind> parseAccumulationScopeKind(StringRef kind) {
-  if (kind == "tensor") {
-    return AccumulationScopeKind::Tensor;
-  }
-  if (kind == "dfb") {
-    return AccumulationScopeKind::DFB;
-  }
-  return failure();
-}
-
 namespace {
 
 /// Return the wait that produces the matched contribution tensor. When the
@@ -410,11 +400,11 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
     rewriter.moveOpBefore(outputReserve, loop);
   }
 
+  OpBuilder::InsertionGuard sectionGuard(rewriter);
   rewriter.setInsertionPoint(loop);
   auto dstSection = DstSectionOp::create(rewriter, loc);
   Block &sectionBody = dstSection.getBody().front();
 
-  OpBuilder::InsertionGuard sectionGuard(rewriter);
   rewriter.setInsertionPoint(sectionBody.getTerminator());
 
   Type tileType = match.tensorType.getElementType();

@@ -148,21 +148,6 @@ struct TTLFormAccumulationScopesPass
       TTLFormAccumulationScopesPass>::TTLFormAccumulationScopesBase;
 
   void runOnOperation() override {
-    FailureOr<AccumulationScopeKind> scopeKind =
-        parseAccumulationScopeKind(kind);
-    if (failed(scopeKind)) {
-      getOperation().emitOpError() << "invalid accumulation scope kind `"
-                                   << kind << "`; expected `tensor` or `dfb`";
-      signalPassFailure();
-      return;
-    }
-    if (*scopeKind == AccumulationScopeKind::DFB) {
-      getOperation().emitOpError()
-          << "DFB accumulation scopes are not supported yet";
-      signalPassFailure();
-      return;
-    }
-
     SmallVector<scf::ForOp> loops;
     getOperation().walk<WalkOrder::PostOrder>(
         [&](scf::ForOp loop) { loops.push_back(loop); });
