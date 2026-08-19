@@ -951,8 +951,6 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
     n = rhs_shape[0] if transpose else rhs_shape[1]
     result_shape = [lhs_shape[0], n]
     result_tile_width = rhs_tile_height if transpose else rhs_tile_width
-    # The supported mixed-format operation packs BF16 output, matching its
-    # BF16 activation operand; destination accumulation remains configurable.
     result_tile = ttcore.ir.TileType.get(
         lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
     )
