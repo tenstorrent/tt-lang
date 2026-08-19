@@ -440,6 +440,34 @@ def test_unified_operation_propagates_runtime_resource_factory(monkeypatch):
     assert observed["runtime_resource_factory"] is make_resources
 
 
+def test_unified_operation_propagates_factory_cache(monkeypatch):
+    observed = {}
+    factory_cache = {}
+    factory_cache_key = ("layer", 7)
+
+    def fake_make_operation_wrapper(*_args, **kwargs):
+        observed.update(kwargs)
+        return lambda *_args, **_kwargs: None
+
+    monkeypatch.setattr(
+        atom_module, "_make_operation_wrapper", fake_make_operation_wrapper
+    )
+
+    cached_decorator = ttl.operation(
+        grid=(1, 1),
+        factory_cache=factory_cache,
+        factory_cache_key=factory_cache_key,
+    )
+
+    @cached_decorator
+    def cached_operation():
+        pass
+
+    assert cached_operation is not None
+    assert observed["factory_cache"] is factory_cache
+    assert observed["factory_cache_key"] == factory_cache_key
+
+
 def test_captured_kernel_cannot_bind_to_two_operations():
     """One public handle has one operation-local binding."""
     sender = Kernel(KernelKind.DATA_MOVEMENT)

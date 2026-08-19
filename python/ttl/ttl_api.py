@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import copy as _copy
 import functools
 import inspect
 import os
@@ -1006,6 +1007,45 @@ class CompiledTTNNKernel:
 
     def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
         self._runtime_resource_lifetimes = lifetimes
+
+
+class _CompiledTTNNKernelTemplate:
+    """Compiled artifacts without per-wrapper runtime-resource ownership."""
+
+    def __init__(self, compiled_kernel: CompiledTTNNKernel):
+        self.compiled_kernel = _copy.copy(compiled_kernel)
+        self.compiled_kernel.runtime_resource_factory = None
+        self._reset_runtime_state(self.compiled_kernel)
+
+    @staticmethod
+    def _reset_runtime_state(compiled_kernel: CompiledTTNNKernel) -> None:
+        # These objects retain device allocations or invocation lifetimes. A
+        # factory cache shares compile artifacts, never runtime ownership.
+        compiled_kernel._pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
+        compiled_kernel._fabric_route_cache = _FabricRouteCache()
+        compiled_kernel._runtime_resource_lifetimes = ()
+
+    def materialize(
+        self,
+        runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]],
+    ) -> CompiledTTNNKernel:
+        compiled_kernel = _copy.copy(self.compiled_kernel)
+        compiled_kernel.runtime_resource_factory = runtime_resource_factory
+        self._reset_runtime_state(compiled_kernel)
+        return compiled_kernel
+
+
+def _freeze_factory_cache_entry(compiled_kernel):
+    if isinstance(compiled_kernel, CompiledTTNNKernel):
+        return _CompiledTTNNKernelTemplate(compiled_kernel)
+    # Tests and downstream adapters may return a lightweight callable.
+    return compiled_kernel
+
+
+def _materialize_factory_cache_entry(entry, runtime_resource_factory):
+    if isinstance(entry, _CompiledTTNNKernelTemplate):
+        return entry.materialize(runtime_resource_factory)
+    return entry
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -2950,8 +2990,15 @@ def _make_operation_wrapper(
     math_fidelity: Optional[str],
     options: Optional[str],
     prepare_call: Optional[Callable] = None,
+    factory_cache=None,
+    factory_cache_key=None,
+    runtime_resource_factory=None,
 ) -> Callable:
     """Build the shared top-level operation cache and execution wrapper."""
+    if (factory_cache is None) != (factory_cache_key is None):
+        raise ValueError(
+            "factory_cache and factory_cache_key must be supplied together"
+        )
     kernel_id = random.getrandbits(64)
     cache: Dict[tuple, CompiledTTNNKernel] = {}
     pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
@@ -2991,6 +3038,17 @@ def _make_operation_wrapper(
         cache_key = make_cache_key(l1_budget_override)
 
         compiled_kernel = cache.get(cache_key)
+        shared_key = None
+        if compiled_kernel is None and factory_cache is not None:
+            shared_key = (factory_cache_key, cache_key)
+            entry = factory_cache.get(shared_key)
+            if entry is not None:
+                compiled_kernel = _materialize_factory_cache_entry(
+                    entry, runtime_resource_factory
+                )
+                cache[cache_key] = compiled_kernel
+                if os.environ.get("TTLANG_FACTORY_CACHE_DEBUG") == "1":
+                    print(f"TT-Lang factory cache hit: {factory_cache_key!r}")
         if compiled_kernel is None:
             compiled_kernel = compile_callback(
                 runtime_args,
@@ -3003,6 +3061,14 @@ def _make_operation_wrapper(
             )
             if compiled_kernel is not None:
                 cache[cache_key] = compiled_kernel
+                if factory_cache is not None:
+                    if shared_key is None:
+                        shared_key = (factory_cache_key, cache_key)
+                    factory_cache[shared_key] = _freeze_factory_cache_entry(
+                        compiled_kernel
+                    )
+                    if os.environ.get("TTLANG_FACTORY_CACHE_DEBUG") == "1":
+                        print("TT-Lang factory cache miss: " f"{factory_cache_key!r}")
 
         if compiled_kernel is None or not _should_execute():
             return None
@@ -3076,6 +3142,8 @@ def pykernel_gen(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache=None,
+    factory_cache_key=None,
     _prepare_call: Optional[Callable] = None,
     device_domain=None,
 ) -> Callable:
@@ -3099,6 +3167,11 @@ def pykernel_gen(
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
         device_domain: Optional logical device domain for mesh execution.
         runtime_resource_factory: Optional per-invocation resource callback
+        factory_cache: Optional caller-owned mapping shared by operations made
+            from the same dynamic factory.
+        factory_cache_key: Hashable identity for all compile-time captures,
+            including fixed L1 or semaphore addresses. Must be supplied with
+            ``factory_cache``.
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -3179,6 +3252,9 @@ def pykernel_gen(
             math_fidelity=math_fidelity,
             options=options,
             prepare_call=_prepare_call,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+            runtime_resource_factory=runtime_resource_factory,
         )
 
     return _decorator

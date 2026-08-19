@@ -399,3 +399,85 @@ def test_factory_level_kernel_cache_reuses_matching_decorated_kernel(monkeypatch
     assert len(compile_calls) == 2
     assert two_result == repeated_two_result
     assert two_result != three_result
+
+
+def test_caller_owned_factory_cache_reuses_separate_wrappers(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    factory_cache = {}
+
+    def make_scaled_kernel(scale):
+        @ttl_api.operation(
+            grid=(1, 1),
+            factory_cache=factory_cache,
+            factory_cache_key=("scaled", scale),
+        )
+        def scaled_kernel(input_tensor, output_tensor):
+            return scale
+
+        return scaled_kernel
+
+    first = make_scaled_kernel(2)
+    repeated = make_scaled_kernel(2)
+    different = make_scaled_kernel(3)
+
+    first_result = first(_FakeTensor(), _FakeTensor())
+    repeated_result = repeated(_FakeTensor(), _FakeTensor())
+    different_result = different(_FakeTensor(), _FakeTensor())
+
+    assert first is not repeated
+    assert len(compile_calls) == 2
+    assert first_result == repeated_result
+    assert first_result != different_result
+
+
+@pytest.mark.parametrize(
+    ("factory_cache", "factory_cache_key"),
+    (({}, None), (None, ("scaled", 2))),
+)
+def test_factory_cache_requires_key_and_mapping_together(
+    monkeypatch, factory_cache, factory_cache_key
+):
+    _install_recording_compile(monkeypatch)
+
+    with pytest.raises(ValueError, match="must be supplied together"):
+        ttl_api.operation(
+            grid=(1, 1),
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+        )(lambda input_tensor, output_tensor: None)
+
+
+def test_factory_cache_template_replaces_runtime_ownership():
+    def first_resource_factory(**_kwargs):
+        return None
+
+    def second_resource_factory(**_kwargs):
+        return None
+
+    compiled_kernel = ttl_api.CompiledTTNNKernel(
+        kernel_paths=[],
+        kernel_configs=[],
+        kernel_arg_specs=[],
+        num_tensors=0,
+        core_ranges=None,
+        kernel_tensor_indices=[],
+        runtime_resource_factory=first_resource_factory,
+    )
+    retained_lifetime = object()
+    compiled_kernel._runtime_resource_lifetimes = (retained_lifetime,)
+
+    template = ttl_api._freeze_factory_cache_entry(compiled_kernel)
+    materialized = ttl_api._materialize_factory_cache_entry(
+        template, second_resource_factory
+    )
+
+    assert template.compiled_kernel.runtime_resource_factory is None
+    assert template.compiled_kernel._runtime_resource_lifetimes == ()
+    assert materialized is not compiled_kernel
+    assert materialized.runtime_resource_factory is second_resource_factory
+    assert materialized._runtime_resource_lifetimes == ()
+    assert (
+        materialized._pipe_global_semaphore_cache
+        is not compiled_kernel._pipe_global_semaphore_cache
+    )
+    assert materialized._fabric_route_cache is not compiled_kernel._fabric_route_cache
