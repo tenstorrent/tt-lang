@@ -761,6 +761,8 @@ class TTLGenericCompiler(TTCompilerBase):
     _NAMESPACE_OVERRIDES = {
         "broadcast": "ttl.block",
         "fill": "ttl.block",
+        "squeeze": "ttl.block",
+        "unsqueeze": "ttl.block",
     }
 
     def _resolve_ttl_function(self, node, func_args, kwargs):
