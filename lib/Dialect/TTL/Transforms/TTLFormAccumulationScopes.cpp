@@ -73,24 +73,16 @@ static bool
 shouldFormTensorAccumulationForStrategy(const TensorAccumulationMatch &match,
                                         const DFBAcquireReleaseIndex &dfbIndex,
                                         AccumulationStrategy strategy) {
-  if (strategy == AccumulationStrategy::Dst) {
+  if (strategy == AccumulationStrategy::Dst ||
+      strategy == AccumulationStrategy::L1Pack) {
     return true;
   }
 
-  if (strategy == AccumulationStrategy::Auto) {
-    if (succeeded(analyzeTensorAccumulationForDst(match, dfbIndex))) {
-      return true;
-    }
+  if (succeeded(analyzeTensorAccumulationForDst(match, dfbIndex))) {
+    return true;
   }
 
-  if (strategy == AccumulationStrategy::L1Pack ||
-      strategy == AccumulationStrategy::Auto) {
-    if (succeeded(analyzeTensorAccumulationForL1Pack(match))) {
-      return true;
-    }
-  }
-
-  return false;
+  return succeeded(analyzeTensorAccumulationForL1Pack(match, &dfbIndex));
 }
 
 static FailureOr<TensorAccumulationMatch>

@@ -78,6 +78,59 @@ static CBWaitOp getContributionWait(const TensorAccumulationMatch &match,
   return contribution.getDefiningOp<CBWaitOp>();
 }
 
+static CBWaitOp getTensorWait(Value tensor) {
+  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+    tensor = attach.getTensor();
+  }
+  return tensor.getDefiningOp<CBWaitOp>();
+}
+
+static bool mayExecuteBefore(Operation *operation, Operation *use) {
+  if (operation == use) {
+    return true;
+  }
+  if (operation->getBlock() == use->getBlock()) {
+    return operation->isBeforeInBlock(use);
+  }
+
+  if (Operation *useAncestor =
+          operation->getBlock()->findAncestorOpInBlock(*use)) {
+    return operation->isBeforeInBlock(useAncestor);
+  }
+
+  if (Operation *operationAncestor =
+          use->getBlock()->findAncestorOpInBlock(*operation)) {
+    return !use->isBeforeInBlock(operationAncestor);
+  }
+
+  return true;
+}
+
+static bool hasOwnedReleaseBeforeUse(CBWaitOp wait, Operation *use,
+                                     const DFBAcquireReleaseIndex &dfbIndex) {
+  SmallVector<Operation *> consumerAcquisitions =
+      dfbIndex.getAcquisitions(DFBAcquireReleaseKind::Consumer);
+  SmallVector<Operation *> consumerReleases =
+      dfbIndex.getReleases(DFBAcquireReleaseKind::Consumer);
+  DFBAcquireInterval interval =
+      makeDFBAcquireInterval(wait.getOperation(), consumerAcquisitions);
+  Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
+  DFBReleaseSearch releaseSearch =
+      findOwnedDFBReleases(interval, lastOwnedUse, consumerReleases);
+
+  for (Operation *release : releaseSearch.sameLevelReleases) {
+    if (mayExecuteBefore(release, use)) {
+      return true;
+    }
+  }
+  for (Operation *release : releaseSearch.nestedReleases) {
+    if (mayExecuteBefore(release, use)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Check that deleting the source loop will not drop work other than the
 /// additive recurrence itself. The only permitted side effect is the pop that
 /// releases the matched contribution block after the add consumes it.
@@ -469,11 +522,26 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
 }
 
 FailureOr<TensorL1PackAccumulationInfo>
-analyzeTensorAccumulationForL1Pack(const TensorAccumulationMatch &match) {
+analyzeTensorAccumulationForL1Pack(const TensorAccumulationMatch &match,
+                                   const DFBAcquireReleaseIndex *dfbIndex) {
   scf::ForOp loop = match.loop;
   if (match.contribution.getType() != match.tensorType ||
       loop.getNumResults() != 1 || match.resultIndex != 0) {
     return failure();
+  }
+
+  if (dfbIndex) {
+    if (CBWaitOp initialWait = getTensorWait(match.initialValue)) {
+      if (hasOwnedReleaseBeforeUse(initialWait, loop.getOperation(),
+                                   *dfbIndex)) {
+        return failure();
+      }
+    }
+    if (CBWaitOp contributionWait = getTensorWait(match.contribution)) {
+      if (hasOwnedReleaseBeforeUse(contributionWait, match.add, *dfbIndex)) {
+        return failure();
+      }
+    }
   }
 
   bool hasLoopLocalStore = false;
@@ -510,11 +578,11 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
     rewriter.moveOpBefore(outputReserve, loop);
   }
 
+  OpBuilder::InsertionGuard sectionGuard(rewriter);
   rewriter.setInsertionPoint(loop);
   auto dstSection = DstSectionOp::create(rewriter, loc);
   Block &sectionBody = dstSection.getBody().front();
 
-  OpBuilder::InsertionGuard sectionGuard(rewriter);
   rewriter.setInsertionPoint(sectionBody.getTerminator());
 
   Type tileType = match.tensorType.getElementType();
@@ -623,10 +691,10 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
   rewriter.eraseOp(loop);
 }
 
-LogicalResult
-lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
-                                int64_t scopeId, RewriterBase &rewriter) {
-  if (failed(analyzeTensorAccumulationForL1Pack(match))) {
+LogicalResult lowerTensorAccumulationToL1Pack(
+    const TensorAccumulationMatch &match, int64_t scopeId,
+    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter) {
+  if (failed(analyzeTensorAccumulationForL1Pack(match, &dfbIndex))) {
     return failure();
   }
 

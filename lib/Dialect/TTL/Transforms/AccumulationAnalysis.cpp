@@ -251,12 +251,13 @@ buildDstCandidate(TensorAccumulationMatch &match,
 
 static AccumulationStrategyCandidate
 buildL1PackCandidate(TensorAccumulationMatch &match,
+                     const DFBAcquireReleaseIndex &dfbIndex,
                      const AccumulationCostModel &costModel) {
   AccumulationStrategyCandidate candidate;
   candidate.strategy = AccumulationStrategy::L1Pack;
 
   FailureOr<TensorL1PackAccumulationInfo> info =
-      analyzeTensorAccumulationForL1Pack(match);
+      analyzeTensorAccumulationForL1Pack(match, &dfbIndex);
   if (failed(info)) {
     candidate.reason =
         "expected one same-type additive recurrence with one final store";
@@ -454,10 +455,10 @@ planTensorAccumulationStrategy(AccumulationScopeOp scope,
   if (requestedStrategy == AccumulationStrategy::Dst) {
     plan.candidates.push_back(buildDstCandidate(match, dfbIndex, costModel));
   } else if (requestedStrategy == AccumulationStrategy::L1Pack) {
-    plan.candidates.push_back(buildL1PackCandidate(match, costModel));
+    plan.candidates.push_back(buildL1PackCandidate(match, dfbIndex, costModel));
   } else {
     plan.candidates.push_back(buildDstCandidate(match, dfbIndex, costModel));
-    plan.candidates.push_back(buildL1PackCandidate(match, costModel));
+    plan.candidates.push_back(buildL1PackCandidate(match, dfbIndex, costModel));
   }
 
   LLVM_DEBUG({
