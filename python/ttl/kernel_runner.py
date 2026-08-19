@@ -130,6 +130,30 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     )
 
 
+def _device_l1_cb_usage(
+    device,
+    excluded_l1_buffer_addresses: Sequence[int] = (),
+) -> Tuple[int, Dict[Tuple[int, int], int]]:
+    """Return ``(cb_limit, L1 bytes used per logical (x, y) core)``."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    budget_bytes = ttnn._ttnn.reports.get_device_info(device).cb_limit
+    excluded_addresses = frozenset(
+        int(address) for address in excluded_l1_buffer_addresses
+    )
+    used_bytes: Dict[Tuple[int, int], int] = {}
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type != ttnn.BufferType.L1:
+            continue
+        if int(page.address) in excluded_addresses:
+            continue
+        core = (page.core_x, page.core_y)
+        used_bytes[core] = used_bytes.get(core, 0) + page.page_size
+    return budget_bytes, used_bytes
+
+
 def get_min_remaining_l1_for_device(
     device, excluded_l1_buffer_addresses: Sequence[int] = ()
 ):
@@ -152,25 +176,9 @@ def get_min_remaining_l1_for_device(
     before computing the per-core maximum. This reconstructs the compilation
     budget without changing the contribution of unrelated allocations.
     """
-    _ensure_ttnn()
-    if ttnn is None:
-        raise RuntimeError("ttnn is not available")
-
-    info = ttnn._ttnn.reports.get_device_info(device)
-    budget_bytes = info.cb_limit
-
-    excluded_addresses = frozenset(
-        int(address) for address in excluded_l1_buffer_addresses
+    budget_bytes, bytes_per_core = _device_l1_cb_usage(
+        device, excluded_l1_buffer_addresses
     )
-    bytes_per_core: dict[tuple[int, int], int] = {}
-    for page in ttnn._ttnn.reports.get_buffer_pages(device):
-        if (
-            page.buffer_type == ttnn.BufferType.L1
-            and int(page.address) not in excluded_addresses
-        ):
-            key = (page.core_y, page.core_x)
-            bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
-
     max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
     return max(0, budget_bytes - max_core_bytes)
 
@@ -179,19 +187,9 @@ def _get_remaining_l1_by_core_for_device(
     device, cores: set[tuple[int, int]]
 ) -> dict[tuple[int, int], int]:
     """Return each requested logical core's remaining static DFB budget."""
-    _ensure_ttnn()
-    if ttnn is None:
-        raise RuntimeError("ttnn is not available")
-
-    budget_bytes = ttnn._ttnn.reports.get_device_info(device).cb_limit
-    used_bytes = {core: 0 for core in cores}
-    for page in ttnn._ttnn.reports.get_buffer_pages(device):
-        core = (page.core_x, page.core_y)
-        if page.buffer_type == ttnn.BufferType.L1 and core in used_bytes:
-            used_bytes[core] += page.page_size
+    budget_bytes, used_bytes = _device_l1_cb_usage(device)
     return {
-        core: max(0, budget_bytes - core_used_bytes)
-        for core, core_used_bytes in used_bytes.items()
+        core: max(0, budget_bytes - used_bytes.get(core, 0)) for core in cores
     }
 
 
