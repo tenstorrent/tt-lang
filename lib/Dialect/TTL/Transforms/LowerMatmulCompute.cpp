@@ -59,6 +59,8 @@ struct PendingStore {
 /// per-output-tile slot accounting.
 struct MatmulComputeAnalysis {
   TileMatmulBlockOp mmOp;
+  SmallVector<int64_t> batchShape;
+  int64_t numBatches = 1;
   int64_t numRows = 0;
   int64_t numCols = 0;
   Value lhsTensor;
@@ -252,6 +254,50 @@ static Value createConstantIndex(OpBuilder &builder, Location loc,
   return arith::ConstantIndexOp::create(builder, loc, value);
 }
 
+static SmallVector<int64_t> delinearizeStaticIndex(int64_t linearIndex,
+                                                   ArrayRef<int64_t> shape) {
+  SmallVector<int64_t> coordinates(shape.size());
+  for (int64_t dimension = shape.size(); dimension-- > 0;) {
+    coordinates[dimension] = linearIndex % shape[dimension];
+    linearIndex /= shape[dimension];
+  }
+  return coordinates;
+}
+
+static Value createBatchSlice(OpBuilder &builder, Location loc, Value tensor,
+                              ArrayRef<int64_t> batchCoordinates) {
+  if (!tensor || batchCoordinates.empty()) {
+    return tensor;
+  }
+
+  auto tensorType = cast<RankedTensorType>(tensor.getType());
+  SmallVector<int64_t> sliceShape(tensorType.getShape());
+  SmallVector<OpFoldResult> offsets;
+  SmallVector<OpFoldResult> sizes;
+  SmallVector<OpFoldResult> strides;
+  offsets.reserve(tensorType.getRank());
+  sizes.reserve(tensorType.getRank());
+  strides.reserve(tensorType.getRank());
+  for (int64_t dimension = 0; dimension < tensorType.getRank(); ++dimension) {
+    bool isBatchDimension =
+        dimension < static_cast<int64_t>(batchCoordinates.size());
+    offsets.push_back(builder.getIndexAttr(
+        isBatchDimension ? batchCoordinates[dimension] : 0));
+    sizes.push_back(builder.getIndexAttr(
+        isBatchDimension ? 1 : tensorType.getDimSize(dimension)));
+    strides.push_back(builder.getIndexAttr(1));
+    if (isBatchDimension) {
+      sliceShape[dimension] = 1;
+    }
+  }
+
+  auto sliceType = RankedTensorType::get(
+      sliceShape, tensorType.getElementType(), tensorType.getEncoding());
+  return tensor::ExtractSliceOp::create(builder, loc, sliceType, tensor,
+                                        offsets, sizes, strides)
+      .getResult();
+}
+
 /// Assign a cloned op to either the output slot it updates in place or to the
 /// tile's private scratch region. The value map records the original SSA value
 /// residency so later cloned consumers can preserve in-place DST behavior.
@@ -312,11 +358,17 @@ static FailureOr<MatmulComputeAnalysis> analyzeMatmulCompute(ComputeOp op) {
   }
 
   auto outType = cast<RankedTensorType>(op.getOutputs()[0].getType());
-  if (outType.getRank() != 2 || !outType.hasStaticShape()) {
+  if (outType.getRank() < 2 || !outType.hasStaticShape()) {
     return failure();
   }
-  analysis.numRows = outType.getDimSize(0);
-  analysis.numCols = outType.getDimSize(1);
+  int64_t rank = outType.getRank();
+  analysis.batchShape.assign(outType.getShape().begin(),
+                             outType.getShape().end() - 2);
+  for (int64_t batchSize : analysis.batchShape) {
+    analysis.numBatches *= batchSize;
+  }
+  analysis.numRows = outType.getDimSize(rank - 2);
+  analysis.numCols = outType.getDimSize(rank - 1);
 
   FailureOr<Value> lhsTensor =
       getInputTensorForBodyOperand(op, analysis.mmOp.getLhs());
@@ -370,16 +422,15 @@ static LogicalResult validateDSTCapacity(ComputeOp computeOp,
     return failure();
   }
   auto outType = cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
-  int64_t outM = outType.getDimSize(0);
-  int64_t outN = outType.getDimSize(1);
-  int64_t totalDstSlots = outM * outN * dstSlotsPerTile;
+  int64_t totalDstSlots = outType.getNumElements() * dstSlotsPerTile;
   int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
   if (totalDstSlots > dstCapacity) {
-    computeOp.emitOpError()
-        << "output " << outM << "x" << outN << " with " << dstSlotsPerTile
-        << " DST slots per tile = " << totalDstSlots
-        << " total slots exceeds DST capacity of " << dstCapacity
-        << "; enable maximize_dst to auto-subblock";
+    InFlightDiagnostic diagnostic = computeOp.emitOpError() << "output ";
+    llvm::interleave(outType.getShape(), diagnostic, "x");
+    diagnostic << " with " << dstSlotsPerTile
+               << " DST slots per tile = " << totalDstSlots
+               << " total slots exceeds DST capacity of " << dstCapacity
+               << "; enable maximize_dst to auto-subblock";
     return failure();
   }
   return success();
@@ -417,9 +468,13 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   // expansion below assumes the output and scratch slots fit.
 
   TileMatmulBlockOp mmOp = analysis->mmOp;
+  ArrayRef<int64_t> batchShape = analysis->batchShape;
+  int64_t numBatches = analysis->numBatches;
   int64_t numRows = analysis->numRows;
   int64_t numCols = analysis->numCols;
-  int64_t numOutputTiles = numRows * numCols;
+  auto outputType = cast<RankedTensorType>(op.getOutputs()[0].getType());
+  ArrayRef<int64_t> outputShape = outputType.getShape();
+  int64_t numOutputTiles = outputType.getNumElements();
   Type tileType = mmOp.getResult().getType();
   MatmulAccumulatorInfo accumulatorInfo = analysis->accumulatorInfo;
   const DenseMap<int64_t, int64_t> &scratchIndexMap = analysis->scratchIndexMap;
@@ -436,71 +491,89 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
                        Block::iterator(sectionBody.getTerminator()));
 
   // Each output tile needs its own body-argument map and DST residency map
-  // because post-ops are cloned per tile but matmul_block is emitted once.
+  // because post-ops are cloned per tile.
   struct TileExpansion {
     IRMapping mapping;
     DenseMap<Value, int64_t> valueDstMap;
+    int64_t batchIndex = 0;
     int64_t outputSlot = 0;
   };
 
   SmallVector<TileExpansion> expansions;
   expansions.reserve(numOutputTiles);
 
-  for (int64_t rowIdx = 0; rowIdx < numRows; ++rowIdx) {
-    for (int64_t colIdx = 0; colIdx < numCols; ++colIdx) {
-      int64_t tileIdx = rowIdx * numCols + colIdx;
-      int64_t scratchBase = numOutputTiles + tileIdx * scratchPerTile;
+  for (int64_t tileIdx = 0; tileIdx < numOutputTiles; ++tileIdx) {
+    SmallVector<int64_t> outputCoordinates =
+        delinearizeStaticIndex(tileIdx, outputShape);
+    int64_t scratchBase = numOutputTiles + tileIdx * scratchPerTile;
 
-      SmallVector<Value> fullIVs(iterTypes.size());
-      unsigned parIdx = 0;
-      for (auto [dim, iterType] : llvm::enumerate(iterTypes)) {
-        if (iterType.getValue() == "reduction") {
-          fullIVs[dim] = createConstantIndex(secBuilder, loc, 0);
-        } else {
-          int64_t coord = (parIdx == 0) ? rowIdx : colIdx;
-          fullIVs[dim] = createConstantIndex(secBuilder, loc, coord);
-          ++parIdx;
-        }
+    SmallVector<Value> fullIVs(iterTypes.size());
+    unsigned parallelIndex = 0;
+    for (auto [dimension, iterType] : llvm::enumerate(iterTypes)) {
+      if (iterType.getValue() == "reduction") {
+        fullIVs[dimension] = createConstantIndex(secBuilder, loc, 0);
+      } else {
+        assert(parallelIndex < outputCoordinates.size() &&
+               "matmul has more parallel dimensions than output dimensions");
+        fullIVs[dimension] = createConstantIndex(
+            secBuilder, loc, outputCoordinates[parallelIndex++]);
       }
-
-      auto extractedInputs = extractTilesAtIndices(
-          secBuilder, loc, op.getInputs(), indexingMaps, fullIVs);
-      auto extractedOutputs =
-          extractTilesAtIndices(secBuilder, loc, op.getOutputs(), indexingMaps,
-                                fullIVs, op.getInputs().size());
-
-      TileExpansion expansion;
-      expansion.outputSlot = tileIdx;
-      mapComputeBodyArgs(expansion.mapping, op, extractedInputs,
-                         extractedOutputs, fullIVs);
-
-      for (Operation *bodyOp : preMatmulOps) {
-        Operation *cloned = secBuilder.clone(*bodyOp, expansion.mapping);
-        remapClonedDstIndex(secBuilder, bodyOp, cloned, expansion.valueDstMap,
-                            scratchIndexMap, accumulatorInfo,
-                            expansion.outputSlot, scratchBase);
-      }
-
-      expansions.push_back(std::move(expansion));
     }
+    assert(parallelIndex == outputCoordinates.size() &&
+           "matmul output dimension has no parallel iterator");
+
+    auto extractedInputs = extractTilesAtIndices(
+        secBuilder, loc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs =
+        extractTilesAtIndices(secBuilder, loc, op.getOutputs(), indexingMaps,
+                              fullIVs, op.getInputs().size());
+
+    TileExpansion expansion;
+    expansion.batchIndex = tileIdx / (numRows * numCols);
+    expansion.outputSlot = tileIdx;
+    mapComputeBodyArgs(expansion.mapping, op, extractedInputs, extractedOutputs,
+                       fullIVs);
+
+    for (Operation *bodyOp : preMatmulOps) {
+      Operation *cloned = secBuilder.clone(*bodyOp, expansion.mapping);
+      remapClonedDstIndex(secBuilder, bodyOp, cloned, expansion.valueDstMap,
+                          scratchIndexMap, accumulatorInfo,
+                          expansion.outputSlot, scratchBase);
+    }
+
+    expansions.push_back(std::move(expansion));
   }
 
-  Value dstZero = createConstantIndex(secBuilder, loc, 0);
   Value accTensor = accumulatorInfo.kind == MatmulAccumulatorKind::InputTensor
                         ? accumulatorInfo.tensorAccumulator
                         : Value();
-  auto newMmOp = TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor,
-                                           rhsTensor, accTensor, dstZero);
-  newMmOp.setTransposeRhsAttr(mmOp.getTransposeRhsAttr());
-  Value mmResult = newMmOp.getResult();
+  SmallVector<Value> batchMatmulResults;
+  batchMatmulResults.reserve(numBatches);
+  for (int64_t batchIndex = 0; batchIndex < numBatches; ++batchIndex) {
+    SmallVector<int64_t> batchCoordinates =
+        delinearizeStaticIndex(batchIndex, batchShape);
+    Value lhsBatch =
+        createBatchSlice(secBuilder, loc, lhsTensor, batchCoordinates);
+    Value rhsBatch =
+        createBatchSlice(secBuilder, loc, rhsTensor, batchCoordinates);
+    Value accBatch =
+        createBatchSlice(secBuilder, loc, accTensor, batchCoordinates);
+    Value dstBase =
+        createConstantIndex(secBuilder, loc, batchIndex * numRows * numCols);
+    auto batchMatmul = TileMatmulBlockOp::create(
+        secBuilder, loc, tileType, lhsBatch, rhsBatch, accBatch, dstBase);
+    batchMatmul.setTransposeRhsAttr(mmOp.getTransposeRhsAttr());
+    batchMatmulResults.push_back(batchMatmul.getResult());
+  }
 
   SmallVector<PendingStore> pendingStores;
   for (TileExpansion &expansion : expansions) {
     Value outputDstIndex =
         createConstantIndex(secBuilder, loc, expansion.outputSlot);
-    Value mmTile =
-        DstIndexOp::create(secBuilder, loc, tileType, mmResult, outputDstIndex)
-            .getResult();
+    Value mmTile = DstIndexOp::create(secBuilder, loc, tileType,
+                                      batchMatmulResults[expansion.batchIndex],
+                                      outputDstIndex)
+                       .getResult();
     expansion.mapping.map(mmOp.getResult(), mmTile);
     expansion.valueDstMap[mmOp.getResult()] = expansion.outputSlot;
     int64_t scratchBase =

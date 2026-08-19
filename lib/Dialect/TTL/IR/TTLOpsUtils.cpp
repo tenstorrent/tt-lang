@@ -591,7 +591,8 @@ static bool isTileValue(Value value) {
 }
 
 /// A block matmul reports one output slot before block expansion and an `M*N`
-/// range after `LowerMatmulCompute` has replaced tile operands with tensors.
+/// range after `LowerMatmulCompute` has replaced tile operands with one-batch
+/// tensor slices.
 static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
   auto lhsType = dyn_cast<RankedTensorType>(op.getLhs().getType());
   auto rhsType = dyn_cast<RankedTensorType>(op.getRhs().getType());
@@ -599,7 +600,12 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
       !lhsType.hasStaticShape() || !rhsType.hasStaticShape()) {
     return 1;
   }
-  return lhsType.getDimSize(0) * rhsType.getDimSize(1);
+  int64_t lhsRank = lhsType.getRank();
+  int64_t rhsRank = rhsType.getRank();
+  int64_t outputColumns = op.getTransposeRhs()
+                              ? rhsType.getDimSize(rhsRank - 2)
+                              : rhsType.getDimSize(rhsRank - 1);
+  return lhsType.getDimSize(lhsRank - 2) * outputColumns;
 }
 
 /// Interface defaults require resolved DST operands because callers use this

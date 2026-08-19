@@ -620,6 +620,46 @@ static void buildIdentityIterationPlan(ComputeOpCreationPlan &plan) {
                                       utils::IteratorType::parallel);
 }
 
+struct MatmulIterationMaps {
+  AffineMap left;
+  AffineMap right;
+  AffineMap transposedRight;
+  AffineMap output;
+  SmallVector<utils::IteratorType> iteratorTypes;
+};
+
+static MatmulIterationMaps buildMatmulIterationMaps(MLIRContext *context,
+                                                    int64_t tensorRank) {
+  int64_t batchRank = tensorRank - 2;
+  int64_t iterationRank = tensorRank + 1;
+  SmallVector<AffineExpr> batchExpressions;
+  for (int64_t dimension = 0; dimension < batchRank; ++dimension) {
+    batchExpressions.push_back(getAffineDimExpr(dimension, context));
+  }
+
+  AffineExpr dimensionM = getAffineDimExpr(batchRank, context);
+  AffineExpr dimensionN = getAffineDimExpr(batchRank + 1, context);
+  AffineExpr dimensionK = getAffineDimExpr(batchRank + 2, context);
+
+  SmallVector<AffineExpr> leftExpressions(batchExpressions);
+  leftExpressions.append({dimensionM, dimensionK});
+  SmallVector<AffineExpr> rightExpressions(batchExpressions);
+  rightExpressions.append({dimensionK, dimensionN});
+  SmallVector<AffineExpr> transposedRightExpressions(batchExpressions);
+  transposedRightExpressions.append({dimensionN, dimensionK});
+  SmallVector<AffineExpr> outputExpressions(batchExpressions);
+  outputExpressions.append({dimensionM, dimensionN});
+
+  SmallVector<utils::IteratorType> iteratorTypes(tensorRank,
+                                                 utils::IteratorType::parallel);
+  iteratorTypes.push_back(utils::IteratorType::reduction);
+  return {AffineMap::get(iterationRank, 0, leftExpressions, context),
+          AffineMap::get(iterationRank, 0, rightExpressions, context),
+          AffineMap::get(iterationRank, 0, transposedRightExpressions, context),
+          AffineMap::get(iterationRank, 0, outputExpressions, context),
+          std::move(iteratorTypes)};
+}
+
 static LogicalResult buildFusedIterationPlan(ComputeOpCreationPlan &plan,
                                              std::string &failureReason) {
   MLIRContext *context = plan.source->getContext();
@@ -662,20 +702,9 @@ static LogicalResult buildFusedIterationPlan(ComputeOpCreationPlan &plan,
   plan.fusedInputRoles.clear();
   plan.iteration.inputMaps.clear();
   if (hasMatmul) {
-    // Every operation fused with a matmul executes in its [M, N, K] domain.
-    // Elementwise inputs use only [M, N], while the matmul operands retain
-    // their distinct contraction maps. This prevents subblocking M from also
-    // slicing an operand whose first dimension is K.
-    AffineExpr dimensionM = getAffineDimExpr(0, context);
-    AffineExpr dimensionN = getAffineDimExpr(1, context);
-    AffineExpr dimensionK = getAffineDimExpr(2, context);
-    AffineMap leftMap = AffineMap::get(3, 0, {dimensionM, dimensionK}, context);
-    AffineMap rightMap =
-        AffineMap::get(3, 0, {dimensionK, dimensionN}, context);
-    AffineMap transposedRightMap =
-        AffineMap::get(3, 0, {dimensionN, dimensionK}, context);
-    plan.iteration.outputMap =
-        AffineMap::get(3, 0, {dimensionM, dimensionN}, context);
+    MatmulIterationMaps maps =
+        buildMatmulIterationMaps(context, plan.resultType.getRank());
+    plan.iteration.outputMap = maps.output;
     for (Value input : plan.trace.rootInputs) {
       auto roles = inputRoles.find(input);
       if (roles == inputRoles.end()) {
@@ -686,26 +715,24 @@ static LogicalResult buildFusedIterationPlan(ComputeOpCreationPlan &plan,
         plan.inputs.push_back(input);
         plan.fusedInputRoles.push_back(role);
         if (role == FusedInputRole::MatmulLeft) {
-          plan.iteration.inputMaps.push_back(leftMap);
+          plan.iteration.inputMaps.push_back(maps.left);
         } else if (role == FusedInputRole::MatmulRight) {
-          plan.iteration.inputMaps.push_back(rightMap);
+          plan.iteration.inputMaps.push_back(maps.right);
         } else if (role == FusedInputRole::MatmulTransposedRight) {
-          plan.iteration.inputMaps.push_back(transposedRightMap);
+          plan.iteration.inputMaps.push_back(maps.transposedRight);
         } else {
           AffineMap inputMap = plan.iteration.outputMap;
           if (RankedTensorType inputType = getTensorType(input);
-              inputType && inputType.getRank() == 2) {
-            inputMap =
-                buildBroadcastAwareInputMap(context, inputType, plan.resultType,
-                                            3, {dimensionM, dimensionN});
+              inputType && inputType.getRank() == plan.resultType.getRank()) {
+            inputMap = buildBroadcastAwareInputMap(
+                context, inputType, plan.resultType, maps.output.getNumDims(),
+                maps.output.getResults());
           }
           plan.iteration.inputMaps.push_back(inputMap);
         }
       }
     }
-    plan.iteration.iteratorTypes = {utils::IteratorType::parallel,
-                                    utils::IteratorType::parallel,
-                                    utils::IteratorType::reduction};
+    plan.iteration.iteratorTypes = std::move(maps.iteratorTypes);
   } else {
     plan.iteration.outputMap =
         AffineMap::getMultiDimIdentityMap(plan.resultType.getRank(), context);
@@ -821,20 +848,13 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
   if (auto matmul = dyn_cast<MatmulOp>(plan.source)) {
     plan.recipe = ComputeOpCreationRecipe::Matmul;
     plan.transposeRhs = matmul.getTransposeRhs();
-    MLIRContext *context = plan.source->getContext();
-    AffineExpr dimensionM = getAffineDimExpr(0, context);
-    AffineExpr dimensionN = getAffineDimExpr(1, context);
-    AffineExpr dimensionK = getAffineDimExpr(2, context);
-    plan.iteration.inputMaps = {
-        AffineMap::get(3, 0, {dimensionM, dimensionK}, context),
-        matmul.getTransposeRhs()
-            ? AffineMap::get(3, 0, {dimensionN, dimensionK}, context)
-            : AffineMap::get(3, 0, {dimensionK, dimensionN}, context)};
-    plan.iteration.outputMap =
-        AffineMap::get(3, 0, {dimensionM, dimensionN}, context);
-    plan.iteration.iteratorTypes = {utils::IteratorType::parallel,
-                                    utils::IteratorType::parallel,
-                                    utils::IteratorType::reduction};
+    MatmulIterationMaps maps = buildMatmulIterationMaps(
+        plan.source->getContext(), plan.resultType.getRank());
+    plan.iteration.inputMaps = {maps.left, matmul.getTransposeRhs()
+                                               ? maps.transposedRight
+                                               : maps.right};
+    plan.iteration.outputMap = maps.output;
+    plan.iteration.iteratorTypes = std::move(maps.iteratorTypes);
     return success();
   }
   if (auto reduce = dyn_cast<ReduceOp>(plan.source)) {

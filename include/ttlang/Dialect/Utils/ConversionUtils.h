@@ -50,9 +50,11 @@ inline FailureOr<CircularBufferType> getTTLCircularBufferType(Value value) {
 ///   delinearize(5, [3,2]) -> (2,1), add [0,2] -> (2,3),
 ///   linearize((2,3), [3,4]) -> 11.
 ///
-/// Returns `localIndex` unchanged if no extract_slice is found.
+/// Returns `localIndex` unchanged if no extract_slice is found. Set
+/// `composeNestedSlices` when the operand may be a slice of another slice and
+/// the index must be expressed relative to the root tensor.
 inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
-                            Location loc) {
+                            Location loc, bool composeNestedSlices = false) {
   // Trace through tensor.extract (tile extraction from lower-to-loops).
   Value tensor = operand;
   if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
@@ -85,9 +87,16 @@ inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
     globalCoords.push_back(global);
   }
 
-  // Relinearize against the full source shape.
-  return affine::AffineLinearizeIndexOp::create(builder, loc, globalCoords,
-                                                sourceType.getShape());
+  // Relinearize against the immediate source shape. Most callers address a
+  // single DFB slice; batched matmul explicitly composes its batch and
+  // subblock slices.
+  Value sourceIndex = affine::AffineLinearizeIndexOp::create(
+      builder, loc, globalCoords, sourceType.getShape());
+  if (!composeNestedSlices) {
+    return sourceIndex;
+  }
+  return addSliceOffset(slice.getSource(), sourceIndex, builder, loc,
+                        composeNestedSlices);
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType, or return

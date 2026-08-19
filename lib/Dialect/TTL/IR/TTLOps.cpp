@@ -1155,8 +1155,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
   // The iteration domain (from iterator_types) must be at least as large as the
   // maximum operand rank. Extra dimensions are reduction dims that do not
-  // appear in any operand's shape (e.g., the K dimension in matmul: rank-2
-  // operands with a 3D [M, N, K] iteration space).
+  // appear in any operand's shape (e.g., the K dimension in matmul:
+  // rank-N operands with an (N+1)-D [batch..., M, N, K] iteration space).
   int64_t maxTensorRank = 0;
   for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
     auto ty = cast<RankedTensorType>(operand.getType());
@@ -1845,17 +1845,22 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
   auto rhsType = mlir::cast<RankedTensorType>(getRhs().getType());
   auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
 
-  if (lhsType.getRank() != 2) {
-    return emitOpError() << "lhs must be rank 2, got rank "
+  if (lhsType.getRank() < 2) {
+    return emitOpError() << "lhs must have rank 2 or greater, got rank "
                          << lhsType.getRank();
   }
-  if (rhsType.getRank() != 2) {
-    return emitOpError() << "rhs must be rank 2, got rank "
+  if (rhsType.getRank() < 2) {
+    return emitOpError() << "rhs must have rank 2 or greater, got rank "
                          << rhsType.getRank();
   }
-  if (resultType.getRank() != 2) {
-    return emitOpError() << "result must be rank 2, got rank "
-                         << resultType.getRank();
+  if (lhsType.getRank() != rhsType.getRank()) {
+    return emitOpError() << "operand ranks must match, got lhs rank "
+                         << lhsType.getRank() << " and rhs rank "
+                         << rhsType.getRank();
+  }
+  if (resultType.getRank() != lhsType.getRank()) {
+    return emitOpError() << "result rank " << resultType.getRank()
+                         << " must match operand rank " << lhsType.getRank();
   }
 
   if (!lhsType.hasStaticShape()) {
@@ -1868,26 +1873,39 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
     return emitOpError() << "result must have static shape";
   }
 
-  // When transpose_rhs is set, rhs is the transpose B stored as [N, K], so K
-  // is rhs.shape[1] and N is rhs.shape[0].
+  int64_t rank = lhsType.getRank();
+  for (int64_t dimension = 0; dimension < rank - 2; ++dimension) {
+    if (lhsType.getDimSize(dimension) != rhsType.getDimSize(dimension)) {
+      return emitOpError() << "batch dimension " << dimension
+                           << " mismatch: lhs has "
+                           << lhsType.getDimSize(dimension) << " but rhs has "
+                           << rhsType.getDimSize(dimension);
+    }
+  }
+
   bool transposeRhs = getTransposeRhs();
-  int64_t lhsK = lhsType.getDimSize(1);
-  int64_t rhsK = transposeRhs ? rhsType.getDimSize(1) : rhsType.getDimSize(0);
+  int64_t lhsK = lhsType.getDimSize(rank - 1);
+  int64_t rhsK = transposeRhs ? rhsType.getDimSize(rank - 1)
+                              : rhsType.getDimSize(rank - 2);
   if (lhsK != rhsK) {
     return emitOpError() << "K dimension mismatch: lhs has " << lhsK
                          << " columns but rhs has " << rhsK
                          << (transposeRhs ? " columns" : " rows");
   }
 
-  int64_t expectedM = lhsType.getDimSize(0);
-  int64_t expectedN =
-      transposeRhs ? rhsType.getDimSize(0) : rhsType.getDimSize(1);
-  if (resultType.getDimSize(0) != expectedM ||
-      resultType.getDimSize(1) != expectedN) {
-    return emitOpError() << "result shape [" << resultType.getDimSize(0) << ", "
-                         << resultType.getDimSize(1) << "] does not match "
-                         << "expected [" << expectedM << ", " << expectedN
-                         << "]";
+  SmallVector<int64_t> expectedShape(lhsType.getShape());
+  int64_t expectedM = lhsType.getDimSize(rank - 2);
+  int64_t expectedN = transposeRhs ? rhsType.getDimSize(rank - 2)
+                                   : rhsType.getDimSize(rank - 1);
+  expectedShape[rank - 2] = expectedM;
+  expectedShape[rank - 1] = expectedN;
+  if (resultType.getShape() != ArrayRef<int64_t>(expectedShape)) {
+    InFlightDiagnostic diagnostic = emitOpError() << "result shape [";
+    llvm::interleaveComma(resultType.getShape(), diagnostic);
+    diagnostic << "] does not match expected [";
+    llvm::interleaveComma(expectedShape, diagnostic);
+    diagnostic << "]";
+    return failure();
   }
 
   auto lhsTileType = mlir::dyn_cast<ttcore::TileType>(lhsType.getElementType());
