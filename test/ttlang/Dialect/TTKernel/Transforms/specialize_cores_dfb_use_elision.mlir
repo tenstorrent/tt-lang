@@ -7,13 +7,13 @@
 
 // CHECK-NOT: func.func @conditional_dfb_user()
 // CHECK-LABEL: func.func @conditional_dfb_user_c0_0
-// CHECK-SAME: ttl.core_coord = {{\[\[}}0, 0]]
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
-// CHECK: ttkernel.get_compile_time_arg_val(0)
+// CHECK-SAME: ttl.core_coord = {{\[\[}}[[$X:[0-9]+]], [[Y0:[0-9]+]]]]
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: [[DFB:[0-9]+]]>
+// CHECK: ttkernel.get_compile_time_arg_val([[DFB]])
 // CHECK: ttkernel.cb_wait_front
 // CHECK-NOT: scf.if
 // CHECK-LABEL: func.func @conditional_dfb_user_c0_1
-// CHECK-SAME: ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-SAME: ttl.core_coord = {{\[\[}}[[$X]], [[Y1:[0-9]+]]]]
 // CHECK-SAME: ttl.used_dfb_indices = array<i32>
 // CHECK-NOT: ttkernel.get_compile_time_arg_val
 // CHECK-NOT: ttkernel.cb_wait_front
