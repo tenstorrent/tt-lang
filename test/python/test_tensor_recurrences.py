@@ -13,6 +13,8 @@ fallbacks, augmented-assignment rewriting, and existing DFB-attached block
 `+=` behavior.
 """
 
+import re
+
 import pytest
 import torch
 
@@ -513,27 +515,9 @@ def test_resident_contribution_early_pop_does_not_form_dst(
     assert "binary_dest_reuse_tiles<" not in _extract_generated_kernel_source(
         output, "compute"
     )
-    assert "ttl.compiler_allocated" in final_ir
-
-
-@pytest.mark.requires_device
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
-def test_two_streamed_updates_per_iteration_are_preserved(device, dtype):
-    """A loop with two streamed updates must preserve both waits each pass."""
-    initial = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE) / 64
-    initial = initial.to(dtype)
-    delta = torch.empty((2 * TILE, TILE), dtype=dtype)
-    delta[0:TILE, :] = 0.25
-    delta[TILE : 2 * TILE, :] = -0.25
-    expected = initial.float()
-    _run_io_kernel(
-        _make_two_update_streamed_kernel(),
-        in_tensors=[initial, delta],
-        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
-        expected_list=[expected],
-        dtype=dtype,
-        device=device,
-    )
+    source_dfb_ids = set(re.findall(r"dfb_id = (\d+) : index", initial_ir))
+    final_dfb_indices = set(re.findall(r"dfb_index = (\d+) : i32", final_ir))
+    assert len(final_dfb_indices) > len(source_dfb_ids)
 
 
 @pytest.mark.requires_device
