@@ -435,7 +435,7 @@ static LogicalResult lowerTensorAccumulationScope(
         "accumulator; select the automatic accumulation strategy or split the "
         "accumulators into separate loops");
   }
-  if (failed(analyzeTensorAccumulationForL1Pack(recurrence))) {
+  if (failed(analyzeTensorAccumulationForL1Pack(recurrence, &dfbIndex))) {
     return emitL1PackError(
         "expected one same-type additive recurrence with one final store; "
         "select the automatic accumulation strategy or rewrite the loop");
@@ -443,7 +443,7 @@ static LogicalResult lowerTensorAccumulationScope(
 
   replaceYieldOperandsWithStateArguments(scope);
   [[maybe_unused]] LogicalResult lowered =
-      lowerTensorAccumulationToL1Pack(recurrence, scopeId, rewriter);
+      lowerTensorAccumulationToL1Pack(recurrence, scopeId, dfbIndex, rewriter);
   assert(succeeded(lowered) && "L1 pack legality was checked before mutation");
   eraseAccumulationScopeWrapper(scope, rewriter,
                                 getScopeBlockArgumentReplacements(scope));
