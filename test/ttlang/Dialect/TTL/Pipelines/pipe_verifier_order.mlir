@@ -3,11 +3,15 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=false})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-DISABLED
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=true})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-ENABLED
 
-// Verify PipeNet schedule semantics before later transformations modify the
-// high-level pipe and DFB operations or reuse provisional DFB indices.
+// Verify tensor recurrence lowering runs before DFB materialization and
+// synchronization, and PipeNet verification runs before DFB index reuse.
 
 // CHECK-LABEL: Pass Manager with
-// CHECK:        ttl-create-producer-compute
+// CHECK:      ttl-form-accumulation-scopes
+// CHECK:      ttl-lower-accumulation-scopes
+// CHECK:      ttl-materialize-loop-state
+// CHECK:      ttl-insert-copy-wait
+// CHECK:      ttl-create-producer-compute
 // CHECK-NEXT: ),
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-insert-intermediate-dfbs{enable=true}
