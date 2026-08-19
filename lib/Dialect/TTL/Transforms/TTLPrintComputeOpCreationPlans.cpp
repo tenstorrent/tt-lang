@@ -67,6 +67,10 @@ static StringRef stringifyFusedRecipe(FusedOperationRecipe recipe) {
     return "inter-tile-broadcast";
   case FusedOperationRecipe::TileBroadcast:
     return "tile-broadcast";
+  case FusedOperationRecipe::DeferredTileBroadcast:
+    return "deferred-tile-broadcast";
+  case FusedOperationRecipe::BinaryBroadcast:
+    return "binary-broadcast";
   case FusedOperationRecipe::Matmul:
     return "matmul";
   case FusedOperationRecipe::DeferredMatmul:

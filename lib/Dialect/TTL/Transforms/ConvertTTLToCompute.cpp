@@ -434,6 +434,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           sinkOp, "fused operation dependency is unavailable");
     }
     if (operationPlan.recipe == FusedOperationRecipe::DeferredMatmul ||
+        operationPlan.recipe == FusedOperationRecipe::DeferredTileBroadcast ||
         operationPlan.recipe == FusedOperationRecipe::DeferredExpScale) {
       continue;
     }
@@ -542,6 +543,19 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       tileResult = matmul;
       break;
     }
+    case FusedOperationRecipe::BinaryBroadcast: {
+      assert(operationPlan.tileBroadcast && operationPlan.eltwiseBinaryType &&
+             "binary-broadcast recipe must record its hardware kinds");
+      tileResult = createTileOpWithPlaceholderDstIndex<TileBinaryBcastOp>(
+          rewriter, loc, operationPlan.resultTileType, tileOperands[0],
+          tileOperands[1], body->getArguments().back(),
+          *operationPlan.eltwiseBinaryType, *operationPlan.tileBroadcast);
+      break;
+    }
+    case FusedOperationRecipe::DeferredTileBroadcast:
+      assert(!instrumentationEmitter.hasAfter(op) &&
+             "instrumented broadcast must not be folded into its user");
+      continue;
     case FusedOperationRecipe::DeferredMatmul:
       assert(!instrumentationEmitter.hasAfter(op) &&
              "instrumented matmul must not be folded into its user");

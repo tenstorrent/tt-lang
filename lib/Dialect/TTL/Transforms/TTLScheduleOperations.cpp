@@ -48,6 +48,12 @@ static int64_t getInitAffinity(Operation *op) {
   if (auto bcast = dyn_cast<TileBcastOp>(op)) {
     return static_cast<int64_t>(bcast.getBcastType());
   }
+  // TileBinaryBcastOp: the init also encodes the binary op, so both attributes
+  // participate in the affinity key.
+  if (auto bcast = dyn_cast<TileBinaryBcastOp>(op)) {
+    return (static_cast<int64_t>(bcast.getEltwiseBinaryType()) << 16) |
+           static_cast<int64_t>(bcast.getBcastType());
+  }
   // CopyTileOp: group by input CB so copies from the same CB stay adjacent
   // (avoiding redundant copy_tile_init re-inits). After loop lowering, the
   // source is a scalar tile from tensor.extract — trace through it to reach

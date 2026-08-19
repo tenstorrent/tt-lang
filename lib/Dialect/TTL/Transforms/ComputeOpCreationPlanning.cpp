@@ -439,6 +439,21 @@ static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
   return failure();
 }
 
+/// Binary operations the FPU can fuse with a broadcast operand.
+static std::optional<EltwiseBinaryType>
+getFusedEltwiseBinaryType(Operation *operation) {
+  if (isa<AddOp>(operation)) {
+    return EltwiseBinaryType::Add;
+  }
+  if (isa<SubOp>(operation)) {
+    return EltwiseBinaryType::Sub;
+  }
+  if (isa<MulOp>(operation)) {
+    return EltwiseBinaryType::Mul;
+  }
+  return std::nullopt;
+}
+
 static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
                                               std::string &failureReason) {
   DenseSet<Operation *> fusedOperations(plan.trace.opsInOrder.begin(),
@@ -498,6 +513,47 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
     }
   }
 
+  // A within-tile broadcast feeding a single add/sub/mul collapses into one
+  // FPU op. The hardware applies the broadcast while unpacking, so this only
+  // works when both operands are still CB-resident: an operand produced by an
+  // earlier fused recipe already lives in DST and has no unpack source.
+  DenseMap<Operation *, BlockBroadcastOp> foldedBroadcastByBinary;
+  DenseSet<Operation *> deferredTileBroadcasts;
+  for (Operation *operation : plan.trace.opsInOrder) {
+    auto broadcast = dyn_cast<BlockBroadcastOp>(operation);
+    if (!broadcast || !broadcast.getResult().hasOneUse()) {
+      continue;
+    }
+    RankedTensorType inputType = getTensorType(broadcast.getInput());
+    if (!inputType ||
+        !getTileBroadcastType(broadcast.getDims(), inputType.getRank())) {
+      continue;
+    }
+
+    Operation *user = *broadcast.getResult().getUsers().begin();
+    if (!isa<AddOp, SubOp, MulOp>(user) || !fusedOperations.contains(user) ||
+        foldedMatmulByAdd.contains(user) ||
+        broadcast->getBlock() != user->getBlock()) {
+      continue;
+    }
+    // sub is not commutative and only the second unpack source is broadcast,
+    // so `broadcast(B) - A` has no fused form.
+    if (isa<SubOp>(user) && user->getOperand(1) != broadcast.getResult()) {
+      continue;
+    }
+
+    Value other = user->getOperand(0) == broadcast.getResult()
+                      ? user->getOperand(1)
+                      : user->getOperand(0);
+    if (!plan.trace.rootInputs.contains(broadcast.getInput()) ||
+        !plan.trace.rootInputs.contains(other)) {
+      continue;
+    }
+
+    foldedBroadcastByBinary.try_emplace(user, broadcast);
+    deferredTileBroadcasts.insert(broadcast);
+  }
+
   for (Operation *operation : plan.trace.opsInOrder) {
     FusedOperationPlan operationPlan;
     operationPlan.source = operation;
@@ -535,9 +591,31 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       }
       operationPlan.tileBroadcast =
           getTileBroadcastType(broadcast.getDims(), inputType.getRank());
-      operationPlan.recipe = operationPlan.tileBroadcast
-                                 ? FusedOperationRecipe::TileBroadcast
-                                 : FusedOperationRecipe::InterTileBroadcast;
+      if (deferredTileBroadcasts.contains(operation)) {
+        operationPlan.recipe = FusedOperationRecipe::DeferredTileBroadcast;
+      } else {
+        operationPlan.recipe = operationPlan.tileBroadcast
+                                   ? FusedOperationRecipe::TileBroadcast
+                                   : FusedOperationRecipe::InterTileBroadcast;
+      }
+    } else if (auto foldedBroadcast =
+                   foldedBroadcastByBinary.lookup(operation)) {
+      Value broadcastResult = foldedBroadcast.getResult();
+      Value data = operation->getOperand(0) == broadcastResult
+                       ? operation->getOperand(1)
+                       : operation->getOperand(0);
+      // The broadcast operand is always second: the FPU broadcasts SRCB.
+      if (failed(addOperand(data, FusedInputRole::Parallel)) ||
+          failed(addOperand(foldedBroadcast.getInput(),
+                            FusedInputRole::Parallel))) {
+        return failure();
+      }
+      RankedTensorType inputType = getTensorType(foldedBroadcast.getInput());
+      operationPlan.tileBroadcast =
+          getTileBroadcastType(foldedBroadcast.getDims(), inputType.getRank());
+      operationPlan.eltwiseBinaryType = getFusedEltwiseBinaryType(operation);
+      operationPlan.foldedBroadcast = foldedBroadcast;
+      operationPlan.recipe = FusedOperationRecipe::BinaryBroadcast;
     } else if (auto matmul = dyn_cast<MatmulOp>(operation)) {
       if (failed(addOperand(matmul.getLhs(), FusedInputRole::MatmulLeft)) ||
           failed(addOperand(matmul.getRhs(),

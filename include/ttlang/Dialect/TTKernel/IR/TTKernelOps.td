@@ -671,6 +671,58 @@ def TTKernel_UnaryBcastTileOp : TTKernel_FPUOp<"unary_bcast", [TTKernel_UnaryOpT
     }];
 }
 
+def TTKernel_BinaryBcastInitOp : TTKernel_InitOp<"binary_bcast_init"> {
+    let summary = "Init function for the fused binary broadcast op";
+    let description = [{
+      Must be run before binary_bcast. Configures the MATH pipeline for the
+      requested elementwise binary operation and broadcast dimension, the
+      UNPACK pipeline for both input CBs, and the PACK pipeline from out_cb.
+      Lowers to the metal `init_bcast<EltwiseBinaryType, BroadcastType>` API.
+    }];
+
+    let arguments = (ins TTKernel_CB:$in0_cb,
+                         TTKernel_CB:$in1_cb,
+                         TTKernel_CB:$out_cb,
+                         TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                         TTKernel_BcastTypeAttr:$bcast_type
+                        );
+
+    let assemblyFormat = [{
+      `(` $in0_cb `,` $in1_cb `,` $out_cb `,` $eltwise_binary_type `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_BinaryBcastTileOp : TTKernel_FPUOp<"binary_bcast", [TTKernel_BinaryOpTrait]> {
+    let summary = "Fused elementwise binary operation with a broadcast operand";
+    let description = [{
+      Performs *DST[dst_tile_index] = A op broadcast(B)* in a single FPU pass,
+      where A is the tile at *in0_tile_index* in *in0_cb* and B is the tile at
+      *in1_tile_index* in *in1_cb*. The broadcast is applied to the second
+      operand along `bcast_type` (`row`, `col` or `scalar`) as the tile is
+      unpacked, so B is never materialized into DST.
+
+      Because the broadcast is fixed to the second operand, commutative
+      operations (add, mul) may swap their operands to place the broadcast
+      source in *in1_cb*, while sub only supports *A - broadcast(B)*.
+
+      The DST register buffer must be in acquired state via *tile_regs_acquire*
+      call. This call is blocking and is only available on the compute engine.
+    }];
+
+    let arguments = (ins TTKernel_CB:$in0_cb,
+                         TTKernel_CB:$in1_cb,
+                         IndexLike:$in0_tile_index,
+                         IndexLike:$in1_tile_index,
+                         IndexLike:$dst_tile_index,
+                         TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                         TTKernel_BcastTypeAttr:$bcast_type
+    );
+
+    let assemblyFormat = [{
+      `(` $in0_cb `,` $in1_cb `,` $in0_tile_index `,` $in1_tile_index `,` $dst_tile_index `,` $eltwise_binary_type `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
 def TTKernel_ReduceInitOp : TTKernel_InitOp<"reduce_init"> {
     let summary = "Init function";
     let description = [{

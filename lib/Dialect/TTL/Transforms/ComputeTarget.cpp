@@ -519,6 +519,21 @@ getBroadcastCapability(Operation *operation, std::string &failureReason) {
     return BroadcastCapability{*inputType, *resultType,
                                broadcast.getBcastType()};
   }
+  if (auto broadcast = dyn_cast<TileBinaryBcastOp>(operation)) {
+    // Only the rhs is broadcast; the lhs is a plain full-tile unpack source.
+    FailureOr<ttcore::TileType> inputType = getRequiredTileType(
+        broadcast.getRhs().getType(), "broadcast input", failureReason);
+    if (failed(inputType)) {
+      return failure();
+    }
+    FailureOr<ttcore::TileType> resultType = getRequiredTileType(
+        broadcast.getResult().getType(), "broadcast result", failureReason);
+    if (failed(resultType)) {
+      return failure();
+    }
+    return BroadcastCapability{*inputType, *resultType,
+                               broadcast.getBcastType()};
+  }
   failureReason = "has no broadcast capability representation";
   return failure();
 }

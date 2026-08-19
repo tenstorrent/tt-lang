@@ -120,6 +120,19 @@ def TTL_BcastType : I32EnumAttr<"BcastType", "TTL broadcast type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+def TTL_EltwiseBinaryType_Add : I32EnumAttrCase<"Add", 0, "add">;
+def TTL_EltwiseBinaryType_Sub : I32EnumAttrCase<"Sub", 1, "sub">;
+def TTL_EltwiseBinaryType_Mul : I32EnumAttrCase<"Mul", 2, "mul">;
+
+// Mirrors ttkernel::EltwiseBinaryType; only the ops the FPU can fuse with a
+// broadcast operand are modelled here.
+def TTL_EltwiseBinaryType : I32EnumAttr<"EltwiseBinaryType",
+    "TTL elementwise binary operation type",
+    [TTL_EltwiseBinaryType_Add, TTL_EltwiseBinaryType_Sub,
+     TTL_EltwiseBinaryType_Mul]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 //===----------------------------------------------------------------------===//
 // Reduce enums
 //===----------------------------------------------------------------------===//

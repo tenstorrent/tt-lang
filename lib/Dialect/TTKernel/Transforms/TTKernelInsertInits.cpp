@@ -163,6 +163,18 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                       bcastOp.getBcastTypeAttr());
       }};
 
+  map[mlir::TypeID::get<ttk::BinaryBcastTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto bcastOp = cast<ttk::BinaryBcastTileOp>(computeOp);
+        Value outputCB =
+            resolveOutputCB(computeOp, kBcastOutputCBIndexAttrName);
+        assert(outputCB && "output CB required for binary_bcast_init");
+        ttk::BinaryBcastInitOp::create(b, l, bcastOp.getIn0Cb(),
+                                       bcastOp.getIn1Cb(), outputCB,
+                                       bcastOp.getEltwiseBinaryTypeAttr(),
+                                       bcastOp.getBcastTypeAttr());
+      }};
+
   map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {[](OpBuilder &b, Location l,
                                                     Operation *computeOp) {
     auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
@@ -257,6 +269,14 @@ static InitKey computeInitKey(Operation *op) {
   if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
     return {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
+  }
+
+  // The init configures both the MATH op and the broadcast dimension, so the
+  // two attributes have to be part of the key alongside the unpack sources.
+  if (auto bcast = dyn_cast<ttk::BinaryBcastTileOp>(op)) {
+    int64_t disc = (static_cast<int64_t>(bcast.getEltwiseBinaryType()) << 16) |
+                   static_cast<int64_t>(bcast.getBcastType());
+    return {typeId, {bcast.getIn0Cb(), bcast.getIn1Cb()}, disc};
   }
 
   if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
@@ -388,6 +408,14 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       } else if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(inner)) {
         if (!inputCB) {
           inputCB = bcast.getInCb();
+        }
+      } else if (auto bcast = dyn_cast<ttk::BinaryBcastTileOp>(inner)) {
+        // Unpacks both operands into SRCA/SRCB like any other FPU binary, so
+        // the region needs binary_op_init_common rather than init_sfpu.
+        result.hasFPUBinary = true;
+        if (!in0CB) {
+          in0CB = bcast.getIn0Cb();
+          in1CB = bcast.getIn1Cb();
         }
       } else if (auto reduce = dyn_cast<ttk::ReduceTileOp>(inner)) {
         if (!inputCB) {

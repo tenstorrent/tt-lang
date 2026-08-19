@@ -194,6 +194,13 @@ enum class FusedOperationRecipe {
   /// Emit `ttl.tile_bcast` for a broadcast within one hardware tile.
   TileBroadcast,
 
+  /// Emit no operation because a following binary recipe folds this broadcast.
+  DeferredTileBroadcast,
+
+  /// Emit one `ttl.tile_binary_bcast` for a deferred broadcast and its binary
+  /// consumer, so the broadcast never materializes into DST.
+  BinaryBroadcast,
+
   /// Emit a standalone `ttl.tile_matmul_block`.
   Matmul,
 
@@ -253,6 +260,12 @@ struct FusedOperationPlan {
 
   /// Matmul emitted by a later accumulator recipe.
   std::optional<MatmulOp> foldedMatmul;
+
+  /// Broadcast emitted by a later binary-broadcast recipe.
+  std::optional<BlockBroadcastOp> foldedBroadcast;
+
+  /// Binary operation fused into a binary-broadcast recipe.
+  std::optional<EltwiseBinaryType> eltwiseBinaryType;
 
   /// Non-matmul operand used to initialize an accumulating matmul.
   std::optional<Value> accumulator;
