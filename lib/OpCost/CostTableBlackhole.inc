@@ -4,28 +4,22 @@
 
 //===========================================================================//
 //                                                                           //
-//     ####   G E N E R A T E D   F I L E  --  D O   N O T   E D I T   ####  //
-//                                                                           //
-//     EVERY LINE OF THIS FILE IS EMITTED BY llk-perf/gen_cost_table.py IN   //
-//     THE tt-lang-ops-and-models REPOSITORY. AN EDIT MADE HERE IS           //
-//     SILENTLY DESTROYED BY THE NEXT REGENERATION.                          //
-//                                                                           //
-//     To change a number, change the sweep that measures it. To change      //
-//     the shape of the table, change the generator. Both live in llk-perf/. //
+//                       GENERATED FILE -- DO NOT EDIT                       //
 //                                                                           //
 //===========================================================================//
 //
-// Regenerate from a checkout of that repository, which needs a device and the
-// tt-llk harness:
+// Emitted by llk-perf/gen_cost_table.py in tt-lang-ops-and-models. Regenerate
+// from a checkout of that repository, which needs a device and the tt-llk
+// harness:
 //   llk-perf/run_sweep.sh      --tt-lang <path to this tt-lang>
 //   llk-perf/gen_cost_table.py --tt-lang <path to this tt-lang>
 //
-// Generated 2026-08-19 22:07:42 UTC, from 11222 CSV rows over 7 benchmarks,
+// Generated 2026-08-19 22:10:13 UTC, from 11222 CSV rows over 7 benchmarks,
 // measured on blackhole; costs are not transferable across architectures. The
 // CSVs are in neither tree, so the revisions they were produced against are:
 //
-//   tt-lang-ops-and-models  69b48fff   the sweeps and this generator
-//   tt-lang                 185bc5701  the dialect the keys are checked against
+//   tt-lang-ops-and-models  4f761072   the sweeps and this generator
+//   tt-lang                 7c35360c8  the dialect the keys are checked against
 //   tt-lang's tt-metal      ea042c4ad  tt-llk and the perf harness
 //
 // Included into a scope that defines `MeasuredCost`, `EngineCost` and `OpCost`;
