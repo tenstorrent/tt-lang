@@ -1,6 +1,7 @@
 add_mlir_dialect_library(TTLangTTKernelTransforms
   TTKernelCleanupPatterns.cpp
   TTKernelCombinePackTiles.cpp
+  TTKernelCostEstimate.cpp
   TTKernelInsertInits.cpp
   TTKernelInsertL1Accumulation.cpp
   TTKernelLowerScalarFpTypes.cpp
@@ -10,6 +11,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   TTLangTTLTransformsIncGen
 
   LINK_LIBS PUBLIC
+  TTLangAnalysis
   MLIRArithDialect
   MLIRFuncDialect
   MLIRFuncTransforms

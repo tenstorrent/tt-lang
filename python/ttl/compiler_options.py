@@ -163,6 +163,24 @@ def _make_parser() -> argparse.ArgumentParser:
         "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
     )
     p.add_argument(
+        "--ttl-cost-estimate",
+        default=None,
+        dest="cost_estimate",
+        action=argparse.BooleanOptionalAction,
+        help="Report how the program's work splits across the five RISCs of a "
+        "Tensix core, read from TTKernel IR just before EmitC conversion "
+        "(ttkernel-cost-estimate). Non-mutating. Opt-in (default: disabled).",
+    )
+    p.add_argument(
+        "--ttl-cost-estimate-detail",
+        default=None,
+        dest="cost_estimate_detail",
+        action=argparse.BooleanOptionalAction,
+        help="Add per-lane operation tables and an event-boundary timeline to "
+        "the cost estimate. Capped, but still long. Requires "
+        "--ttl-cost-estimate.",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -226,6 +244,8 @@ class CompilerOptions:
     reuse_user_dfbs: bool = True
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
+    cost_estimate: bool = False
+    cost_estimate_detail: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from
