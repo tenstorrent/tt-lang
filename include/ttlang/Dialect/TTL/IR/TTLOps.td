@@ -42,7 +42,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       allocation for all logical DFBs carrying the same group identity.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
-      The range is relative to the local shard on each launch node.
+      The range is relative to the local shard on each launch node. Tensor
+      backing supports BF16, FP32, BFP4_B, and BFP8_B tile element types.
     Example:
 
     ```mlir
@@ -1682,9 +1683,9 @@ def TTL_MatmulOp : TTL_ComputePrimitiveOp<"matmul", "Matmul", [Pure,
     `transpose_rhs`, `lhs.tile.width == rhs.tile.height` and the result tile is
     `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
     width is contracted and the result tile width is the rhs tile height.
-    Operand and result tile element data types normally match. The
-    non-transposed mixed-format form accepts BF16 lhs tiles, BFP4_B or BFP8_B
-    rhs tiles, and produces BF16 result tiles.
+    The supported element data type combinations are equal lhs, rhs, and result
+    types, or BF16 lhs and result types with a BFP4_B or BFP8_B rhs. The
+    mixed-format form does not support rhs transposition.
   }];
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
                        UnitAttr:$transpose_rhs);

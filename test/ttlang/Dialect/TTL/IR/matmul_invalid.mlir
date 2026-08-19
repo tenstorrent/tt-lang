@@ -78,8 +78,7 @@ func.func @matmul_result_element_mismatch(
 
 // -----
 
-// Mixed-format matmul does not support a transposed packed rhs because the
-// Blackhole unpacker contract used by the generated primitive is non-transposed.
+// Mixed-format matmul rejects a transposed BFP4 rhs.
 func.func @matmul_transposed_bfp4_rhs(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<4x3x!ttcore.tile<32x32, bfp_bf4>>)
@@ -94,8 +93,7 @@ func.func @matmul_transposed_bfp4_rhs(
 
 // -----
 
-// Mixed-format matmul does not support a transposed packed rhs because the
-// Blackhole unpacker contract used by the generated primitive is non-transposed.
+// Mixed-format matmul rejects a transposed BFP8 rhs.
 func.func @matmul_transposed_bfp8_rhs(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<4x3x!ttcore.tile<32x32, bfp_bf8>>)
@@ -106,6 +104,36 @@ func.func @matmul_transposed_bfp8_rhs(
         tensor<4x3x!ttcore.tile<32x32, bfp_bf8>>
         -> tensor<2x4x!ttcore.tile<32x32, bf16>>
   return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Mixed BFP4_B matmul requires a BF16 result.
+func.func @matmul_bfp4_result_type(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<3x4x!ttcore.tile<32x32, bfp_bf4>>)
+    -> tensor<2x4x!ttcore.tile<32x32, bfp_bf4>> {
+  // expected-error @below {{unsupported matmul element data type combination: lhs has !ttcore.tile<32x32, bf16>, rhs has !ttcore.tile<32x32, bfp_bf4>, and result has !ttcore.tile<32x32, bfp_bf4>}}
+  %r = ttl.matmul %a, %b
+      : tensor<2x3x!ttcore.tile<32x32, bf16>>,
+        tensor<3x4x!ttcore.tile<32x32, bfp_bf4>>
+        -> tensor<2x4x!ttcore.tile<32x32, bfp_bf4>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, bfp_bf4>>
+}
+
+// -----
+
+// Mixed BFP8_B matmul requires a BF16 result.
+func.func @matmul_bfp8_result_type(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<3x4x!ttcore.tile<32x32, bfp_bf8>>)
+    -> tensor<2x4x!ttcore.tile<32x32, bfp_bf8>> {
+  // expected-error @below {{unsupported matmul element data type combination: lhs has !ttcore.tile<32x32, bf16>, rhs has !ttcore.tile<32x32, bfp_bf8>, and result has !ttcore.tile<32x32, bfp_bf8>}}
+  %r = ttl.matmul %a, %b
+      : tensor<2x3x!ttcore.tile<32x32, bf16>>,
+        tensor<3x4x!ttcore.tile<32x32, bfp_bf8>>
+        -> tensor<2x4x!ttcore.tile<32x32, bfp_bf8>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, bfp_bf8>>
 }
 
 // -----
