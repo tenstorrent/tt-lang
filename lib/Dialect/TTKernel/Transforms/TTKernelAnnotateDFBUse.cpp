@@ -29,13 +29,6 @@ namespace {
 
 using DFBSet = llvm::SmallDenseSet<int32_t, 8>;
 
-static int64_t getDFBCount(func::FuncOp func, int64_t fallback) {
-  if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-    return attr.getInt();
-  }
-  return fallback;
-}
-
 static func::FuncOp getCallableFunc(CallGraphNode *node) {
   if (node->isExternal()) {
     return {};
@@ -53,9 +46,12 @@ static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
   });
 }
 
-static void recordAllDFBs(func::FuncOp func, int64_t moduleDFBCount,
+static void recordAllDFBs(func::FuncOp func, int64_t maxDFBCount,
                           DFBSet &used) {
-  int64_t dfbCount = getDFBCount(func, moduleDFBCount);
+  int64_t dfbCount = maxDFBCount;
+  if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
+    dfbCount = attr.getInt();
+  }
   for (int64_t index = 0; index < dfbCount; ++index) {
     used.insert(static_cast<int32_t>(index));
   }
@@ -66,7 +62,7 @@ static void recordAllDFBs(func::FuncOp func, int64_t moduleDFBCount,
 static void propagateSCC(ArrayRef<CallGraphNode *> scc,
                          llvm::DenseMap<Operation *, DFBSet> &usedDFBs,
                          llvm::SmallDenseSet<Operation *> &conservative,
-                         int64_t moduleDFBCount) {
+                         int64_t maxDFBCount) {
   SmallVector<func::FuncOp> funcs;
   DFBSet sccUses;
   for (CallGraphNode *node : scc) {
@@ -113,7 +109,7 @@ static void propagateSCC(ArrayRef<CallGraphNode *> scc,
     Operation *key = func.getOperation();
     if (sccConservative) {
       conservative.insert(key);
-      recordAllDFBs(func, moduleDFBCount, usedDFBs[key]);
+      recordAllDFBs(func, maxDFBCount, usedDFBs[key]);
     } else {
       usedDFBs[key] = sccUses;
     }
@@ -126,24 +122,29 @@ struct TTKernelAnnotateDFBUsePass
     ModuleOp module = getOperation();
     llvm::DenseMap<Operation *, DFBSet> usedDFBs;
     llvm::SmallDenseSet<Operation *> conservative;
-    int64_t moduleDFBCount = 0;
+    // Maximum DFB index in the module.
+    int64_t maxDFBCount = 0;
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (auto attr =
               func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-        moduleDFBCount = std::max(moduleDFBCount, attr.getInt());
+        maxDFBCount = std::max(maxDFBCount, attr.getInt());
       }
     }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      collectDirectDFBUses(func, getDFBCount(func, moduleDFBCount),
-                           usedDFBs[func.getOperation()]);
+      int64_t dfbCount = maxDFBCount;
+      if (auto attr =
+              func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
+        dfbCount = attr.getInt();
+      }
+      collectDirectDFBUses(func, dfbCount, usedDFBs[func.getOperation()]);
     }
 
     CallGraph callgraph(module);
     const CallGraph *graph = &callgraph;
     for (auto sccIt = llvm::scc_begin(graph); !sccIt.isAtEnd(); ++sccIt) {
-      propagateSCC(*sccIt, usedDFBs, conservative, moduleDFBCount);
+      propagateSCC(*sccIt, usedDFBs, conservative, maxDFBCount);
     }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
