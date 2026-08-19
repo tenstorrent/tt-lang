@@ -18,6 +18,15 @@ namespace mlir::tt::ttl {
 
 class DFBAcquireReleaseIndex;
 
+/// Accumulation scope family selected by scope insertion and lowering passes.
+enum class AccumulationScopeKind {
+  Tensor,
+  DFB,
+};
+
+/// Parse an accumulation scope kind pass option.
+FailureOr<AccumulationScopeKind> parseAccumulationScopeKind(StringRef kind);
+
 /// Describes how the contribution operand is acquired relative to the source
 /// recurrence loop.
 enum class TensorAccumulationContributionResidency {

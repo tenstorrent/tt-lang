@@ -204,8 +204,6 @@ def TTLFormAccumulationScopes
   }];
 
   let options = [
-    Option<"kind", "kind", "std::string", "\"tensor\"",
-           "Accumulation scope form to create. `dfb` is reserved and unsupported.">,
     Option<"strategy", "strategy", "std::string", "\"auto\"",
            "Tensor recurrence accumulation strategy used to filter scopes: auto, dst, or l1-pack.">
   ];
