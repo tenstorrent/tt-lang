@@ -1030,22 +1030,8 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     return list(attr)
 
 
-def _get_optional_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
-    """Read an optional `DenseI32ArrayAttr` kernel attribute."""
-    operation = _lookup_kernel_func_op(module, kernel_name)
-    attr = operation.attributes.get(attr_name, None)
-    if attr is None:
-        return []
-    if not isinstance(attr, DenseI32ArrayAttr):
-        raise ValueError(
-            f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
-            f"'{kernel_name}', got {attr}"
-        )
-    return list(attr)
-
-
 def _get_kernel_optional_i32_array_attr(module, kernel_name: str, attr_name: str):
-    """Read an optional array while preserving missing versus empty."""
+    """Read an optional `DenseI32ArrayAttr`. Missing returns None, empty returns []."""
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
@@ -1347,9 +1333,10 @@ def _compile_ttnn_kernel(
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
         kernel_pipe_computed_address_dfb_indices.append(
-            _get_optional_kernel_i32_array_attr(
+            _get_kernel_optional_i32_array_attr(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
+            or []
         )
         kernel_used_dfb_indices.append(
             _get_kernel_optional_i32_array_attr(
