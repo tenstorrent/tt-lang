@@ -98,128 +98,112 @@ kernel kinds and identities.
 
 ## Operation runtime resources
 
-An operation can provide TTNN resources that are created for each invocation:
+### Motivation
 
-```python
-def make_collective(runtime_owner):
-    sender = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+TT-Metal separates reusable program structure from values supplied for each
+dispatch. Kernel configuration, core placement, JIT definitions, program
+semaphore layout, and the runtime-argument schema determine the program
+structure. Per-core runtime-argument words may change when the cached program
+executes again. Program execution may also depend on host or device objects
+whose owners must remain alive through dispatch.
 
-    def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
-        assert len(tensors) == 2
-        semaphore = ttnn.SemaphoreDescriptor(
-            first_free_semaphore_id,
-            core_ranges=core_ranges,
-            initial_value=0,
-        )
-        return ttl.ProgramRuntimeResources(
-            semaphore_descriptors=(semaphore,),
-            kernel_resources=(
-                ttl.KernelRuntimeResources(
-                    kernel=sender,
-                    runtime_args=(
-                        ttl.CoreRuntimeArgs(
-                            ttnn.CoreCoord(0, 0),
-                            (first_free_semaphore_id, 0),
-                        ),
-                        ttl.CoreRuntimeArgs(
-                            ttnn.CoreCoord(1, 0),
-                            (first_free_semaphore_id, 1),
-                        ),
-                    ),
-                    defines=(ttl.KernelDefine("FABRIC_2D", "1"),),
-                ),
-            ),
-            lifetimes=(runtime_owner, semaphore),
-        )
+External TT-Lang kernels can require caller-defined program semaphores and JIT
+definitions, per-core dispatch words, and host owners. These resources may
+depend on the current tensors, device, launch range, and semaphore IDs already
+reserved by the compiler. `runtime_resource_factory` supplies them for each
+device execution without exposing target-specific kernel descriptor identities.
 
-    @ttl.operation(grid=(2, 1), runtime_resource_factory=make_resources)
-    def collective(input_tensor, output_tensor):
-        ttl.call_extern_func(
-            HEADER,
-            "collective_sender",
-            func_args=[input_tensor, output_tensor],
-            kernel=sender,
-        )
+### Resource model
 
-    return collective
-```
+`@ttl.operation(runtime_resource_factory=...)` calls the factory once for each
+device execution, before the runner constructs program descriptors. The
+callback receives the current tensors, complete operation core range, and first
+semaphore ID after the compiler-owned range. It returns frozen
+`ProgramRuntimeResources` records with the following cache and lifetime
+semantics:
 
-The factory has the keyword-only contract
-`(tensors, core_ranges, first_free_semaphore_id)`. `tensors` contains the
-current invocation tensors, `core_ranges` is the operation worker-core range,
-and `first_free_semaphore_id` is the first ID after compiler-managed
-semaphores. The callback executes for every invocation; its result is not
-cached.
+| Resource | Role | Invocation and cache treatment |
+| --- | --- | --- |
+| `semaphore_descriptors` | Program semaphore structure. | IDs, ranges, core types, and initial values participate in cache identity. |
+| `KernelDefine` | JIT compilation input. | Names and values participate in cache identity and apply to every specialized descriptor for the logical kernel. |
+| `CoreRuntimeArgs` | Per-core dispatch values. | Logical destination, core, and vector length participate in cache identity; argument words may change on a cache hit. |
+| `lifetimes` | Host ownership only. | Object identities do not participate in cache identity; references remain alive through execution. |
 
-The factory returns frozen typed records:
+The factory runs for each device execution even when its structural result
+selects an existing cached program. This preserves TT-Metal's distinction
+between stable program structure and current dispatch values.
 
-| Record | Purpose |
-| --- | --- |
-| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, and retained owners. |
-| `KernelRuntimeResources` | Selects one logical kernel and supplies per-core runtime arguments and JIT definitions. |
-| `CoreRuntimeArgs` | Associates one ordered integer vector with one worker coordinate. |
-| `KernelDefine` | Associates one definition name with its string value. |
+The [operation runtime resources reference](../sphinx/reference/operation-runtime-resources.md)
+defines the callback signature, public records, and usage example.
 
-All collection fields are tuples. Runtime values accept integer-indexable
-objects except booleans. Coordinates and semaphore ranges must be inside the
-operation range. Caller semaphore IDs must be unique and greater than or equal
-to `first_free_semaphore_id`. Invalid or incomplete resources raise before
-caller descriptors are materialized; execution never receives a partial caller
-resource plan.
+### Planning and materialization
 
-`KernelKind` selects the compiler-owned canonical kernel of that kind. A
-captured `Kernel` is an explicit operation-owned identity and is required to
-distinguish multiple logical kernels of the same kind. The operation body and
-factory must capture the same `Kernel` declaration. A handle owned by another
-operation, an unbound handle, or a physical processor string is invalid.
+The runner validates the complete factory result and constructs a frozen
+`ProgramResourcePlan` before creating any `KernelDescriptor` or
+`ProgramDescriptor`. Planning validates record types, logical ownership, core
+membership, unique semaphore IDs, the compiler/caller semaphore boundary, and
+the unique destination of every per-core runtime argument. The plan contains
+one resource entry for every compiled kernel descriptor, including descriptors
+with no caller resources.
 
-Core specialization can produce several TTNN descriptors for one logical
-identity. Definitions are copied to every matching descriptor because the
-descriptors compile the same source. Runtime argument records are partitioned
-by coordinate, and every record must match exactly one descriptor. Overlapping
-specialized descriptor ranges are an internal compiler error. Caller runtime
-arguments remain associated with their selected logical descriptor.
+Descriptor construction consumes this plan without repeating selector lookup,
+specialization routing, or cache policy. Planning does not modify compiled
+kernel state or TTNN program state. A factory or planning failure occurs before
+the runner constructs TTNN kernel or program descriptors and cannot produce a
+partially materialized program.
 
-Resource structure participates in the TT-Metal program-cache identity. The
-structural fingerprint includes logical identities, descriptor coordinates,
-definitions, runtime-vector lengths, and caller semaphore properties. Runtime
-values, tensor addresses, and lifetime object identities are excluded, so a
-cached program can receive new invocation values. Changing a definition or
-semaphore structure selects a different program-cache identity.
+### Logical identity and specialization
 
-Objects in `lifetimes` remain referenced through execution. The compiled
-operation replaces its retained owner tuple only after successful execution,
-so a failed invocation preserves the previous valid owners.
+TT-Metal attaches definitions and runtime arguments to a `KernelDescriptor`.
+TT-Lang does not expose descriptor indices as source identities: processor
+assignment and descriptor order are target decisions, and core specialization
+can materialize one logical kernel as several descriptors over disjoint core
+sets. Resources therefore select the compiler-owned canonical kernel with
+`KernelKind` or an explicit operation-owned kernel with `Kernel`.
 
-An emitted runner for a resource-aware operation requires the factory on every
-call:
+The selected logical identity is retained on every `KernelSpec`, independent
+of generated symbols, physical processors, and descriptor order. The planner
+maps each resource to descriptors with the same identity.
 
-```python
-runner.run(
-    tensors,
-    runtime_resource_factory=make_resources,
-    device=device,
-)
-```
+The planner groups descriptors by logical identity and verifies that
+specialized descriptors for one identity cover disjoint core sets. A
+definition applies to every descriptor in the group because the descriptors
+compile the same logical source. A per-core runtime argument applies only to
+the descriptor whose core set contains that coordinate. Missing and multiple
+destinations are errors.
 
-The runner reconstructs serialized logical identities and uses the normal
-planner and materializer. It does not serialize live owners or create
-replacement topology resources.
+### Program cache identity
+
+The runner combines the compiled operation hash with a deterministic structural
+fingerprint of the resource plan. Logical destinations, descriptor core sets,
+definitions, runtime-argument coordinates and vector lengths, and caller
+semaphore properties affect the fingerprint. Runtime-argument words, tensor
+addresses, and lifetime object identities do not.
+
+Changing a JIT definition or semaphore layout therefore selects a different
+cached program. Changing only runtime-argument words reuses the same program
+structure and supplies the current values to TT-Metal for that dispatch.
+
+### Lifetimes and failures
+
+Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
+execution. The factory result and its lifetime tuple remain local while the
+runner plans, materializes, and executes the program. After successful
+execution, the compiled operation stores the new tuple until a later successful
+execution replaces it. A factory, planning, materialization, or execution
+failure preserves the tuple from the last successful execution.
+
+### Emitted runners and simulation
+
+Emitted Python runners serialize logical identities and use the same planner
+and materializer as decorated operation execution. A resource-aware emitted
+runner requires the factory on every call because live resource objects and
+dispatch values are not serialized.
 
 Operation runtime resources are a hardware execution interface. The simulator
 does not model TTNN program descriptors or per-core kernel runtime arguments
 and rejects `runtime_resource_factory` as an unsupported `ttl.operation`
 argument.
-
-### Consumer migration
-
-Resource dictionaries keyed by physical processor strings must be replaced by
-typed logical selectors. Use `KernelKind.COMPUTE` or
-`KernelKind.DATA_MOVEMENT` for the compiler-owned canonical kernel. Declare and
-capture a `Kernel` for each explicitly owned logical kernel when an operation
-has several kernels of one kind. Composition helpers merge resources by bound
-logical identity, preserve runtime-vector order, reject conflicting
-definitions, and return unique semaphore descriptors.
 
 ## Argument contract
 
