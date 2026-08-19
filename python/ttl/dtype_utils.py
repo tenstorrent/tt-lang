@@ -170,8 +170,8 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
 def format_name_to_ttnn_dtype(name: str):
     """Convert a data format name string to a ttnn.DataType enum value.
 
-    Accepts names produced by the compiler's DFB metadata, e.g.,
-    "bfloat16", "float32".
+    Accepts frontend dtype aliases and names produced by the compiler's DFB
+    metadata, e.g., "bf16", "bfloat16", and "float32".
 
     Raises:
         ValueError: If the name is not recognized.
@@ -183,9 +183,9 @@ def format_name_to_ttnn_dtype(name: str):
     match name:
         case "bfloat16" | "bf16":
             return ttnn.DataType.BFLOAT16
-        case "bfloat4_b" | "bfp_bf4":
+        case "bfloat4_b" | "bfp_bf4" | "bfp4":
             return ttnn.DataType.BFLOAT4_B
-        case "bfloat8_b" | "bfp_bf8":
+        case "bfloat8_b" | "bfp_bf8" | "bfp8":
             return ttnn.DataType.BFLOAT8_B
         case "float16" | "f16":
             return ttnn.DataType.BFLOAT16  # hardware implements f16 as bf16

@@ -248,11 +248,35 @@ def test_unsupported_physical_allocation_dtype_is_diagnosed(mlir_type):
     [
         ("uint8", ttnn.uint8),
         ("bfloat8_b", ttnn.bfloat8_b),
+        ("bfp_bf8", ttnn.bfloat8_b),
         ("bfloat4_b", ttnn.bfloat4_b),
+        ("bfp_bf4", ttnn.bfloat4_b),
     ],
 )
 def test_remaining_compiler_formats_convert_to_ttnn(data_format, expected_dtype):
     assert format_name_to_ttnn_dtype(data_format) == expected_dtype
+
+
+@pytest.mark.parametrize(
+    "data_format,expected_dtype",
+    [
+        ("bfp8", ttnn.bfloat8_b),
+        ("bfp4", ttnn.bfloat4_b),
+    ],
+)
+def test_frontend_bfp_aliases_convert_to_ttnn(data_format, expected_dtype):
+    assert format_name_to_ttnn_dtype(data_format) == expected_dtype
+
+
+@pytest.mark.parametrize(
+    "data_format,expected_dtype",
+    [
+        ("bfp8", ttnn.bfloat8_b),
+        ("bfp4", ttnn.bfloat4_b),
+    ],
+)
+def test_make_dfb_accepts_frontend_bfp_aliases(data_format, expected_dtype):
+    assert make_dfb(data_format, shape=(1, 1), block_count=1).dtype == expected_dtype
 
 
 def test_emitted_runner_preserves_physical_subtile():
