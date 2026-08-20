@@ -8,11 +8,15 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Analysis/CallGraph.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -29,6 +33,97 @@ namespace {
 
 using DFBSet = llvm::SmallDenseSet<int32_t, 8>;
 
+static void collectPrintUsers(Value value, SmallVectorImpl<Operation *> &users,
+                              SmallPtrSetImpl<Operation *> &visited) {
+  for (Operation *user : value.getUsers()) {
+    if (!visited.insert(user).second) {
+      continue;
+    }
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
+      for (Value result : cast.getResults()) {
+        collectPrintUsers(result, users, visited);
+      }
+      continue;
+    }
+    users.push_back(user);
+  }
+}
+
+// True when every use (through unrealized casts) is an emitc.verbatim dprint.
+// An i32 get used as a DFB id for wait/reserve/extern is not print-only.
+static bool isPrintOnlyGet(ttk::GetCompileArgValOp op) {
+  SmallVector<Operation *> users;
+  SmallPtrSet<Operation *, 8> visited;
+  collectPrintUsers(op.getResult(), users, visited);
+  return !users.empty() && llvm::all_of(users, [](Operation *user) {
+    return isa<emitc::VerbatimOp>(user);
+  });
+}
+
+static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
+  InFlightDiagnostic diag = func.emitWarning()
+                            << "eliminating debug print of unused DFB "
+                            << dfbIndex;
+  if (auto coord = func->getAttr("ttl.core_coord")) {
+    diag << " on specialized core " << coord;
+  }
+}
+
+static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
+  if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
+    return attr.getInt();
+  }
+  return maxDFBCount;
+}
+
+// Erase dprint-only gets whose DFB index is absent from the function's
+// recorded uses. Prints of a DFB remain on functions that still have a
+// non-print use of that index (including uses inherited from callees).
+static void
+dropUnusedPrintOnlyDFBGets(ModuleOp module,
+                           const llvm::DenseMap<Operation *, DFBSet> &usedDFBs,
+                           int64_t maxDFBCount) {
+  SmallVector<ttk::GetCompileArgValOp> gets;
+  module.walk([&](ttk::GetCompileArgValOp op) { gets.push_back(op); });
+
+  for (ttk::GetCompileArgValOp op : gets) {
+    auto func = op->getParentOfType<func::FuncOp>();
+    if (!func || !isPrintOnlyGet(op)) {
+      continue;
+    }
+    int64_t index = static_cast<int64_t>(op.getArgIndex());
+    int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
+    if (index < 0 || index >= dfbCount) {
+      continue;
+    }
+    auto usedIt = usedDFBs.find(func.getOperation());
+    if (usedIt != usedDFBs.end() &&
+        usedIt->second.contains(static_cast<int32_t>(index))) {
+      continue;
+    }
+
+    warnDroppedPrint(func, static_cast<int32_t>(index));
+    SmallVector<Operation *> users;
+    SmallPtrSet<Operation *, 8> visited;
+    collectPrintUsers(op.getResult(), users, visited);
+    for (Operation *user : users) {
+      user->erase();
+    }
+    SmallVector<Operation *> casts;
+    for (Operation *user : op->getUsers()) {
+      if (isa<UnrealizedConversionCastOp>(user) && user->use_empty()) {
+        casts.push_back(user);
+      }
+    }
+    for (Operation *cast : casts) {
+      cast->erase();
+    }
+    if (op->use_empty()) {
+      op->erase();
+    }
+  }
+}
+
 static func::FuncOp getCallableFunc(CallGraphNode *node) {
   if (node->isExternal()) {
     return {};
@@ -39,6 +134,9 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
 static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
                                  DFBSet &used) {
   func.walk([&](ttk::GetCompileArgValOp op) {
+    if (isPrintOnlyGet(op)) {
+      return;
+    }
     int64_t index = static_cast<int64_t>(op.getArgIndex());
     if (index >= 0 && index < dfbCount) {
       used.insert(static_cast<int32_t>(index));
@@ -48,10 +146,7 @@ static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
 
 static void recordAllDFBs(func::FuncOp func, int64_t maxDFBCount,
                           DFBSet &used) {
-  int64_t dfbCount = maxDFBCount;
-  if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-    dfbCount = attr.getInt();
-  }
+  int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
   for (int64_t index = 0; index < dfbCount; ++index) {
     used.insert(static_cast<int32_t>(index));
   }
@@ -126,18 +221,13 @@ struct TTKernelAnnotateDFBUsePass
     int64_t maxDFBCount = 0;
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      if (auto attr =
-              func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
+      if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
         maxDFBCount = std::max(maxDFBCount, attr.getInt());
       }
     }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      int64_t dfbCount = maxDFBCount;
-      if (auto attr =
-              func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-        dfbCount = attr.getInt();
-      }
+      int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
       collectDirectDFBUses(func, dfbCount, usedDFBs[func.getOperation()]);
     }
 
@@ -146,6 +236,8 @@ struct TTKernelAnnotateDFBUsePass
     for (auto sccIt = llvm::scc_begin(graph); !sccIt.isAtEnd(); ++sccIt) {
       propagateSCC(*sccIt, usedDFBs, conservative, maxDFBCount);
     }
+
+    dropUnusedPrintOnlyDFBGets(module, usedDFBs, maxDFBCount);
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (!getKernelThreadType(func)) {

@@ -59,6 +59,7 @@ def dm_write():
 - Prints can be extremely large and slow; redirect output to a file and use grep.
 - In compute kernels, guard prints with `thread="math"`, `thread="pack"`, or `thread="unpack"` to avoid overlapping output from the three TRISC threads.
 - When using multi-tile block sizes (DFB shape > 1x1), prints inside the generated loop will dump all tiles in the block.
+- With `--ttl-specialize-cores`, DFB and tile prints remain only on cores that still have a non-print use of that DFB.
 
 See the [full print debugging reference](reference/print-debugging.md) for all supported modes (scalars, tiles, tensor pages, DFB details, DST registers, thread conditioning).
 

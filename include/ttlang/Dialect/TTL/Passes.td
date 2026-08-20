@@ -956,7 +956,18 @@ def TTLLowerDPrintToEmitC
     device debug print calls. Resolves CB indices, DST register slots,
     and data formats from the IR. Runs before convert-ttl-to-ttkernel
     so that DST assignments and CB annotations are still available.
+
+    Circular-buffer, tile, and CB-backed tensor prints keep an i32
+    `ttkernel.get_compile_time_arg_val` use as an `emitc.verbatim` operand
+    instead of baking the index into C++ text. `ttkernel-annotate-dfb-use`
+    can then drop prints whose DFB has no remaining non-print use on a
+    specialized core.
   }];
+
+  let dependentDialects = [
+    "::mlir::emitc::EmitCDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
 }
 
 def TTLLowerSignpostToEmitC
@@ -1380,6 +1391,14 @@ def TTKernelAnnotateDFBUse
     callees to callers in SCC order, including recursive calls. An unknown or
     external callee is handled conservatively by recording every DFB
     compile-time argument below `ttl.base_cta_index`.
+
+    Print-only `get_compile_time_arg_val` operations (those whose only users
+    are `emitc.verbatim` debug prints, through unrealized casts) are excluded
+    from the recorded set. After call-graph propagation, those prints are
+    erased when the function does not otherwise use that DFB index. Keeping
+    them would require allocating the DFB on a specialized core that no
+    longer uses it. Debug prints of a DFB remain on functions that still
+    have a non-print use of it, including uses inherited from callees.
   }];
 
   let dependentDialects = [];
