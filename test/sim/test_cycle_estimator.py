@@ -89,7 +89,9 @@ def test_pipe_recv_becomes_remote_l1_movement() -> None:
     # A multicast receive is counted as per-node remote_l1 movement.
     events = [
         TraceEvent(0, "kernel_start", "node0-compute", {}),
-        TraceEvent(5, "pipe_recv", "node0-compute", {"pipe": "pipe_0_to_1", "tiles": 3}),
+        TraceEvent(
+            5, "pipe_recv", "node0-compute", {"pipe": "pipe_0_to_1", "tiles": 3}
+        ),
         TraceEvent(6, "kernel_end", "node0-compute", {}),
     ]
     kw = extract_kernel_work(events)["node0-compute"]
@@ -535,7 +537,7 @@ def test_summary_shows_memory_block_only_with_a_ceiling(capsys) -> None:
     assert "Program" in out
     # No equations leaked into the render (labeled values only).
     memory_block = out.split("Memory (shared)")[1].split("Program")[0]
-    assert "÷" not in memory_block and "max(" not in memory_block
+    assert " / " not in memory_block and "max(" not in memory_block
 
     # Without a ceiling (bw=0): no Memory block, footer shape unchanged.
     print_summary(build_estimate(kernels, _hw()))

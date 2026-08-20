@@ -549,8 +549,9 @@ def main() -> None:
 
         if args.cycles is not None:
             # The estimator needs these; record them even if --trace-events narrowed
-            # the set, or the estimate would be silently incomplete.
-            trace_set = trace_set | frozenset({"compute", "copy"})
+            # the set, or the estimate would be silently incomplete. `pipe` carries
+            # pipe_recv (multicast receives counted as remote_l1 movement).
+            trace_set = trace_set | frozenset({"compute", "copy", "pipe"})
 
         set_tracing(trace_set)
 

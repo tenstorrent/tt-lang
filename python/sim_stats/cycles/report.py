@@ -44,7 +44,7 @@ def _row(
 
 def _header(estimate: CycleEstimate, unit: str, label_w: int, width: int) -> None:
     print("\n" + "=" * width)
-    print("Cycle Estimate — ideal-peak model")
+    print("Cycle Estimate - ideal-peak model")
     print(f"hw-profile: {estimate.profile_name}")
     if estimate.peak_compute_flops_per_cyc > 0.0:
         clock = float(estimate.profile.get("clock_ghz", 1.0))
@@ -56,7 +56,7 @@ def _header(estimate: CycleEstimate, unit: str, label_w: int, width: int) -> Non
         print(f"  {'ridge AI':<13}:  {estimate.ridge_ai:.0f} FLOP/B")
     if not estimate.profile.get("noc_bw"):
         print(
-            "WARNING: profile has no noc_bw — movement modeled as free (latency only)"
+            "WARNING: profile has no noc_bw - movement modeled as free (latency only)"
         )
     print("=" * width)  # title block / tables separator
     print(
@@ -83,11 +83,11 @@ def _human_bytes(n: float) -> str:
 def _stats_footer(estimate: CycleEstimate, width: int) -> None:
     """Nodes rollup, optional shared-memory block, and the program summary.
 
-    A pure read of the pre-computed ``estimate`` — no cycle math happens here.
+    A pure read of the pre-computed ``estimate`` - no cycle math happens here.
     """
     active = [n for n in estimate.nodes if n.cycles > 0.0]
 
-    # Nodes — per-type rollup, then the per-node max and utilization.
+    # Nodes - per-type rollup, then the per-node max and utilization.
     print("-" * width)
     print("Nodes")
     print("." * width)
@@ -119,7 +119,7 @@ def _stats_footer(estimate: CycleEstimate, width: int) -> None:
         f"   ({idle} idle)"
     )
 
-    # Memory (shared) — only when the profile models an aggregate ceiling.
+    # Memory (shared) - only when the profile models an aggregate ceiling.
     agg_bw = float(estimate.profile.get("memory_aggregate_bw", 0.0))
     if agg_bw > 0.0:
         clock = float(estimate.profile.get("clock_ghz", 1.0))
@@ -135,7 +135,7 @@ def _stats_footer(estimate: CycleEstimate, width: int) -> None:
         )
         print(f"  {'floor':<13}:  {abbrev_count(estimate.memory_floor)}")
 
-    # Program — the answer. `bound` is the resource that set it
+    # Program - the answer. `bound` is the resource that set it
     # (compute | movement | memory); AI and roof utilization need a compute peak.
     print("-" * width)
     print("Program")
@@ -143,7 +143,7 @@ def _stats_footer(estimate: CycleEstimate, width: int) -> None:
     print(f"  {'cycles':<13}:  {abbrev_count(estimate.program_cycles)}")
     has_roofline = estimate.peak_compute_flops_per_cyc > 0.0
     if has_roofline:
-        if estimate.total_memory_bytes == 0.0:  # no memory traffic → AI undefined
+        if estimate.total_memory_bytes == 0.0:  # no memory traffic -> AI undefined
             ai_line = "n/a (no memory traffic)"
         else:
             ai_line = f"{estimate.arithmetic_intensity:.0f} FLOP/B"
@@ -158,14 +158,14 @@ def _stats_footer(estimate: CycleEstimate, width: int) -> None:
     print("=" * width)
     if sum(k.compute_cycles for k in estimate.kernels) == 0.0:
         print(
-            "note: compute path is 0 — the trace has no compute_op events "
+            "note: compute path is 0 - the trace has no compute_op events "
             "(compute category filtered out, or a pre-instrumentation trace); "
             "movement-only estimate."
         )
 
 
 def print_detailed(estimate: CycleEstimate) -> None:
-    """Detailed per-kernel view — complete, includes zero rows."""
+    """Detailed per-kernel view - complete, includes zero rows."""
     label_w = _label_width([ke.kernel for ke in estimate.kernels], "Kernel")
     width = max(_MIN_WIDTH, label_w + _ROW_TAIL)
     _header(estimate, "Kernel", label_w, width)
@@ -187,7 +187,7 @@ def print_summary(estimate: CycleEstimate, include_zero: bool = False) -> None:
     """Per-node rollup (the default view).
 
     Each node's columns are the max over its kernels (concurrent RISCs), matching
-    the program combiner — a pure read of ``estimate.nodes``.
+    the program combiner - a pure read of ``estimate.nodes``.
     """
     label_w = _label_width([n.node for n in estimate.nodes], "Node")
     width = max(_MIN_WIDTH, label_w + _ROW_TAIL)
