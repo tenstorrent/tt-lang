@@ -134,6 +134,20 @@ llvm::LogicalResult ExternalTemplateArgAttr::verify(
   llvm_unreachable("unhandled external template argument kind");
 }
 
+llvm::LogicalResult DFBProtocolEffectAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DFBProtocolEffectKind, int64_t dependencyIndex, int64_t numTiles) {
+  if (dependencyIndex < 0) {
+    return emitError() << "DFB dependency index must be nonnegative, got "
+                       << dependencyIndex;
+  }
+  if (numTiles <= 0) {
+    return emitError() << "DFB protocol tile count must be positive, got "
+                       << numTiles;
+  }
+  return success();
+}
+
 llvm::LogicalResult TensorBackingAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     int64_t tensorIndex, int64_t byteOffset, int64_t byteSize) {
@@ -2528,57 +2542,80 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
       return emitOpError(
           "template DFB operands require an ordered template argument list");
     }
-    return success();
+  } else {
+    llvm::BitVector referencedDFBs(getTemplateDfbOperands().size());
+    for (Attribute attribute : *templateArgs) {
+      auto templateArg = dyn_cast<ExternalTemplateArgAttr>(attribute);
+      if (!templateArg) {
+        return emitOpError("template argument list must contain only "
+                           "#ttl.external_template_arg attributes");
+      }
+      ExternalTemplateArgKind kind = templateArg.getKind();
+      if (kind != ExternalTemplateArgKind::DFBIndex &&
+          kind != ExternalTemplateArgKind::DFBDescriptor) {
+        continue;
+      }
+      int64_t operandIndex = templateArg.getValue();
+      if (operandIndex < 0 || static_cast<size_t>(operandIndex) >=
+                                  getTemplateDfbOperands().size()) {
+        return emitOpError("template DFB operand index ")
+               << operandIndex << " is out of range for "
+               << getTemplateDfbOperands().size() << " operands";
+      }
+      if (kind == ExternalTemplateArgKind::DFBDescriptor) {
+        auto dfbType = cast<CircularBufferType>(
+            getTemplateDfbOperands()[static_cast<size_t>(operandIndex)]
+                .getType());
+        FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+        if (failed(pageSizeBytes)) {
+          return emitOpError(
+                     "DFB descriptor element type must occupy a positive whole "
+                     "number of bytes, got ")
+                 << dfbType.getElementType();
+        }
+        FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+        if (failed(pagesPerBlock)) {
+          return emitOpError("DFB descriptor dimensions are not representable");
+        }
+        constexpr uint64_t maxDescriptorField =
+            std::numeric_limits<uint32_t>::max();
+        if (*pagesPerBlock > maxDescriptorField ||
+            static_cast<uint64_t>(dfbType.getBlockCount()) >
+                maxDescriptorField ||
+            *pageSizeBytes > maxDescriptorField) {
+          return emitOpError(
+              "DFB descriptor dimensions or page size exceed uint32_t");
+        }
+      }
+      referencedDFBs.set(static_cast<size_t>(operandIndex));
+    }
+    if (referencedDFBs.count() != getTemplateDfbOperands().size()) {
+      return emitOpError("every template DFB operand must be referenced by an "
+                         "ordered template argument");
+    }
   }
 
-  llvm::BitVector referencedDFBs(getTemplateDfbOperands().size());
-  for (Attribute attribute : *templateArgs) {
-    auto templateArg = dyn_cast<ExternalTemplateArgAttr>(attribute);
-    if (!templateArg) {
-      return emitOpError("template argument list must contain only "
-                         "#ttl.external_template_arg attributes");
-    }
-    ExternalTemplateArgKind kind = templateArg.getKind();
-    if (kind != ExternalTemplateArgKind::DFBIndex &&
-        kind != ExternalTemplateArgKind::DFBDescriptor) {
-      continue;
-    }
-    int64_t operandIndex = templateArg.getValue();
-    if (operandIndex < 0 ||
-        static_cast<size_t>(operandIndex) >= getTemplateDfbOperands().size()) {
-      return emitOpError("template DFB operand index ")
-             << operandIndex << " is out of range for "
-             << getTemplateDfbOperands().size() << " operands";
-    }
-    if (kind == ExternalTemplateArgKind::DFBDescriptor) {
+  SmallVector<Value> dependencies = getDFBDependencyOperands();
+  if (std::optional<ArrayAttr> effects = getDfbEffects()) {
+    for (auto [effectIndex, attribute] : llvm::enumerate(*effects)) {
+      auto effect = cast<DFBProtocolEffectAttr>(attribute);
+      if (static_cast<size_t>(effect.getDependencyIndex()) >=
+          dependencies.size()) {
+        return emitOpError("DFB protocol effect ")
+               << effectIndex << " dependency index "
+               << effect.getDependencyIndex() << " is out of range for "
+               << dependencies.size() << " dependencies";
+      }
       auto dfbType = cast<CircularBufferType>(
-          getTemplateDfbOperands()[static_cast<size_t>(operandIndex)]
+          dependencies[static_cast<size_t>(effect.getDependencyIndex())]
               .getType());
-      FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
-      if (failed(pageSizeBytes)) {
-        return emitOpError(
-                   "DFB descriptor element type must occupy a positive whole "
-                   "number of bytes, got ")
-               << dfbType.getElementType();
-      }
-      FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
-      if (failed(pagesPerBlock)) {
-        return emitOpError("DFB descriptor dimensions are not representable");
-      }
-      constexpr uint64_t maxDescriptorField =
-          std::numeric_limits<uint32_t>::max();
-      if (*pagesPerBlock > maxDescriptorField ||
-          static_cast<uint64_t>(dfbType.getBlockCount()) > maxDescriptorField ||
-          *pageSizeBytes > maxDescriptorField) {
-        return emitOpError(
-            "DFB descriptor dimensions or page size exceed uint32_t");
+      if (effect.getNumTiles() > dfbType.getTotalElements()) {
+        return emitOpError("DFB protocol effect ")
+               << effectIndex << " tile count " << effect.getNumTiles()
+               << " exceeds dependency " << effect.getDependencyIndex()
+               << " capacity " << dfbType.getTotalElements();
       }
     }
-    referencedDFBs.set(static_cast<size_t>(operandIndex));
-  }
-  if (referencedDFBs.count() != getTemplateDfbOperands().size()) {
-    return emitOpError("every template DFB operand must be referenced by an "
-                       "ordered template argument");
   }
   return success();
 }
@@ -2602,10 +2639,7 @@ static llvm::SmallVector<mlir::Value> getTemplateDFBOperandsByKind(
     size_t operandIndex = static_cast<size_t>(templateArg.getValue());
     assert(operandIndex < call.getTemplateDfbOperands().size() &&
            "opaque_call must be verified before querying template DFBs");
-    mlir::Value operand = call.getTemplateDfbOperands()[operandIndex];
-    if (!llvm::is_contained(operands, operand)) {
-      operands.push_back(operand);
-    }
+    operands.push_back(call.getTemplateDfbOperands()[operandIndex]);
   }
   return operands;
 }
@@ -2614,8 +2648,7 @@ llvm::SmallVector<mlir::Value>
 mlir::tt::ttl::OpaqueCallOp::getDFBDependencyOperands() {
   llvm::SmallVector<Value> dependencies;
   auto appendDFB = [&](Value operand) {
-    if (isa<CircularBufferType>(operand.getType()) &&
-        !llvm::is_contained(dependencies, operand)) {
+    if (isa<CircularBufferType>(operand.getType())) {
       dependencies.push_back(operand);
     }
   };
@@ -2623,10 +2656,37 @@ mlir::tt::ttl::OpaqueCallOp::getDFBDependencyOperands() {
   llvm::for_each(getTemplateDFBOperandsByKind(
                      *this, ExternalTemplateArgKind::DFBDescriptor),
                  appendDFB);
+  llvm::for_each(getDependencyDfbOperands(), appendDFB);
   return dependencies;
 }
 
 llvm::SmallVector<mlir::Value>
-mlir::tt::ttl::OpaqueCallOp::getDFBIndexTemplateOperands() {
+mlir::tt::ttl::OpaqueCallOp::getDFBIndexOperands() {
   return getTemplateDFBOperandsByKind(*this, ExternalTemplateArgKind::DFBIndex);
+}
+
+llvm::SmallVector<mlir::tt::ttl::DFBProtocolEffect>
+mlir::tt::ttl::OpaqueCallOp::getDFBProtocolEffects() {
+  llvm::SmallVector<DFBProtocolEffect> effects;
+  std::optional<ArrayAttr> effectAttrs = getDfbEffects();
+  if (!effectAttrs) {
+    return effects;
+  }
+  SmallVector<Value> dependencies = getDFBDependencyOperands();
+  effects.reserve(effectAttrs->size());
+  for (auto [sequenceIndex, attribute] : llvm::enumerate(*effectAttrs)) {
+    auto effect = cast<DFBProtocolEffectAttr>(attribute);
+    size_t dependencyIndex = static_cast<size_t>(effect.getDependencyIndex());
+    assert(dependencyIndex < dependencies.size() &&
+           "opaque_call must be verified before querying DFB effects");
+    effects.push_back({dependencies[dependencyIndex], effect.getKind(),
+                       effect.getNumTiles(),
+                       static_cast<unsigned>(dependencyIndex),
+                       static_cast<unsigned>(sequenceIndex)});
+  }
+  return effects;
+}
+
+bool mlir::tt::ttl::OpaqueCallOp::hasUnknownDFBAccess() {
+  return getUnknownDfbAccess();
 }

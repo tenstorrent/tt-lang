@@ -108,6 +108,30 @@ def TTL_ExternalTemplateArgAttr
   let genVerifyDecl = 1;
 }
 
+def TTL_DFBProtocolEffectAttr
+    : TTL_Attr<"DFBProtocolEffect", "dfb_protocol_effect"> {
+  let summary = "One synchronous dataflow buffer protocol effect";
+  let description = [{
+    Records one action completed by an opaque external call before it returns.
+    `dependency_index` identifies an element of the value sequence returned by
+    the owning operation's `getDFBDependencyOperands()` interface method.
+    `num_tiles` is the positive, statically known transaction size and cannot
+    exceed the selected dependency's capacity. Array order is execution order,
+    including repeated transactions.
+  }];
+  let parameters = (ins
+    "DFBProtocolEffectKind":$kind,
+    "int64_t":$dependencyIndex,
+    "int64_t":$numTiles
+  );
+  let assemblyFormat = "`<` $kind `,` $dependencyIndex `,` $numTiles `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DFBProtocolEffectArrayAttr
+    : TypedArrayAttrBase<TTL_DFBProtocolEffectAttr,
+                         "ordered dataflow buffer protocol effects">;
+
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";
   let description = [{

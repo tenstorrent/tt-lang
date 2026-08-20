@@ -1,6 +1,7 @@
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
+// Summary: Negative tests for finalized DFB verifier preconditions.
 
-// Summary: Negative tests for finalized DFB identity preconditions.
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
+// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
 
 // SPSC verification requires the allocation metadata emitted by DFB
 // finalization, even when the frontend already assigned a logical ID.
@@ -41,7 +42,44 @@ module attributes {
 
 // -----
 
-// A finalized lifecycle operand must resolve to a DFB declaration.
+// Relaxed domain verification still requires a launch grid.
+
+// expected-error @below {{ttl-verify-dfb-spsc requires a `ttl.launch_grid` module attribute}}
+module attributes {ttl.dfb_allocations = []} {
+  func.func @missing_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// Relaxed domain verification still requires a valid launch grid.
+
+// expected-error @below {{ttl-verify-dfb-spsc requires a `ttl.launch_grid` module attribute}}
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [0 : i64, 1 : i64]
+} {
+  func.func @malformed_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// A finalized protocol action must resolve to a DFB declaration.
 // The empty allocation table is synthetic and isolates this precondition.
 
 module attributes {
@@ -51,10 +89,28 @@ module attributes {
   func.func @unresolved_dfb_operand(
       %dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{`ttl-verify-dfb-spsc` requires every DFB lifecycle operand to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
+    // expected-error @below {{`ttl-verify-dfb-spsc` requires every DFB protocol action to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
     %block = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// External-call effects require the same finalized identity as concrete
+// protocol operations.
+
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {
+  func.func @unresolved_external_effect(
+      %dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{`ttl-verify-dfb-spsc` requires every DFB protocol action to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
+    ttl.opaque_call "produce" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
 }

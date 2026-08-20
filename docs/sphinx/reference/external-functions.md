@@ -11,6 +11,9 @@ ttl.call_extern_func(
     *,
     template_args=None,
     func_args=None,
+    dfb_dependencies=None,
+    dfb_effects=None,
+    unknown_dfb_access=False,
     include_paths=None,
     kernel=None,
 )
@@ -170,9 +173,104 @@ Tensor slices, views, and computed tensor values are not valid external
 arguments. `ttl.raw_addr` provides no layout, view offset, page size, alignment,
 or bounds metadata.
 
-When `ttl.get_dfb_id(dfb)` identifies storage accessed by the external
-function, the same DFB must appear as a direct dependency through `func_args`
-or `ttl.dfb_descriptor(dfb)`.
+When an external function consumes `ttl.get_dfb_id(dfb)`, the same DFB must be
+a dependency through `func_args`, `ttl.dfb_descriptor(dfb)`, or
+`dfb_dependencies`. An index value does not declare storage access by itself.
+
+## DFB dependencies and protocol effects
+
+`dfb_dependencies` declares DFB storage used by external C++ without adding
+C++ function arguments. DFBs in `func_args` and DFB descriptors in
+`template_args` are dependencies automatically. `dfb_dependencies` must
+contain distinct DFBs that are not already automatic dependencies.
+
+`dfb_effects` is an optional call-wide list of synchronous DFB protocol actions
+in the exact order the external function executes them. Each action explicitly
+names one DFB dependency and has a positive, statically resolvable tile count no
+greater than the DFB capacity. A complete summary can provide the lifecycle
+proof needed for physical-index reuse:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "external_stage",
+    template_args=[ttl.get_dfb_id(source)],
+    func_args=[source],
+    dfb_dependencies=[destination],
+    dfb_effects=[
+        ttl.DFBEffect.wait(source, tiles=2),
+        ttl.DFBEffect.pop(source, tiles=2),
+        ttl.DFBEffect.reserve(destination, tiles=1),
+        ttl.DFBEffect.push(destination, tiles=1),
+    ],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
+The example defines one sequence across both DFBs: wait on `source`, pop
+`source`, reserve `destination`, then push `destination`. The per-DFB
+subsequences are `wait -> pop` for `source` and `reserve -> push` for
+`destination`. Actions on different DFBs occupy distinct positions in the
+call-wide sequence.
+
+The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
+`ttl.DFBEffect.repeat(count, effects)` repeats a nonempty literal effect
+sequence a nonnegative, statically resolvable number of times. The frontend
+expands the repeat before creating IR, so downstream analyses receive the same
+flat effect sequence as an explicitly written list. The expanded `dfb_effects`
+sequence is limited to 4096 actions per external call. This compiler-resource
+limit bounds materialization and analysis work; it is not a hardware limit:
+
+```python
+dfb_effects=[
+    ttl.DFBEffect.repeat(
+        transaction_count,
+        [
+            ttl.DFBEffect.wait(source, tiles=tiles_per_transaction),
+            ttl.DFBEffect.pop(source, tiles=tiles_per_transaction),
+        ],
+    ),
+]
+```
+
+Tile and repeat counts may use integer literals, integer captures, and
+module-level integer variables combined with unary `+` or `-` and the binary
+operators `+`, `-`, `*`, `//`, and `%`. Booleans and runtime SSA values are not
+static integer counts. Floor-division and modulo divisors must be nonzero.
+
+Every listed action occurs on every execution of the call, and list order is
+execution order. Conditional actions must use TTL control flow around both the
+matching acquisition and a call with an unconditional summary, execute
+unconditionally in external C++, or be omitted so the dependency remains
+opaque. Repeated transactions retain every action and its position. A bounded
+lifecycle requires ordered reserve/push and wait/pop transactions with matching
+tile counts. A partial summary is valid but does not prove a bounded lifecycle
+for that dependency. A dependency occurrence with no listed effect is an opaque
+storage access for the complete call duration, including when operand adaptation
+aliases multiple occurrences to the same SSA DFB. Every aliased occurrence
+requires its own effects to avoid an opaque call-duration access.
+
+`unknown_dfb_access=True` declares that external C++ may access user-managed
+DFBs not present in the declared dependencies. This is distinct from malformed
+metadata. For allocation, the call becomes an opaque occurrence on every
+user-managed DFB in each scope where it may execute, including listed DFBs.
+Listed dependencies and effects remain available to other verification.
+
+Every listed effect is complete when the external function returns. External
+work that continues after return requires separate explicit completion
+semantics and cannot be represented by this synchronous effect list. Effects
+describe external behavior; they do not emit reserve, push, wait, or pop calls.
+Dependency-only operands and all effect metadata leave the generated C++ call
+signature unchanged.
+
+The IR stores each effect as a generated enum and a typed attribute. Its
+dependency index identifies an element of the value sequence returned by the
+call's `getDFBDependencyOperands()` interface method. Operation adaptation may
+map distinct occurrences to the same DFB without merging them. Separate
+executable operations would misrepresent actions already performed in C++,
+while integer or string dictionaries would permit untyped effect kinds.
+Callee-name, header-name, and generated-C++ inspection do not provide a semantic
+contract and are not used.
 
 ## Include directories
 
@@ -191,7 +289,8 @@ ttl.call_extern_func(
 ## DFB synchronization ownership
 
 External C++ must complete its resource accesses before returning. The compiler
-does not infer reserve, wait, push, or pop operations from the C++ body.
+does not infer reserve, wait, push, or pop operations from the C++ body; the
+`dfb_effects` contract supplies those facts when required.
 
 `TensorBlock.push` and `TensorBlock.pop` accept one `kernel=` selector when a
 DFB transaction has no other use from which ownership can be inferred.
@@ -206,6 +305,7 @@ derived from the acquired block's uses and release. An explicit release
 selector that conflicts with inferred ownership is invalid.
 
 The release selector affects unified-operation splitting only. Generated IR
-and C++ retain the ordinary argument-free DFB release operation. An explicit
-thread may use the same signature, but its thread decorator already determines
-ownership, so the release selector has no additional effect.
+and C++ retain the ordinary DFB push or pop signature; `kernel` is not an
+emitted operand or argument. An explicit thread may use the same signature, but
+its thread decorator already determines ownership, so the release selector has
+no additional effect.

@@ -1668,8 +1668,36 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 
-def TTL_CBReserveOp : TTL_Op<"cb_reserve",
-    [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+class TTL_DFBLifecycleOp<string mnemonic, I32EnumAttrCase effectKind,
+                         list<Trait> traits = []>
+    : TTL_Op<mnemonic,
+             !listconcat(traits,
+                         [DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface>])> {
+  let extraClassDefinition = [{
+    ::llvm::SmallVector<::mlir::Value>
+    $cppClass::getDFBDependencyOperands() {
+      return {getCb()};
+    }
+
+    ::llvm::SmallVector<::mlir::tt::ttl::DFBProtocolEffect>
+    $cppClass::getDFBProtocolEffects() {
+      ::mlir::Value dfb = getCb();
+      auto explicitTileCount = getNumTiles();
+      int64_t tileCount =
+          explicitTileCount
+              ? static_cast<int64_t>(*explicitTileCount)
+              : ::mlir::cast<::mlir::tt::ttl::CircularBufferType>(dfb.getType())
+                    .getElementsPerBlock();
+      return {{dfb, ::mlir::tt::ttl::DFBProtocolEffectKind::}] #
+      effectKind.symbol # [{, tileCount, 0, 0}};
+    }
+  }];
+}
+
+def TTL_CBReserveOp
+    : TTL_DFBLifecycleOp<"cb_reserve", TTL_DFBProtocolEffectKind_Reserve,
+        [MemoryEffects<[MemWrite]>,
+         DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Reserve tiles in a dataflow buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer
@@ -1697,7 +1725,9 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
   let hasVerifier = 1;
 }
 
-def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
+def TTL_CBPushOp
+    : TTL_DFBLifecycleOp<"cb_push", TTL_DFBProtocolEffectKind_Push,
+                        [MemoryEffects<[MemWrite]>]> {
   let summary = "Signal that tiles have been written to the dataflow buffer";
   let description = [{
     `ttl.cb_push` signals that pages have been written to the circular buffer
@@ -1723,8 +1753,9 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+def TTL_CBWaitOp
+    : TTL_DFBLifecycleOp<"cb_wait", TTL_DFBProtocolEffectKind_Wait,
+                        [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -1754,7 +1785,9 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
   let hasVerifier = 1;
 }
 
-def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
+def TTL_CBPopOp
+    : TTL_DFBLifecycleOp<"cb_pop", TTL_DFBProtocolEffectKind_Pop,
+                        [MemoryEffects<[MemWrite]>]> {
   let summary = "Release pages from the circular buffer after reading";
   let description = [{
     `ttl.cb_pop` signals that pages have been consumed from the circular buffer
@@ -1943,7 +1976,10 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
 //===----------------------------------------------------------------------===//
 
 def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
-    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
+     DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface,
+                               ["getDFBIndexOperands",
+                                "hasUnknownDFBAccess"]>]> {
   let summary = "Call an external C/C++ function by name";
   let description = [{
     `ttl.opaque_call` emits a call to an external C/C++ function whose
@@ -1961,13 +1997,31 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     preserves DFB identity until allocation is finalized without representing
     scalar metadata as SSA values.
 
-    The `arg_operands` are forwarded as function arguments to the callee. A
-    DFB operand declares that the callee may access that logical DFB from call
-    entry through call completion; storage liveness does not distinguish reads
-    from writes. Every DFB accessed by the callee or a transitive helper must
-    appear as a DFB operand, and all synchronous and asynchronous accesses must
-    complete before the call returns. This external-code contract is assumed
-    because the compiler does not inspect the C++ body.
+    The `arg_operands` are forwarded as function arguments to the callee. DFB
+    arguments and descriptor template operands are dependencies automatically.
+    `dependency_dfb_operands` adds dependencies that are not emitted as C++
+    arguments. `getDFBDependencyOperands()` returns each DFB function-argument
+    occurrence, each descriptor template-argument occurrence, then each
+    dependency-only operand. Operand adaptation may map distinct occurrences to
+    the same DFB without merging them.
+
+    The ordered `dfb_effects` list describes reserve, push, wait, and pop
+    actions completed synchronously before the external call returns. Each
+    effect's dependency index identifies an element returned by
+    `getDFBDependencyOperands()` and carries a positive static tile count no
+    greater than the selected DFB's capacity. Every listed effect occurs on
+    every execution of the call. Repeated effects retain list order. The summary
+    does not emit protocol calls. Effects omitted for a dependency occurrence
+    leave its access opaque for the call duration. If one DFB occupies multiple
+    dependency occurrences, every occurrence requires its own effects to avoid
+    an opaque call-duration access. The
+    `unknown_dfb_access` unit attribute declares that the callee may also access
+    unlisted user-managed DFBs and disables physical-index reuse in affected
+    allocation scopes.
+
+    Every asynchronous DFB access must also complete before the call returns.
+    A callee with outstanding asynchronous work requires a separate explicit
+    completion contract and cannot use this operation's synchronous summary.
 
     `unsigned_arg_indices` identifies signless i32 operands that represent
     unsigned addresses at the C++ boundary. The lowering inserts explicit
@@ -1975,8 +2029,8 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     depend on an incidental signed intermediate type.
 
     A DFB descriptor entry is itself a direct DFB dependency. A DFB index entry
-    does not declare a call-level DFB access. If the callee uses that index to
-    access storage, the same DFB must also appear in `arg_operands`.
+    does not declare a call-level DFB access. If the callee consumes that index,
+    the same DFB must be returned by `getDFBDependencyOperands()`.
 
     Results are optional; when absent the call is treated as a void function
     invocation.
@@ -1995,22 +2049,24 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     StrAttr:$header,
     Variadic<AnyType>:$arg_operands,
     Variadic<TTL_CircularBuffer>:$template_dfb_operands,
+    Variadic<TTL_CircularBuffer>:$dependency_dfb_operands,
     OptionalAttr<ArrayAttr>:$template_args,
-    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
+    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
+    OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
+    UnitAttr:$unknown_dfb_access
   );
   let results = (outs Variadic<AnyType>);
   let assemblyFormat = [{
     $callee (`template_args` $template_args^)?
     (`template_dfbs` `(` $template_dfb_operands^ `:`
      type($template_dfb_operands) `)`)?
-    `(` $arg_operands `)` attr-dict `:`
+    (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
+     type($dependency_dfb_operands) `)`)?
+    (`dfb_effects` $dfb_effects^)?
+    ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
   let hasVerifier = 1;
-  let extraClassDeclaration = [{
-    ::llvm::SmallVector<::mlir::Value> getDFBDependencyOperands();
-    ::llvm::SmallVector<::mlir::Value> getDFBIndexTemplateOperands();
-  }];
 }
 
 //===----------------------------------------------------------------------===//

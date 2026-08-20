@@ -27,9 +27,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Protocol or opaque storage effect performed by one DFB access.
-enum class DFBProtocolEffect { Reserve, Push, Wait, Pop, OpaqueAccess };
-
 /// Hardware processor that owns one DFB ring pointer.
 enum class DFBPointerProcessor { Noc0, Noc1, Pack, Unpack };
 
@@ -54,7 +51,6 @@ struct DFBPointerOwner {
 enum class DFBQuiescenceFailureReason {
   None,
   MissingProtocolEffect,
-  RepeatedProtocolEffect,
   UnsupportedControlFlow,
   MismatchedTransaction,
   IncompleteUseOrder,
@@ -69,21 +65,47 @@ struct DFBQuiescenceProof {
   bool proven() const { return failure == DFBQuiescenceFailureReason::None; }
 };
 
-/// Immutable occurrence of one logical DFB access.
+/// One access event consumed by concurrent-liveness analysis.
+///
+/// A concrete lifecycle operation contributes one occurrence. An operation
+/// with a protocol summary contributes one occurrence per effect, preserving
+/// actions on different DFBs as distinct events. A dependency occurrence with
+/// no effect contributes an opaque call-duration access.
 struct DFBAccessOccurrence {
+  /// Operation that performs the access; several occurrences may share it.
   Operation *operation = nullptr;
-  DFBProtocolEffect effect = DFBProtocolEffect::OpaqueAccess;
+
+  /// Null for an opaque call-duration storage access.
+  std::optional<DFBProtocolEffectKind> protocolEffect;
+
+  /// Positive for protocol effects and zero for opaque accesses.
+  int64_t numTiles = 0;
+
+  /// Execution position among all protocol effects exposed by `operation`.
+  unsigned sequenceIndex = 0;
+
+  /// Launched nodes where this occurrence may execute.
   LaunchNodeDomain launchDomain;
+
+  /// Operation that prevented a precise launch domain, or null when precise.
   Operation *unanalyzableDomainOperation = nullptr;
 };
 
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
+
+  /// Indices of the logical lifecycle's accesses active on `node`.
   SmallVector<unsigned> occurrenceIndices;
-  SmallVector<Operation *> earliestOperations;
-  SmallVector<Operation *> terminalOperations;
-  std::optional<int64_t> transactionTileCount;
+
+  /// Minimal access-entry event IDs under the proved happens-before relation.
+  SmallVector<unsigned> earliestEntryEvents;
+
+  /// Completion event IDs after which the DFB is quiescent.
+  SmallVector<unsigned> terminalCompletionEvents;
+
+  /// One tile count per transaction tuple, paired by occurrence order.
+  SmallVector<int64_t> transactionTileCounts;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   DFBQuiescenceProof quiescence;

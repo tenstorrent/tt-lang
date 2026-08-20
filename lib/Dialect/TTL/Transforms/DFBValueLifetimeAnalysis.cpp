@@ -20,15 +20,15 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// State of one static DFB storage identity at a program point.
+// State of one static DFB storage identity at a program point.
 enum class DFBStorageState {
-  /// Every represented execution has released storage for the identity.
+  // Every represented execution has released storage for the identity.
   Unavailable,
 
-  /// Every reachable execution retains storage for the identity.
+  // Every reachable execution retains storage for the identity.
   Available,
 
-  /// At least one represented execution may have released the storage.
+  // At least one represented execution may have released the storage.
   MayBeUnavailable,
 };
 
@@ -37,16 +37,16 @@ static DFBStorageState joinStorageState(DFBStorageState lhs,
   return lhs == rhs ? lhs : DFBStorageState::MayBeUnavailable;
 }
 
-/// Product lattice over the finite set of DFB storage identities in a kernel.
-///
-/// The uninitialized lattice is unreachable. Every reachable entry state
-/// contains exact acquisition identities as `Unavailable` and standalone
-/// associations as `Available`. Acquisitions establish `Available`, and
-/// releases with proven FIFO owners establish `Unavailable`. A release with
-/// unresolved ownership, or one that may invalidate a standalone association,
-/// establishes `MayBeUnavailable`. Joining different reachable states also
-/// yields `MayBeUnavailable`, so availability is reported only when every
-/// reachable predecessor agrees.
+// Product lattice over the finite set of DFB storage identities in a kernel.
+//
+// The uninitialized lattice is unreachable. Every reachable entry state
+// contains exact acquisition identities as `Unavailable` and standalone
+// associations as `Available`. Acquisitions establish `Available`, and releases
+// with proven FIFO owners establish `Unavailable`. A release with unresolved
+// ownership, or one that may invalidate a standalone association, establishes
+// `MayBeUnavailable`. Joining different reachable states also yields
+// `MayBeUnavailable`, so availability is reported only when every reachable
+// predecessor agrees.
 class DFBValueAvailabilityLattice : public dataflow::AbstractDenseLattice {
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DFBValueAvailabilityLattice)
@@ -158,12 +158,12 @@ static std::optional<AttachCBOp> findAssociation(Value value) {
   return std::nullopt;
 }
 
-/// Static acquisition identities and conservative DFB associations used by
-/// the dense transfer function.
-///
-/// An acquire operation identifies one producer or consumer pointer interval.
-/// An `ttl.attach_cb` not derived from an acquire identifies only an
-/// association, so every release with the same SSA DFB value invalidates it.
+// Static acquisition identities and conservative DFB associations used by the
+// dense transfer function.
+//
+// An acquire operation identifies one producer or consumer pointer interval.
+// An `ttl.attach_cb` not derived from an acquire identifies only an
+// association, so every release with the same SSA DFB value invalidates it.
 class DFBValueIdentityIndex {
 public:
   static PlanningResult<std::unique_ptr<DFBValueIdentityIndex>>
@@ -204,6 +204,11 @@ public:
     return associatedIdentityOrder;
   }
 
+  // Unknown external access applies only to identities visible to user code.
+  ArrayRef<Operation *> getUserManagedIdentities() const {
+    return userManagedIdentities;
+  }
+
   bool isAssociated(Operation *identity) const {
     return associatedIdentities.contains(identity);
   }
@@ -226,11 +231,17 @@ private:
   DFBValueIdentityIndex(func::FuncOp kernel,
                         std::unique_ptr<DFBAcquireReleaseIndex> releaseOwners)
       : releaseOwners(std::move(releaseOwners)) {
+    auto recordIdentity = [&](Value dfb, Operation *identity) {
+      identitiesByDFB[dfb].push_back(identity);
+      allIdentities.push_back(identity);
+      if (isUserManagedDFB(dfb)) {
+        userManagedIdentities.push_back(identity);
+      }
+    };
     kernel.walk([&](Operation *operation) {
       if (isDFBAcquireOp(operation)) {
         Value dfb = getDFBAcquireDFB(operation);
-        identitiesByDFB[dfb].push_back(operation);
-        allIdentities.push_back(operation);
+        recordIdentity(dfb, operation);
         return;
       }
       auto association = dyn_cast<AttachCBOp>(operation);
@@ -238,8 +249,7 @@ private:
         return;
       }
       Value dfb = association.getCb();
-      identitiesByDFB[dfb].push_back(operation);
-      allIdentities.push_back(operation);
+      recordIdentity(dfb, operation);
       associatedIdentityOrder.push_back(operation);
       associatedIdentities.insert(operation);
     });
@@ -247,13 +257,14 @@ private:
 
   std::unique_ptr<DFBAcquireReleaseIndex> releaseOwners;
   SmallVector<Operation *> allIdentities;
+  SmallVector<Operation *> userManagedIdentities;
   SmallVector<Operation *> associatedIdentityOrder;
   DenseMap<Value, SmallVector<Operation *>> identitiesByDFB;
   llvm::DenseSet<Operation *> associatedIdentities;
 };
 
-/// Applies acquisitions and releases to the product lattice along executable
-/// region and CFG edges discovered by MLIR's baseline dataflow analyses.
+// Applies acquisitions and releases to the product lattice along executable
+// region and CFG edges discovered by MLIR's baseline dataflow analyses.
 class DFBValueAvailabilityDataFlow
     : public dataflow::DenseForwardDataFlowAnalysis<
           DFBValueAvailabilityLattice> {
@@ -306,6 +317,24 @@ public:
       }
     }
 
+    auto access = dyn_cast<DFBAccessOpInterface>(operation);
+    if (access && !isDFBReleaseOp(operation)) {
+      for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+        if (effect.kind != DFBProtocolEffectKind::Push &&
+            effect.kind != DFBProtocolEffectKind::Pop) {
+          continue;
+        }
+        for (Operation *identity : identities.getIdentities(effect.dfb)) {
+          transferred[identity] = DFBStorageState::MayBeUnavailable;
+        }
+      }
+    }
+    if (access && access.hasUnknownDFBAccess()) {
+      for (Operation *identity : identities.getUserManagedIdentities()) {
+        transferred[identity] = DFBStorageState::MayBeUnavailable;
+      }
+    }
+
     propagateIfChanged(after, after->join(transferredInitialized, transferred));
     return success();
   }
@@ -317,7 +346,7 @@ private:
 
 } // namespace
 
-/// Owns the immutable identity index and solved dense dataflow states.
+// Owns the immutable identity index and solved dense dataflow states.
 class DFBValueLifetimeAnalysis::Impl {
 public:
   Impl(func::FuncOp kernel, std::unique_ptr<DFBValueIdentityIndex> identities)

@@ -125,8 +125,9 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
   bool hasDFB = false;
   WalkResult result =
       moduleOp.walk([&](Operation *nestedOperation) {
-        if (!isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(
-                nestedOperation)) {
+        auto access = dyn_cast<DFBAccessOpInterface>(nestedOperation);
+        if (!isa<BindCBOp>(nestedOperation) &&
+            (!access || access.getDFBProtocolEffects().empty())) {
           return WalkResult::advance();
         }
         hasDFB = true;
@@ -158,12 +159,25 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
   if (result.wasInterrupted()) {
     return failure();
   }
-  return verifyDFBOperandIdentities(
-      moduleOp, consumerPass,
-      [](Operation *operation) {
-        return isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
-      },
-      getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
+
+  WalkResult effectResult = moduleOp.walk([&](Operation *operation) {
+    auto access = dyn_cast<DFBAccessOpInterface>(operation);
+    if (!access) {
+      return WalkResult::advance();
+    }
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      if (succeeded(getDFBId(effect.dfb))) {
+        continue;
+      }
+      operation->emitOpError()
+          << "`" << consumerPass
+          << "` requires every DFB protocol action to resolve to `ttl.bind_cb` "
+             "with `dfb_id` after finalization";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(effectResult.wasInterrupted());
 }
 
 LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,

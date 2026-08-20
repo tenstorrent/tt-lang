@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
@@ -26,11 +27,54 @@ static bool isBefore(Operation *before, Operation *after) {
   return before->isBeforeInBlock(after);
 }
 
-/// Direct DFB copies can use the same DFB value on either source or
-/// destination operands. Only the operand that corresponds to the acquire class
-/// consumes the acquired slot.
+// Matching protocol effects select one pointer side. Unknown, effect-free, and
+// index-only accesses may use an acquired slot on either side.
+static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
+                                      DFBAccessOpInterface access) {
+  if (access.hasUnknownDFBAccess()) {
+    return true;
+  }
+
+  SmallVector<Value> dependencies = access.getDFBDependencyOperands();
+  llvm::BitVector effectfulDependencies(dependencies.size());
+  for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+    assert(effect.dependencyIndex < dependencies.size() &&
+           "DFB protocol effect dependency index must be valid");
+    assert(dependencies[effect.dependencyIndex] == effect.dfb &&
+           "DFB protocol effect must reference its dependency occurrence");
+    if (effect.dfb != interval.dfb) {
+      continue;
+    }
+    effectfulDependencies.set(effect.dependencyIndex);
+    if ((interval.kind == DFBAcquireReleaseKind::Producer &&
+         isProducerDFBProtocolEffect(effect.kind)) ||
+        (interval.kind == DFBAcquireReleaseKind::Consumer &&
+         isConsumerDFBProtocolEffect(effect.kind))) {
+      return true;
+    }
+  }
+
+  bool foundDependency = false;
+  for (auto [dependencyIndex, dependency] : llvm::enumerate(dependencies)) {
+    if (dependency != interval.dfb) {
+      continue;
+    }
+    foundDependency = true;
+    if (!effectfulDependencies.test(dependencyIndex)) {
+      return true;
+    }
+  }
+  return !foundDependency;
+}
+
+// Operand roles and protocol effects identify the pointer side. Unclassified
+// direct accesses conservatively match both sides.
 static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
                                        Operation *user) {
+  if (auto access = dyn_cast<DFBAccessOpInterface>(user)) {
+    return protocolUseMatchesAcquire(interval, access);
+  }
+
   auto copy = dyn_cast<CopyOp>(user);
   if (!copy) {
     return true;
@@ -45,15 +89,14 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
   llvm_unreachable("unknown DFB acquire/release kind");
 }
 
-/// Returns true when a direct DFB operand does not consume an acquired slot.
 static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
   return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
          !mayAccessDFBStorage(operation);
 }
 
-/// Project `op` into the acquire block so nested regions can be ordered
-/// against the acquire interval. This keeps the interval computation block
-/// local while still noticing releases nested under control-flow operations.
+// Project `op` into the acquire block so nested regions can be ordered against
+// the acquire interval. This keeps the interval computation block local while
+// still noticing releases nested under control-flow operations.
 static bool projectToAcquireBlock(DFBAcquireInterval interval, Operation *op,
                                   Operation *&projected,
                                   bool ignoreBoundary = false) {
@@ -78,10 +121,10 @@ static void updateLatestUse(Operation *candidate, Operation *&latest) {
   }
 }
 
-/// Find the first later acquire of the same class on `dfb`, projected into the
-/// current block. Direct DFB uses at or after that operation belong to another
-/// interval; tensor SSA uses are handled separately because they retain the
-/// exact acquired slot identity.
+// Find the first later acquire of the same class on `dfb`, projected into the
+// current block. Direct DFB uses at or after that operation belong to another
+// interval; tensor SSA uses are handled separately because they retain the
+// exact acquired slot identity.
 static void updateBoundary(Value dfb, Operation *acquire,
                            ArrayRef<Operation *> acquires,
                            Operation *&boundary) {
@@ -111,6 +154,15 @@ static Operation *findNextSameKindAcquire(Value dfb, Operation *acquire,
   Operation *boundary = nullptr;
   updateBoundary(dfb, acquire, acquires, boundary);
   return boundary;
+}
+
+static bool hasProtocolEffect(Operation *operation, Value dfb,
+                              DFBProtocolEffectKind kind) {
+  auto access = dyn_cast<DFBAccessOpInterface>(operation);
+  return access &&
+         llvm::any_of(access.getDFBProtocolEffects(), [&](const auto &effect) {
+           return effect.dfb == dfb && effect.kind == kind;
+         });
 }
 
 } // namespace
@@ -145,13 +197,11 @@ getDFBAcquireReleaseKind(Operation *op) {
 }
 
 int64_t getDFBLifecycleTileCount(Operation *operation) {
-  if (auto numTiles = operation->getAttrOfType<IntegerAttr>("num_tiles")) {
-    return numTiles.getInt();
-  }
-
-  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
-                                        : getDFBReleaseDFB(operation);
-  return cast<CircularBufferType>(dfb.getType()).getElementsPerBlock();
+  auto access = cast<DFBAccessOpInterface>(operation);
+  SmallVector<DFBProtocolEffect> effects = access.getDFBProtocolEffects();
+  assert(effects.size() == 1 &&
+         "concrete DFB lifecycle ops have exactly one protocol effect");
+  return effects.front().numTiles;
 }
 
 std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
@@ -171,14 +221,14 @@ std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
 }
 
 struct OutstandingDFBAcquisition {
-  /// Acquisition contributing the oldest remaining FIFO tiles.
+  // Acquisition contributing the oldest remaining FIFO tiles.
   Operation *operation = nullptr;
 
-  /// Tiles not yet consumed by a same-block release.
+  // Tiles not yet consumed by a same-block release.
   int64_t remainingTiles = 0;
 };
 
-/// Entry-block FIFO matches and control-flow-dependent releases.
+// Entry-block FIFO matches and control-flow-dependent releases.
 struct SameBlockFIFOOwnership {
   DenseMap<Operation *, SmallVector<Operation *>> owners;
   DenseSet<Operation *> unresolvedReleases;
@@ -191,14 +241,14 @@ static bool operationMatchesKind(Operation *operation,
   return operationKind && *operationKind == kind;
 }
 
-/// Matches direct same-block transactions using the DFB's FIFO protocol.
-///
-/// Only the kernel entry block has no incoming local transaction state. A CFG
-/// successor or nested block may receive an outstanding acquisition, so
-/// initializing a local FIFO there would be unsound. Releases outside the
-/// entry block remain unresolved. A nested lifecycle operation also makes the
-/// parent queue control-flow-dependent, so subsequent entry-block releases
-/// retain conservative ownership.
+// Matches direct same-block transactions using the DFB's FIFO protocol.
+//
+// Only the kernel entry block has no incoming local transaction state. A CFG
+// successor or nested block may receive an outstanding acquisition, so
+// initializing a local FIFO there would be unsound. Releases outside the entry
+// block remain unresolved. A nested lifecycle operation also makes the parent
+// queue control-flow-dependent, so subsequent entry-block releases retain
+// conservative ownership.
 static FailureOr<SameBlockFIFOOwnership>
 buildSameBlockFIFOOwners(func::FuncOp kernel, ArrayRef<Operation *> reserves,
                          ArrayRef<Operation *> waits,
@@ -314,6 +364,19 @@ DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func) {
       operations.pops.push_back(op);
       operations.releases.push_back(op);
     }
+    auto access = dyn_cast<DFBAccessOpInterface>(op);
+    if (!access) {
+      return;
+    }
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      if (effect.kind == DFBProtocolEffectKind::Push &&
+          !llvm::is_contained(operations.producerProtocolReleases, op)) {
+        operations.producerProtocolReleases.push_back(op);
+      } else if (effect.kind == DFBProtocolEffectKind::Pop &&
+                 !llvm::is_contained(operations.consumerProtocolReleases, op)) {
+        operations.consumerProtocolReleases.push_back(op);
+      }
+    }
   });
   return operations;
 }
@@ -331,7 +394,8 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   llvm::DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  auto extend = [&](Operation *user, bool ignoreBoundary) {
+  auto extend = [&](Operation *user, bool ignoreBoundary,
+                    bool propagateResults) {
     Operation *projected = nullptr;
     if (!projectToAcquireBlock(interval, user, projected, ignoreBoundary)) {
       return false;
@@ -340,8 +404,10 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
       return false;
     }
     updateLatestUse(projected, last);
-    for (Value result : user->getResults()) {
-      worklist.push_back(result);
+    if (propagateResults) {
+      for (Value result : user->getResults()) {
+        worklist.push_back(result);
+      }
     }
     return true;
   };
@@ -356,7 +422,7 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
         if (isa<CBPushOp, CBPopOp>(user)) {
           continue;
         }
-        extend(user, ignoreBoundary);
+        extend(user, ignoreBoundary, /*propagateResults=*/true);
       }
     }
   };
@@ -375,9 +441,22 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
     if (!directDFBUseMatchesAcquire(interval, user)) {
       continue;
     }
-    extend(user, /*ignoreBoundary=*/false);
+    extend(user, /*ignoreBoundary=*/false, /*propagateResults=*/true);
   }
   drainWorklist(/*ignoreBoundary=*/false);
+
+  if (isUserManagedDFB(interval.dfb)) {
+    // Unknown access has no SSA use of this DFB, so include it explicitly in
+    // every user-managed interval that may contain the operation.
+    func::FuncOp kernel = interval.acquire->getParentOfType<func::FuncOp>();
+    kernel.walk([&](Operation *operation) {
+      auto access = dyn_cast<DFBAccessOpInterface>(operation);
+      if (access && access.hasUnknownDFBAccess()) {
+        extend(operation, /*ignoreBoundary=*/false,
+               /*propagateResults=*/false);
+      }
+    });
+  }
 
   // Tensor SSA uses keep naming the slot acquired by this operation even after
   // a later DFB acquire advances the pointer. Applying the direct-DFB boundary
@@ -390,25 +469,22 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   return last;
 }
 
-DFBReleaseSearch
-findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
-                     ArrayRef<Operation *> releases,
-                     const llvm::DenseSet<Operation *> *erased) {
+DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
+                                      Operation *lastOwnedUse,
+                                      ArrayRef<Operation *> releases) {
   DFBReleaseSearch result;
   Block *block = interval.acquire->getBlock();
+  DFBProtocolEffectKind releaseEffectKind =
+      interval.kind == DFBAcquireReleaseKind::Producer
+          ? DFBProtocolEffectKind::Push
+          : DFBProtocolEffectKind::Pop;
 
   bool useExtendsPastBoundary =
       lastOwnedUse && lastOwnedUse != interval.acquire &&
       interval.kindBoundary && !isBefore(lastOwnedUse, interval.kindBoundary);
 
   for (Operation *release : releases) {
-    // `ttl-insert-cb-sync` may erase releases while iterating. The set contains
-    // raw pointers to erased operations, so membership must be checked before
-    // reading the operation through an op wrapper.
-    if (erased && erased->contains(release)) {
-      continue;
-    }
-    if (getDFBReleaseDFB(release) != interval.dfb) {
+    if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind)) {
       continue;
     }
 

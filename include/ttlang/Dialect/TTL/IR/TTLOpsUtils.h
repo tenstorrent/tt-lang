@@ -175,6 +175,13 @@ inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
   return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
 }
 
+/// Treats an unresolved declaration as user-managed because only the
+/// compiler-created marker proves that external code cannot name the DFB.
+inline bool isUserManagedDFB(mlir::Value dfb) {
+  BindCBOp declaration = getDFBDeclaration(dfb);
+  return !declaration || !declaration->hasAttr(kCompilerAllocatedAttrName);
+}
+
 /// Returns true when a direct DFB operand may access physical storage.
 ///
 /// Callers first identify a DFB operand. Unknown operations conservatively
@@ -233,7 +240,7 @@ LogicalResult verifyDFBOperandIdentities(
 /// Verifies that DFB finalization completed and every logical ID is resolvable.
 ///
 /// Requires allocation metadata, a `dfb_id` on every declaration, and a
-/// resolvable declaration for every DFB lifecycle operand. `consumerPass` is
+/// resolvable declaration for every DFB protocol action. `consumerPass` is
 /// included in diagnostics so the required pipeline ordering is explicit.
 LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
                                           StringRef consumerPass);

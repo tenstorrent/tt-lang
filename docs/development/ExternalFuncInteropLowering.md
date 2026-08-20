@@ -8,9 +8,11 @@ each argument according to its source category. It does not inspect the C++
 body or validate the foreign function signature.
 
 External code must complete all synchronous and asynchronous resource accesses
-before returning. The allocator therefore treats the call as one opaque access
-interval, but the call does not reveal reserve/wait/push/pop effects implemented
-inside C++.
+before returning. DFB behavior is declared rather than inferred:
+`ttl.opaque_call` exposes dependencies, ordered protocol effects, and unknown
+access through `DFBAccessOpInterface`. A dependency occurrence with no listed
+effect remains an opaque access for the call duration. A complete effect summary
+can establish the lifecycle facts required for physical-index reuse.
 
 The Python interface currently supports void calls.
 
@@ -210,8 +212,9 @@ argument.
 | Source argument | Generated C++ interface | Restrictions |
 | --- | --- | --- |
 | `ttl.dfb_descriptor(dfb)` in `template_args` | `ttlang::DFBDescriptor<...>` template type | Declares a direct DFB dependency. |
-| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args` or a `ttl.dfb_descriptor` template argument. |
+| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args`, `ttl.dfb_descriptor`, or `dfb_dependencies`. |
 | DFB in `func_args` | Physical DFB index `uint32_t` parameter | Declares a direct DFB dependency. |
+| DFB in `dfb_dependencies` | No generated C++ argument | Declares dependency-only storage access. Entries must be distinct and must not duplicate automatic dependencies. |
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
@@ -222,10 +225,37 @@ argument.
 A bare DFB in `template_args` is ambiguous and rejected. The explicit wrapper
 selects allocation metadata or an integer index.
 
-## Typed DFB descriptors
+## DFB dependency and effect representation
 
-A descriptor supplies the finalized physical allocation properties required by
-an external DFB protocol:
+The [external-functions reference](../sphinx/reference/external-functions.md)
+defines the Python API and static-expression rules. Every statically known DFB
+accessed by external code must be declared as a dependency. The `dfb_effects`
+summary is optional: without it, each dependency remains an opaque access for
+the call duration. A complete, accurate summary can prove a bounded lifecycle
+and permit physical-index reuse.
+
+`OpaqueCallOp::getDFBDependencyOperands()` returns dependency occurrences in
+this order:
+
+1. DFB occurrences in `func_args`.
+2. DFB descriptor occurrences in `template_args`.
+3. DFBs in `dfb_dependencies`.
+
+Each occurrence receives its position in that returned value sequence as its IR
+index; the sequence does not describe execution. It preserves occurrences
+rather than uniquing SSA values. Operand adaptation can map distinct source
+operands to the same DFB, but each occurrence retains its own access contract.
+
+Each Python effect explicitly names the affected DFB. For example,
+`ttl.DFBEffect.wait(source, tiles=1)` means that the external function executes
+a one-tile wait on `source`. The frontend resolves `source` to its dependency
+occurrence and stores that occurrence index in `DFBProtocolEffectAttr`. The IR
+attribute therefore contains a typed action, a dependency index, and a positive
+static tile count no greater than the DFB capacity; the dependency index is not
+an execution position.
+
+The following call declares two descriptor dependencies and four external
+protocol actions:
 
 ```python
 ttl.call_extern_func(
@@ -235,11 +265,106 @@ ttl.call_extern_func(
         ttl.dfb_descriptor(source),
         ttl.dfb_descriptor(destination),
     ],
+    dfb_effects=[
+        ttl.DFBEffect.reserve(destination, tiles=1),
+        ttl.DFBEffect.wait(source, tiles=1),
+        ttl.DFBEffect.push(destination, tiles=1),
+        ttl.DFBEffect.pop(source, tiles=1),
+    ],
     kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
-The call lowers to a C++ template invocation equivalent to:
+`dfb_effects` is one call-wide execution sequence. List position specifies the
+order in which the external C++ executes protocol actions, including actions on
+different DFBs. Different DFBs do not share an order position; their actions
+occupy distinct positions in the same sequence. The call above produces this
+dependency sequence and effect sequence:
+
+```text
+Sequence returned by getDFBDependencyOperands():
+
+  index 0: source
+  index 1: destination
+
+External-call execution sequence:
+
+  call entry
+      |
+      v
+  [0] reserve destination, 1 tile  (dependency 1)
+      |
+      v
+  [1] wait source, 1 tile          (dependency 0)
+      |
+      v
+      copy source -> destination   (ordinary C++ storage access)
+      |
+      v
+  [2] push destination, 1 tile     (dependency 1)
+      |
+      v
+  [3] pop source, 1 tile           (dependency 0)
+      |
+      v
+    return
+
+Per-DFB protocol subsequences:
+
+  source:      wait [1] ----------------------------> pop [3]
+  destination: reserve [0] --------> push [2]
+```
+
+The global positions preserve the cross-DFB relation: destination is reserved
+before source is popped, so their lifetimes overlap. The compiler uses this
+relation when deciding whether physical-index reuse is valid.
+
+The frontend resolves static tile and repeat expressions, recursively expands
+`ttl.DFBEffect.repeat`, and rejects an empty repeat body or a flattened sequence
+longer than 4096 actions before creating IR. A repeat inserts each copy of its
+body into the same call-wide sequence. The 4096-action bound matches other
+bounded static event enumerations in the compiler and limits both frontend
+materialization and downstream per-effect analysis. It is not a hardware
+limit. A repeat has no IR or runtime representation.
+
+`ttl.opaque_call` implements `DFBAccessOpInterface`, which supplies four facts
+without exposing the operation's operand-segment representation to analyses:
+
+| Interface fact | Meaning |
+| --- | --- |
+| DFB dependencies | Every statically declared storage-access occurrence. |
+| Protocol effects | Synchronous reserve, push, wait, and pop actions in call execution order. |
+| DFB index operands | DFBs whose finalized physical indices reach external C++. |
+| Unknown access | The call may access unlisted user-managed DFBs. |
+
+An effect summary describes actions performed by external C++; it does not
+create executable TTL operations. Every listed action must execute on every
+execution of the call and complete before return. Conditional external actions
+require corresponding TTL control flow around a call with an unconditional
+summary. Work that remains active after return requires a separate completion
+contract and cannot be represented by these effects.
+
+An occurrence with no effect is a possible read and write for the complete
+call. Ordinary storage accesses between summarized acquisitions and releases
+remain inside the corresponding lifetime. A partial effect sequence is valid
+metadata but cannot prove a bounded lifecycle for that DFB. When the same DFB
+has multiple dependency occurrences, every occurrence requires effects to
+eliminate the opaque call-duration access. For allocation,
+`unknown_dfb_access` conservatively adds the call as an opaque occurrence on
+every user-managed DFB, including listed DFBs, in each affected allocation
+scope. The compiler does not infer facts from the callee name, header, emitted
+C++, or integer DFB identity.
+
+DFB ownership, synchronization insertion, SPSC verification, and physical
+allocation consume this common interface. Their use of opaque and effectful
+accesses is described in
+[Dataflow Buffer Management](DFBManagement.md#external-calls).
+
+## Typed DFB descriptors
+
+A descriptor supplies the finalized physical allocation properties required by
+an external DFB protocol. The two descriptor arguments in the `external_copy`
+call above lower to a C++ template invocation equivalent to:
 
 ```c++
 external_copy<
@@ -255,9 +380,23 @@ constant expressions:
 ```c++
 template <typename Source, typename Destination>
 inline void external_copy() {
+  static_assert(Source::pages_per_block == Destination::pages_per_block);
+  static_assert(Source::page_size_bytes == Destination::page_size_bytes);
   cb_reserve_back(Destination::index, Destination::pages_per_block);
   cb_wait_front(Source::index, Source::pages_per_block);
-  // Copy and release the same page counts before returning.
+
+  auto *source_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(
+      get_read_ptr(Source::index));
+  auto *destination_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(
+      get_write_ptr(Destination::index));
+  constexpr uint32_t total_words =
+      Source::pages_per_block * Source::page_size_bytes / sizeof(uint32_t);
+  for (uint32_t word_index = 0; word_index < total_words; ++word_index) {
+    destination_ptr[word_index] = source_ptr[word_index];
+  }
+
+  cb_push_back(Destination::index, Destination::pages_per_block);
+  cb_pop_front(Source::index, Source::pages_per_block);
 }
 ```
 
@@ -275,13 +414,14 @@ ttl.call_extern_func(
     HEADER,
     "legacy_copy",
     template_args=[ttl.get_dfb_id(source)],
-    func_args=[source],
+    dfb_dependencies=[source],
     kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
-The ordinary DFB operand is required because an integer index argument does not
-declare that the external function accesses DFB storage.
+The dependency-only operand is required because an integer index argument does
+not declare that the external function accesses DFB storage. It does not add a
+C++ function argument.
 
 ## Tensor arguments
 
@@ -312,14 +452,19 @@ separate runtime-argument interface.
 
 ## Lowering
 
-The Python AST emits ordered typed attributes for static values and a separate
-operand segment for referenced DFBs. TTL to TTKernel conversion resolves DFB
-indices and materializes descriptor metadata before the DFB type loses its
-block geometry. TTKernel to EmitC resolves constants and descriptor types, and
-C++ emission inserts the required prelude and header during its existing
+The Python AST emits ordered typed attributes for static values and separate
+operand segments for template, dependency-only, and function-argument DFBs.
+Dependency occurrences, protocol effects, and unknown access remain in TTL for
+analysis and verification. TTL to TTKernel conversion resolves DFB indices and
+materializes descriptor metadata before the DFB type loses its block geometry;
+it discards dependency-only and effect metadata because those facts do not
+alter the C++ call. TTKernel to EmitC resolves constants and descriptor types,
+and C++ emission inserts the required prelude and header during its existing
 operation scan.
 
 See `examples/external_dfb_reuse.py` for two external calls surrounded by
 visible TTL protocol operations. An acknowledgment proves that the result
 lifetimes do not overlap, while typed descriptor operands keep each opaque call
-inside the corresponding lifetime.
+inside the corresponding lifetime. See
+`test/python/call_extern_func_dfb_effects.py` for dependency-only operands,
+ordered effect expansion, unknown access, and generated-C++ invariance.
