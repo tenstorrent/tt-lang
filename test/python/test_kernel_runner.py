@@ -1742,6 +1742,45 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
+def test_build_kernel_descriptors_rejects_overlapping_runtime_arg_contracts(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    core_ranges = _FakeCoreRanges((((0, 0), (0, 0)),))
+    spec = _kernel_spec(KernelKind.COMPUTE)
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (4,)),),
+                ),
+            )
+        ),
+        [spec],
+        core_ranges,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "DFB reconfiguration and explicit per-core runtime arguments "
+            "cannot share kernel descriptor 0"
+        ),
+    ):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[],
+            tensor_accessor_args=[],
+            core_ranges=core_ranges,
+            grid_cols=1,
+            grid_rows=1,
+            num_cbs=0,
+            descriptor_resource_plans=plan.kernel_descriptors,
+            dfb_reconfiguration_runtime_args={(0, 0): [0x1000]},
+        )
+
+
 def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -2210,7 +2249,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     )
 
     assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x3020]
-    assert descriptors[0].runtime_args is None
+    assert not descriptors[0].runtime_args
     with pytest.raises(
         RuntimeError,
         match="pipe resource plan expected 2 extra common runtime args, got 1",
@@ -4255,12 +4294,9 @@ def test_emit_runner_source_preserves_dfb_reconfiguration_resources(monkeypatch)
     assert "entry_reconfiguration_ordinal=7" in source
     assert "num_tiles=2" in source
     assert "block_count=3" in source
-    assert "build_dfb_reconfiguration_runtime_resources(" in source
+    assert "run_kernel_on_device(" in source
     assert "dfb_reconfiguration_plan=DFB_RECONFIGURATION_PLAN" in source
-    assert "computed_address_dfb_allocation_bytes" in source
-    assert "dfb_reconfiguration_runtime_args=(" in source
-    assert "dfb_reconfiguration_scratch_tensors=(" in source
-    assert "dfb_reconfiguration_configuration_tensors=(" in source
+    assert "runtime_resource_cache=_RUNTIME_RESOURCE_CACHE" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():

@@ -1081,6 +1081,8 @@ def plan_program_runtime_resources(
             semaphore_fingerprints,
         ),
     )
+
+
 @dataclass
 class DFBReconfigurationRuntimeResources:
     """Host allocations referenced by synchronized DFB reconfiguration."""
@@ -1266,7 +1268,7 @@ def build_kernel_descriptors(
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
         )
-        if reconfiguration_args:
+        if runtime_args:
             kernel_descriptor_args["runtime_args"] = runtime_args
         kernel_desc = ttnn.KernelDescriptor(**kernel_descriptor_args)
         kernel_descriptors.append(kernel_desc)

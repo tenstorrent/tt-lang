@@ -867,7 +867,7 @@ def _compile_unified_operation(
         target_arch=target_arch,
         compiler_options=compiler_options,
         l1_budget_override=l1_budget_override,
-        runtime_resource_factory=decorator_options["runtime_resource_factory"],
+        runtime_resource_factory=decorator_options.get("runtime_resource_factory"),
         runtime_resource_cache=runtime_resource_cache,
     )
 
