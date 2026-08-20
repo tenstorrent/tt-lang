@@ -36,20 +36,38 @@ from .global_semaphore import (
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
+# Use the same 4096-item scale as other bounded static enumerations in the
+# compiler. External protocol summaries are expected to be much shorter; this
+# policy limit bounds frontend memory and downstream per-effect analysis rather
+# than hardware behavior.
 _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS = 4096
 
 
-def _accumulate_expanded_dfb_effect_count(
-    current_effect_count: int, repeated_effect_count: int, repeat_count: int
+def _saturating_add_expanded_dfb_effect_count(
+    current_effect_count: int, body_effect_count: int, repeat_count: int
 ) -> int:
+    """Return the cumulative count, saturated at one past the limit.
+
+    Args:
+        current_effect_count: Actions preceding this repeat.
+        body_effect_count: Flattened actions in one copy of the repeat body.
+        repeat_count: Number of body copies.
+
+    Returns:
+        The exact cumulative count within the limit, otherwise the fixed
+        over-limit sentinel.
+
+    Saturation prevents nested repeats from multiplying arbitrarily large
+    Python integers before the final over-limit diagnostic.
+    """
     if current_effect_count > _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS:
         return _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS + 1
     if repeat_count == 0:
         return current_effect_count
     remaining_effect_count = _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS - current_effect_count
-    if repeated_effect_count > remaining_effect_count // repeat_count:
+    if body_effect_count > remaining_effect_count // repeat_count:
         return _MAX_EXPANDED_EXTERNAL_DFB_EFFECTS + 1
-    return current_effect_count + repeated_effect_count * repeat_count
+    return current_effect_count + body_effect_count * repeat_count
 
 
 @dataclass(frozen=True)
@@ -1887,7 +1905,7 @@ class TTLGenericCompiler(TTCompilerBase):
         for element in node.elts:
             if not self._is_dfb_effect_repeat(element):
                 parsed_effects.append(self._resolve_dfb_effect(element))
-                expanded_effect_count = _accumulate_expanded_dfb_effect_count(
+                expanded_effect_count = _saturating_add_expanded_dfb_effect_count(
                     expanded_effect_count, 1, 1
                 )
                 continue
@@ -1916,13 +1934,14 @@ class TTLGenericCompiler(TTCompilerBase):
             parsed_effects.append(
                 _ExternalDFBEffectRepeat(repeat_count, repeated_effects)
             )
-            expanded_effect_count = _accumulate_expanded_dfb_effect_count(
+            expanded_effect_count = _saturating_add_expanded_dfb_effect_count(
                 expanded_effect_count, repeated_effect_count, repeat_count
             )
 
         return tuple(parsed_effects), expanded_effect_count
 
     def _append_dfb_effect_sequence(self, parsed_effects, resolved_effects):
+        """Materialize a parsed sequence after its expanded size is validated."""
         for effect in parsed_effects:
             if isinstance(effect, _ExternalDFBEffectRepeat):
                 for _repeat_index in range(effect.count):

@@ -38,16 +38,17 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Domain fact recorded for one dataflow buffer producer or consumer action.
+// Caches one operation's launch domain because all its protocol actions execute
+// on the same launched nodes.
 struct ProtocolActionDomain {
   LaunchNodeDomain domain;
   Operation *unanalyzableOp = nullptr;
 };
 
-/// A kernel thread that produces or consumes a dataflow buffer.
-///
-/// Multiple acquires in the same thread are merged into one participant because
-/// SPSC is a thread-level property, not an operation-level property.
+// A kernel thread that produces or consumes a dataflow buffer.
+//
+// Multiple actions in the same thread are merged because SPSC is a thread-level
+// property, not an operation-level property.
 struct DFBParticipant {
   func::FuncOp thread;
   Operation *op = nullptr;
@@ -55,17 +56,16 @@ struct DFBParticipant {
   Operation *unanalyzableOp = nullptr;
 };
 
-/// Producers or consumers for one logical dataflow buffer.
+// Producers or consumers for one logical dataflow buffer.
 struct DFBParticipantSet {
   llvm::SmallMapVector<func::FuncOp, DFBParticipant, 2> participants;
 };
 
-/// Analysis state shared by the dataflow solver and the verifier pass.
+// Analysis state shared by the dataflow solver and the verifier pass.
 struct ModuleState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, ProtocolActionDomain> protocolActionDomains;
 };
 
-/// Record the launch-node domain that reaches a producer or consumer action.
 void recordProtocolActionDomain(Operation *op, const LaunchNodeDomain &domain,
                                 Operation *unanalyzableOp, ModuleState &state) {
   auto access = dyn_cast<DFBAccessOpInterface>(op);
@@ -75,7 +75,8 @@ void recordProtocolActionDomain(Operation *op, const LaunchNodeDomain &domain,
   state.protocolActionDomains[op] = {domain, unanalyzableOp};
 }
 
-/// Add a thread participant, merging repeated acquires from the same thread.
+// SPSC counts kernel threads, so repeated actions from one thread form one
+// participant with the union of their launch domains.
 void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
                     const LaunchNodeDomain &domain, Operation *unanalyzableOp) {
   DFBParticipant participant{thread, op, domain, unanalyzableOp};
@@ -90,7 +91,6 @@ void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
       pickEarlierBySourceLoc(existing.unanalyzableOp, unanalyzableOp);
 }
 
-/// Attach notes shared by producer and consumer SPSC diagnostics.
 void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
                        llvm::StringRef role) {
   diag.attachNote() << "tt-metal CBs are single-producer single-consumer; "
@@ -101,7 +101,6 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
   }
 }
 
-/// Emit the error for two participant domains with a proven common launch node.
 void emitOverlapError(int64_t logicalId, const DFBParticipant &lhs,
                       const DFBParticipant &rhs,
                       const LaunchNodeDomain &overlap, Operation *bindSite,
@@ -119,8 +118,6 @@ void emitOverlapError(int64_t logicalId, const DFBParticipant &lhs,
   attachCommonNotes(diag, bindSite, role);
 }
 
-/// Emit the conservative error used when a domain-dependent predicate could not
-/// be evaluated statically.
 void emitUnknownDomainError(int64_t logicalId, const DFBParticipantSet &set,
                             Operation *bindSite, llvm::StringRef role,
                             llvm::StringRef verbedHere) {
@@ -151,8 +148,6 @@ void emitUnknownDomainError(int64_t logicalId, const DFBParticipantSet &set,
   attachCommonNotes(diag, bindSite, role);
 }
 
-/// Verify one dataflow buffer role after participants have been coalesced by
-/// kernel thread.
 bool verifyParticipantSet(int64_t logicalId, const DFBParticipantSet &set,
                           Operation *bindSite, llvm::StringRef role,
                           llvm::StringRef verbedHere) {

@@ -27,6 +27,8 @@ static bool isBefore(Operation *before, Operation *after) {
   return before->isBeforeInBlock(after);
 }
 
+// Matching protocol effects select one pointer side. Unknown, effect-free, and
+// index-only accesses may use an acquired slot on either side.
 static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
                                       DFBAccessOpInterface access) {
   if (access.hasUnknownDFBAccess()) {
@@ -62,13 +64,11 @@ static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
       return true;
     }
   }
-  // Index-only template operands use the DFB without declaring a storage
-  // dependency.
   return !foundDependency;
 }
 
-// Returns true when `user` may consume this acquired slot; unclassified
-// accesses remain conservative.
+// Operand roles and protocol effects identify the pointer side. Unclassified
+// direct accesses conservatively match both sides.
 static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
                                        Operation *user) {
   if (auto access = dyn_cast<DFBAccessOpInterface>(user)) {
@@ -89,15 +89,14 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
   llvm_unreachable("unknown DFB acquire/release kind");
 }
 
-/// Returns true when a direct DFB operand does not consume an acquired slot.
 static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
   return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
          !mayAccessDFBStorage(operation);
 }
 
-/// Project `op` into the acquire block so nested regions can be ordered
-/// against the acquire interval. This keeps the interval computation block
-/// local while still noticing releases nested under control-flow operations.
+// Project `op` into the acquire block so nested regions can be ordered against
+// the acquire interval. This keeps the interval computation block local while
+// still noticing releases nested under control-flow operations.
 static bool projectToAcquireBlock(DFBAcquireInterval interval, Operation *op,
                                   Operation *&projected,
                                   bool ignoreBoundary = false) {
@@ -122,10 +121,10 @@ static void updateLatestUse(Operation *candidate, Operation *&latest) {
   }
 }
 
-/// Find the first later acquire of the same class on `dfb`, projected into the
-/// current block. Direct DFB uses at or after that operation belong to another
-/// interval; tensor SSA uses are handled separately because they retain the
-/// exact acquired slot identity.
+// Find the first later acquire of the same class on `dfb`, projected into the
+// current block. Direct DFB uses at or after that operation belong to another
+// interval; tensor SSA uses are handled separately because they retain the
+// exact acquired slot identity.
 static void updateBoundary(Value dfb, Operation *acquire,
                            ArrayRef<Operation *> acquires,
                            Operation *&boundary) {
@@ -222,14 +221,14 @@ std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
 }
 
 struct OutstandingDFBAcquisition {
-  /// Acquisition contributing the oldest remaining FIFO tiles.
+  // Acquisition contributing the oldest remaining FIFO tiles.
   Operation *operation = nullptr;
 
-  /// Tiles not yet consumed by a same-block release.
+  // Tiles not yet consumed by a same-block release.
   int64_t remainingTiles = 0;
 };
 
-/// Entry-block FIFO matches and control-flow-dependent releases.
+// Entry-block FIFO matches and control-flow-dependent releases.
 struct SameBlockFIFOOwnership {
   DenseMap<Operation *, SmallVector<Operation *>> owners;
   DenseSet<Operation *> unresolvedReleases;
@@ -242,14 +241,14 @@ static bool operationMatchesKind(Operation *operation,
   return operationKind && *operationKind == kind;
 }
 
-/// Matches direct same-block transactions using the DFB's FIFO protocol.
-///
-/// Only the kernel entry block has no incoming local transaction state. A CFG
-/// successor or nested block may receive an outstanding acquisition, so
-/// initializing a local FIFO there would be unsound. Releases outside the
-/// entry block remain unresolved. A nested lifecycle operation also makes the
-/// parent queue control-flow-dependent, so subsequent entry-block releases
-/// retain conservative ownership.
+// Matches direct same-block transactions using the DFB's FIFO protocol.
+//
+// Only the kernel entry block has no incoming local transaction state. A CFG
+// successor or nested block may receive an outstanding acquisition, so
+// initializing a local FIFO there would be unsound. Releases outside the entry
+// block remain unresolved. A nested lifecycle operation also makes the parent
+// queue control-flow-dependent, so subsequent entry-block releases retain
+// conservative ownership.
 static FailureOr<SameBlockFIFOOwnership>
 buildSameBlockFIFOOwners(func::FuncOp kernel, ArrayRef<Operation *> reserves,
                          ArrayRef<Operation *> waits,
@@ -447,6 +446,8 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   drainWorklist(/*ignoreBoundary=*/false);
 
   if (isUserManagedDFB(interval.dfb)) {
+    // Unknown access has no SSA use of this DFB, so include it explicitly in
+    // every user-managed interval that may contain the operation.
     func::FuncOp kernel = interval.acquire->getParentOfType<func::FuncOp>();
     kernel.walk([&](Operation *operation) {
       auto access = dyn_cast<DFBAccessOpInterface>(operation);
@@ -473,7 +474,7 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
                                       ArrayRef<Operation *> releases) {
   DFBReleaseSearch result;
   Block *block = interval.acquire->getBlock();
-  DFBProtocolEffectKind releaseKind =
+  DFBProtocolEffectKind releaseEffectKind =
       interval.kind == DFBAcquireReleaseKind::Producer
           ? DFBProtocolEffectKind::Push
           : DFBProtocolEffectKind::Pop;
@@ -483,7 +484,7 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
       interval.kindBoundary && !isBefore(lastOwnedUse, interval.kindBoundary);
 
   for (Operation *release : releases) {
-    if (!hasProtocolEffect(release, interval.dfb, releaseKind)) {
+    if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind)) {
       continue;
     }
 

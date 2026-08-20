@@ -289,11 +289,12 @@ consumer for that DFB.
 ### Verification
 
 The `ttl-verify-dfb-spsc` module-level pass runs after
-`ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op,
-groups them by logical `dfb_id` and enclosing
+`ttl-annotate-cb-associations`. It walks producer and consumer actions exposed
+through `DFBAccessOpInterface`, groups them by logical `dfb_id` and enclosing
 `ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
-each producer or consumer. Distinct logical DFBs therefore remain separate
-after physical allocation assigns them the same `cb_index`.
+each participant. Concrete reserve, push, wait, and pop operations and external
+protocol summaries therefore use the same verification. Distinct logical DFBs
+remain separate after physical allocation assigns them the same `cb_index`.
 
 The pass rejects a DFB when two producer domains overlap or when two consumer
 domains overlap. If multiple threads participate and a coordinate-dependent
@@ -301,6 +302,14 @@ predicate cannot be analyzed statically, the pass rejects the DFB rather than
 assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
 role (producer or consumer), an overlapping launched node when available, the
 participating operation sites, and the originating `ttl.bind_cb`.
+
+Setting `TTL_RELAX_DFB_SPSC` skips only launch-node-domain proofs that require
+the program to provide synchronization absent from IR. It skips overlapping
+producer/consumer domain checks here and producer correspondence for DFB waits
+in `ttl-verify-pipenet-guards`. Finalized DFB identity, physical-index, and
+launch-grid preconditions remain mandatory. PipeNet endpoint guards, transfer
+correspondence, and synchronization schedules also remain mandatory. Strict
+verification is the default.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
 
@@ -412,6 +421,12 @@ transfer(release):
     mark every possible owner may be unavailable
   mark standalone associations on the released DFB may be unavailable
 
+transfer(DFBAccessOpInterface operation):
+  for each summarized push or pop:
+    mark every identity on the effect's DFB may be unavailable
+  if unknown DFB access:
+    mark every user-managed DFB identity may be unavailable
+
 join(predecessors):
   available only if every reachable predecessor is available
 
@@ -421,11 +436,13 @@ query(non-executable program point):
 
 Partial releases invalidate the complete tensor because the lattice does not
 track tile ranges. Unresolved ownership also invalidates every same-kind
-acquisition on the DFB. These rules may require an additional intermediate
-DFB, but they cannot classify released storage as available. Dead code
-analysis excludes statically non-executable blocks from this conservative
-fallback; dense analysis creates no lattice there, and availability holds
-vacuously because the consumer cannot execute.
+acquisition on the DFB. An external push or pop does not identify a concrete
+FIFO owner, so it may invalidate every identity on its DFB. Unknown access has
+the same effect on every user-managed DFB identity. These rules may require an
+additional intermediate DFB, but they cannot classify released storage as
+available. Dead code analysis excludes statically non-executable blocks from
+this conservative fallback; dense analysis creates no lattice there, and
+availability holds vacuously because the consumer cannot execute.
 
 #### `ComputeOp` Creation
 
@@ -786,11 +803,15 @@ later `cb_pop`. The pass is also responsible for hoisting releases that were
 emitted inside structured regions to the acquire's block when that is the
 correct DFB interval boundary.
 
+Here a release closes pointer-side access to acquired slots. A push publishes
+producer-written tiles; a pop returns consumer-read capacity to the producer.
+Neither operation deallocates the DFB.
+
 The pass treats every acquire as opening a DFB live interval. The interval
 starts at `cb_reserve` or `cb_wait` and ends after the last operation that can
 use the acquired slot.
 
-DFB sync classes separate the producer side from the consumer side:
+DFB acquire kinds separate the producer side from the consumer side:
 `cb_reserve`/`cb_push` form producer intervals, and `cb_wait`/`cb_pop` form
 consumer intervals. Producer acquires bound other producer intervals; consumer
 acquires bound other consumer intervals.
@@ -813,13 +834,15 @@ Two disjoint criteria establish ownership:
 
 - **Direct-DFB ownership** -- `U` references the DFB directly and may access
   its physical storage. A `ttl.copy` is owned only on the operand side matching
-  the acquire's sync class. An opaque external call is a possible read and
-  write, so it can extend either class. Identity-only `ttl.attach_cb` and
-  `ttl.get_dfb_id` operations do not consume an acquired slot. With no SSA tile
-  handle, ownership is positional: `U` belongs to the latest acquire on
-  `(cb, sync class)` that precedes it in operation order. Equivalently, `U` is
-  bounded between `acquire` and the next acquire on the same sync class
-  (`interval.syncClassBoundary` in the pass).
+  the acquire kind. A `DFBAccessOpInterface` operation matches the
+  producer or consumer class when it exposes an effect on that side. A
+  dependency occurrence without effects remains a possible read and write, and
+  unknown access matches every user-managed DFB. Identity-only `ttl.attach_cb`
+  and `ttl.get_dfb_id` operations do not consume an acquired slot. With no SSA
+  tile handle, ownership is positional: `U` belongs to the latest acquire on
+  `(dfb, acquire kind)` that precedes it in operation order. Equivalently, `U`
+  is bounded between `acquire` and the next acquire of the same kind
+  (`interval.kindBoundary` in the analysis).
 
 The criteria are disjoint. DM-thread `ttl.copy` does not flow through
 `attach_cb` (it takes the DFB directly). Compute-kernel uses always go through
@@ -844,12 +867,12 @@ For each acquire `A`, the inserted release `R_A` must satisfy:
 1. **Causal dominance** -- every owned use of `A` precedes `R_A` in op order
    (after projecting nested uses to `A`'s block). The pass enforces this
    directly: the release is positioned after the last owned use returned by
-   `findLastOwnedUse`.
+   `findLastDFBAcquireOwnedUse`.
 
-2. **FIFO monotonicity** -- for `A_0 < A_1 < ...` on the same `(cb, sync
-   class)`, the inserted releases satisfy `R_0 < R_1 < ...` in op order. The
-   CB front (or back) pointer advances monotonically; out-of-order pops would
-   advance it past slots whose data is still needed.
+2. **FIFO monotonicity** -- for `A_0 < A_1 < ...` on the same `(dfb, acquire
+   kind)`, the inserted releases satisfy `R_0 < R_1 < ...` in op order. The DFB
+   front or back pointer advances monotonically; out-of-order pops would advance
+   it past slots whose data is still needed.
 
 (1) is enforced explicitly by the pass. (2) is enforced *implicitly* when
 tile-SSA consumers appear in declaration order (`use(t1); use(t2); use(t3)`).
@@ -867,7 +890,7 @@ When the pass runs twice on the same IR, the second run must observe the
 releases inserted by the first as already-present and skip re-injection.
 Because tile-SSA ownership can place a release past the next-acquire boundary
 (when a tile is consumed later than the next acquire on the same DFB),
-`findOwnedReleases` extends its release-search upper bound to the acquire's
+`findOwnedDFBReleases` extends its release-search upper bound to the acquire's
 last owned use. Without this extension, the second run sees the inserted
 release as past the boundary and treats the acquire as needing another
 release.
@@ -912,7 +935,7 @@ Consumer side:
 
 Each acquire owns exactly one interval. The release inserted for that interval
 must follow the last owned use. For direct-DFB ownership, the release must also
-precede the next acquire in the same DFB sync class because direct DFB uses are
+precede the next acquire of the same kind because direct DFB uses are
 position-based:
 
 ```
@@ -921,8 +944,8 @@ cb_wait A  ->  owned reads  ->  cb_pop A  ->  cb_wait B
                                   inserted release
 ```
 
-Direct-CB ownership is positional: a release after the next acquire in the
-same sync class is owned by that next acquire, not the earlier one. Tile-SSA
+Direct-DFB ownership is positional: a release after the next acquire in the
+same acquire kind is owned by that next acquire, not the earlier one. Tile-SSA
 ownership is unbounded: a release placed after a tile's last use can sit past
 the next acquire and still belong to the earlier interval. The pass
 distinguishes these two cases by use criterion, not by a single bound.
@@ -930,38 +953,46 @@ distinguishes these two cases by use criterion, not by a single bound.
 ### Algorithm
 
 ```
-insertMissingReleases(func):
+planAndInsertMissingReleases(func):
   reserves = all cb_reserve ops in func
   waits = all cb_wait ops in func
-  pushes = all cb_push ops in func
-  pops = all cb_pop ops in func
+  producerReleases = all operations with push effects
+  consumerReleases = all operations with pop effects
 
-  insertReleases(reserves, pushes, cb_push)
-  insertReleases(waits, pops, cb_pop)
+  producerPlan = planReleases(reserves, producerReleases, cb_push)
+  consumerPlan = planReleases(waits, consumerReleases, cb_pop)
+  reject before mutation if either plan is invalid
+  apply producerPlan, then consumerPlan
 
-insertReleases(acquires, releases, releaseOp):
+planReleases(acquires, releases, releaseOp):
   for acquire in acquires:
     dfb = acquire.cb
-    boundary = next acquire in the same DFB sync class, projected to acquire.block
+    boundary = next acquire of the same kind on the DFB, projected to acquire.block
 
     liveEnd = latest owned use:
       direct-DFB uses are bounded by boundary
       tensor-SSA uses ignore boundary
 
-    matching = same-block owned release on dfb
-    nested = nested releases on dfb after acquire and before boundary
+    matching = same-block operation with the required release effect
+    nested = nested operations with the required release effect
     if matching:
       continue
 
-    erase nested releases
-    insert releaseOp(dfb) after liveEnd
+    reject if a nested release is an external effect summary
+    plan erasure of nested concrete releases
+    plan insertion of releaseOp(dfb) after liveEnd
 ```
 
-The same-block release check makes the pass idempotent. For direct-DFB
-ownership, a release after the next acquire in the same DFB sync class belongs
-to that later interval and does not satisfy the earlier acquire. For tile-SSA
-ownership, an existing release past the boundary still satisfies the earlier
-acquire when it follows that acquire's last owned tensor use.
+The same-block release check makes the pass idempotent. A summarized external
+push or pop can satisfy this check, but it cannot move out of a nested region;
+the pass rejects that case because only concrete release operations can be
+recreated at the interval boundary. Producer and consumer plans are both
+validated before mutation. For direct-DFB ownership, a release after the next
+acquire of the same kind on the DFB belongs to that later interval and does not
+satisfy the earlier acquire. For tile-SSA ownership, an existing release past
+the boundary still satisfies the earlier acquire when it follows that
+acquire's last owned tensor use. Transaction tile-count validation occurs in
+the concurrent-liveness analysis.
 
 ## DFB Acquire Coalescing
 
@@ -1120,11 +1151,12 @@ considers all kernel functions concurrently, including user-declared DFBs
 shared across data-movement and compute kernels.
 
 Two DFBs may share an index only if they have identical `CircularBufferType`
-(shape, element type, block count), equal transaction tile counts, and a
-transaction count that divides the physical capacity. These conditions ensure
-one physical allocation has one page size, capacity, data format, and legal
-ring-pointer progression. `CircularBufferType` is an MLIR-uniqued type, so
-exact type equality is a pointer comparison.
+(shape, element type, block count) and identical transaction tile-count
+sequences on every shared launched node. Every count in each sequence must
+divide the physical capacity. These conditions ensure one physical allocation
+has one page size, capacity, data format, and legal ring-pointer progression.
+`CircularBufferType` is an MLIR-uniqued type, so exact type equality is a
+pointer comparison.
 
 ### Logical identity
 
@@ -1163,8 +1195,9 @@ op.entry -> op.completion -> next.entry
 ```
 
 Program-order edges connect consecutive operations within each kernel. When a
-logical DFB has exactly one `cb_push` and one `cb_wait`, the blocking protocol
-adds this cross-kernel edge:
+logical DFB has the same number of statically enumerated push and wait
+occurrences, the blocking protocol pairs them by occurrence order. Each pair
+with equal tile counts adds this cross-kernel edge:
 
 ```text
 producer kernel:  ... -> cb_push.completion -----------------+
@@ -1198,20 +1231,23 @@ operation with the ID of the declaration reached from its DFB operand.
 Protocol edges from all logical DFBs share one module graph, so transitive
 order can pass through any number of intermediate kernels.
 
-#### Lifetimes with one reserve/push and wait/pop pair
+#### Lifetimes with statically enumerated transactions
 
 A logical DFB is bounded only when all of these conditions hold:
 
-- exactly one `cb_reserve`, `cb_push`, `cb_wait`, and `cb_pop` reference it;
-- static execution analysis proves that each operation executes exactly once
-  on the applicable launched node;
-- reserve precedes push, and wait precedes pop;
-- push follows all uses owned by the reserve;
-- pop follows all uses owned by the wait;
-- reserve, push, wait, and pop transfer the same tile count (`num_tiles`);
-- the transaction tile count divides the physical DFB capacity;
-- reserve and push have one known write-pointer owner, and wait and pop have
-  one known read-pointer owner.
+- a positive, equal number of reserve, push, wait, and pop occurrences reference
+  it;
+- static execution analysis proves that the operation owning each occurrence
+  executes exactly once on the applicable launched node;
+- occurrences pair by order into reserve/push/wait/pop transactions;
+- within every transaction, reserve precedes push and wait precedes pop;
+- each concrete push follows all uses owned by its reserve, and each concrete
+  pop follows all uses owned by its wait;
+- all four actions in a transaction transfer the same tile count (`num_tiles`),
+  and that count divides the physical DFB capacity;
+- all reserve and push occurrences have one known write-pointer owner, and all
+  wait and pop occurrences have one known read-pointer owner;
+- the final pop follows every active access occurrence on the DFB.
 
 Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
@@ -1228,35 +1264,46 @@ Failure to prove any condition leaves the DFB unbounded.
 
 #### External calls
 
-Every DFB accessed by a custom function or transitive helper must appear as a
-direct DFB operand of `ttl.opaque_call`. When a direct `ttl.get_dfb_id` result
-is passed as an ordinary or template argument, the finalizer verifies that its
-source DFB is also present as a dependency operand and rejects the call before
-mutation otherwise. The compiler cannot inspect custom C++ for hidden
-constants or global state, so validity of the remaining declared access set is
-an external-code assumption.
+Every DFB accessed by a custom function or transitive helper must appear in the
+value sequence returned by `DFBAccessOpInterface::getDFBDependencyOperands()`.
+For `ttl.opaque_call`, the sequence contains DFB function arguments, descriptor
+template arguments, then dependency-only operands. An effect's dependency index
+identifies one element of this sequence; it does not describe execution order.
+When a `ttl.get_dfb_id` result reaches external C++, finalization verifies that
+the same logical DFB is also a dependency and rejects the call before mutation
+otherwise. The compiler cannot inspect custom C++ for hidden constants or
+global state, so validity of the declared access contract remains an
+external-code requirement.
 
-Every direct DFB operand is a possible read or write from call entry through
-call completion. The liveness proof does not need a read/write distinction:
-either access requires the same physical allocation to remain available. The
-callee must complete every synchronous and asynchronous DFB access before
-returning. An external call before the terminal `cb_pop` can therefore remain
-within a bounded lifetime; the same call after the pop makes the DFB unbounded.
+Each effect identifies one dependency occurrence, one reserve, push, wait, or
+pop action, and a positive static tile count no greater than that DFB's physical
+capacity. The effect list is a single call-wide execution sequence, including
+actions on different DFBs. The event graph preserves these cross-DFB relations
+and the order of statically expanded transactions. Effects are synchronous
+facts about actions completed inside the external call; they do not emit
+lifecycle operations.
 
-Some external functions implement their reserve, push, wait, and pop operations
-inside C++. Direct operands make their DFB access sets explicit, but the hidden
-protocol cannot supply the exact visible lifecycle required by the reuse proof.
-Those DFBs remain unbounded and conflict with every other allocation candidate.
-The external call does not disable reuse among other DFBs whose visible
-lifecycles remain bounded.
+An occurrence with no effect remains a possible read or write from call entry
+through completion. If operand adaptation aliases several occurrences to one
+DFB, every occurrence requires effects to eliminate that opaque interval.
+Ordinary storage accesses between summarized acquisitions and releases remain
+inside the corresponding lifetime. A partial summary supplies its listed
+events but cannot establish the complete reserve/push/wait/pop lifecycle for
+that DFB. A bounded external lifecycle requires balanced, ordered transactions
+with equal tile counts, known pointer owners, supported execution counts, and
+no access after the terminal pop.
 
-The current DSL cannot declare a dependency-only DFB, summarize hidden
-protocol effects, or represent an unknown DFB access set. An external callee
-with an unknown set is outside the valid-program assumption. A future explicit
-unknown form must disable user DFB reuse for the complete module because an
-unresolved raw index may name any physical allocation. Issue
-[#806](https://github.com/tenstorrent/tt-lang/issues/806) tracks the required
-DFB dependency and protocol-effect representation.
+`unknown_dfb_access` represents access to user-managed DFBs absent from the
+declared dependencies. For allocation, liveness analysis conservatively adds
+the call as an opaque occurrence on every user-managed logical DFB, including
+listed DFBs, over the call's launch-node domain. Listed effects remain available
+to other verification. Unknown access applies only to user-managed DFBs;
+compiler-created DFB accesses require listed operands.
+
+The callee must complete every synchronous and asynchronous DFB access before
+returning. Work that remains active after return requires a separate explicit
+completion contract. The frontend and IR representation are described in
+[External Function Interop Lowering](ExternalFuncInteropLowering.md).
 
 `num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
 tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
@@ -1267,10 +1314,10 @@ a physical index.
 TT-Metal advances each ring pointer by
 [`num_pages * fifo_page_size`](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L208-L214).
 The pointer wraps only when it reaches the end of the physical DFB. Logical
-DFBs sharing one physical index therefore use the same transaction tile count,
-and that count divides `block_count * elements_per_block`. This keeps every
-reserve, push, wait, and pop within the allocation and places each pointer on a
-legal wrap boundary.
+DFBs sharing one physical index therefore use the same transaction tile-count
+sequence, and every count divides `block_count * elements_per_block`. This keeps
+every reserve, push, wait, and pop within the allocation and places each pointer
+on a legal wrap boundary.
 
 For a bounded DFB, every storage-accessing operation with a direct DFB operand
 is projected to a top-level function operation. `attach_cb` and `get_dfb_id`
@@ -1402,18 +1449,19 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         add previous completion -> entry
 
     for each logical DFB active on the node:
-      if exactly one reserve, push, wait, and pop form a matched lifecycle:
-        DFB.nodeLifetime.transactionTileCount = transactionTileCount
-        DFB.nodeLifetime.pointerOwners = read and write hardware processors
-        add DFB.push.completion -> DFB.wait.completion
+      pair equal nonzero reserve, push, wait, and pop occurrence sequences
+      if every tuple forms a matched transaction:
+        append each tile count to DFB.nodeLifetime.transactionTileCounts
+        record the common read and write hardware processors
+        add each push completion -> matching wait completion
 
     compute transitive graph reachability
 
     for each logical DFB with a matched lifecycle on the node:
       uses = project every active runtime use to a top-level operation
-      if every use completion precedes DFB.pop.completion:
+      if every use completion precedes the final pop completion:
         DFB.nodeLifetime.earliestEvents = minimal entry events in uses
-        DFB.nodeLifetime.terminalEvents = {DFB.pop.completion}
+        DFB.nodeLifetime.terminalEvents = {final pop completion}
         DFB.nodeLifetime.quiescence = proven
 
   return logical DFB lifecycles, per-node quiescence, pointer owners,
@@ -1456,7 +1504,7 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     add unknown-domain conflict if either launch-node domain is unknown
     for each node where A and B both execute:
       add unproven-quiescence conflict unless both node lifetimes are proven
-      add transaction conflict unless their transaction sizes match
+      add transaction conflict unless their transaction tile-count sequences match
       add pointer-owner conflict unless read and write owners match
       add concurrent-lifetime conflict unless A precedes B or B precedes A
 
@@ -1535,19 +1583,19 @@ Every happens-before edge is a required execution order:
 - program order within each kernel is preserved;
 - the matched push must complete before the matched blocking wait can complete.
 
-For a bounded DFB, matching lifecycle tile counts and one push/pop pair imply
-zero occupancy at `cb_pop` completion. The owned-use checks prove that neither
-the producer nor the consumer accesses the slot after its corresponding
-release. Every runtime use is reachable from at least one event in the
-earliest-event antichain and completes no later than the terminal pop.
+For a bounded DFB, matching lifecycle tile counts across every transaction imply
+zero occupancy at the final `cb_pop` completion. The owned-use checks prove that
+neither the producer nor the consumer accesses a slot after its corresponding
+closing operation. Every runtime use is reachable from at least one event in
+the earliest-event antichain and completes no later than the terminal pop.
 
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
 
 1. A and B have the same page shape, data format, and block count.
-2. They use the same transaction tile count, and that count divides their
-   physical capacity. Their ring pointers therefore advance by equal increments
-   and wrap only at the allocation boundary.
+2. They use the same transaction tile-count sequence, and every count divides
+   their physical capacity. Their ring pointers therefore advance by equal
+   increments and wrap only at the allocation boundary.
 3. On every shared launched node, their write effects have the same hardware
    pointer owner and their read effects have the same hardware pointer owner.
 4. On every shared launched node, A's terminal pop completes before every
@@ -1715,13 +1763,14 @@ with releases before finalization.
   applies the same conservative restriction when repeated regions invalidate a
   dominance-based `happensBefore` result.
 
-- **Repeated protocols.** The analysis accepts one reserve/push/wait/pop
-  occurrence per logical DFB. Loops and multi-acquire protocols require
-  symbolic occurrence matching so a push, wait, and pop from the same
-  iteration are related without conflating different iterations. PipeNet
-  schedule verification already pairs static protocol occurrences and uses
-  `ExecutionCountAnalysis` to prove equal dynamic counts. DFB reuse requires
-  the corresponding reserve/push/wait/pop occurrence matching.
+- **Dynamically repeated protocols.** Multiple statically enumerated
+  reserve/push/wait/pop transactions are represented as distinct ordered
+  occurrences, including sequences expanded from `ttl.DFBEffect.repeat`. A
+  runtime loop still requires symbolic occurrence matching so a push, wait, and
+  pop from the same iteration are related without conflating different
+  iterations. PipeNet schedule verification pairs static protocol occurrences
+  and uses `ExecutionCountAnalysis` to prove equal dynamic counts. DFB reuse
+  requires the corresponding reserve/push/wait/pop occurrence matching.
 
 - **Credit-return ordering.** Only push-to-wait completion is modeled across
   kernels. Proving additional pop-to-reserve ordering could shorten later
@@ -1757,10 +1806,11 @@ with releases before finalization.
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
 
 - **Reachability cost.** Each launch node runs one graph traversal from every
-  top-level DFB-accessing operation. For `V` operation events and `E` ordering
-  edges, this costs `O(V * (V + E))`; unrelated operations are excluded. Launch
-  nodes with identical active operations currently recompute the same ordering
-  relation. Grouping those nodes could reduce analysis time for large grids.
+  modeled entry, completion, and external-effect event. For `V` events and `E`
+  ordering edges, this costs `O(V * (V + E))`; unrelated operations are
+  excluded. Launch nodes with identical active operations currently recompute
+  the same ordering relation. Grouping those nodes could reduce analysis time
+  for large grids.
 
 ## Scalar Element Access to DFBs
 

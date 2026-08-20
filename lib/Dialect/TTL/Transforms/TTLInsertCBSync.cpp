@@ -10,7 +10,7 @@
 // matching release is absent in the input IR, placing each release after
 // the last use of the acquired slot so the slot is not recycled before
 // the consumer is done with it. "Last use" classification handles two
-// different valid IR situations -- direct-CB uses and tensor-SSA uses --
+// different valid IR situations -- direct-DFB uses and tensor-SSA uses --
 // under different rules; see `docs/development/DFBManagement.md` for the
 // rules and correctness argument.
 //
@@ -33,13 +33,20 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+// Defers one rewrite until all producer and consumer intervals are valid.
 struct MissingReleasePlan {
   Operation *acquire = nullptr;
+
+  // Last owned use after which the closing operation is inserted.
   Operation *insertionAfter = nullptr;
   Value dfb;
+
+  // Nested concrete releases are retained until every candidate is valid.
   SmallVector<Operation *> nestedConcreteReleases;
 };
 
+// External release effects cannot be relocated as concrete operations. Validate
+// every interval before mutation so failure leaves the input IR unchanged.
 template <typename ConcreteReleaseOp>
 static PlanningResult<SmallVector<MissingReleasePlan>>
 planMissingReleases(ArrayRef<Operation *> acquires,

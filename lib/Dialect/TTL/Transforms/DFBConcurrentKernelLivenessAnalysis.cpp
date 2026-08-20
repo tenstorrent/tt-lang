@@ -33,19 +33,19 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Entry and completion events keep operation duration distinct from source
-/// order and protocol completion edges.
+// Entry and completion events keep operation duration distinct from source
+// order and protocol completion edges.
 struct EventPair {
   unsigned entry = 0;
   unsigned completion = 0;
 };
 
-/// Represents only ordering proved for one launch node. Cyclic reachability is
-/// deliberately not treated as strict order.
+// Represents only ordering proved for one launch node. Cyclic reachability is
+// deliberately not treated as strict order.
 class HappensBeforeGraph {
 public:
-  /// Creates distinct entry and completion events so later constraints may
-  /// order either execution or completion.
+  // Creates distinct entry and completion events so later constraints may
+  // order either execution or completion.
   EventPair addOperation() {
     unsigned entry = successors.size();
     successors.emplace_back();
@@ -55,14 +55,14 @@ public:
     return {entry, completion};
   }
 
-  /// Records one proved ordering constraint without inferring its converse.
+  // Records one proved ordering constraint without inferring its converse.
   void addEdge(unsigned source, unsigned destination) {
     assert(source < successors.size() && destination < successors.size());
     successors[source].push_back(destination);
   }
 
-  /// Visits each edge once per source, which avoids cubic closure on sparse
-  /// per-node program-order graphs.
+  // Visits each edge once per source, which avoids cubic closure on sparse
+  // per-node program-order graphs.
   void computeReachability() {
     unsigned eventCount = successors.size();
     reachable.assign(eventCount, llvm::BitVector(eventCount));
@@ -79,8 +79,8 @@ public:
     }
   }
 
-  /// Requires asymmetric reachability because mutually reachable events do
-  /// not establish a safe lifetime order.
+  // Requires asymmetric reachability because mutually reachable events do not
+  // establish a safe lifetime order.
   bool strictlyPrecedes(unsigned source, unsigned destination) const {
     assert(source < reachable.size() && destination < reachable.size());
     return source != destination && reachable[source].test(destination) &&
@@ -92,20 +92,20 @@ private:
   SmallVector<llvm::BitVector> reachable;
 };
 
-/// Associates a storage access with its computed launch domain and the
-/// operation that prevented a precise result, when applicable.
+// Associates a storage access with its computed launch domain and the operation
+// that prevented a precise result, when applicable.
 struct AccessDomain {
   LaunchNodeDomain domain = LaunchNodeDomain::unknown();
   Operation *unanalyzableOperation = nullptr;
 };
 
-/// Retains access-domain results from the shared launch-domain analysis.
+// Retains access-domain results from the shared launch-domain analysis.
 struct LivenessDomainState : LaunchNodeDomainState {
   DenseMap<Operation *, AccessDomain> accessDomains;
 };
 
-/// Identifies attributes that copy a provisional physical DFB index and would
-/// become stale after allocation changes declaration indices.
+// Identifies attributes that copy a provisional physical DFB index and would
+// become stale after allocation changes declaration indices.
 static bool isDerivedDFBIndexAttribute(StringRef attributeName) {
   return attributeName == kUnpackToDestFp32AttrName ||
          attributeName.starts_with(kCBIndexAttrPrefix) ||
@@ -114,9 +114,9 @@ static bool isDerivedDFBIndexAttribute(StringRef attributeName) {
          attributeName == kTransposeOutputCBIndexAttrName;
 }
 
-/// Resolves the hardware pointer owner only from explicit kernel semantics.
-/// Missing or invalid ownership attributes remain unknown because assuming a
-/// processor could permit unsafe physical-index reuse.
+// Resolves the hardware pointer owner only from explicit kernel semantics.
+// Missing or invalid ownership attributes remain unknown because assuming a
+// processor could permit unsafe physical-index reuse.
 static std::optional<DFBPointerOwner>
 getPointerOwner(Operation *operation, LaunchNodeCoord node,
                 DFBProtocolEffectKind effect) {
@@ -159,8 +159,8 @@ getPointerOwner(Operation *operation, LaunchNodeCoord node,
   return DFBPointerOwner{node, processor, direction};
 }
 
-/// Projects nested accesses to their containing top-level operation because
-/// the graph models only source order that is unconditional at that level.
+// Projects nested accesses to their containing top-level operation because the
+// graph models only source order that is unconditional at that level.
 static Operation *getTopLevelKernelOperation(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
@@ -173,8 +173,8 @@ static Operation *getTopLevelKernelOperation(Operation *operation) {
              : functionBody.findAncestorOpInBlock(*operation);
 }
 
-/// Missing projected events remain unknown because nested source order alone
-/// cannot establish cross-region execution order.
+// Missing projected events remain unknown because nested source order alone
+// cannot establish cross-region execution order.
 static std::optional<EventPair>
 getProjectedEvents(Operation *operation,
                    const DenseMap<Operation *, EventPair> &operationEvents) {
@@ -188,6 +188,8 @@ getProjectedEvents(Operation *operation,
              : std::optional<EventPair>(eventIt->second);
 }
 
+// Effect summaries receive occurrence-specific events; concrete and opaque
+// accesses use their projected operation events.
 static std::optional<EventPair> getAccessEvents(
     const DFBAccessOccurrence &access,
     const DenseMap<Operation *, EventPair> &operationEvents,
@@ -199,8 +201,8 @@ static std::optional<EventPair> getAccessEvents(
   return getProjectedEvents(access.operation, operationEvents);
 }
 
-/// Requires a release to follow every use owned by its acquisition; textual
-/// acquire/release order alone does not prove storage quiescence.
+// Requires a release to follow every use owned by its acquisition; textual
+// acquire/release order alone does not prove storage quiescence.
 static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   if (acquire->getBlock() != release->getBlock()) {
     return false;
@@ -211,8 +213,8 @@ static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
 
-/// Finds every access without a proved predecessor so all possible lifetime
-/// starts constrain reuse.
+// Finds every access without a proved predecessor so all possible lifetime
+// starts constrain reuse.
 static SmallVector<unsigned> findMinimalEntryEvents(
     ArrayRef<const DFBAccessOccurrence *> accesses,
     const HappensBeforeGraph &graph,
@@ -239,8 +241,8 @@ static SmallVector<unsigned> findMinimalEntryEvents(
   return minimal;
 }
 
-/// Requires a custom function that consumes a physical index to name the same
-/// logical DFB as a direct storage dependency.
+// Requires a custom function that consumes a physical index to name the same
+// logical DFB as a direct storage dependency.
 static LogicalResult verifyCustomFunctionIndexDependency(
     DFBAccessOpInterface access, int64_t logicalId,
     const DFBLogicalIdentityAnalysis &identityAnalysis,
@@ -265,8 +267,8 @@ static LogicalResult verifyCustomFunctionIndexDependency(
   return success();
 }
 
-/// Integer comparisons derive predicates from an index rather than another
-/// index value. Every other pure result remains conservative.
+// Integer comparisons derive predicates from an index rather than another
+// index value. Every other pure result remains conservative.
 static void appendPhysicalIndexResults(Operation *operation,
                                        SmallVectorImpl<Value> &pending) {
   if (isa<arith::CmpIOp>(operation)) {
@@ -275,11 +277,11 @@ static void appendPhysicalIndexResults(Operation *operation,
   pending.append(operation->result_begin(), operation->result_end());
 }
 
-/// Verifies every transitive use of one physical DFB index. Pure SSA operations
-/// propagate the dependency conservatively to index-capable results. Calls,
-/// terminators, region-bearing operations, resultless consumers and
-/// side-effecting operations are rejected because the analysis cannot prove
-/// where the integer is consumed.
+// Verifies every transitive use of one physical DFB index. Pure SSA operations
+// propagate the dependency conservatively to index-capable results. Calls,
+// terminators, region-bearing operations, resultless consumers and
+// side-effecting operations are rejected because the analysis cannot prove
+// where the integer is consumed.
 static LogicalResult
 verifyPhysicalIndexUses(GetDfbIdOp getId,
                         const DFBLogicalIdentityAnalysis &identityAnalysis,
@@ -325,9 +327,9 @@ verifyPhysicalIndexUses(GetDfbIdOp getId,
   return success();
 }
 
-/// Collects logical DFB declarations and storage accesses in one module walk.
-/// Stale copied indices, malformed identities, and untracked physical-index
-/// escapes are rejected before launch-domain or lifetime analysis begins.
+// Collects logical DFB declarations and storage accesses in one module walk.
+// Stale copied indices, malformed identities, and untracked physical-index
+// escapes are rejected before launch-domain or lifetime analysis begins.
 static LogicalResult collectLogicalDFBs(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identityAnalysis,
     SmallVectorImpl<DFBLogicalLifecycle> &logicalDFBs,
@@ -447,6 +449,9 @@ static LogicalResult collectLogicalDFBs(
       return WalkResult::advance();
     }
 
+    // Preserve dependency occurrences because aliased operands may have
+    // different summaries. An occurrence without an effect remains opaque for
+    // the operation's complete duration.
     llvm::BitVector effectedDependencies(dfbOperands.size());
     for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
       assert(effect.dependencyIndex < dependencyLogicalIndices.size() &&
@@ -512,8 +517,10 @@ static LogicalResult collectLogicalDFBs(
   return success();
 }
 
-/// Builds source-order events only for accesses active on `node`. Operations
-/// in different kernels remain concurrent unless protocol edges order them.
+// Builds source-order events only for accesses active on `node`. Direct
+// protocol effects receive separate events in their declared sequence;
+// operations in different kernels remain concurrent unless protocol edges
+// order them.
 static void buildProgramOrderGraph(
     ModuleOp module, ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     LaunchNodeCoord node, HappensBeforeGraph &graph,
@@ -568,9 +575,9 @@ static void buildProgramOrderGraph(
   }
 }
 
-/// Derives the immutable per-node lifetime facts required for reuse. Any
-/// unsupported or ambiguous protocol fact returns a typed failed proof, which
-/// can only add conflicts.
+// Derives the immutable per-node lifetime facts required for reuse. Any
+// unsupported or ambiguous protocol fact returns a typed failed proof, which
+// can only add conflicts.
 static DFBQuiescenceProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
     const HappensBeforeGraph &graph,
@@ -733,8 +740,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
   return {};
 }
 
-/// Proves non-overlap only when every possible end of `before` strictly
-/// precedes every possible start of `after`.
+// Proves non-overlap only when every possible end of `before` strictly precedes
+// every possible start of `after`.
 static bool proveOrderedBefore(const DFBPerNodeLifetime &before,
                                const DFBPerNodeLifetime &after,
                                const HappensBeforeGraph &graph) {
@@ -852,6 +859,9 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
   }
 
+  // Unknown external access may name any user-managed physical allocation,
+  // including one also declared by the operation. Compiler-created DFBs cannot
+  // be referenced by external code without an explicit dependency.
   for (Operation *unknownAccess : unknownAccessOperations) {
     auto domainIt = domainState.accessDomains.find(unknownAccess);
     AccessDomain accessDomain =

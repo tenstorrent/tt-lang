@@ -21,7 +21,7 @@ def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return the stable, ordered DFB dependency occurrence list.",
+      /*desc=*/"Return DFB dependencies addressed by DFBProtocolEffect::dependencyIndex.",
       /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
       /*methodName=*/"getDFBDependencyOperands",
       /*args=*/(ins)>,
@@ -34,12 +34,16 @@ def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
       /*desc=*/"Return DFBs whose physical indices are consumed by the operation.",
       /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
       /*methodName=*/"getDFBIndexOperands",
-      /*args=*/(ins)>,
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return {};">,
     InterfaceMethod<
       /*desc=*/"Return true when the operation may access unlisted user DFBs.",
       /*retTy=*/"bool",
       /*methodName=*/"hasUnknownDFBAccess",
-      /*args=*/(ins)>
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return false;">
   ];
 }
 

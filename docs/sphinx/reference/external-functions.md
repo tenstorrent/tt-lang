@@ -184,9 +184,11 @@ C++ function arguments. DFBs in `func_args` and DFB descriptors in
 `template_args` are dependencies automatically. `dfb_dependencies` must
 contain distinct DFBs that are not already automatic dependencies.
 
-`dfb_effects` is an ordered list of synchronous DFB protocol actions. Each
-action references one dependency and has a positive, statically resolvable tile
-count:
+`dfb_effects` is an optional call-wide list of synchronous DFB protocol actions
+in the exact order the external function executes them. Each action explicitly
+names one DFB dependency and has a positive, statically resolvable tile count no
+greater than the DFB capacity. A complete summary can provide the lifecycle
+proof needed for physical-index reuse:
 
 ```python
 ttl.call_extern_func(
@@ -205,12 +207,19 @@ ttl.call_extern_func(
 )
 ```
 
+The example defines one sequence across both DFBs: wait on `source`, pop
+`source`, reserve `destination`, then push `destination`. The per-DFB
+subsequences are `wait -> pop` for `source` and `reserve -> push` for
+`destination`. Actions on different DFBs occupy distinct positions in the
+call-wide sequence.
+
 The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
-`ttl.DFBEffect.repeat(count, effects)` repeats a literal ordered effect list a
-nonnegative, statically resolvable number of times. The frontend expands the
-repeat before creating IR, so downstream analyses receive the same flat effect
-sequence as an explicitly written list. The expanded `dfb_effects` sequence is
-limited to 4096 actions per external call:
+`ttl.DFBEffect.repeat(count, effects)` repeats a nonempty literal effect
+sequence a nonnegative, statically resolvable number of times. The frontend
+expands the repeat before creating IR, so downstream analyses receive the same
+flat effect sequence as an explicitly written list. The expanded `dfb_effects`
+sequence is limited to 4096 actions per external call. This compiler-resource
+limit bounds materialization and analysis work; it is not a hardware limit:
 
 ```python
 dfb_effects=[
@@ -235,18 +244,17 @@ matching acquisition and a call with an unconditional summary, execute
 unconditionally in external C++, or be omitted so the dependency remains
 opaque. Repeated transactions retain every action and its position. A bounded
 lifecycle requires ordered reserve/push and wait/pop transactions with matching
-tile counts. A partial summary is valid but remains conservative: it does not
-prove physical-index reuse. A dependency
-occurrence with no listed effect is an opaque storage access for the complete
-call duration, including when operand adaptation aliases multiple occurrences
-to the same SSA DFB. Every aliased occurrence requires its own effects to avoid
-an opaque call-duration access.
+tile counts. A partial summary is valid but does not prove a bounded lifecycle
+for that dependency. A dependency occurrence with no listed effect is an opaque
+storage access for the complete call duration, including when operand adaptation
+aliases multiple occurrences to the same SSA DFB. Every aliased occurrence
+requires its own effects to avoid an opaque call-duration access.
 
 `unknown_dfb_access=True` declares that external C++ may access user-managed
-DFBs not present in the dependency list. This is distinct from malformed
-metadata. It disables user DFB physical-index reuse in every allocation scope
-where the call may execute. Listed dependencies and effects remain available
-to other verification.
+DFBs not present in the declared dependencies. This is distinct from malformed
+metadata. For allocation, the call becomes an opaque occurrence on every
+user-managed DFB in each scope where it may execute, including listed DFBs.
+Listed dependencies and effects remain available to other verification.
 
 Every listed effect is complete when the external function returns. External
 work that continues after return requires separate explicit completion
@@ -255,13 +263,14 @@ describe external behavior; they do not emit reserve, push, wait, or pop calls.
 Dependency-only operands and all effect metadata leave the generated C++ call
 signature unchanged.
 
-The IR stores each effect as a generated enum and a typed attribute indexing
-the call's ordered dependency-occurrence list. Occurrence positions do not
-change when operation adaptation maps distinct operands to the same DFB.
-Separate executable operations would misrepresent actions already performed in
-C++, while integer or string dictionaries would permit untyped effect kinds.
-Callee-name, header-name, and generated-C++ inspection do not provide a
-semantic contract and are not used.
+The IR stores each effect as a generated enum and a typed attribute. Its
+dependency index identifies an element of the value sequence returned by the
+call's `getDFBDependencyOperands()` interface method. Operation adaptation may
+map distinct occurrences to the same DFB without merging them. Separate
+executable operations would misrepresent actions already performed in C++,
+while integer or string dictionaries would permit untyped effect kinds.
+Callee-name, header-name, and generated-C++ inspection do not provide a semantic
+contract and are not used.
 
 ## Include directories
 
@@ -296,6 +305,7 @@ derived from the acquired block's uses and release. An explicit release
 selector that conflicts with inferred ownership is invalid.
 
 The release selector affects unified-operation splitting only. Generated IR
-and C++ retain the ordinary argument-free DFB release operation. An explicit
-thread may use the same signature, but its thread decorator already determines
-ownership, so the release selector has no additional effect.
+and C++ retain the ordinary DFB push or pop signature; `kernel` is not an
+emitted operand or argument. An explicit thread may use the same signature, but
+its thread decorator already determines ownership, so the release selector has
+no additional effect.

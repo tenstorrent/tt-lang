@@ -1698,38 +1698,6 @@ mlir::Value mlir::tt::ttl::CBReserveOp::getViewSource() { return getCb(); }
 
 mlir::Value mlir::tt::ttl::CBWaitOp::getViewSource() { return getCb(); }
 
-static int64_t getConcreteDFBProtocolTileCount(std::optional<uint64_t> numTiles,
-                                               mlir::Value dfb) {
-  if (numTiles) {
-    return static_cast<int64_t>(*numTiles);
-  }
-  return mlir::cast<mlir::tt::ttl::CircularBufferType>(dfb.getType())
-      .getElementsPerBlock();
-}
-
-#define DEFINE_DFB_PROTOCOL_INTERFACE_METHODS(OpType, EffectKind)              \
-  llvm::SmallVector<mlir::Value>                                               \
-  mlir::tt::ttl::OpType::getDFBDependencyOperands() {                          \
-    return {getCb()};                                                          \
-  }                                                                            \
-  llvm::SmallVector<mlir::tt::ttl::DFBProtocolEffect>                          \
-  mlir::tt::ttl::OpType::getDFBProtocolEffects() {                             \
-    return {{getCb(), mlir::tt::ttl::DFBProtocolEffectKind::EffectKind,        \
-             getConcreteDFBProtocolTileCount(getNumTiles(), getCb()), 0, 0}};  \
-  }                                                                            \
-  llvm::SmallVector<mlir::Value>                                               \
-  mlir::tt::ttl::OpType::getDFBIndexOperands() {                               \
-    return {};                                                                 \
-  }                                                                            \
-  bool mlir::tt::ttl::OpType::hasUnknownDFBAccess() { return false; }
-
-DEFINE_DFB_PROTOCOL_INTERFACE_METHODS(CBReserveOp, Reserve)
-DEFINE_DFB_PROTOCOL_INTERFACE_METHODS(CBPushOp, Push)
-DEFINE_DFB_PROTOCOL_INTERFACE_METHODS(CBWaitOp, Wait)
-DEFINE_DFB_PROTOCOL_INTERFACE_METHODS(CBPopOp, Pop)
-
-#undef DEFINE_DFB_PROTOCOL_INTERFACE_METHODS
-
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   if (getNumTiles()) {
     auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());

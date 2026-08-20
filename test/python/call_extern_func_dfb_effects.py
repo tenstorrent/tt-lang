@@ -39,7 +39,10 @@ def make_external_stage(transaction_count):
                 ttl.DFBEffect.repeat(
                     -(-transaction_count),
                     [
-                        ttl.DFBEffect.wait(source, tiles=(EFFECT_TILES + 1) // 3),
+                        ttl.DFBEffect.repeat(
+                            1,
+                            [ttl.DFBEffect.wait(source, tiles=(EFFECT_TILES + 1) // 3)],
+                        ),
                         ttl.DFBEffect.pop(source, tiles=EFFECT_TILES - 3),
                     ],
                 ),

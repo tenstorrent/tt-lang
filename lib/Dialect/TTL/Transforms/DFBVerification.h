@@ -9,6 +9,7 @@
 
 namespace mlir::tt::ttl {
 
+/// Treats any defined `TTL_RELAX_DFB_SPSC` value as enabling relaxation.
 inline bool isDFBProtocolDomainVerificationRelaxed() {
   return std::getenv("TTL_RELAX_DFB_SPSC") != nullptr;
 }
