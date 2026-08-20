@@ -162,6 +162,11 @@ attach_cb                            // tensor SSA view of the waited slot
 cb_pop                               // occupancy: 1 -> 0
 ```
 
+For a zero-copy tensor shape view, the producer-side reserve may use the
+producer rank with an explicit tile count while `attach_cb` exposes the same
+published DFB at the consumer-visible rank. This is valid only when the static
+element type, encoding, and total tile count are unchanged.
+
 The producer side is ordered so the slot is reserved before the compute that
 writes it and published only after the compute has packed the materialized
 tile. The consumer side is ordered so every rewritten operand is dominated by

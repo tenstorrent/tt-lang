@@ -230,6 +230,23 @@ static void applyStandaloneMaterializationPlan(
     const IntermediateDFBRequirement &use = requirements[requirementIndex];
     use.consumer->setOperand(use.operandIndex, materializedValue);
   }
+
+  // Shape-view casts are bypassed by the producer-side store. Remove an
+  // original cast chain after every planned consumer has been rewritten so a
+  // dead earlier use cannot constrain final ComputeOp placement.
+  Value view = plan.source;
+  Value storeSource = getDFBMaterializationStoreSource(view);
+  while (view != storeSource) {
+    auto cast = view.getDefiningOp<UnrealizedConversionCastOp>();
+    assert(cast && cast.getInputs().size() == 1 &&
+           "materialization view trace must contain single-input casts");
+    Value input = cast.getInputs()[0];
+    if (!cast->use_empty()) {
+      break;
+    }
+    cast.erase();
+    view = input;
+  }
 }
 
 static LogicalResult verifyPlanSources(const IntermediateDFBPlan &plan) {

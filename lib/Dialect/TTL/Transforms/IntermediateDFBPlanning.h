@@ -67,6 +67,10 @@ enum class IntermediateDFBReason {
   /// A consumer cannot absorb a producer with its own standalone compute
   /// recipe, so the producer result must become a DFB input to that consumer.
   ComputeOpRequiresMaterializedInput,
+
+  /// A computed zero-copy shape view is stored directly and must first be
+  /// routed through a compiler DFB so the final store becomes passthrough.
+  StoreInputShapeView,
 };
 
 /// Evidence supporting one intermediate DFB requirement.

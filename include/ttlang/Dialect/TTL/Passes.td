@@ -330,7 +330,9 @@ def TTLInsertIntermediateDFBs
     monotonically to a fixed point and retain independent evidence. This
     follows the One-Shot Bufferize model: analysis records every operand
     decision first, then a separate immutable plan groups those decisions by
-    producer and applies them without repeating policy.
+    producer and applies them without repeating policy. The fixed point closes
+    over each planned producer expression so materialization boundaries exposed
+    by another planned boundary are recorded before mutation.
 
     MLIR dense forward dataflow proves DFB-backed inputs available at their
     eventual compute positions across CFG and structured-region edges.
@@ -340,6 +342,9 @@ def TTLInsertIntermediateDFBs
     producer materializes the exact consumer operand. Multiple reserve
     transactions for one result, and direct stores of one value in multiple
     blocks, materialize all relevant uses through one shared compiler DFB.
+    A direct store of a computed, zero-copy tensor shape view materializes its
+    producer tiles through an equal-tile-count reserve view and preserves the
+    store's consumer-visible tensor rank when attaching the compiler DFB.
     Application begins only after the complete plan is valid.
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.

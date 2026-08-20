@@ -260,3 +260,105 @@ func.func @two_transactions_and_elementwise_use()
         tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }
+
+// -----
+
+// A zero-copy singleton-rank view has no tile recipe of its own. Materialize
+// its computed input through a reserve view with the producer's rank, then
+// attach the same DFB with the consumer-visible rank for the final passthrough.
+// PLAN-LABEL: ComputeOp creation plan @computed_shape_view_store
+// PLAN:       unassigned-store
+// PLAN:       operand=0
+// PLAN-NEXT:  reason=store-input-shape-view
+// FULL-LABEL: func.func @computed_shape_view_store
+// FULL:       %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL:       %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]] {num_tiles = 4 : i64}
+// FULL:       ttl.compute
+// FULL:         ttl.tile_neg
+// FULL:       %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
+// FULL:       %[[INTERMEDIATE:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
+// FULL:       ttl.compute ins(%[[INTERMEDIATE]]
+// FULL-NOT:   ttl.store
+func.func @computed_shape_view_store()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %negative = ttl.neg %input
+      : tensor<2x2x!ttcore.tile<32x32, bf16>>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %view = builtin.unrealized_conversion_cast %negative
+      : tensor<2x2x!ttcore.tile<32x32, bf16>>
+        to tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %view, %output
+      : tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// Requirements must close over their producer expressions before mutation.
+// The reduction first requires storage for the multiply. Both multiply inputs
+// then require the shared transpose to be materialized independently.
+// PLAN-LABEL: ComputeOp creation plan @recursive_materialization_requirements
+// PLAN-COUNT-2: reason=compute-op-requires-materialized-input
+// PLAN:       reason=required-dfb-operand
+// FULL-LABEL: func.func @recursive_materialization_requirements
+// FULL-COUNT-2: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL:       ttl.tile_transpose
+// FULL:       ttl.tile_mul
+// FULL:       ttl.tile_reduce
+// FULL-NOT:   ttl.store
+func.func @recursive_materialization_requirements()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %scaler_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %scaler_wait = ttl.cb_wait %scaler_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %scaler_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %transposed = ttl.transpose %input
+      : tensor<2x2x!ttcore.tile<32x32, bf16>>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %squared = ttl.mul %transposed, %transposed
+      : tensor<2x2x!ttcore.tile<32x32, bf16>>,
+        tensor<2x2x!ttcore.tile<32x32, bf16>>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %reduced = ttl.reduce %squared, %scaler 0 : i32 [-1]
+      : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[2, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduced, %output
+      : tensor<2x1x!ttcore.tile<32x32, bf16>>,
+        tensor<2x1x!ttcore.tile<32x32, bf16>>
+  return
+}

@@ -9,6 +9,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "llvm/ADT/DenseMap.h"
@@ -96,6 +97,67 @@ addComputeResultUseRequirements(DFBMaterializationAnalysisState &state) {
       state.requireMaterialization(use, std::move(evidence));
     }
   }
+}
+
+static void
+addMaterializedSourceRequirements(DFBMaterializationAnalysisState &state) {
+  SmallVector<Value> requiredValues;
+  for (const IntermediateDFBRequirement &requirement :
+       state.getRequirements()) {
+    requiredValues.push_back(requirement.value);
+  }
+
+  for (Value requiredValue : requiredValues) {
+    Value storeSource = getDFBMaterializationStoreSource(requiredValue);
+    Operation *source = storeSource.getDefiningOp();
+    if (!source || isa<ComputeOp>(source)) {
+      continue;
+    }
+
+    if (succeeded(collectComputeOpCreationLifetimeInputs(
+            source, [&](OpOperand &operand) {
+              return state.requiresMaterialization(operand);
+            }))) {
+      continue;
+    }
+
+    FusionTraceResult trace =
+        traceFusionToRoots(storeSource, [&](OpOperand &operand) {
+          return state.requiresMaterialization(operand);
+        });
+    OpOperand *failedOperand = trace.failedOperand;
+    Operation *producer =
+        failedOperand ? failedOperand->get().getDefiningOp() : nullptr;
+    if (!producer || (!isa<ComputeOp>(producer) &&
+                      !hasStandaloneComputeOpCreationRecipe(producer))) {
+      continue;
+    }
+
+    IntermediateDFBEvidence evidence;
+    evidence.reason = IntermediateDFBReason::ComputeOpRequiresMaterializedInput;
+    evidence.inputs = {failedOperand->get()};
+    evidence.observation = source;
+    state.requireMaterialization(*failedOperand, std::move(evidence));
+  }
+}
+
+static void
+addShapeViewStoreRequirements(func::FuncOp kernel,
+                              DFBMaterializationAnalysisState &state) {
+  kernel.walk([&](StoreOp store) {
+    OpOperand &storedValue = store.getTensorMutable();
+    Value value = storedValue.get();
+    if (getAttachedCB(value) ||
+        getDFBMaterializationStoreSource(value) == value) {
+      return;
+    }
+
+    IntermediateDFBEvidence evidence;
+    evidence.reason = IntermediateDFBReason::StoreInputShapeView;
+    evidence.inputs = {value};
+    evidence.observation = store;
+    state.requireMaterialization(storedValue, std::move(evidence));
+  });
 }
 
 static void
@@ -536,6 +598,7 @@ IntermediateDFBPlanner::buildMaterializationRecords(
 PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
   DFBMaterializationAnalysisState state;
   DominanceInfo dominanceInfo(kernel);
+  addShapeViewStoreRequirements(kernel, state);
   kernel->walk([&](DFBInputOpInterface dfbInputOp) {
     Operation *operation = dfbInputOp.getOperation();
     for (unsigned operandIndex : dfbInputOp.getDFBInputOperandIndices()) {
@@ -566,6 +629,7 @@ PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
   do {
     previousRequirementCount = state.getRequirements().size();
     addComputeResultUseRequirements(state);
+    addMaterializedSourceRequirements(state);
     kernel->walk([&](Operation *operation) {
       if (isElementwiseOp(operation)) {
         addExpressionReleaseRequirements(operation, lifetimes, state);
