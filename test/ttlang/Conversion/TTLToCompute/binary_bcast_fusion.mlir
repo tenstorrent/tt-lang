@@ -35,7 +35,7 @@ func.func @col_mul(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x
   %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x1x!ttcore.tile<32x32, f32>>
   %arg1_cb = ttl.attach_cb %arg1, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // CHECK: ^bb0(%[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[DATA_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK: ^bb0(%[[DATA_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK: ttl.tile_binary_bcast %[[DATA_TILE]], %[[BCAST_TILE]], %[[OUT_TILE]] 2 : i32 1 : i32 into dst
   %reserve = ttl.cb_reserve %cb2 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %bcast = ttl.block.broadcast %arg0_cb dims = [-1], shape = [2, 2] : tensor<2x1x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -56,7 +56,7 @@ func.func @scalar_sub(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>, %arg1: tensor
   %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %arg1_cb = ttl.attach_cb %arg1, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // CHECK: ^bb0(%[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[DATA_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK: ^bb0(%[[DATA_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK: ttl.tile_binary_bcast %[[DATA_TILE]], %[[BCAST_TILE]], %[[OUT_TILE]] 1 : i32 3 : i32 into dst
   %reserve = ttl.cb_reserve %cb2 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %bcast = ttl.block.broadcast %arg0_cb dims = [-1, -2], shape = [2, 2] : tensor<1x1x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>

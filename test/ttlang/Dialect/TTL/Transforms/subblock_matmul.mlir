@@ -78,7 +78,8 @@ func.func @matmul_fits_in_dst(
 // two scratch slots per output tile in the current lowering. f32 DST capacity
 // is 4, so only one output tile fits even though the output has two tiles.
 // Subblocking must still emit a loop when the chosen output subblock product
-// is one.
+// is one. The subtraction keeps the broadcast on the left, which the FPU
+// cannot fold into a binary-broadcast, so the scratch slots are still needed.
 
 // CHECK-LABEL: func.func @scaled_acc_matmul_one_output_tile_subblock
 // CHECK-SAME:  fp32_dest_acc_en = true
@@ -107,7 +108,7 @@ func.func @scaled_acc_matmul_one_output_tile_subblock(
   %old_attached = ttl.attach_cb %o_old, %cb3 : (tensor<1x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x2x!ttcore.tile<32x32, f32>>
   %reserve = ttl.cb_reserve %cb4 : <[1, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<1x2x!ttcore.tile<32x32, f32>>
   %alpha_bcast = ttl.block.broadcast %alpha_attached dims = [-1], shape = [1, 2] : tensor<1x1x!ttcore.tile<32x32, f32>> -> tensor<1x2x!ttcore.tile<32x32, f32>>
-  %scaled = ttl.mul %alpha_bcast, %old_attached : tensor<1x2x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>> -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %scaled = ttl.sub %alpha_bcast, %old_attached : tensor<1x2x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>> -> tensor<1x2x!ttcore.tile<32x32, f32>>
   %mm = ttl.matmul %scores_attached, %v_attached : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>> -> tensor<1x2x!ttcore.tile<32x32, f32>>
   %out = ttl.add %scaled, %mm : tensor<1x2x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>> -> tensor<1x2x!ttcore.tile<32x32, f32>>
   ttl.store %out, %reserve : tensor<1x2x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>>

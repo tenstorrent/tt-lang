@@ -544,12 +544,14 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       break;
     }
     case FusedOperationRecipe::BinaryBroadcast: {
-      assert(operationPlan.tileBroadcast && operationPlan.eltwiseBinaryType &&
+      std::optional<EltwiseBinaryType> eltwiseBinaryType =
+          getFusedEltwiseBinaryType(operationPlan.source);
+      assert(operationPlan.tileBroadcast && eltwiseBinaryType &&
              "binary-broadcast recipe must record its hardware kinds");
       tileResult = createTileOpWithPlaceholderDstIndex<TileBinaryBcastOp>(
           rewriter, loc, operationPlan.resultTileType, tileOperands[0],
-          tileOperands[1], body->getArguments().back(),
-          *operationPlan.eltwiseBinaryType, *operationPlan.tileBroadcast);
+          tileOperands[1], body->getArguments().back(), *eltwiseBinaryType,
+          *operationPlan.tileBroadcast);
       break;
     }
     case FusedOperationRecipe::DeferredTileBroadcast:

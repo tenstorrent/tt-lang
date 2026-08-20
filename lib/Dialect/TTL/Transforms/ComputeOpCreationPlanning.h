@@ -224,6 +224,11 @@ struct FusedOperationOperand {
   std::optional<unsigned> rootInputIndex;
 };
 
+/// Return the elementwise binary kind the FPU can fuse with a broadcast
+/// operand, or nullopt when `operation` is not such a binary.
+std::optional<EltwiseBinaryType>
+getFusedEltwiseBinaryType(Operation *operation);
+
 /// Hardware configuration captured for an exp tile recipe.
 struct ExpFlagsPlan {
   BoolAttr approx;
@@ -260,12 +265,6 @@ struct FusedOperationPlan {
 
   /// Matmul emitted by a later accumulator recipe.
   std::optional<MatmulOp> foldedMatmul;
-
-  /// Broadcast emitted by a later binary-broadcast recipe.
-  std::optional<BlockBroadcastOp> foldedBroadcast;
-
-  /// Binary operation fused into a binary-broadcast recipe.
-  std::optional<EltwiseBinaryType> eltwiseBinaryType;
 
   /// Non-matmul operand used to initialize an accumulating matmul.
   std::optional<Value> accumulator;

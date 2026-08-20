@@ -265,8 +265,7 @@ func.func @chained_add_reduce_broadcast()
 // CHECK: %[[REDUCED_WAIT:.*]] = ttl.cb_wait [[REDUCED_DFB]]
 // CHECK: %[[REDUCED:.*]] = ttl.attach_cb %[[REDUCED_WAIT]], [[REDUCED_DFB]]
 // CHECK: ttl.compute ins(%[[SUM]], %[[REDUCED]]
-// CHECK:   ttl.tile_bcast
-// CHECK:   ttl.tile_mul
+// CHECK:   ttl.tile_binary_bcast
 func.func @published_result_with_mixed_consumers()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}

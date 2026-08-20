@@ -439,21 +439,6 @@ static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
   return failure();
 }
 
-/// Binary operations the FPU can fuse with a broadcast operand.
-static std::optional<EltwiseBinaryType>
-getFusedEltwiseBinaryType(Operation *operation) {
-  if (isa<AddOp>(operation)) {
-    return EltwiseBinaryType::Add;
-  }
-  if (isa<SubOp>(operation)) {
-    return EltwiseBinaryType::Sub;
-  }
-  if (isa<MulOp>(operation)) {
-    return EltwiseBinaryType::Mul;
-  }
-  return std::nullopt;
-}
-
 static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
                                               std::string &failureReason) {
   DenseSet<Operation *> fusedOperations(plan.trace.opsInOrder.begin(),
@@ -613,8 +598,6 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       RankedTensorType inputType = getTensorType(foldedBroadcast.getInput());
       operationPlan.tileBroadcast =
           getTileBroadcastType(foldedBroadcast.getDims(), inputType.getRank());
-      operationPlan.eltwiseBinaryType = getFusedEltwiseBinaryType(operation);
-      operationPlan.foldedBroadcast = foldedBroadcast;
       operationPlan.recipe = FusedOperationRecipe::BinaryBroadcast;
     } else if (auto matmul = dyn_cast<MatmulOp>(operation)) {
       if (failed(addOperand(matmul.getLhs(), FusedInputRole::MatmulLeft)) ||
@@ -1083,6 +1066,20 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
 }
 
 } // namespace
+
+std::optional<EltwiseBinaryType>
+getFusedEltwiseBinaryType(Operation *operation) {
+  if (isa<AddOp>(operation)) {
+    return EltwiseBinaryType::Add;
+  }
+  if (isa<SubOp>(operation)) {
+    return EltwiseBinaryType::Sub;
+  }
+  if (isa<MulOp>(operation)) {
+    return EltwiseBinaryType::Mul;
+  }
+  return std::nullopt;
+}
 
 PlanningResult<OutputPublicationPlan, OutputPublicationRejection>
 buildOutputPublicationPlan(Operation *source) {
