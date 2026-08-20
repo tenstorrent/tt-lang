@@ -1643,7 +1643,7 @@ static LogicalResult validateSynchronizedResetsAtNode(
         }
         if (!referenceExecutionCount) {
           referenceExecutionCount = executionCount;
-          referenceIterationDomain = std::move(iterationDomain);
+          referenceIterationDomain = iterationDomain;
         } else if (*referenceExecutionCount != *executionCount ||
                    !hasEquivalentIterationSequence(*referenceIterationDomain,
                                                    iterationDomain)) {
