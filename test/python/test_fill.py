@@ -218,7 +218,7 @@ def subtile_fill_add_kernel(inp, out):
 @pytest.mark.parametrize("operation", ["direct", "fused"])
 @pytest.mark.parametrize(
     "tile",
-    [(16, 16), (16, 32), (32, 16), (32, 32)],
+    [(8, 32), (16, 16), (16, 32), (32, 16), (32, 32)],
     ids=lambda tile_dimensions: f"{tile_dimensions[0]}x{tile_dimensions[1]}",
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
