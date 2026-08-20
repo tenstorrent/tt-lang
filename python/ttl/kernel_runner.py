@@ -875,6 +875,8 @@ def plan_program_runtime_resources(
             semaphore_fingerprints,
         ),
     )
+
+
 @dataclass
 class DFBReconfigurationRuntimeResources:
     """Host allocations referenced by synchronized DFB reconfiguration."""
@@ -894,22 +896,43 @@ class KernelRuntimeResourceCache:
     device: Optional[Any] = None
     pipe_resources: Optional[PipeRuntimeResources] = None
     reconfiguration_resources: Optional[DFBReconfigurationRuntimeResources] = None
+    portable_resource_lifetimes: Tuple[object, ...] = ()
+    portable_resource_device: Optional[Any] = None
+
+
+def _release_portable_runtime_resources_impl(
+    cache: KernelRuntimeResourceCache,
+) -> None:
+    if not cache.portable_resource_lifetimes:
+        return
+    if cache.portable_resource_device is not None:
+        _ensure_ttnn()
+        if ttnn is None:
+            raise RuntimeError("ttnn is not available")
+        ttnn.synchronize_device(cache.portable_resource_device)
+    cache.portable_resource_lifetimes = ()
+    cache.portable_resource_device = None
 
 
 def _release_cached_runtime_resources_impl(
     cache: KernelRuntimeResourceCache,
 ) -> None:
-    if cache.compatibility_key is None:
+    if cache.compatibility_key is None and not cache.portable_resource_lifetimes:
         return
-    if cache.device is not None:
+    resource_device = (
+        cache.device if cache.device is not None else cache.portable_resource_device
+    )
+    if resource_device is not None:
         _ensure_ttnn()
         if ttnn is None:
             raise RuntimeError("ttnn is not available")
-        ttnn.synchronize_device(cache.device)
+        ttnn.synchronize_device(resource_device)
     cache.compatibility_key = None
     cache.device = None
     cache.pipe_resources = None
     cache.reconfiguration_resources = None
+    cache.portable_resource_lifetimes = ()
+    cache.portable_resource_device = None
 
 
 def release_cached_runtime_resources(cache: KernelRuntimeResourceCache) -> None:
@@ -952,6 +975,7 @@ def _retain_unsynchronized_runtime_resources(
     device,
     pipe_resources: PipeRuntimeResources,
     reconfiguration_resources: DFBReconfigurationRuntimeResources,
+    portable_resource_lifetimes: Tuple[object, ...] = (),
 ) -> None:
     """Retain one uncached generation when device completion is unknown."""
     retained_cache = KernelRuntimeResourceCache(
@@ -959,6 +983,8 @@ def _retain_unsynchronized_runtime_resources(
         device=device,
         pipe_resources=pipe_resources,
         reconfiguration_resources=reconfiguration_resources,
+        portable_resource_lifetimes=portable_resource_lifetimes,
+        portable_resource_device=device,
     )
     _RETAINED_RUNTIME_RESOURCE_CACHES.append(retained_cache)
 
@@ -967,13 +993,17 @@ def _synchronize_or_retain_runtime_resources(
     device,
     pipe_resources: PipeRuntimeResources,
     reconfiguration_resources: DFBReconfigurationRuntimeResources,
+    portable_resource_lifetimes: Tuple[object, ...] = (),
 ) -> None:
     """Synchronize one uncached generation or retain all of its owners."""
     try:
         ttnn.synchronize_device(device)
     except BaseException:
         _retain_unsynchronized_runtime_resources(
-            device, pipe_resources, reconfiguration_resources
+            device,
+            pipe_resources,
+            reconfiguration_resources,
+            portable_resource_lifetimes,
         )
         raise
 
@@ -1152,7 +1182,7 @@ def build_kernel_descriptors(
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
         )
-        if reconfiguration_args:
+        if runtime_args:
             kernel_descriptor_args["runtime_args"] = runtime_args
         kernel_desc = ttnn.KernelDescriptor(**kernel_descriptor_args)
         kernel_descriptors.append(kernel_desc)
@@ -2236,9 +2266,6 @@ def _run_kernel_on_device_impl(
     num_pipe_global_semaphores: int = 0,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
-    runtime_resource_lifetime_commit: Optional[
-        Callable[[Tuple[object, ...]], None]
-    ] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
 ) -> Any:
@@ -2267,10 +2294,8 @@ def _run_kernel_on_device_impl(
         runtime_resource_factory: Optional callback that returns declarative
             resources for the current invocation.
         operation_name: User-facing operation name for callback diagnostics.
-        runtime_resource_lifetime_commit: Callback that replaces the compiled
-            operation's retained owner tuple after successful execution.
-        runtime_resource_cache: Optional cache owning persistent PipeNet and
-            DFB reconfiguration resources.
+        runtime_resource_cache: Optional cache owning persistent PipeNet, DFB
+            reconfiguration, and declarative runtime resources.
         device: Optional explicit resource device. Defaults to the first input
             tensor's device.
 
@@ -2280,6 +2305,9 @@ def _run_kernel_on_device_impl(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+
+    if runtime_resource_cache is not None:
+        _release_portable_runtime_resources_impl(runtime_resource_cache)
 
     semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
         core_ranges=core_ranges,
@@ -2415,30 +2443,58 @@ def _run_kernel_on_device_impl(
         ),
     )
 
-    owns_runtime_resources = bool(
+    portable_resource_lifetimes = (
+        resource_plan.lifetimes if resource_plan is not None else ()
+    )
+    if runtime_resource_cache is not None and portable_resource_lifetimes:
+        runtime_resource_cache.portable_resource_lifetimes = portable_resource_lifetimes
+        runtime_resource_cache.portable_resource_device = (
+            device
+            if device is not None
+            else (
+                runtime_resource_cache.device
+                if runtime_resource_cache.device is not None
+                else _first_device(tensors)
+            )
+        )
+
+    uncached_portable_resource_lifetimes = (
+        portable_resource_lifetimes if runtime_resource_cache is None else ()
+    )
+    owns_hidden_runtime_resources = bool(
         pipe_runtime_resources.scratch_tensors
         or pipe_runtime_resources.global_semaphores
         or pipe_runtime_resources.computed_address_dfb_tensors
         or reconfiguration_resources.scratch_tensors
         or reconfiguration_resources.configuration_tensors
     )
-    synchronize_uncached_resources = (
-        runtime_resource_cache is None and owns_runtime_resources
+    synchronize_after_success = runtime_resource_cache is None and bool(
+        owns_hidden_runtime_resources or uncached_portable_resource_lifetimes
+    )
+    synchronize_after_dispatch_error = runtime_resource_cache is None and bool(
+        owns_hidden_runtime_resources or portable_resource_lifetimes
     )
     resource_device = None
-    if synchronize_uncached_resources:
+    if synchronize_after_success:
         resource_device = reconfiguration_resources.device
         if resource_device is None:
             resource_device = device if device is not None else _first_device(tensors)
     try:
         result = ttnn.generic_op(io_tensors, program)
     except BaseException as dispatch_error:
-        if synchronize_uncached_resources:
+        if synchronize_after_dispatch_error:
             try:
+                if resource_device is None:
+                    resource_device = reconfiguration_resources.device
+                if resource_device is None:
+                    resource_device = (
+                        device if device is not None else _first_device(tensors)
+                    )
                 _synchronize_or_retain_runtime_resources(
                     resource_device,
                     pipe_runtime_resources,
                     reconfiguration_resources,
+                    portable_resource_lifetimes,
                 )
             except BaseException as synchronization_error:
                 try:
@@ -2449,14 +2505,13 @@ def _run_kernel_on_device_impl(
                 except BaseException:
                     pass
         raise
-    if synchronize_uncached_resources:
+    if synchronize_after_success:
         _synchronize_or_retain_runtime_resources(
             resource_device,
             pipe_runtime_resources,
             reconfiguration_resources,
+            uncached_portable_resource_lifetimes,
         )
-    if resource_plan is not None and runtime_resource_lifetime_commit is not None:
-        runtime_resource_lifetime_commit(resource_plan.lifetimes)
     return result
 
 
@@ -2472,9 +2527,6 @@ def run_kernel_on_device(
     num_pipe_global_semaphores: int = 0,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
-    runtime_resource_lifetime_commit: Optional[
-        Callable[[Tuple[object, ...]], None]
-    ] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
 ) -> Any:
@@ -2492,7 +2544,6 @@ def run_kernel_on_device(
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             runtime_resource_factory=runtime_resource_factory,
             operation_name=operation_name,
-            runtime_resource_lifetime_commit=runtime_resource_lifetime_commit,
             runtime_resource_cache=None,
             device=device,
         )
@@ -2509,7 +2560,6 @@ def run_kernel_on_device(
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             runtime_resource_factory=runtime_resource_factory,
             operation_name=operation_name,
-            runtime_resource_lifetime_commit=runtime_resource_lifetime_commit,
             runtime_resource_cache=runtime_resource_cache,
             device=device,
         )

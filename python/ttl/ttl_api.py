@@ -848,7 +848,6 @@ class CompiledTTNNKernel:
                 )
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
-        self._runtime_resource_lifetimes = ()
         owns_runtime_resource_cache = runtime_resource_cache is None
         self._runtime_resource_cache = (
             KernelRuntimeResourceCache()
@@ -909,17 +908,9 @@ class CompiledTTNNKernel:
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
-            runtime_resource_lifetime_commit=(
-                self._commit_runtime_resource_lifetimes
-                if self.runtime_resource_factory is not None
-                else None
-            ),
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
         )
-
-    def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
-        self._runtime_resource_lifetimes = lifetimes
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:

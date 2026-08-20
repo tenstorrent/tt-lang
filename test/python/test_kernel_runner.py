@@ -277,6 +277,9 @@ class _FakeTTNN:
         def __init__(self, ranges):
             self.ranges = tuple(ranges)
 
+        def bounding_box(self):
+            return _FakeBoundingBox(self.ranges)
+
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
         cb_index, tensor, total_size, core_ranges, address_offset=0
@@ -1468,12 +1471,51 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
-def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
+def test_build_kernel_descriptors_rejects_overlapping_runtime_arg_contracts(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    core_ranges = _FakeCoreRanges((((0, 0), (0, 0)),))
+    spec = _kernel_spec(KernelKind.COMPUTE)
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (4,)),),
+                ),
+            )
+        ),
+        [spec],
+        core_ranges,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "DFB reconfiguration and explicit per-core runtime arguments "
+            "cannot share kernel descriptor 0"
+        ),
+    ):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[],
+            tensor_accessor_args=[],
+            core_ranges=core_ranges,
+            grid_cols=1,
+            grid_rows=1,
+            num_cbs=0,
+            descriptor_resource_plans=plan.kernel_descriptors,
+            dfb_reconfiguration_runtime_args={(0, 0): [0x1000]},
+        )
+
+
+def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    device = object()
     owner = object()
-    committed_lifetimes = []
 
     def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
         assert len(tensors) == 1
@@ -1504,27 +1546,25 @@ def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
         num_pipe_sync_semaphores=1,
         runtime_resource_factory=make_resources,
         operation_name="resource_execution",
-        runtime_resource_lifetime_commit=committed_lifetimes.append,
+        device=device,
     )
 
     program = result["program"]
     assert [semaphore.id for semaphore in program.semaphores] == [0, 1]
     assert program.kernels[0].defines == [("MODE", "runtime")]
     assert program.kernels[0].runtime_args[1][0] == [8, 9]
-    assert committed_lifetimes == [(owner,)]
+    assert fake_ttnn.synchronize_calls == [device]
 
 
 def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
     fake_ttnn = _FakeTTNN()
+    device = object()
 
     def fail_generic_op(_tensors, _program):
         raise RuntimeError("device execution failed")
 
     fake_ttnn.generic_op = fail_generic_op
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
-
     with pytest.raises(RuntimeError, match="device execution failed"):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
@@ -1535,18 +1575,14 @@ def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
                 lifetimes=(object(),)
             ),
             operation_name="failed_execution",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
+            device=device,
         )
 
-    assert retained_lifetimes == [(previous_owner,)]
+    assert fake_ttnn.synchronize_calls == [device]
 
 
 def test_run_kernel_plan_failure_preserves_runtime_resource_lifetimes(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     with pytest.raises(TypeError) as exception_info:
         kernel_runner.run_kernel_on_device(
@@ -1558,16 +1594,12 @@ def test_run_kernel_plan_failure_preserves_runtime_resource_lifetimes(monkeypatc
                 kernel_resources=[]
             ),
             operation_name="failed_execution",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
         )
 
     assert str(exception_info.value) == (
         "@ttl.operation 'failed_execution': kernel_resources must be a tuple, "
         "got list"
     )
-    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
@@ -1580,8 +1612,6 @@ def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
 
     fake_ttnn.KernelDescriptor = fail_kernel_descriptor
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     with pytest.raises(RuntimeError) as exception_info:
         kernel_runner.run_kernel_on_device(
@@ -1593,13 +1623,9 @@ def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
                 lifetimes=(object(),)
             ),
             operation_name="failed_execution",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
         )
 
     assert str(exception_info.value) == "descriptor construction failed"
-    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
@@ -1620,7 +1646,7 @@ def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
 
     fake_ttnn.generic_op = verify_lifetime
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    committed_lifetimes = []
+    device = object()
 
     result = kernel_runner.run_kernel_on_device(
         kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
@@ -1629,11 +1655,106 @@ def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
         core_ranges=_FakeCoreRanges(),
         runtime_resource_factory=make_resources,
         operation_name="lifetime_execution",
-        runtime_resource_lifetime_commit=committed_lifetimes.append,
+        device=device,
     )
 
     assert result == "executed"
-    assert committed_lifetimes == [(owner_reference[0](),)]
+    assert fake_ttnn.synchronize_calls == [device]
+    assert owner_reference[0]() is None
+
+
+def test_run_kernel_cache_replaces_portable_lifetimes_after_synchronization(
+    monkeypatch,
+):
+    events = []
+
+    class LifetimeOwner:
+        def __init__(self, identifier):
+            self.identifier = identifier
+            events.append(("allocate", identifier))
+
+        def __del__(self):
+            events.append(("release", self.identifier))
+
+    fake_ttnn = _FakeTTNN()
+    device = object()
+    fake_ttnn.synchronize_device = lambda synchronized_device: events.append(
+        ("synchronize", synchronized_device)
+    )
+    fake_ttnn.generic_op = lambda _tensors, _program: events.append(
+        ("dispatch", device)
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    owner_references = []
+
+    def make_resources(**_kwargs):
+        owner = LifetimeOwner(len(owner_references))
+        owner_references.append(weakref.ref(owner))
+        return ProgramRuntimeResources(lifetimes=(owner,))
+
+    for _invocation in range(2):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=make_resources,
+            runtime_resource_cache=cache,
+            device=device,
+        )
+
+    first_synchronize = events.index(("synchronize", device))
+    first_release = events.index(("release", 0))
+    second_allocation = events.index(("allocate", 1))
+    assert first_synchronize < first_release < second_allocation
+    assert owner_references[0]() is None
+    assert owner_references[1]() is cache.portable_resource_lifetimes[0]
+
+    kernel_runner.release_cached_runtime_resources(cache)
+    second_synchronize = len(events) - 2
+    second_release = len(events) - 1
+    assert events[second_synchronize] == ("synchronize", device)
+    assert events[second_release] == ("release", 1)
+    assert owner_references[1]() is None
+
+
+def test_run_kernel_cache_retains_portable_lifetimes_after_dispatch_error(
+    monkeypatch,
+):
+    class LifetimeOwner:
+        pass
+
+    fake_ttnn = _FakeTTNN()
+    device = object()
+    owner_reference = []
+
+    def make_resources(**_kwargs):
+        owner = LifetimeOwner()
+        owner_reference.append(weakref.ref(owner))
+        return ProgramRuntimeResources(lifetimes=(owner,))
+
+    fake_ttnn.generic_op = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("dispatch failed")
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=make_resources,
+            runtime_resource_cache=cache,
+            device=device,
+        )
+
+    assert owner_reference[0]() is cache.portable_resource_lifetimes[0]
+    kernel_runner.release_cached_runtime_resources(cache)
+    assert fake_ttnn.synchronize_calls == [device]
+    assert owner_reference[0]() is None
 
 
 def test_run_kernel_checks_compiler_semaphore_ids_before_factory(monkeypatch):
@@ -1826,7 +1947,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     )
 
     assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x3020]
-    assert descriptors[0].runtime_args is None
+    assert not descriptors[0].runtime_args
     with pytest.raises(
         RuntimeError,
         match="pipe resource plan expected 2 extra common runtime args, got 1",
@@ -1971,8 +2092,6 @@ def test_run_kernel_rejects_wrong_runtime_resource_factory_result(monkeypatch):
 def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     factory_error = ValueError("factory detail")
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     def fail_factory(**_kwargs):
         raise factory_error
@@ -1991,13 +2110,9 @@ def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch)
             core_ranges=_FakeCoreRanges(),
             runtime_resource_factory=fail_factory,
             operation_name="factory_failure",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
         )
 
     assert exception_info.value.__cause__ is factory_error
-    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_sets_custom_program_hash(monkeypatch):
@@ -2101,7 +2216,7 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     next_values = iter((7, 19))
-    retained_lifetimes = []
+    device = object()
 
     def make_resources(**_kwargs):
         return ProgramRuntimeResources(
@@ -2129,14 +2244,14 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
             program_hash=23,
             runtime_resource_factory=make_resources,
             operation_name="repeated_resources",
-            runtime_resource_lifetime_commit=retained_lifetimes.append,
+            device=device,
         )
         programs.append(result["program"])
 
     assert programs[0].custom_program_hash == programs[1].custom_program_hash
     assert programs[0].kernels[0].runtime_args[0][0] == [7]
     assert programs[1].kernels[0].runtime_args[0][0] == [19]
-    assert len(retained_lifetimes) == 2
+    assert kernel_runner.ttnn.synchronize_calls == [device, device]
 
 
 def test_build_generic_op_io_tensors_duplicates_single_output():
@@ -3227,11 +3342,9 @@ def test_emit_runner_source_preserves_dfb_reconfiguration_resources(monkeypatch)
     assert "entry_reconfiguration_ordinal=7" in source
     assert "num_tiles=2" in source
     assert "block_count=3" in source
-    assert "get_cached_runtime_resources(" in source
+    assert "run_kernel_on_device(" in source
     assert "dfb_reconfiguration_plan=DFB_RECONFIGURATION_PLAN" in source
-    assert "dfb_reconfiguration_runtime_args=(" in source
-    assert "dfb_reconfiguration_scratch_tensors=(" in source
-    assert "dfb_reconfiguration_configuration_tensors=(" in source
+    assert "runtime_resource_cache=_RUNTIME_RESOURCE_CACHE" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():
@@ -3260,6 +3373,7 @@ def test_emitted_runner_without_resources_executes_shared_runner(monkeypatch):
     def record_run(**kwargs):
         calls.append(kwargs)
         return "executed"
+
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[],
