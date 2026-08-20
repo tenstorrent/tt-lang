@@ -175,8 +175,7 @@ constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Function attribute recording physical DFB indices referenced by the final
 /// TTKernel body after per-core specialization and canonicalization.
-constexpr llvm::StringLiteral
-    kUsedDFBIndicesAttrName("ttl.used_dfb_indices");
+constexpr llvm::StringLiteral kUsedDFBIndicesAttrName("ttl.used_dfb_indices");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>

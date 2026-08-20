@@ -188,9 +188,7 @@ def _get_remaining_l1_by_core_for_device(
 ) -> dict[tuple[int, int], int]:
     """Return each requested logical core's remaining static DFB budget."""
     budget_bytes, used_bytes = _device_l1_cb_usage(device)
-    return {
-        core: max(0, budget_bytes - used_bytes.get(core, 0)) for core in cores
-    }
+    return {core: max(0, budget_bytes - used_bytes.get(core, 0)) for core in cores}
 
 
 @dataclass
@@ -2750,7 +2748,9 @@ def emit_runner_source(
         "                logical_kernel=_logical_kernel_from_spec("
         "KERNEL_LOGICAL_IDENTITIES[kernel_idx]),"
     )
-    lines.append("                used_dfb_indices=KERNEL_USED_DFB_INDICES[kernel_idx],")
+    lines.append(
+        "                used_dfb_indices=KERNEL_USED_DFB_INDICES[kernel_idx],"
+    )
     lines.append("            )")
     lines.append("        )")
     lines.append("    return run_kernel_on_device(")

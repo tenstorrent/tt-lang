@@ -292,7 +292,11 @@ def _make_subset_dfb_op():
         def compute_fn():
             x, _y = ttl.node(dims=2)
             if x == 0:
-                with a_dfb.wait() as a_tile, extra_dfb.wait() as extra_tile, out_dfb.reserve() as o:
+                with (
+                    a_dfb.wait() as a_tile,
+                    extra_dfb.wait() as extra_tile,
+                    out_dfb.reserve() as o,
+                ):
                     o.store(a_tile + extra_tile)
             else:
                 with a_dfb.wait() as a_tile, out_dfb.reserve() as o:
