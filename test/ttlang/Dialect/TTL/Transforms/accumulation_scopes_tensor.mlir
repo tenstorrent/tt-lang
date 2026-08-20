@@ -312,3 +312,50 @@ func.func @zero_trip_recurrence_scope() {
   ttl.store %result, %out : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }
+
+// -----
+
+// Two recurrences that reuse one resident contribution share the acquisition's
+// single synthesized release.
+// FORM-LABEL: func.func @shared_resident_contribution
+// FORM-COUNT-2: ttl.accumulation_scope
+// LOWER-LABEL: func.func @shared_resident_contribution
+// LOWER: %[[CONTRIB_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
+// LOWER-COUNT-1: ttl.cb_wait %[[CONTRIB_CB]]
+// LOWER-COUNT-2: ttl.dst_section
+// LOWER-COUNT-1: ttl.cb_pop %[[CONTRIB_CB]]
+// LOWER-NOT: ttl.cb_pop %[[CONTRIB_CB]]
+// LOWER-NOT: ttl.accumulation_scope
+func.func @shared_resident_contribution() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c3 = arith.constant 3 : index
+  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %out0_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %out1_cb = ttl.bind_cb {cb_index = 17, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %init_wait = ttl.cb_wait %init_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init = ttl.attach_cb %init_wait, %init_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contrib_wait = ttl.cb_wait %contrib_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contrib = ttl.attach_cb %contrib_wait, %contrib_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %out0 = ttl.cb_reserve %out0_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result0 = scf.for %iv = %c0 to %c3 step %c1
+      iter_args(%acc = %init)
+      -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %next = ttl.add %acc, %contrib : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  ttl.store %result0, %out0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %out1 = ttl.cb_reserve %out1_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result1 = scf.for %iv = %c0 to %c3 step %c1
+      iter_args(%acc = %init)
+      -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %next = ttl.add %acc, %contrib : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  ttl.store %result1, %out1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}

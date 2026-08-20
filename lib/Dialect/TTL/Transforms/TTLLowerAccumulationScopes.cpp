@@ -21,6 +21,9 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
+
 #include <memory>
 #include <utility>
 
@@ -47,6 +50,7 @@ struct TensorAccumulationScopeLoweringPlan {
   AccumulationScopeOp scope;
   TensorAccumulationScopeMatch match;
   TensorDstAccumulationInfo dstInfo;
+  bool synthesizeResidentContributionPop = false;
 };
 
 /// Check the structural policy encoded by tensor accumulation scopes. The
@@ -198,7 +202,28 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
         "fits in DST");
     return failure();
   }
-  return TensorAccumulationScopeLoweringPlan{scope, *match, *dstInfo};
+  return TensorAccumulationScopeLoweringPlan{
+      scope, *match, *dstInfo,
+      /*synthesizeResidentContributionPop=*/
+      false};
+}
+
+/// Assign one missing resident release to the final lowering plan that uses
+/// each acquisition. Multiple scopes may reuse one resident contribution, but
+/// the acquisition owns exactly one release after its final use.
+static void assignResidentContributionReleases(
+    MutableArrayRef<TensorAccumulationScopeLoweringPlan> plans) {
+  llvm::SmallPtrSet<Operation *, 4> assignedWaits;
+  for (TensorAccumulationScopeLoweringPlan &plan : llvm::reverse(plans)) {
+    TensorDstAccumulationInfo &dstInfo = plan.dstInfo;
+    if (dstInfo.contributionResidency !=
+            TensorAccumulationContributionResidency::Resident ||
+        dstInfo.residentContributionPop) {
+      continue;
+    }
+    plan.synthesizeResidentContributionPop =
+        assignedWaits.insert(dstInfo.contributionWait.getOperation()).second;
+  }
 }
 
 /// Rewrite one verified tensor accumulation scope to a DST-resident accumulator
@@ -209,7 +234,9 @@ lowerTensorAccumulationScope(const TensorAccumulationScopeLoweringPlan &plan,
   AccumulationScopeOp scope = plan.scope;
   Value initialValue = scope.getInits().front();
   replaceYieldOperandsWithStateArguments(scope);
-  lowerTensorAccumulationToDst(plan.match.recurrence, plan.dstInfo, rewriter);
+  lowerTensorAccumulationToDst(plan.match.recurrence, plan.dstInfo,
+                               plan.synthesizeResidentContributionPop,
+                               rewriter);
 
   eraseAccumulationScopeWrapper(scope, rewriter, initialValue);
 }
@@ -256,6 +283,7 @@ struct TTLLowerAccumulationScopesPass
       signalPassFailure();
       return;
     }
+    assignResidentContributionReleases(plans);
 
     IRRewriter rewriter(&getContext());
     for (const TensorAccumulationScopeLoweringPlan &plan : plans) {

@@ -149,6 +149,53 @@ def _make_resident_contribution_kernel():
     return kernel
 
 
+def _make_shared_resident_contribution_kernel():
+    @ttl.operation(grid=(1, 1))
+    def kernel(initial_a, initial_b, delta, out_a, out_b):
+        initial_a_dfb = ttl.make_dataflow_buffer_like(
+            initial_a, shape=(1, 1), block_count=2
+        )
+        initial_b_dfb = ttl.make_dataflow_buffer_like(
+            initial_b, shape=(1, 1), block_count=2
+        )
+        delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=1)
+        out_a_dfb = ttl.make_dataflow_buffer_like(out_a, shape=(1, 1), block_count=2)
+        out_b_dfb = ttl.make_dataflow_buffer_like(out_b, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            delta_blk = delta_dfb.wait()
+            with initial_a_dfb.wait() as acc_a:
+                for _ in range(STREAMING_UPDATE_COUNT):
+                    acc_a = acc_a + delta_blk
+                with out_a_dfb.reserve() as out_a_blk:
+                    out_a_blk.store(acc_a)
+
+            with initial_b_dfb.wait() as acc_b:
+                for _ in range(STREAMING_UPDATE_COUNT):
+                    acc_b = acc_b + delta_blk
+                with out_b_dfb.reserve() as out_b_blk:
+                    out_b_blk.store(acc_b)
+
+        @ttl.datamovement()
+        def reader():
+            with initial_a_dfb.reserve() as initial_a_blk:
+                ttl.copy(initial_a[0:1, 0:1], initial_a_blk).wait()
+            with initial_b_dfb.reserve() as initial_b_blk:
+                ttl.copy(initial_b[0:1, 0:1], initial_b_blk).wait()
+            with delta_dfb.reserve() as delta_blk:
+                ttl.copy(delta[0:1, 0:1], delta_blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_a_dfb.wait() as out_a_blk:
+                ttl.copy(out_a_blk, out_a[0:1, 0:1]).wait()
+            with out_b_dfb.wait() as out_b_blk:
+                ttl.copy(out_b_blk, out_b[0:1, 0:1]).wait()
+
+    return kernel
+
+
 def _make_resident_contribution_explicit_pop_kernel():
     @ttl.operation(grid=(1, 1))
     def kernel(initial, delta, out):
@@ -368,7 +415,12 @@ def _extract_generated_kernel_source(output, kernel_name):
 
 
 def _assert_dst_accumulation_compute(
-    output, final_ir, *, expected_tile_count, resident_contribution=False
+    output,
+    final_ir,
+    *,
+    expected_tile_count,
+    resident_contribution=False,
+    expected_pop_count=2,
 ):
     compute_source = _extract_generated_kernel_source(output, "compute")
     assert "binary_dest_reuse_tiles<" in compute_source
@@ -385,7 +437,7 @@ def _assert_dst_accumulation_compute(
     if resident_contribution:
         assert "wait_front" not in loop_source
         assert "pop_front" not in loop_source
-        assert compute_source.count("pop_front") == 2
+        assert compute_source.count("pop_front") == expected_pop_count
     else:
         assert "wait_front" in loop_source
         assert "pop_front" in loop_source
@@ -468,6 +520,39 @@ def test_resident_contribution_is_dst_resident(
         capsys=capsys,
     )
     _assert_resident_dst_compute(output, final_ir)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_shared_resident_contribution_has_one_release(
+    device, dtype, tmp_path, monkeypatch, capsys
+):
+    initial_a = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    initial_b = torch.full((TILE, TILE), 8.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
+    expected_a = initial_a.float() + STREAMING_UPDATE_COUNT * delta.float()
+    expected_b = initial_b.float() + STREAMING_UPDATE_COUNT * delta.float()
+    output, final_ir = _run_io_kernel_with_ir_capture(
+        _make_shared_resident_contribution_kernel(),
+        in_tensors=[initial_a, initial_b, delta],
+        out_zeros=[
+            torch.zeros((TILE, TILE), dtype=dtype),
+            torch.zeros((TILE, TILE), dtype=dtype),
+        ],
+        expected_list=[expected_a, expected_b],
+        dtype=dtype,
+        device=device,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+    )
+    _assert_dst_accumulation_compute(
+        output,
+        final_ir,
+        expected_tile_count=2,
+        resident_contribution=True,
+        expected_pop_count=3,
+    )
 
 
 @pytest.mark.requires_device

@@ -391,6 +391,7 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
 
 void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
                                   const TensorDstAccumulationInfo &info,
+                                  bool synthesizeResidentContributionPop,
                                   RewriterBase &rewriter) {
   scf::ForOp loop = match.loop;
   Location loc = loop.getLoc();
@@ -495,7 +496,7 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
 
   if (info.contributionResidency ==
           TensorAccumulationContributionResidency::Resident &&
-      !info.residentContributionPop) {
+      !info.residentContributionPop && synthesizeResidentContributionPop) {
     Operation *lastUse = info.residentContributionLastUse;
     assert(lastUse && "resident contribution must have an owned use");
     if (lastUse == loop.getOperation()) {

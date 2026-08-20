@@ -125,9 +125,12 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
 
 /// Lower a matched additive tensor recurrence to a DST section whose
 /// accumulator stays resident across the original source loop. Contribution
-/// acquisition follows `info.contributionResidency`.
+/// acquisition follows `info.contributionResidency`. The caller assigns
+/// `synthesizeResidentContributionPop` to exactly one lowering plan for each
+/// resident acquisition that has no existing release.
 void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
                                   const TensorDstAccumulationInfo &info,
+                                  bool synthesizeResidentContributionPop,
                                   RewriterBase &rewriter);
 
 } // namespace mlir::tt::ttl
