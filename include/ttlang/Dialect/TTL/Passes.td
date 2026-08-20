@@ -742,8 +742,9 @@ def TTLVerifyPipeNetGuards
     logical IDs until physical index finalization. DFB lifecycle operands used
     by the guard analysis must resolve to `ttl.bind_cb` declarations.
 
-    When `TTL_RELAX_DFB_SPSC` is set, external synchronization supplies the
-    wait-versus-producer domain proof. PipeNet endpoint guards, transfer
+    When `TTL_RELAX_DFB_SPSC` is set, this pass skips the check that each DFB
+    wait has a producer on the same dynamically active launch nodes. The
+    program must enforce that correspondence. PipeNet endpoint guards, transfer
     correspondence, and synchronization schedules remain mandatory.
   }];
 }
@@ -842,9 +843,10 @@ def TTLVerifyDFBSPSC
     must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
     must also carry a valid `ttl.launch_grid` attribute.
 
-    Setting `TTL_RELAX_DFB_SPSC` disables producer and consumer launch-domain
-    analysis for externally synchronized programs whose ownership contract is
-    not represented in the IR. Finalized DFB identity, physical-index, and
+    Setting `TTL_RELAX_DFB_SPSC` skips compiler verification that each DFB has
+    one producer and one consumer per dynamically active launch node. The
+    program must enforce that ownership contract through synchronization not
+    represented in the IR. Finalized DFB identity, physical-index, and
     launch-grid preconditions remain mandatory. Strict verification is the
     default.
   }];
