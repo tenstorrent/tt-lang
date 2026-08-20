@@ -5,12 +5,12 @@
 
 Turns per-kernel work into cycles and combines them into a ``CycleEstimate``:
 
-- :func:`op_cycles` — one op's ideal-peak cycles (work / peak-rate).
-- :func:`kernel_cycles` — per-kernel ``max(compute, movement)`` (concurrent engines).
-- :func:`program_cycles` — throughput-bound ``max`` within a node and across nodes,
+- :func:`op_cycles` - one op's ideal-peak cycles (work / peak-rate).
+- :func:`kernel_cycles` - per-kernel ``max(compute, movement)`` (concurrent engines).
+- :func:`program_cycles` - throughput-bound ``max`` within a node and across nodes,
   floored by the shared aggregate-memory ceiling (:func:`program_breakdown`).
-- :func:`per_node_rollup` — the single per-node aggregation (max over a node).
-- :func:`build_estimate` — assemble the canonical ``CycleEstimate``.
+- :func:`per_node_rollup` - the single per-node aggregation (max over a node).
+- :func:`build_estimate` - assemble the canonical ``CycleEstimate``.
 
 Profile loading (:func:`resolve_profile` / :func:`load_profile_json`) lives here;
 profile *data* is JSON under ``hw_profiles/``.
@@ -35,7 +35,7 @@ from .types import (
 from ..utils import node_from_kernel, node_sort_key, role_from_kernel
 
 _TILE_DIM = 32  # Tenstorrent tile edge, fixed across parts
-FLOP_PER_MATMUL_TILE = 2 * _TILE_DIM**3  # 2·MACs per 32×32 tile-matmul
+FLOP_PER_MATMUL_TILE = 2 * _TILE_DIM**3  # 2*MACs per 32x32 tile-matmul
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def total_memory_bytes(kernels: list[KernelWork], hw: HardwareProfile) -> float:
 
 
 def total_matmul_flop(kernels: list[KernelWork]) -> float:
-    """Program-wide matmul FLOP for the roofline. Matmul only — the SFPU rate
+    """Program-wide matmul FLOP for the roofline. Matmul only - the SFPU rate
     is a placeholder, so non-matmul compute is excluded."""
     return sum(
         o.tiles * FLOP_PER_MATMUL_TILE
@@ -96,7 +96,7 @@ def memory_bytes_by_direction(
 
     Direction comes from the trace's ``copy_end`` ``direction`` field. Traffic with
     no direction (older traces) falls into read, so read + write always equals
-    :func:`total_memory_bytes`. Reporting/validation only — the ceiling is unsplit.
+    :func:`total_memory_bytes`. Reporting/validation only - the ceiling is unsplit.
     """
     read = write = 0.0
     for k in kernels:
@@ -262,7 +262,7 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
             )
         )
 
-    # One per-node rollup, reused for program selection and rendering — no second
+    # One per-node rollup, reused for program selection and rendering - no second
     # walk of the ops through the cycle math.
     nodes = per_node_rollup(kernel_estimates)
     node_bound = max((n.cycles for n in nodes), default=0.0)
@@ -273,7 +273,7 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
     node_bound_reason = at_max[0].bound if at_max else "-"
 
     # program_cycles is the throughput lower bound: max(node_bound, memory_floor).
-    # Fill/drain is reported as an informational delta only — NOT folded into the
+    # Fill/drain is reported as an informational delta only - NOT folded into the
     # bound. It is a crude, unprovable heuristic that can exceed real per-node
     # overhead (device-confirmed on the reuse kernel: it broke `measured >= estimate`
     # at some sizes), so including it would forfeit the lower-bound guarantee.
@@ -300,7 +300,7 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
             else "memory"
         )
     else:
-        # No shared-memory traffic → infinite AI → compute-bound (if any matmul).
+        # No shared-memory traffic -> infinite AI -> compute-bound (if any matmul).
         arithmetic_intensity = 0.0
         roofline_bound = "compute" if matmul_flop > 0.0 else "memory"
     compute_roof_pct = (
@@ -396,9 +396,9 @@ def load_profile_json(path: Path | str) -> HardwareProfile:
 def resolve_profile(name_or_path: str | None) -> HardwareProfile:
     """Resolve a ``--hw-profile`` input to a HardwareProfile.
 
-    None → default (wormhole_n300); a path (``.json`` or a directory component) →
-    that file; a bare name → ``hw_profiles/<name>.json``. A bare name may also be
-    a board *family* (e.g. ``wormhole`` → ``wormhole_n300``): if there is no exact
+    None -> default (wormhole_n300); a path (``.json`` or a directory component) ->
+    that file; a bare name -> ``hw_profiles/<name>.json``. A bare name may also be
+    a board *family* (e.g. ``wormhole`` -> ``wormhole_n300``): if there is no exact
     match, a single profile whose stem starts with ``<name>_`` is used; multiple
     matches are ambiguous and raise.
     """

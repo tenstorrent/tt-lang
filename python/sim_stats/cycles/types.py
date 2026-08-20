@@ -37,12 +37,12 @@ class HardwareProfile:
     bytes_per_tile: float
     dm_engines: int = 1
     memory_aggregate_bw: float = (
-        0.0  # B/cyc; JSON stores gbps, converted ÷clock at load
+        0.0  # B/cyc; JSON stores gbps, converted /clock at load
     )
-    tensix_cores: int = 0  # chip-wide Tensix count; 0 → compute roof unavailable
+    tensix_cores: int = 0  # chip-wide Tensix count; 0 -> compute roof unavailable
 
     def rate_for(self, op_type: str, dtype: str = "") -> float:
-        """Peak tiles/cycle: exact ``(op_type, dtype)`` → ``(op_type, "")`` → default."""
+        """Peak tiles/cycle: exact ``(op_type, dtype)`` -> ``(op_type, "")`` -> default."""
         for key in ((op_type, dtype), (op_type, "")):
             if key in self.compute_rate:
                 return self.compute_rate[key]
@@ -87,7 +87,7 @@ class KernelWork:
     """Per-kernel collection of op records extracted from the trace."""
 
     kernel: str
-    ops: list[OpWork] = field(default_factory=list[OpWork])
+    ops: list[OpWork] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -128,13 +128,13 @@ class CycleEstimate:
     program_cycles: float
     total_nodes: int
     active_nodes: int
-    kernels: list[KernelEstimate] = field(default_factory=list[KernelEstimate])
+    kernels: list[KernelEstimate] = field(default_factory=list)
     program_bound: str = "per-node"  # "per-node" | "memory"
     memory_floor: float = 0.0
     total_memory_bytes: float = 0.0
     memory_read_bytes: float = 0.0
     memory_write_bytes: float = 0.0
-    nodes: list[NodeEstimate] = field(default_factory=list[NodeEstimate])
+    nodes: list[NodeEstimate] = field(default_factory=list)
     node_bound: float = 0.0  # max over nodes of per-node cycles (throughput)
     node_bound_reason: str = "compute"  # slowest node's bound ("compute"|"movement")
     node_fill_drain: float = (
