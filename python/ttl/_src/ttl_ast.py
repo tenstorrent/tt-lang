@@ -1113,6 +1113,10 @@ class TTLGenericCompiler(TTCompilerBase):
                     self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
                     self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
+                elif isinstance(val, (tuple, list)):
+                    # Shape and axis lists are consumed by the Python-level API,
+                    # exactly as an inline literal would be.
+                    self._set_var(name, val)
                 elif isinstance(val, DataflowBuffer):
                     self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):

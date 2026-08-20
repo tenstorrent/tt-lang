@@ -729,27 +729,38 @@ def node(*, dims):
     """
     Get the coordinates of the current core.
 
-    Currently only dims=2 is supported (temporary restriction).
+    Currently only dims=1 and dims=2 are supported (temporary restriction).
 
     Args:
-        dims: Number of dimensions to return (must be 2)
+        dims: Number of dimensions to return (must be 1 or 2)
 
     Returns:
         For dims=2: Tuple (x, y) where x is column coordinate and y is row coordinate
+        For dims=1: The node's index within the flattened grid
 
     Raises:
-        ValueError: If dims is not 2
+        ValueError: If dims is not 1 or 2
 
     Example:
         x, y = ttl.node(dims=2)
+        n = ttl.node(dims=1)
     """
     dims_val = _get_constant_int(dims)
-    if dims_val != 2:
+    if dims_val not in (1, 2):
         raise ValueError(
-            f"core() currently only supports dims=2, got dims={dims_val}. "
+            f"core() currently only supports dims=1 and dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
-    return (ttl.core_x(), ttl.core_y())
+    x = ttl.core_x()
+    if dims_val == 2:
+        return (x, ttl.core_y())
+    # Flattening folds the highest-rank dimension into the one below it, so x
+    # varies fastest and the row stride is the grid's column count.
+    cols = _get_current_grid()[0]
+    ctx = x.type.context
+    stride = arith.ConstantOp(IndexType.get(ctx), cols).result
+    row_base = arith.MulIOp(ttl.core_y(), stride).result
+    return arith.AddIOp(row_base, x).result
 
 
 @syntax("grid_size")
@@ -757,28 +768,33 @@ def grid_size(*, dims):
     """
     Get the size of the grid.
 
-    Currently only dims=2 is supported (temporary restriction).
+    Currently only dims=1 and dims=2 are supported (temporary restriction).
 
     Args:
-        dims: Number of dimensions to return (must be 2)
+        dims: Number of dimensions to return (must be 1 or 2)
 
     Returns:
         For dims=2: Tuple (x_size, y_size) where x_size is columns and y_size is rows
+        For dims=1: The total number of nodes in the grid
 
     Raises:
-        ValueError: If dims is not 2
+        ValueError: If dims is not 1 or 2
 
     Example:
         x_size, y_size = ttl.grid_size(dims=2)
+        total = ttl.grid_size(dims=1)
     """
     dims_val = _get_constant_int(dims)
-    if dims_val != 2:
+    if dims_val not in (1, 2):
         raise ValueError(
-            f"grid_size() currently only supports dims=2, got dims={dims_val}. "
+            f"grid_size() currently only supports dims=1 and dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
     # grid is stored as (cols, rows) = (x, y), matching tt-metal convention
-    return _get_current_grid()
+    cols, rows = _get_current_grid()
+    if dims_val == 2:
+        return (cols, rows)
+    return cols * rows
 
 
 @syntax("signpost")

@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from sim import ttl
+from sim import ttnnsim as ttnn
 from sim.dfb import Block
 from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
@@ -1402,6 +1403,54 @@ def test_fill_requires_2d():
     """fill rejects shapes with fewer than 2 dimensions."""
     with pytest.raises(ValueError, match="at least 2 dimensions"):
         ttl.block.fill(1.0, shape=(4,))
+
+
+def test_fill_declares_bfloat16_by_default():
+    """An unqualified fill produces bfloat16 tiles, as the specification says."""
+    result = ttl.block.fill(1.0, shape=(1, 1))
+
+    assert result.to_tensor().dtype == ttnn.bfloat16
+
+
+def test_fill_declares_the_requested_dtype():
+    """The dtype a fill is asked for is the dtype the block it makes declares.
+
+    An accumulator seeded by fill has to declare the width it accumulates at,
+    since that is what the buffer it is stored into is sized and typed by.
+    """
+    result = ttl.block.fill(0.0, shape=(2, 3), dtype=torch.float32)
+
+    assert result.shape == (2, 3)
+    assert result.to_tensor().dtype == torch.float32
+
+
+def test_fill_dtype_is_positional_after_shape():
+    """dtype sits where the specification puts it, before the tile dimensions."""
+    result = ttl.block.fill(4.0, (1, 1), torch.float32)
+
+    assert result.to_tensor().dtype == torch.float32
+    assert result.tile == (32, 32)
+
+
+def test_fill_backs_a_narrow_dtype_with_float32():
+    """A narrow declared dtype is stored at float32, as every other tensor is.
+
+    The simulator promotes narrow floats so host arithmetic stays exact on
+    hosts without bfloat16, and a filled block has to be storable alongside
+    the tensors it is accumulated against.
+    """
+    result = ttl.block.fill(1.0, shape=(1, 1), dtype=ttnn.bfloat16)
+
+    assert result.to_tensor().underlying_dtype == torch.float32
+
+
+def test_fill_does_not_narrow_the_value():
+    """A filled value survives the block it is put in."""
+    value = 1.0 + 2.0**-20  # not representable in bfloat16
+
+    result = ttl.block.fill(value, shape=(1, 1), dtype=torch.float32)
+
+    assert (result.to_list()[0].to_torch() == value).all()
 
 
 # ---------------------------------------------------------------------------

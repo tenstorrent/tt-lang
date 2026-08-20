@@ -50,6 +50,9 @@ from .operators import (
 # Math operations namespace
 from . import ttl_math as math
 
+# Block operations namespace
+from . import ttl_block as block
+
 __all__ = [
     "operation",
     "DFB",
@@ -74,4 +77,5 @@ __all__ = [
     "get_dfb_id",
     "raw_addr",
     "math",
+    "block",
 ]
