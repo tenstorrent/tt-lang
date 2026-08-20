@@ -61,7 +61,9 @@ def test_block_state_machine_restrictions() -> None:
         _ = block[0]
 
     # Store makes it MR (read-only after regular store)
-    block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 5.0))))
+    block.store(
+        Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 5.0), dtype=element.dtype))
+    )
 
     block.push()
 
@@ -73,7 +75,11 @@ def test_block_state_machine_restrictions() -> None:
         RuntimeError,
         match=r"(?s)Cannot perform store\(\): not a valid next dataflow step.*\[STORE_SRC\]",
     ):
-        read_block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))))
+        read_block.store(
+            Block.from_tensor(
+                ttnn.Tensor(torch.full(TILE_SHAPE, 10.0), dtype=element.dtype)
+            )
+        )
 
     # Use waited block as STORE_SRC before pop
     out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
@@ -538,9 +544,12 @@ def test_format_cannot_write_ror_includes_pending_copy_callsite_when_provided() 
 
 def test_bsm_validate_finished_block_uses_block_finished_error() -> None:
     """Empty expected-ops should surface the reacquire / lifecycle message."""
-    dfb = DataflowBuffer(likeness_tensor=make_zeros_tile(), shape=(1, 1), block_count=2)
+    element = make_zeros_tile()
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
     b = dfb.reserve()
-    b.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0))))
+    b.store(
+        Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0), dtype=element.dtype))
+    )
     b.push()
     with pytest.raises(RuntimeError) as err:
         b.mark_store_complete()

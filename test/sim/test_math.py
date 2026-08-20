@@ -1266,6 +1266,12 @@ def _make_row_major_block(shape: tuple) -> Block:
     return Block.from_list(tiles, shape=shape)
 
 
+def _block_with_declared_dtype(dtype) -> Block:
+    """Create a float32-backed tile block with an explicit logical dtype."""
+    tile = Tensor(torch.ones(32, 32, dtype=torch.float32), dtype=dtype)
+    return Block.from_list([tile], shape=(1, 1))
+
+
 def test_broadcast_row_major_rejected():
     """Test that broadcast raises an error for Row-Major layout blocks."""
     block = _make_row_major_block((1, 1))
@@ -1367,6 +1373,57 @@ def test_block_where_layout_error_wins_over_shape_error():
     with pytest.raises(ValueError, match="must share the same layout") as exc_info:
         ttl.block.where(cond, tv, fv)
     assert "Shape mismatch" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        ttl.math.max,
+        ttl.math.min,
+        ttl.math.gt,
+        ttl.math.lt,
+        ttl.math.eq,
+        ttl.math.ne,
+        ttl.block.mask,
+        ttl.block.mask_posinf,
+    ],
+)
+def test_multi_block_helpers_reject_mixed_declared_dtypes(operation):
+    """Multi-block helpers reject BF16/F32 inputs with identical F32 backing."""
+    lhs = _block_with_declared_dtype(ttnn.bfloat16)
+    rhs = _block_with_declared_dtype(ttnn.float32)
+
+    with pytest.raises(ValueError, match="operation requires matching data types"):
+        operation(lhs, rhs)
+
+
+def test_where_rejects_mixed_declared_dtypes():
+    """``ttl.block.where`` requires all three blocks to declare one dtype."""
+    condition = _block_with_declared_dtype(ttnn.bfloat16)
+    true_value = _block_with_declared_dtype(ttnn.bfloat16)
+    false_value = _block_with_declared_dtype(ttnn.float32)
+
+    with pytest.raises(ValueError, match="operation requires matching data types"):
+        ttl.block.where(condition, true_value, false_value)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda block: ttl.math.exp(block),
+        lambda block: ttl.math.max(block, block),
+        lambda block: ttl.math.reduce_sum(block, dims=[0], shape=(1, 1)),
+        lambda block: ttl.block.broadcast(block, dims=[0], shape=(2, 1)),
+        lambda block: ttl.block.transpose(block),
+    ],
+    ids=["unary", "binary", "reduce", "broadcast", "transpose"],
+)
+def test_block_helpers_preserve_declared_dtype(operation):
+    """Derived blocks retain logical BF16 while using F32 backing storage."""
+    result = operation(_block_with_declared_dtype(ttnn.bfloat16))
+
+    assert result.raw_tensor.dtype == ttnn.bfloat16
+    assert result.raw_tensor.underlying_dtype == torch.float32
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,13 @@ import torch
 
 from .constants import TILE_SHAPE
 from .context import get_context
-from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
+from .dfb import (
+    Block,
+    check_same_dtype,
+    check_same_layout,
+    track_source_blocks,
+    _dry_run_result,
+)
 from .blockstate import BlockAcquisition
 from .kernel import KernelKind
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor, bfloat16, _promote_dtype
@@ -36,6 +42,7 @@ def _apply_binary_op(
     # mismatch: shape comparison only makes sense between like-laid-out
     # operands.
     check_same_layout(a, b)
+    check_same_dtype(a, b)
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
     if a_shape != b_shape:
@@ -50,7 +57,9 @@ def _apply_binary_op(
     result_torch: List[torch.Tensor] = [
         op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)
     ]
-    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
+    result_list: List[Tensor] = [
+        Tensor(t, layout, dtype=a.raw_tensor.dtype) for t in result_torch
+    ]
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
     return result_block
@@ -65,6 +74,7 @@ def _apply_ternary_op(
     # Layout is checked before shape so a layout error wins when both
     # mismatch (see ``_apply_binary_op`` for the rationale).
     check_same_layout(a, b, c)
+    check_same_dtype(a, b, c)
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
     c_shape = c._shape  # type: ignore[attr-defined]
@@ -82,7 +92,9 @@ def _apply_ternary_op(
     result_torch: List[torch.Tensor] = [
         op(a_t, b_t, c_t) for a_t, b_t, c_t in zip(a_tensors, b_tensors, c_tensors)
     ]
-    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
+    result_list: List[Tensor] = [
+        Tensor(t, layout, dtype=a.raw_tensor.dtype) for t in result_torch
+    ]
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b, c)
     return result_block
@@ -222,7 +234,7 @@ def broadcast(
     ).contiguous()
 
     result_block = Block(
-        tensor=Tensor(result_elem),
+        tensor=Tensor(result_elem, dtype=block.raw_tensor.dtype),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
         kernel_type=KernelKind.COMPUTE,
@@ -467,7 +479,10 @@ def transpose(block: Block) -> Block:
         return _dry_run_result((N, M), block)
 
     layout = block.layout
-    transposed_tiles = [Tensor(t.to_torch().T, layout) for t in block.to_list()]
+    transposed_tiles = [
+        Tensor(t.to_torch().T, layout, dtype=block.raw_tensor.dtype)
+        for t in block.to_list()
+    ]
     reordered_tiles: List[Tensor] = []
     for j in range(N):
         for i in range(M):

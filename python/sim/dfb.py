@@ -749,6 +749,7 @@ class Block:
         # Check write access before touching items so state-machine errors are
         # always surfaced first.
         self._check_can_write()
+        check_same_dtype(self, items)
 
         src_tensor = items._buf
         source_blocks_to_mark: List["Block"] = []
@@ -891,6 +892,7 @@ class Block:
         # only meaningful when both operands agree on layout, regardless of
         # whether their declared shapes happen to match.
         check_same_layout(self, other)
+        check_same_dtype(self, other)
 
         left_shape = self._shape
         right_shape = other._shape
@@ -1655,6 +1657,17 @@ def check_same_layout(*blocks: Block) -> None:
         )
 
 
+def check_same_dtype(*blocks: Block) -> None:
+    """Raise ``ValueError`` if input blocks declare different data types."""
+    if len(blocks) < 2:
+        return
+    dtypes = [block.raw_tensor.dtype for block in blocks]
+    if any(dtype != dtypes[0] for dtype in dtypes[1:]):
+        raise ValueError(
+            f"operation requires matching data types; got operand data types {dtypes}"
+        )
+
+
 def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
     """Compute the output tile-grid shape for matmul a @ b.
 
@@ -1703,6 +1716,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         Block whose tile shape corresponds to the matmul output shape.
     """
     check_same_layout(a, b)
+    check_same_dtype(a, b)
     result_shape = _matmul_tile_shape(a.shape, b.shape)
     if _is_dry_run():
         result_tensor = _DRY_RUN_SENTINEL
