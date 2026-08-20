@@ -2120,6 +2120,43 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
+def test_build_kernel_descriptors_prefixes_reconfiguration_runtime_args(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    core_ranges = _FakeCoreRanges((((0, 0), (0, 0)),))
+    spec = _kernel_spec(KernelKind.COMPUTE)
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (4, 5)),),
+                    defines=(KernelDefine("MODE", "planned"),),
+                ),
+            )
+        ),
+        [spec],
+        core_ranges,
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        descriptor_resource_plans=plan.kernel_descriptors,
+        dfb_reconfiguration_runtime_args={(0, 0): [0x1000, 0x2000]},
+    )
+
+    assert descriptors[0].runtime_args[0][0] == [0x1000, 0x2000, 4, 5]
+    assert descriptors[0].defines == [
+        ("MODE", "planned"),
+        ("TTLANG_PORTABLE_RUNTIME_ARG_BASE", "2"),
+    ]
+
+
 def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -2620,7 +2657,7 @@ def test_build_kernel_descriptors_binds_reconfiguration_args_by_core(monkeypatch
         kernel_specs=[spec],
         tensors=[],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges((((0, 0), (0, 0)),)),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -2628,6 +2665,7 @@ def test_build_kernel_descriptors_binds_reconfiguration_args_by_core(monkeypatch
     )
 
     assert descriptors[0].runtime_args[0][0] == [0x4000, 0x5000]
+    assert descriptors[0].defines == [("TTLANG_PORTABLE_RUNTIME_ARG_BASE", "2")]
 
 
 def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(

@@ -48,6 +48,13 @@ All resource records are frozen, and all collection fields are tuples.
 returns it for each execution. `CoreRuntimeArgs.values` contains the dispatch
 words that may change while the cached program is reused.
 
+`CoreRuntimeArgs.values` owns the portable-resource suffix of each kernel's
+unique runtime-argument vector. When synchronized DFB reconfiguration is
+present, the compiler prepends one configuration address per boundary and
+defines `TTLANG_PORTABLE_RUNTIME_ARG_BASE` as the first caller-owned index.
+External kernels must index caller-supplied words relative to that definition;
+the definition name is reserved by the compiler.
+
 The following example creates one caller semaphore and configures an
 operation-owned data-movement kernel:
 

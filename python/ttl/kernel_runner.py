@@ -1741,7 +1741,7 @@ def build_kernel_descriptors(
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
         )
-        if reconfiguration_args:
+        if reconfiguration_args or runtime_args:
             kernel_descriptor_args["runtime_args"] = runtime_args
         kernel_desc = ttnn.KernelDescriptor(**kernel_descriptor_args)
         kernel_descriptors.append(kernel_desc)
