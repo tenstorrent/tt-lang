@@ -12,6 +12,7 @@ import functools
 import inspect
 import os
 import random
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
@@ -1124,9 +1125,19 @@ def _compile_ttnn_kernel(
     # Lower the whole module once before deriving structural equivalence keys.
     # This lets identical specialized clones share a C++ translation and Metal
     # descriptor instead of discovering duplicates only after translation.
+    compiler_timing = os.environ.get("TTLANG_COMPILER_TIMING") == "1"
+    prepare_start = time.perf_counter()
     prepare_ttkernel_to_cpp(module)
+    if compiler_timing:
+        print(
+            "TTLANG_COMPILER_TIMING "
+            f"phase=prepare_cpp seconds={time.perf_counter() - prepare_start:.6f} "
+            f"kernels={len(kernel_info)}",
+            flush=True,
+        )
 
     for idx, (name, thread_type) in enumerate(kernel_info):
+        kernel_start = time.perf_counter()
         # The specialized clone's launch coordinates (None on the default
         # whole-grid path).
         coords = kernel_coords[idx]
@@ -1152,7 +1163,9 @@ def _compile_ttnn_kernel(
             runtime_arg_spec = []
 
         config_attrs = kernel_config_attrs[name]
+        equivalence_start = time.perf_counter()
         equivalence_ir = _get_kernel_equivalence_ir(module, name)
+        equivalence_seconds = time.perf_counter() - equivalence_start
         group_key = (
             thread_type,
             noc_role,
@@ -1170,13 +1183,34 @@ def _compile_ttnn_kernel(
         ):
             group_idx = specialized_kernel_groups[group_key]
             kernel_coord_groups[group_idx].extend(coords)
+            if compiler_timing and (
+                equivalence_seconds >= 0.5 or (idx + 1) % 25 == 0
+            ):
+                print(
+                    "TTLANG_COMPILER_TIMING "
+                    f"phase=clone_dedup index={idx + 1}/{len(kernel_info)} "
+                    f"name={name} equivalence_seconds={equivalence_seconds:.6f} "
+                    f"total_seconds={time.perf_counter() - kernel_start:.6f}",
+                    flush=True,
+                )
             continue
 
         if specialize_cores and coords is not None:
             specialized_kernel_groups[group_key] = len(kernel_paths)
 
+        emit_start = time.perf_counter()
         cpp_source = ttkernel_to_cpp_by_name(module, name)
+        emit_seconds = time.perf_counter() - emit_start
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
+        if compiler_timing:
+            print(
+                "TTLANG_COMPILER_TIMING "
+                f"phase=clone_emit index={idx + 1}/{len(kernel_info)} "
+                f"name={name} equivalence_seconds={equivalence_seconds:.6f} "
+                f"emit_seconds={emit_seconds:.6f} "
+                f"total_seconds={time.perf_counter() - kernel_start:.6f}",
+                flush=True,
+            )
         kernel_paths.append((kernel_path, thread_type))
 
         if thread_type == "compute":
@@ -1943,6 +1977,29 @@ def _lower_program_to_kernel(
     # Always generate source locations for error messages
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
+    compiler_timing = os.environ.get("TTLANG_COMPILER_TIMING") == "1"
+    timing_invocation = None
+    if compiler_timing:
+        timing_invocation = (
+            getattr(_lower_program_to_kernel, "_timing_invocation", 0) + 1
+        )
+        _lower_program_to_kernel._timing_invocation = timing_invocation
+        thread_names = ",".join(
+            getattr(thread, "__qualname__", getattr(thread, "__name__", type(thread).__name__))
+            for thread in program.threads
+        )
+        callers = " <- ".join(
+            f"{Path(frame.filename).name}:{frame.lineno}:{frame.function}"
+            for frame in inspect.stack()[1:9]
+        )
+        print(
+            "TTLANG_COMPILER_TIMING "
+            f"phase=invocation_start invocation={timing_invocation} "
+            f"program_hash={program_hash} launch_grid={launch_grid} "
+            f"source={kernel_source_file!r} threads={thread_names!r} "
+            f"callers={callers!r}",
+            flush=True,
+        )
 
     # Some large composed modules expose latent thread-safety bugs in
     # function-pass implementations. Keep normal parallel compilation as the
@@ -2168,6 +2225,9 @@ def _lower_program_to_kernel(
         # fmt: on
         pm = PassManager.parse(pipeline_str)
         pm.enable_verifier(verify)
+        if compiler_timing:
+            pm.enable_timing()
+            pm.enable_statistics()
 
         try:
             from ttl._mlir_libs._ttlang import enable_pretty_stack_traces
@@ -2192,7 +2252,15 @@ def _lower_program_to_kernel(
 
         try:
             # Run the pass manager with error handling for source-aware diagnostics
+            pass_start = time.perf_counter()
             pm.run(module.operation)
+            if compiler_timing:
+                print(
+                    "TTLANG_COMPILER_TIMING "
+                    f"phase=mlir_pipeline invocation={timing_invocation} "
+                    f"seconds={time.perf_counter() - pass_start:.6f}",
+                    flush=True,
+                )
         except Exception as e:
             error_msg = str(e)
             # Try to format error with source context
