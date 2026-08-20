@@ -14,8 +14,11 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
+import hashlib
+import json
+import operator
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -42,7 +45,13 @@ from .dataflow_buffer import (
 )
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
-from .kernel import KernelSelector
+from .kernel import Kernel, KernelKind, KernelSelector
+from .runtime_resources import (
+    CoreRuntimeArgs,
+    KernelDefine,
+    KernelRuntimeResources,
+    ProgramRuntimeResources,
+)
 
 
 @dataclass(frozen=True)
@@ -172,6 +181,45 @@ class KernelSpec:
     logical_kernel: Optional[KernelSelector] = None
 
 
+@dataclass(frozen=True)
+class LogicalKernelId:
+    kind: KernelKind
+    name: Optional[str]
+    operation: Optional[str]
+    implicit_role: Optional[str]
+
+
+@dataclass(frozen=True)
+class _CoreRuntimeArgsPlan:
+    coordinate: Tuple[int, int]
+    values: Tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _KernelDescriptorResourcePlan:
+    kernel_spec_index: int
+    logical_kernel: LogicalKernelId
+    coordinates: Tuple[Tuple[int, int], ...]
+    runtime_args: Tuple[_CoreRuntimeArgsPlan, ...]
+    defines: Tuple[Tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ProgramResourcePlan:
+    semaphore_descriptors: Tuple[object, ...]
+    kernel_descriptors: Tuple[_KernelDescriptorResourcePlan, ...]
+    lifetimes: Tuple[object, ...]
+    structural_fingerprint: int
+
+
+@dataclass(frozen=True)
+class _SemaphoreResourceFingerprint:
+    semaphore_id: int
+    coordinates: Tuple[Tuple[int, int], ...]
+    initial_value: int
+    core_type: str
+
+
 @dataclass
 class PipeRuntimeResources:
     """Host allocations and runtime args for compiler-emitted pipe resources."""
@@ -182,6 +230,615 @@ class PipeRuntimeResources:
     computed_address_base_addresses: Dict[int, int]
     extra_common_runtime_args: List[int]
     expected_extra_common_runtime_args: int
+
+
+def _format_logical_kernel(kernel: LogicalKernelId) -> str:
+    if kernel.name is None:
+        return f"canonical {kernel.kind.value} kernel"
+    return f"{kernel.kind.value} kernel {kernel.name!r}"
+
+
+def _normalize_logical_kernel_selector(
+    selector: object,
+    *,
+    operation_name: str,
+    source: str,
+) -> LogicalKernelId:
+    if isinstance(selector, KernelKind):
+        return LogicalKernelId(selector, None, None, None)
+    if not isinstance(selector, Kernel):
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: {source} must select a "
+            f"KernelKind or Kernel, got {type(selector).__name__}"
+        )
+
+    try:
+        name = selector.identity
+    except ValueError as error:
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: {source} uses an unbound Kernel"
+        ) from error
+    operation_identity = selector._operation_identity
+    implicit_role = selector._implicit_role
+    assert (operation_identity is None) != (
+        implicit_role is None
+    ), "a bound Kernel must identify exactly one operation or compiler-owned role"
+    return LogicalKernelId(
+        selector.kind,
+        name,
+        operation_identity,
+        implicit_role,
+    )
+
+
+def _normalize_index(
+    value: object,
+    *,
+    operation_name: str,
+    field: str,
+) -> int:
+    if isinstance(value, bool):
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: {field} must be an integer, "
+            "got bool"
+        )
+    try:
+        return int(operator.index(value))
+    except TypeError as error:
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: {field} must be an integer, "
+            f"got {type(value).__name__}"
+        ) from error
+
+
+def _normalize_coordinate(
+    core: object,
+    *,
+    operation_name: str,
+    field: str,
+) -> Tuple[int, int]:
+    try:
+        core_x = core.x
+        core_y = core.y
+    except AttributeError as error:
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: {field} must provide integer "
+            "x and y coordinates"
+        ) from error
+    coordinate = (
+        _normalize_index(
+            core_x,
+            operation_name=operation_name,
+            field=f"{field}.x",
+        ),
+        _normalize_index(
+            core_y,
+            operation_name=operation_name,
+            field=f"{field}.y",
+        ),
+    )
+    if coordinate[0] < 0 or coordinate[1] < 0:
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: {field} coordinate "
+            f"{coordinate} must be nonnegative"
+        )
+    return coordinate
+
+
+def _canonicalize_core_ranges(
+    core_ranges: object,
+    *,
+    operation_name: str,
+    field: str,
+) -> Tuple[Tuple[int, int], ...]:
+    try:
+        ranges = tuple(core_ranges.ranges())
+    except AttributeError as error:
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: {field} must provide ranges()"
+        ) from error
+
+    coordinates = set()
+    for range_index, core_range in enumerate(ranges):
+        try:
+            start = _normalize_coordinate(
+                core_range.start,
+                operation_name=operation_name,
+                field=f"{field} range {range_index} start",
+            )
+            end = _normalize_coordinate(
+                core_range.end,
+                operation_name=operation_name,
+                field=f"{field} range {range_index} end",
+            )
+        except AttributeError as error:
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: {field} range "
+                f"{range_index} must provide start and end coordinates"
+            ) from error
+        if start[0] > end[0] or start[1] > end[1]:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: {field} range "
+                f"{range_index} has start {start} after end {end}"
+            )
+        coordinates.update(
+            (core_x, core_y)
+            for core_y in range(start[1], end[1] + 1)
+            for core_x in range(start[0], end[0] + 1)
+        )
+    if not coordinates:
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: {field} must not be empty"
+        )
+    return tuple(
+        sorted(coordinates, key=lambda coordinate: (coordinate[1], coordinate[0]))
+    )
+
+
+def _normalize_defines(
+    defines: Tuple[KernelDefine, ...],
+    *,
+    operation_name: str,
+    resource_index: int,
+) -> Tuple[Tuple[str, str], ...]:
+    normalized = []
+    names = set()
+    for define_index, define in enumerate(defines):
+        if not isinstance(define.name, str):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} define {define_index} name must be a str, "
+                f"got {type(define.name).__name__}"
+            )
+        if not define.name or "\0" in define.name:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} define {define_index} name must be nonempty "
+                "and contain no NUL"
+            )
+        if not isinstance(define.value, str):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} define {define_index} value must be a str, "
+                f"got {type(define.value).__name__}"
+            )
+        if define.name in names:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} defines name {define.name!r} more than once"
+            )
+        names.add(define.name)
+        normalized.append((define.name, define.value))
+    return tuple(normalized)
+
+
+def _normalize_runtime_args(
+    runtime_args: Tuple[CoreRuntimeArgs, ...],
+    *,
+    operation_name: str,
+    resource_index: int,
+    operation_coordinates: frozenset[Tuple[int, int]],
+) -> Tuple[_CoreRuntimeArgsPlan, ...]:
+    normalized = []
+    seen_coordinates = set()
+    for runtime_arg_index, runtime_arg in enumerate(runtime_args):
+        coordinate = _normalize_coordinate(
+            runtime_arg.core,
+            operation_name=operation_name,
+            field=(
+                f"kernel resource {resource_index} runtime argument "
+                f"{runtime_arg_index} core"
+            ),
+        )
+        if coordinate not in operation_coordinates:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} runtime argument {runtime_arg_index} core "
+                f"{coordinate} is outside the operation core range"
+            )
+        if coordinate in seen_coordinates:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} specifies runtime arguments for core "
+                f"{coordinate} more than once"
+            )
+        seen_coordinates.add(coordinate)
+        values = tuple(
+            _normalize_index(
+                value,
+                operation_name=operation_name,
+                field=(
+                    f"kernel resource {resource_index} runtime argument "
+                    f"{runtime_arg_index} value {value_index}"
+                ),
+            )
+            for value_index, value in enumerate(runtime_arg.values)
+        )
+        normalized.append(_CoreRuntimeArgsPlan(coordinate, values))
+    return tuple(
+        sorted(
+            normalized,
+            key=lambda runtime_arg: (
+                runtime_arg.coordinate[1],
+                runtime_arg.coordinate[0],
+            ),
+        )
+    )
+
+
+def _normalize_semaphore_core_type(
+    core_type: object,
+    *,
+    operation_name: str,
+    descriptor_index: int,
+) -> str:
+    if isinstance(core_type, str):
+        name = core_type
+    else:
+        name = getattr(core_type, "name", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: semaphore descriptor "
+            f"{descriptor_index} core_type must be a named value, got "
+            f"{type(core_type).__name__}"
+        )
+    return name
+
+
+def _validate_semaphore_descriptors(
+    semaphore_descriptors: Tuple[object, ...],
+    *,
+    operation_name: str,
+    operation_coordinates: frozenset[Tuple[int, int]],
+    first_free_semaphore_id: int,
+) -> Tuple[_SemaphoreResourceFingerprint, ...]:
+    seen_ids = set()
+    fingerprints = []
+    for descriptor_index, descriptor in enumerate(semaphore_descriptors):
+        semaphore_id = _normalize_index(
+            descriptor.id,
+            operation_name=operation_name,
+            field=f"semaphore descriptor {descriptor_index} id",
+        )
+        if semaphore_id < first_free_semaphore_id:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: semaphore descriptor "
+                f"{descriptor_index} id {semaphore_id} is below first free "
+                f"semaphore id {first_free_semaphore_id}"
+            )
+        if semaphore_id in seen_ids:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: semaphore id "
+                f"{semaphore_id} was specified more than once"
+            )
+        seen_ids.add(semaphore_id)
+        descriptor_coordinates = _canonicalize_core_ranges(
+            descriptor.core_ranges,
+            operation_name=operation_name,
+            field=f"semaphore descriptor {descriptor_index} core_ranges",
+        )
+        outside_coordinates = frozenset(descriptor_coordinates) - operation_coordinates
+        if outside_coordinates:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: semaphore descriptor "
+                f"{descriptor_index} has cores outside the operation range: "
+                f"{tuple(sorted(outside_coordinates, key=lambda core: (core[1], core[0])))}"
+            )
+        initial_value = _normalize_index(
+            descriptor.initial_value,
+            operation_name=operation_name,
+            field=f"semaphore descriptor {descriptor_index} initial_value",
+        )
+        fingerprints.append(
+            _SemaphoreResourceFingerprint(
+                semaphore_id=semaphore_id,
+                coordinates=descriptor_coordinates,
+                initial_value=initial_value,
+                core_type=_normalize_semaphore_core_type(
+                    descriptor.core_type,
+                    operation_name=operation_name,
+                    descriptor_index=descriptor_index,
+                ),
+            )
+        )
+    return tuple(sorted(fingerprints, key=lambda descriptor: descriptor.semaphore_id))
+
+
+def _validate_runtime_resource_record_types(
+    resources: object,
+    *,
+    operation_name: str,
+) -> ProgramRuntimeResources:
+    if not isinstance(resources, ProgramRuntimeResources):
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: runtime_resource_factory must "
+            "return ProgramRuntimeResources, got "
+            f"{type(resources).__name__}"
+        )
+    for field_name in (
+        "semaphore_descriptors",
+        "kernel_resources",
+        "lifetimes",
+    ):
+        field_value = getattr(resources, field_name)
+        if not isinstance(field_value, tuple):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: {field_name} must be a "
+                f"tuple, got {type(field_value).__name__}"
+            )
+
+    for resource_index, kernel_resource in enumerate(resources.kernel_resources):
+        if not isinstance(kernel_resource, KernelRuntimeResources):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} must be KernelRuntimeResources, got "
+                f"{type(kernel_resource).__name__}"
+            )
+        if not isinstance(kernel_resource.runtime_args, tuple):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} runtime_args must be a tuple, got "
+                f"{type(kernel_resource.runtime_args).__name__}"
+            )
+        if not isinstance(kernel_resource.defines, tuple):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} defines must be a tuple, got "
+                f"{type(kernel_resource.defines).__name__}"
+            )
+        for runtime_arg_index, runtime_arg in enumerate(kernel_resource.runtime_args):
+            if not isinstance(runtime_arg, CoreRuntimeArgs):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: kernel resource "
+                    f"{resource_index} runtime argument {runtime_arg_index} must "
+                    f"be CoreRuntimeArgs, got {type(runtime_arg).__name__}"
+                )
+            if not isinstance(runtime_arg.values, tuple):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: kernel resource "
+                    f"{resource_index} runtime argument {runtime_arg_index} values "
+                    f"must be a tuple, got {type(runtime_arg.values).__name__}"
+                )
+        for define_index, define in enumerate(kernel_resource.defines):
+            if not isinstance(define, KernelDefine):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: kernel resource "
+                    f"{resource_index} define {define_index} must be a "
+                    f"KernelDefine, got {type(define).__name__}"
+                )
+
+    for descriptor_index, descriptor in enumerate(resources.semaphore_descriptors):
+        for field_name in ("id", "core_ranges", "initial_value", "core_type"):
+            if not hasattr(descriptor, field_name):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: semaphore descriptor "
+                    f"{descriptor_index} must provide {field_name}"
+                )
+    return resources
+
+
+_RESOURCE_PLAN_VERSION = 1
+_RESOURCE_PLAN_PERSONALIZATION = b"ttlang-rr-plan"
+_RESOURCE_HASH_PERSONALIZATION = b"ttlang-rr-hash"
+
+
+def _digest_primitive_payload(payload: object, personalization: bytes) -> int:
+    encoded_payload = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    digest = hashlib.blake2b(
+        encoded_payload,
+        digest_size=8,
+        person=personalization,
+    ).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def _compute_resource_plan_fingerprint(
+    kernel_descriptors: Tuple[_KernelDescriptorResourcePlan, ...],
+    semaphore_descriptors: Tuple[_SemaphoreResourceFingerprint, ...],
+) -> int:
+    kernel_payload = tuple(
+        (
+            descriptor.logical_kernel.kind.value,
+            descriptor.logical_kernel.name,
+            descriptor.coordinates,
+            descriptor.defines,
+            tuple(
+                (runtime_arg.coordinate, len(runtime_arg.values))
+                for runtime_arg in descriptor.runtime_args
+            ),
+        )
+        for descriptor in kernel_descriptors
+    )
+    semaphore_payload = tuple(
+        (
+            descriptor.semaphore_id,
+            descriptor.coordinates,
+            descriptor.initial_value,
+            descriptor.core_type,
+        )
+        for descriptor in semaphore_descriptors
+    )
+    return _digest_primitive_payload(
+        (
+            "operation-runtime-resource-plan",
+            _RESOURCE_PLAN_VERSION,
+            kernel_payload,
+            semaphore_payload,
+        ),
+        _RESOURCE_PLAN_PERSONALIZATION,
+    )
+
+
+def plan_program_runtime_resources(
+    *,
+    operation_name: str,
+    resources: ProgramRuntimeResources,
+    kernel_specs: Sequence[KernelSpec],
+    operation_core_ranges: object,
+    first_free_semaphore_id: int,
+) -> ProgramResourcePlan:
+    resources = _validate_runtime_resource_record_types(
+        resources,
+        operation_name=operation_name,
+    )
+
+    normalized_first_free_id = _normalize_index(
+        first_free_semaphore_id,
+        operation_name=operation_name,
+        field="first_free_semaphore_id",
+    )
+    if normalized_first_free_id < 0:
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: first_free_semaphore_id must "
+            f"be nonnegative, got {normalized_first_free_id}"
+        )
+
+    operation_coordinates_tuple = _canonicalize_core_ranges(
+        operation_core_ranges,
+        operation_name=operation_name,
+        field="operation core_ranges",
+    )
+    operation_coordinates = frozenset(operation_coordinates_tuple)
+
+    descriptor_identities = []
+    descriptor_coordinates = []
+    descriptors_by_identity: Dict[LogicalKernelId, List[int]] = {}
+    for kernel_spec_index, kernel_spec in enumerate(kernel_specs):
+        logical_kernel = _normalize_logical_kernel_selector(
+            kernel_spec.logical_kernel,
+            operation_name=operation_name,
+            source=f"kernel descriptor {kernel_spec_index}",
+        )
+        coordinates = (
+            operation_coordinates_tuple
+            if kernel_spec.core_ranges is None
+            else _canonicalize_core_ranges(
+                kernel_spec.core_ranges,
+                operation_name=operation_name,
+                field=f"kernel descriptor {kernel_spec_index} core_ranges",
+            )
+        )
+        outside_coordinates = frozenset(coordinates) - operation_coordinates
+        if outside_coordinates:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: kernel descriptor "
+                f"{kernel_spec_index} has cores outside the operation range: "
+                f"{tuple(sorted(outside_coordinates, key=lambda core: (core[1], core[0])))}"
+            )
+        descriptor_identities.append(logical_kernel)
+        descriptor_coordinates.append(coordinates)
+        descriptors_by_identity.setdefault(logical_kernel, []).append(kernel_spec_index)
+
+    for logical_kernel, matching_descriptors in descriptors_by_identity.items():
+        for position, previous_descriptor_index in enumerate(matching_descriptors):
+            previous_coordinates = frozenset(
+                descriptor_coordinates[previous_descriptor_index]
+            )
+            for descriptor_index in matching_descriptors[position + 1 :]:
+                overlap = tuple(
+                    candidate_coordinate
+                    for candidate_coordinate in descriptor_coordinates[descriptor_index]
+                    if candidate_coordinate in previous_coordinates
+                )
+                assert not overlap, (
+                    f"compiler emitted kernel descriptors "
+                    f"{previous_descriptor_index} and {descriptor_index} for "
+                    f"{_format_logical_kernel(logical_kernel)} with overlapping "
+                    f"cores {overlap}"
+                )
+
+    descriptor_runtime_args: Dict[int, List[_CoreRuntimeArgsPlan]] = {}
+    descriptor_defines: Dict[int, Tuple[Tuple[str, str], ...]] = {}
+    seen_resource_identities = set()
+    for resource_index, kernel_resource in enumerate(resources.kernel_resources):
+        logical_kernel = _normalize_logical_kernel_selector(
+            kernel_resource.kernel,
+            operation_name=operation_name,
+            source=f"kernel resource {resource_index}",
+        )
+        if logical_kernel in seen_resource_identities:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: runtime resources for "
+                f"{_format_logical_kernel(logical_kernel)} were specified more "
+                "than once"
+            )
+        seen_resource_identities.add(logical_kernel)
+        matching_descriptors = descriptors_by_identity.get(logical_kernel, [])
+        if not matching_descriptors:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: kernel resource "
+                f"{resource_index} selects {_format_logical_kernel(logical_kernel)}, "
+                "but the operation emitted no matching kernel descriptor"
+            )
+        normalized_defines = _normalize_defines(
+            kernel_resource.defines,
+            operation_name=operation_name,
+            resource_index=resource_index,
+        )
+        for descriptor_index in matching_descriptors:
+            descriptor_defines[descriptor_index] = normalized_defines
+        normalized_runtime_args = _normalize_runtime_args(
+            kernel_resource.runtime_args,
+            operation_name=operation_name,
+            resource_index=resource_index,
+            operation_coordinates=operation_coordinates,
+        )
+        for runtime_arg_index, runtime_arg in enumerate(normalized_runtime_args):
+            candidate_descriptors = [
+                descriptor_index
+                for descriptor_index in matching_descriptors
+                if runtime_arg.coordinate
+                in frozenset(descriptor_coordinates[descriptor_index])
+            ]
+            if not candidate_descriptors:
+                ranges = tuple(
+                    (descriptor_index, descriptor_coordinates[descriptor_index])
+                    for descriptor_index in matching_descriptors
+                )
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: kernel resource "
+                    f"{resource_index} runtime argument {runtime_arg_index} core "
+                    f"{runtime_arg.coordinate} is not covered by any descriptor "
+                    f"for {_format_logical_kernel(logical_kernel)}; descriptor "
+                    f"ranges are {ranges}"
+                )
+            if len(candidate_descriptors) != 1:
+                raise AssertionError(
+                    "validated descriptor partitions must select exactly one "
+                    "descriptor"
+                )
+            descriptor_index = candidate_descriptors[0]
+            descriptor_runtime_args.setdefault(descriptor_index, []).append(runtime_arg)
+
+    semaphore_fingerprints = _validate_semaphore_descriptors(
+        resources.semaphore_descriptors,
+        operation_name=operation_name,
+        operation_coordinates=operation_coordinates,
+        first_free_semaphore_id=normalized_first_free_id,
+    )
+    kernel_descriptor_plans = tuple(
+        _KernelDescriptorResourcePlan(
+            kernel_spec_index=kernel_spec_index,
+            logical_kernel=logical_kernel,
+            coordinates=descriptor_coordinates[kernel_spec_index],
+            runtime_args=tuple(descriptor_runtime_args.get(kernel_spec_index, ())),
+            defines=descriptor_defines.get(kernel_spec_index, ()),
+        )
+        for kernel_spec_index, logical_kernel in enumerate(descriptor_identities)
+    )
+    return ProgramResourcePlan(
+        semaphore_descriptors=resources.semaphore_descriptors,
+        kernel_descriptors=kernel_descriptor_plans,
+        lifetimes=resources.lifetimes,
+        structural_fingerprint=_compute_resource_plan_fingerprint(
+            kernel_descriptor_plans,
+            semaphore_fingerprints,
+        ),
+    )
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -216,6 +873,7 @@ def build_kernel_descriptors(
     pipe_computed_address_base_addresses: Optional[Dict[int, int]] = None,
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
+    descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -237,6 +895,8 @@ def build_kernel_descriptors(
             after tensor buffer addresses and computed receiver DFB bases.
         expected_extra_common_runtime_args: Expected number of compiler-managed
             pipe runtime args from the compiled resource plan.
+        descriptor_resource_plans: Immutable caller resource plans aligned with
+            kernel_specs.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -246,6 +906,13 @@ def build_kernel_descriptors(
         raise RuntimeError("ttnn is not available")
 
     kernel_descriptors = []
+    if descriptor_resource_plans is not None and len(descriptor_resource_plans) != len(
+        kernel_specs
+    ):
+        raise ValueError(
+            "kernel descriptor resource plan count must match kernel spec count: "
+            f"got {len(descriptor_resource_plans)} plans for {len(kernel_specs)} specs"
+        )
 
     # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs).
     cb_indices = list(range(num_cbs))
@@ -261,7 +928,7 @@ def build_kernel_descriptors(
             f"got {len(extra_args)}"
         )
 
-    for spec in kernel_specs:
+    for kernel_spec_index, spec in enumerate(kernel_specs):
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
@@ -293,10 +960,33 @@ def build_kernel_descriptors(
             spec.core_ranges if spec.core_ranges is not None else core_ranges
         )
 
+        runtime_args = []
+        defines = []
+        if descriptor_resource_plans is not None:
+            descriptor_resource_plan = descriptor_resource_plans[kernel_spec_index]
+            if descriptor_resource_plan.kernel_spec_index != kernel_spec_index:
+                raise ValueError(
+                    "kernel descriptor resource plan index mismatch: expected "
+                    f"{kernel_spec_index}, got "
+                    f"{descriptor_resource_plan.kernel_spec_index}"
+                )
+            runtime_args = [
+                (
+                    ttnn.CoreCoord(
+                        runtime_arg.coordinate[0], runtime_arg.coordinate[1]
+                    ),
+                    list(runtime_arg.values),
+                )
+                for runtime_arg in descriptor_resource_plan.runtime_args
+            ]
+            defines = list(descriptor_resource_plan.defines)
+
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
+            defines=defines,
+            runtime_args=runtime_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
@@ -518,6 +1208,24 @@ def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
     if program_hash is None:
         return None
     return int(program_hash) & ((1 << 64) - 1)
+
+
+def combine_program_hash_with_runtime_resources(
+    program_hash: Optional[int], structural_fingerprint: int
+) -> Optional[int]:
+    """Combine compiler and runtime-resource structure into one uint64 hash."""
+    normalized_program_hash = normalize_program_hash(program_hash)
+    if normalized_program_hash is None:
+        return None
+    return _digest_primitive_payload(
+        (
+            "operation-runtime-resource-program-hash",
+            _RESOURCE_PLAN_VERSION,
+            normalized_program_hash,
+            structural_fingerprint,
+        ),
+        _RESOURCE_HASH_PERSONALIZATION,
+    )
 
 
 def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
@@ -833,6 +1541,11 @@ def run_kernel_on_device(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    operation_name: str = "<anonymous>",
+    runtime_resource_lifetime_commit: Optional[
+        Callable[[Tuple[object, ...]], None]
+    ] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -858,6 +1571,11 @@ def run_kernel_on_device(
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.
+        runtime_resource_factory: Optional callback that returns declarative
+            resources for the current invocation.
+        operation_name: User-facing operation name for callback diagnostics.
+        runtime_resource_lifetime_commit: Callback that replaces the compiled
+            operation's retained owner tuple after successful execution.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -865,6 +1583,39 @@ def run_kernel_on_device(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+
+    semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
+        core_ranges=core_ranges,
+        count=num_pipe_sync_semaphores,
+    )
+    if [descriptor.id for descriptor in semaphore_descriptors] != list(
+        range(num_pipe_sync_semaphores)
+    ):
+        raise RuntimeError(
+            "compiler-managed semaphore descriptors must use the dense ID range "
+            f"[0, {num_pipe_sync_semaphores})"
+        )
+
+    resource_plan = None
+    if runtime_resource_factory is not None:
+        try:
+            program_resources = runtime_resource_factory(
+                tensors=tuple(tensors),
+                core_ranges=core_ranges,
+                first_free_semaphore_id=num_pipe_sync_semaphores,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"@ttl.operation {operation_name!r}: runtime resource factory "
+                f"failed: {error}"
+            ) from error
+        resource_plan = plan_program_runtime_resources(
+            operation_name=operation_name,
+            resources=program_resources,
+            kernel_specs=kernel_specs,
+            operation_core_ranges=core_ranges,
+            first_free_semaphore_id=num_pipe_sync_semaphores,
+        )
 
     # Build tensor accessor args.
     tensor_accessor_args = build_tensor_accessor_args(tensors)
@@ -907,6 +1658,9 @@ def run_kernel_on_device(
         expected_extra_common_runtime_args=(
             pipe_runtime_resources.expected_extra_common_runtime_args
         ),
+        descriptor_resource_plans=(
+            resource_plan.kernel_descriptors if resource_plan is not None else None
+        ),
     )
 
     # Build CB descriptors.
@@ -919,10 +1673,8 @@ def run_kernel_on_device(
         ),
     )
 
-    semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
-        core_ranges=core_ranges,
-        count=num_pipe_sync_semaphores,
-    )
+    if resource_plan is not None:
+        semaphore_descriptors.extend(resource_plan.semaphore_descriptors)
 
     # Build and execute program.
     program = ttnn.ProgramDescriptor(
@@ -931,6 +1683,11 @@ def run_kernel_on_device(
         semaphores=semaphore_descriptors,
     )
     normalized_program_hash = normalize_program_hash(program_hash)
+    if resource_plan is not None:
+        normalized_program_hash = combine_program_hash_with_runtime_resources(
+            normalized_program_hash,
+            resource_plan.structural_fingerprint,
+        )
     if normalized_program_hash is not None:
         program.custom_program_hash = normalized_program_hash
 
@@ -949,7 +1706,10 @@ def run_kernel_on_device(
         ),
     )
 
-    return ttnn.generic_op(io_tensors, program)
+    result = ttnn.generic_op(io_tensors, program)
+    if resource_plan is not None and runtime_resource_lifetime_commit is not None:
+        runtime_resource_lifetime_commit(resource_plan.lifetimes)
+    return result
 
 
 def _serialize_core_ranges(
@@ -970,6 +1730,24 @@ def _serialize_core_ranges(
             )
         )
     return serialized
+
+
+def _serialize_logical_kernel(
+    spec: KernelSpec,
+) -> Optional[Tuple[str, Optional[str], Optional[str], Optional[str]]]:
+    if spec.logical_kernel is None:
+        return None
+    logical_kernel = _normalize_logical_kernel_selector(
+        spec.logical_kernel,
+        operation_name="<emitted runner>",
+        source=f"kernel descriptor {spec.path!r}",
+    )
+    return (
+        logical_kernel.kind.value,
+        logical_kernel.name,
+        logical_kernel.operation,
+        logical_kernel.implicit_role,
+    )
 
 
 def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
@@ -1004,6 +1782,7 @@ def emit_runner_source(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    requires_runtime_resource_factory: bool = False,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -1026,36 +1805,21 @@ def emit_runner_source(
     lines.append("")
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.dataflow_buffer import DFBStorageSegment")
+    lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelSpec,")
-    lines.append("    build_cb_descriptors,")
-    lines.append("    build_generic_op_io_tensors,")
-    lines.append("    build_kernel_descriptors,")
-    lines.append("    build_pipe_runtime_resources,")
-    lines.append("    build_pipe_sync_semaphore_descriptors,")
-    lines.append("    build_tensor_accessor_args,")
+    lines.append("    run_kernel_on_device,")
     lines.append(")")
     lines.append("")
 
     lines.append(f"GRID_COLS = {grid_cols}")
     lines.append(f"GRID_ROWS = {grid_rows}")
     lines.append(f"NUM_TENSORS = {num_tensors}")
+    lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
-    computed_address_dfb_indices = sorted(
-        {
-            dfb_index
-            for spec in kernel_specs
-            for dfb_index in spec.pipe_computed_address_dfb_indices
-        }
-    )
-    lines.append(
-        f"PIPE_COMPUTED_ADDRESS_DFB_INDICES = {computed_address_dfb_indices!r}"
-    )
-    lines.append("")
-
     lines.append("KERNEL_PATHS = [")
     for spec in kernel_specs:
         lines.append(f'    ("{spec.path}", "{spec.thread_type}"),')
@@ -1084,6 +1848,12 @@ def emit_runner_source(
         lines.append(
             f"    {_serialize_core_ranges(spec.core_ranges)!r},  # {spec.thread_type}"
         )
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_LOGICAL_IDENTITIES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {_serialize_logical_kernel(spec)!r},")
     lines.append("]")
     lines.append("")
 
@@ -1120,11 +1890,20 @@ def emit_runner_source(
     lines.append("")
 
     lines.append("")
-    lines.append("def run(tensors, device=None):")
+    if requires_runtime_resource_factory:
+        lines.append("def run(tensors, *, runtime_resource_factory, device=None):")
+    else:
+        lines.append("def run(tensors, device=None):")
     lines.append(f'    """Run the {kernel_name} on device."""')
     lines.append(
         f"    assert len(tensors) == {num_tensors}, f'Expected {num_tensors} tensors, got {{len(tensors)}}'"
     )
+    if requires_runtime_resource_factory:
+        lines.append("    if runtime_resource_factory is None:")
+        lines.append(
+            '        raise TypeError(f"emitted runner for {OPERATION_NAME!r} '
+            'requires runtime_resource_factory")'
+        )
     lines.append("")
     lines.append("    if device is None:")
     lines.append("        device = tensors[0].device()")
@@ -1136,20 +1915,6 @@ def emit_runner_source(
     lines.append("    )])")
     lines.append("")
 
-    lines.append("    tensor_accessor_args = build_tensor_accessor_args(tensors)")
-    lines.append("    pipe_resources = build_pipe_runtime_resources(")
-    lines.append("        tensors=tensors,")
-    lines.append("        core_ranges=core_ranges,")
-    lines.append("        cb_configs=CB_CONFIGS,")
-    lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
-    lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
-    lines.append(
-        "        pipe_computed_address_dfb_indices=PIPE_COMPUTED_ADDRESS_DFB_INDICES,"
-    )
-    lines.append("        device=device,")
-    lines.append("    )")
-    lines.append("")
-
     lines.append("    def _core_ranges_from_spec(ranges_spec):")
     lines.append("        if ranges_spec is None:")
     lines.append("            return None")
@@ -1159,6 +1924,17 @@ def emit_runner_source(
     lines.append("            )")
     lines.append("            for (sx, sy), (ex, ey) in ranges_spec")
     lines.append("        ])")
+    lines.append("")
+    lines.append("    def _logical_kernel_from_spec(identity_spec):")
+    lines.append("        if identity_spec is None:")
+    lines.append("            return None")
+    lines.append("        kind, name, operation, implicit_role = identity_spec")
+    lines.append("        kind = KernelKind(kind)")
+    lines.append("        if name is None:")
+    lines.append("            return kind")
+    lines.append("        return Kernel._from_metadata(")
+    lines.append("            kind, name, operation, implicit_role")
+    lines.append("        )")
     lines.append("")
     lines.append("    kernel_specs = []")
     lines.append("")
@@ -1186,61 +1962,25 @@ def emit_runner_source(
         "                core_ranges=_core_ranges_from_spec("
         "KERNEL_CORE_RANGES[kernel_idx]),"
     )
+    lines.append(
+        "                logical_kernel=_logical_kernel_from_spec("
+        "KERNEL_LOGICAL_IDENTITIES[kernel_idx]),"
+    )
     lines.append("            )")
     lines.append("        )")
-    lines.append("    kernel_descriptors = build_kernel_descriptors(")
+    lines.append("    return run_kernel_on_device(")
     lines.append("        kernel_specs=kernel_specs,")
-    lines.append("        tensors=tensors,")
-    lines.append("        tensor_accessor_args=tensor_accessor_args,")
-    lines.append("        core_ranges=core_ranges,")
-    lines.append("        grid_cols=GRID_COLS,")
-    lines.append("        grid_rows=GRID_ROWS,")
-    lines.append("        num_cbs=len(CB_CONFIGS),")
-    lines.append(
-        "        pipe_computed_address_base_addresses=pipe_resources.computed_address_base_addresses,"
-    )
-    lines.append(
-        "        extra_common_runtime_args=pipe_resources.extra_common_runtime_args,"
-    )
-    lines.append("        expected_extra_common_runtime_args=(")
-    lines.append("            pipe_resources.expected_extra_common_runtime_args")
-    lines.append("        ),")
-    lines.append("    )")
-    lines.append("")
-
-    lines.append("    cb_descriptors = build_cb_descriptors(")
     lines.append("        tensors=tensors,")
     lines.append("        cb_configs=CB_CONFIGS,")
     lines.append("        core_ranges=core_ranges,")
-    lines.append(
-        "        pipe_computed_address_backing_tensors=pipe_resources.computed_address_dfb_tensors,"
-    )
+    lines.append("        program_hash=PROGRAM_HASH,")
+    lines.append("        num_pipe_sync_semaphores=NUM_PIPE_SYNC_SEMAPHORES,")
+    lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
+    lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
+    if requires_runtime_resource_factory:
+        lines.append("        runtime_resource_factory=runtime_resource_factory,")
+    lines.append("        operation_name=OPERATION_NAME,")
     lines.append("    )")
-    lines.append("")
-
-    lines.append("    semaphore_descriptors = build_pipe_sync_semaphore_descriptors(")
-    lines.append("        core_ranges=core_ranges,")
-    lines.append("        count=NUM_PIPE_SYNC_SEMAPHORES,")
-    lines.append("    )")
-    lines.append("")
-
-    lines.append("    program = ttnn.ProgramDescriptor(")
-    lines.append("        kernels=kernel_descriptors,")
-    lines.append("        cbs=cb_descriptors,")
-    lines.append("        semaphores=semaphore_descriptors,")
-    lines.append("    )")
-    lines.append("    if PROGRAM_HASH is not None:")
-    lines.append("        program.custom_program_hash = PROGRAM_HASH")
-    lines.append("")
-    lines.append("    io_tensors = build_generic_op_io_tensors(")
-    lines.append("        tensors=tensors,")
-    lines.append("        pipe_sram_scratch_tensors=pipe_resources.scratch_tensors,")
-    lines.append(
-        "        pipe_computed_address_dfb_tensors=pipe_resources.computed_address_dfb_tensors,"
-    )
-    lines.append("    )")
-    lines.append("    result = ttnn.generic_op(io_tensors, program)")
-    lines.append("    return result")
     lines.append("")
 
     lines.append("")
@@ -1263,6 +2003,7 @@ def emit_runner_file(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    requires_runtime_resource_factory: bool = False,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -1285,6 +2026,7 @@ def emit_runner_file(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        requires_runtime_resource_factory=requires_runtime_resource_factory,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -1297,6 +2039,8 @@ def emit_runner_file(
 
 __all__ = [
     "KernelSpec",
+    "LogicalKernelId",
+    "ProgramResourcePlan",
     "PipeRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
@@ -1307,7 +2051,9 @@ __all__ = [
     "build_pipe_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
     "normalize_program_hash",
+    "combine_program_hash_with_runtime_resources",
     "build_generic_op_io_tensors",
+    "plan_program_runtime_resources",
     "run_kernel_on_device",
     "emit_runner_source",
     "emit_runner_file",

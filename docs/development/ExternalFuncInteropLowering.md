@@ -96,6 +96,115 @@ logical-to-processor assignment, and final TTNN interop validation. Explicit and
 unified operations therefore report capacity failures with the same logical
 kernel kinds and identities.
 
+## Operation runtime resources
+
+### Motivation
+
+TT-Metal separates reusable program structure from values supplied for each
+dispatch. Kernel configuration, core placement, JIT definitions, program
+semaphore layout, and the runtime-argument schema determine the program
+structure. Per-core runtime-argument words may change when the cached program
+executes again. Program execution may also depend on host or device objects
+whose owners must remain alive through dispatch.
+
+External TT-Lang kernels can require caller-defined program semaphores and JIT
+definitions, per-core dispatch words, and host owners. These resources may
+depend on the current tensors, device, launch range, and semaphore IDs already
+reserved by the compiler. `runtime_resource_factory` supplies them for each
+device execution without exposing target-specific kernel descriptor identities.
+
+### Resource model
+
+`@ttl.operation(runtime_resource_factory=...)` calls the factory once for each
+device execution, before the runner constructs program descriptors. The
+callback receives the current tensors, complete operation core range, and first
+semaphore ID after the compiler-owned range. It returns frozen
+`ProgramRuntimeResources` records with the following cache and lifetime
+semantics:
+
+| Resource | Role | Invocation and cache treatment |
+| --- | --- | --- |
+| `semaphore_descriptors` | Program semaphore structure. | IDs, ranges, core types, and initial values participate in cache identity. |
+| `KernelDefine` | JIT compilation input. | Names and values participate in cache identity and apply to every specialized descriptor for the logical kernel. |
+| `CoreRuntimeArgs` | Per-core dispatch values. | Logical destination, core, and vector length participate in cache identity; argument words may change on a cache hit. |
+| `lifetimes` | Host ownership only. | Object identities do not participate in cache identity; references remain alive through execution. |
+
+The factory runs for each device execution even when its structural result
+selects an existing cached program. This preserves TT-Metal's distinction
+between stable program structure and current dispatch values.
+
+The [operation runtime resources reference](../sphinx/reference/operation-runtime-resources.md)
+defines the callback signature, public records, and usage example.
+
+### Planning and materialization
+
+The runner validates the complete factory result and constructs a frozen
+`ProgramResourcePlan` before creating any `KernelDescriptor` or
+`ProgramDescriptor`. Planning validates record types, logical ownership, core
+membership, unique semaphore IDs, the compiler/caller semaphore boundary, and
+the unique destination of every per-core runtime argument. The plan contains
+one resource entry for every compiled kernel descriptor, including descriptors
+with no caller resources.
+
+Descriptor construction consumes this plan without repeating selector lookup,
+specialization routing, or cache policy. Planning does not modify compiled
+kernel state or TTNN program state. A factory or planning failure occurs before
+the runner constructs TTNN kernel or program descriptors and cannot produce a
+partially materialized program.
+
+### Logical identity and specialization
+
+TT-Metal attaches definitions and runtime arguments to a `KernelDescriptor`.
+TT-Lang does not expose descriptor indices as source identities: processor
+assignment and descriptor order are target decisions, and core specialization
+can materialize one logical kernel as several descriptors over disjoint core
+sets. Resources therefore select the compiler-owned canonical kernel with
+`KernelKind` or an explicit operation-owned kernel with `Kernel`.
+
+The selected logical identity is retained on every `KernelSpec`, independent
+of generated symbols, physical processors, and descriptor order. The planner
+maps each resource to descriptors with the same identity.
+
+The planner groups descriptors by logical identity and verifies that
+specialized descriptors for one identity cover disjoint core sets. A
+definition applies to every descriptor in the group because the descriptors
+compile the same logical source. A per-core runtime argument applies only to
+the descriptor whose core set contains that coordinate. Missing and multiple
+destinations are errors.
+
+### Program cache identity
+
+The runner combines the compiled operation hash with a deterministic structural
+fingerprint of the resource plan. Logical destinations, descriptor core sets,
+definitions, runtime-argument coordinates and vector lengths, and caller
+semaphore properties affect the fingerprint. Runtime-argument words, tensor
+addresses, and lifetime object identities do not.
+
+Changing a JIT definition or semaphore layout therefore selects a different
+cached program. Changing only runtime-argument words reuses the same program
+structure and supplies the current values to TT-Metal for that dispatch.
+
+### Lifetimes and failures
+
+Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
+execution. The factory result and its lifetime tuple remain local while the
+runner plans, materializes, and executes the program. After successful
+execution, the compiled operation stores the new tuple until a later successful
+execution replaces it. A factory, planning, materialization, or execution
+failure preserves the tuple from the last successful execution.
+
+### Emitted runners and simulation
+
+Emitted Python runners serialize logical identities and use the same planner
+and materializer as decorated operation execution. A resource-aware emitted
+runner requires the factory on every call because live resource objects and
+dispatch values are not serialized.
+
+Operation runtime resources are a hardware execution interface. The simulator
+does not model TTNN program descriptors or per-core kernel runtime arguments
+and rejects `runtime_resource_factory` as an unsupported `ttl.operation`
+argument.
+
 ## Argument contract
 
 | Source argument | Generated C++ interface | Restrictions |

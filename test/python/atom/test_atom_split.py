@@ -17,6 +17,7 @@ import textwrap
 
 import pytest
 import ttl
+import ttl.atom as atom_module
 import ttl.kernel as kernel_module
 
 from ttl._src.atom_split import split_function_body
@@ -27,6 +28,7 @@ from ttl.atom import (
     _build_atom_spec,
     _lift_setup,
 )
+from ttl.compiler_options import CompilerOptions
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 
@@ -140,6 +142,41 @@ def test_captured_kernel_is_bound_for_final_operation():
         kernel_capacities=_backend_kernel_capacities(),
     )
     assert result.kernels == (reader,)
+
+
+def test_unified_operation_propagates_runtime_resource_factory(monkeypatch):
+    observed = {}
+
+    def make_resources(**_kwargs):
+        return None
+
+    def fake_compile_atom(*_args, **kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(atom_module, "_compile_atom", fake_compile_atom)
+    result = atom_module._compile_unified_operation(
+        object(),
+        {
+            "num_outs": 1,
+            "memory_space": "L1",
+            "tiled": True,
+            "fp32_dest_acc_en": None,
+            "dst_full_sync_en": None,
+            "math_fidelity": None,
+            "runtime_resource_factory": make_resources,
+        },
+        (),
+        {},
+        (1, 1),
+        1,
+        None,
+        CompilerOptions(),
+        0,
+    )
+
+    assert result is not None
+    assert observed["runtime_resource_factory"] is make_resources
 
 
 def test_captured_kernel_cannot_bind_to_two_operations():
@@ -659,6 +696,27 @@ def test_chained_copy_wait_routes_to_data_movement():
 
     assert "ttl.copy" not in _kind_src(result, KernelKind.COMPUTE)
     assert "ttl.copy" in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
+def test_read_index_routes_to_data_movement():
+    """Tensor-provided indices remain with their dataflow buffer acquire."""
+    fn = _fn(
+        """
+        def k(weights, output):
+            index_block = index_dfb.wait()
+            slot = ttl.read_index(index_block, 0, 0)
+            ttl.copy(weights[slot], output)
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" not in _kind_src(result, KernelKind.COMPUTE)
+    assert "ttl.read_index" in _kind_src(result, KernelKind.DATA_MOVEMENT)
 
 
 def test_compute_and_data_movement_route_to_separate_logical_kernels():
