@@ -53,6 +53,8 @@ StringRef getDFBConflictReasonName(DFBConflictReason reason) {
     return "pointer-owner-mismatch";
   case DFBConflictReason::ConcurrentLifetime:
     return "concurrent-lifetime";
+  case DFBConflictReason::ResetDomainWrite:
+    return "reset-domain-write";
   case DFBConflictReason::StaticConfigurationMismatch:
     return "static-configuration-mismatch";
   }
@@ -113,19 +115,7 @@ public:
                          /*requireMatchingTransactions=*/!sameAllocationGroup);
       }
     }
-    for (const DFBResetAllocationConflict &conflict :
-         liveness.getResetAllocationConflicts()) {
-      unsigned targetIndex = conflict.targetLogicalIndex;
-      unsigned overlappingIndex = conflict.overlappingLogicalIndex;
-      if (targetIndex == overlappingIndex ||
-          model.adjacency[targetIndex].test(overlappingIndex)) {
-        continue;
-      }
-      addEvidence(model, logicalDFBs[targetIndex],
-                  logicalDFBs[overlappingIndex], targetIndex, overlappingIndex,
-                  DFBConflictReason::ResetDomainWrite, conflict.node,
-                  conflict.resetOperation, conflict.overlappingOperation);
-    }
+    addResetAllocationConflicts(model, liveness);
     DenseMap<int64_t, unsigned> logicalIndexById;
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
       logicalIndexById.try_emplace(logicalDFB.logicalId, logicalIndex);
@@ -168,6 +158,8 @@ public:
     addPairConflicts(model, liveness, lhsIndex, rhsIndex,
                      /*requireExactDescriptor=*/false,
                      /*requireMatchingTransactions=*/false);
+    addResetAllocationConflicts(model, liveness,
+                                std::make_pair(lhsIndex, rhsIndex));
     return model;
   }
 
@@ -182,6 +174,33 @@ private:
     model.adjacency[rhsIndex].set(lhsIndex);
     model.evidence.push_back({lhsIndex, rhsIndex, lhs.logicalId, rhs.logicalId,
                               reason, node, lhsOperation, rhsOperation});
+  }
+
+  static void addResetAllocationConflicts(
+      DFBPhysicalConflictModel &model,
+      const DFBConcurrentKernelLivenessAnalysis &liveness,
+      std::optional<std::pair<unsigned, unsigned>> onlyPair = std::nullopt) {
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+        liveness.getLogicalDFBLifecycles();
+    for (const DFBResetAllocationConflict &conflict :
+         liveness.getResetAllocationConflicts()) {
+      unsigned targetIndex = conflict.targetLogicalIndex;
+      unsigned overlappingIndex = conflict.overlappingLogicalIndex;
+      if (onlyPair && !((targetIndex == onlyPair->first &&
+                         overlappingIndex == onlyPair->second) ||
+                        (targetIndex == onlyPair->second &&
+                         overlappingIndex == onlyPair->first))) {
+        continue;
+      }
+      if (targetIndex == overlappingIndex ||
+          model.adjacency[targetIndex].test(overlappingIndex)) {
+        continue;
+      }
+      addEvidence(model, logicalDFBs[targetIndex],
+                  logicalDFBs[overlappingIndex], targetIndex, overlappingIndex,
+                  DFBConflictReason::ResetDomainWrite, conflict.node,
+                  conflict.resetOperation, conflict.overlappingOperation);
+    }
   }
 
   static void
@@ -451,6 +470,7 @@ getAllocationGroupAssumptionReason(DFBConflictReason reason) {
     return DFBAllocationGroupAssumptionReason::ConcurrentLifetime;
   case DFBConflictReason::DescriptorMismatch:
   case DFBConflictReason::StorageMismatch:
+  case DFBConflictReason::ResetDomainWrite:
   case DFBConflictReason::StaticConfigurationMismatch:
   case DFBConflictReason::TransactionMismatch:
     return std::nullopt;
