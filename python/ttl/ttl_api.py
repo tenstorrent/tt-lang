@@ -117,7 +117,7 @@ from .kernel_runner import (
     attach_runtime_resource_finalizer,
     KernelRuntimeResourceCache,
     KernelSpec,
-    get_cached_runtime_resource_l1_bytes,
+    get_min_remaining_l1_excluding_cached_resources,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
@@ -607,12 +607,11 @@ def _resolve_l1_budget(
         return 0
     try:
         device = _require_device(args)
-        remaining_bytes = get_min_remaining_l1_for_device(device)
         if runtime_resource_cache is not None:
-            remaining_bytes += get_cached_runtime_resource_l1_bytes(
+            return get_min_remaining_l1_excluding_cached_resources(
                 runtime_resource_cache, device
             )
-        return remaining_bytes
+        return get_min_remaining_l1_for_device(device)
     except ValueError:
         return 0
 

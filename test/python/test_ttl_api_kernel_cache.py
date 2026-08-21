@@ -264,8 +264,7 @@ def test_operation_cache_separates_tensor_config_changes(monkeypatch):
     assert len(program_hashes) == 8
 
     runtime_caches = {
-        id(call["compile_options"]["runtime_resource_cache"])
-        for call in compile_calls
+        id(call["compile_options"]["runtime_resource_cache"]) for call in compile_calls
     }
     assert len(runtime_caches) == 1
 
@@ -556,7 +555,7 @@ def test_operation_cache_rechecks_device_derived_l1_budget(monkeypatch):
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
 
 
-def test_operation_cache_compensates_for_owned_l1_resources(monkeypatch):
+def test_operation_cache_uses_l1_budget_without_owned_resources(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
     device = _FakeDevice()
     monkeypatch.setattr(
@@ -568,11 +567,11 @@ def test_operation_cache_compensates_for_owned_l1_resources(monkeypatch):
             {"synchronize_device": staticmethod(lambda _device: None)},
         )(),
     )
-    remaining_budgets = iter((98304, 98240, 98176))
+    remaining_budgets = iter((98304, 98240, 98240))
     monkeypatch.setattr(
         ttl_api,
-        "get_min_remaining_l1_for_device",
-        lambda selected_device: next(remaining_budgets),
+        "get_min_remaining_l1_excluding_cached_resources",
+        lambda resource_cache, selected_device: next(remaining_budgets),
     )
 
     @ttl_api.operation(grid=(1, 1))
@@ -584,10 +583,8 @@ def test_operation_cache_compensates_for_owned_l1_resources(monkeypatch):
     resource_cache.compatibility_key = ("variant-a",)
     resource_cache.device = device
     resource_cache.pipe_resources = object()
-    resource_cache.owned_l1_bytes = 64
 
     copy_kernel(_FakeTensor(device=device), _FakeTensor(device=device))
-    resource_cache.owned_l1_bytes = 64
     copy_kernel(_FakeTensor(device=device), _FakeTensor(device=device))
 
     assert len(compile_calls) == 2

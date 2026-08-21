@@ -120,7 +120,9 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     )
 
 
-def get_min_remaining_l1_for_device(device):
+def get_min_remaining_l1_for_device(
+    device, excluded_l1_buffer_addresses: Sequence[int] = ()
+):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
     Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
@@ -135,6 +137,10 @@ def get_min_remaining_l1_for_device(device):
     uniformly across the mesh. If individual physical devices need tracking,
     ttnn.reports.get_buffer_pages would have to report allocations on the
     parent mesh instead of the first device within the mesh.
+
+    ``excluded_l1_buffer_addresses`` removes retained compiler-owned buffers
+    before computing the per-core maximum. This reconstructs the compilation
+    budget without changing the contribution of unrelated allocations.
     """
     _ensure_ttnn()
     if ttnn is None:
@@ -143,9 +149,15 @@ def get_min_remaining_l1_for_device(device):
     info = ttnn._ttnn.reports.get_device_info(device)
     budget_bytes = info.cb_limit
 
+    excluded_addresses = frozenset(
+        int(address) for address in excluded_l1_buffer_addresses
+    )
     bytes_per_core: dict[tuple[int, int], int] = {}
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
-        if page.buffer_type == ttnn.BufferType.L1:
+        if (
+            page.buffer_type == ttnn.BufferType.L1
+            and int(page.address) not in excluded_addresses
+        ):
             key = (page.core_y, page.core_x)
             bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
 
@@ -233,6 +245,7 @@ class PipeRuntimeResources:
     computed_address_base_addresses: Dict[int, int]
     extra_common_runtime_args: List[int]
     expected_extra_common_runtime_args: int
+    l1_buffer_addresses: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -243,7 +256,7 @@ class KernelRuntimeResourceCache:
     compatibility_key: Optional[Tuple[Any, ...]] = None
     device: Optional[Any] = None
     pipe_resources: Optional[PipeRuntimeResources] = None
-    owned_l1_bytes: int = 0
+    owned_l1_buffer_addresses: frozenset[int] = frozenset()
     portable_resource_lifetimes: Tuple[object, ...] = ()
     portable_resource_device: Optional[Any] = None
 
@@ -278,7 +291,7 @@ def _release_cached_runtime_resources_impl(
     cache.compatibility_key = None
     cache.device = None
     cache.pipe_resources = None
-    cache.owned_l1_bytes = 0
+    cache.owned_l1_buffer_addresses = frozenset()
     cache.portable_resource_lifetimes = ()
     cache.portable_resource_device = None
 
@@ -343,7 +356,7 @@ def _detach_cached_runtime_resources(
         compatibility_key=cache.compatibility_key,
         device=cache.device,
         pipe_resources=cache.pipe_resources,
-        owned_l1_bytes=cache.owned_l1_bytes,
+        owned_l1_buffer_addresses=cache.owned_l1_buffer_addresses,
         portable_resource_lifetimes=cache.portable_resource_lifetimes,
         portable_resource_device=cache.portable_resource_device,
     )
@@ -354,7 +367,7 @@ def _detach_cached_runtime_resources(
     cache.compatibility_key = None
     cache.device = None
     cache.pipe_resources = None
-    cache.owned_l1_bytes = 0
+    cache.owned_l1_buffer_addresses = frozenset()
     cache.portable_resource_lifetimes = ()
     cache.portable_resource_device = None
 
@@ -1344,6 +1357,13 @@ def build_pipe_runtime_resources(
         dfb_index: int(tensor.buffer_address())
         for dfb_index, tensor in computed_address_dfb_tensors.items()
     }
+    l1_buffer_addresses = frozenset(
+        [
+            *(int(tensor.buffer_address()) for tensor in scratch_tensors),
+            *global_semaphore_addresses,
+            *computed_address_base_addresses.values(),
+        ]
+    )
     return PipeRuntimeResources(
         scratch_tensors=scratch_tensors,
         global_semaphores=global_semaphores,
@@ -1351,33 +1371,8 @@ def build_pipe_runtime_resources(
         computed_address_base_addresses=computed_address_base_addresses,
         extra_common_runtime_args=extra_common_runtime_args,
         expected_extra_common_runtime_args=expected_extra_common_runtime_args,
+        l1_buffer_addresses=l1_buffer_addresses,
     )
-
-
-def _round_l1_allocation_bytes(payload_bytes: int) -> int:
-    """Return the conservative per-core allocation for one L1 object."""
-    if payload_bytes <= 0:
-        return 0
-    allocation_quantum = 64
-    return (
-        (payload_bytes + allocation_quantum - 1) // allocation_quantum
-    ) * allocation_quantum
-
-
-def _get_pipe_runtime_resource_l1_bytes(
-    cb_configs: List[PhysicalDFBConfig],
-    pipe_sram_scratch_bytes: int,
-    num_pipe_global_semaphores: int,
-    pipe_computed_address_dfb_indices: Tuple[int, ...],
-) -> int:
-    """Return the conservative per-core L1 owned by one resource generation."""
-    scratch_bytes = _round_l1_allocation_bytes(pipe_sram_scratch_bytes)
-    computed_address_bytes = sum(
-        _round_l1_allocation_bytes(_get_dfb_allocation(cb_configs[index]).total_size)
-        for index in pipe_computed_address_dfb_indices
-    )
-    semaphore_bytes = 64 * num_pipe_global_semaphores
-    return scratch_bytes + computed_address_bytes + semaphore_bytes
 
 
 def _runtime_resource_compatibility_key(
@@ -1466,23 +1461,19 @@ def _get_cached_runtime_resources_impl(
         cache.compatibility_key = compatibility_key
         cache.device = resource_device
         cache.pipe_resources = pipe_resources
-        cache.owned_l1_bytes = _get_pipe_runtime_resource_l1_bytes(
-            cb_configs,
-            pipe_sram_scratch_bytes,
-            num_pipe_global_semaphores,
-            pipe_computed_address_dfb_indices,
-        )
+        cache.owned_l1_buffer_addresses = pipe_resources.l1_buffer_addresses
     return pipe_resources
 
 
-def get_cached_runtime_resource_l1_bytes(
+def get_min_remaining_l1_excluding_cached_resources(
     cache: KernelRuntimeResourceCache, device: Any
 ) -> int:
-    """Return L1 retained by this cache on the selected device."""
+    """Return the current L1 budget with this cache's buffers excluded."""
     with cache.lock:
-        if cache.device is not device:
-            return 0
-        return cache.owned_l1_bytes
+        excluded_addresses = (
+            cache.owned_l1_buffer_addresses if cache.device is device else ()
+        )
+        return get_min_remaining_l1_for_device(device, excluded_addresses)
 
 
 def get_cached_runtime_resources(
