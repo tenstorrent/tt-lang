@@ -868,6 +868,26 @@ def test_synchronized_dfb_reset_requires_positional_boundary():
         ttl.reset_all_dfbs(reset=reset)
 
 
+def test_direct_kernel_capture_names_precede_reset_participant_names():
+    """Reset capture order does not replace direct logical-kernel identities."""
+    z_compute = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    z_reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    z_writer = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    a_reset = ttl.DFBReset(participants=(z_compute, z_reader, z_writer))
+
+    @ttl.operation()
+    def reset_with_direct_participants():
+        ttl.call_extern_func("compute.hpp", "compute", kernel=z_compute)
+        ttl.call_extern_func("reader.hpp", "reader", kernel=z_reader)
+        ttl.call_extern_func("writer.hpp", "writer", kernel=z_writer)
+        ttl.reset_all_dfbs(a_reset)
+
+    spec = reset_with_direct_participants._spec
+    assert tuple(spec.logical_kernels) == ("z_compute", "z_reader", "z_writer")
+    bound_reset = spec.dfb_resets["a_reset"]
+    assert bound_reset.participants == tuple(spec.logical_kernels.values())
+
+
 def test_synchronized_dfb_reset_alias_topology_changes_operation_identity():
     """The cache identity distinguishes shared and independent reset instances."""
 
