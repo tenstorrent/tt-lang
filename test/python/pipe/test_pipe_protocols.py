@@ -258,8 +258,28 @@ def test_pipe_protocols_match(device, dtype, recv_block_count):
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
 )
-def test_pipe_computed_address_scratch_coexists_with_reset(
-    device, dtype, memory_config, to_device, monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("pipe_options", "expected_scratch_bytes", "expected_reset_offset"),
+    [
+        ("--ttl-reuse-user-dfbs", 32, 0),
+        (
+            "--ttl-reuse-user-dfbs --no-ttl-pipe-computed-addresses",
+            64,
+            32,
+        ),
+    ],
+    ids=["computed-address", "published-address"],
+)
+def test_pipe_resources_coexist_with_reset(
+    device,
+    dtype,
+    memory_config,
+    to_device,
+    pipe_options,
+    expected_scratch_bytes,
+    expected_reset_offset,
+    monkeypatch,
+    tmp_path,
 ):
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole DFB reset support")
@@ -275,7 +295,7 @@ def test_pipe_computed_address_scratch_coexists_with_reset(
         ).to(dtype)
         input_tensor = to_device(input_host, device)
         output_tensor = to_device(torch.zeros_like(input_host), device)
-        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+        operation(input_tensor, output_tensor, options=pipe_options)
         assert_pcc(
             input_host.float(),
             ttnn.to_torch(output_tensor).float(),
@@ -283,8 +303,18 @@ def test_pipe_computed_address_scratch_coexists_with_reset(
 
     final_mlir = final_mlir_path.read_text()
     assert "ttl.dfb_reset_count = 1 : i64" in final_mlir
-    assert "ttl.pipe_sram_scratch_bytes = " in final_mlir
-    assert "ttl.pipe_computed_address_dfb_indices" in final_mlir
+    assert f"ttl.pipe_sram_scratch_bytes = {expected_scratch_bytes} : i64" in final_mlir
+    has_computed_address_backing = "ttl.pipe_computed_address_dfb_indices" in final_mlir
+    assert has_computed_address_backing == (expected_reset_offset == 0)
+
+    compute_mlir = final_mlir.split("func.func @compute", 1)[1].split(
+        "func.func @send_data", 1
+    )[0]
+    if expected_reset_offset == 0:
+        assert "emitc.add" not in compute_mlir
+    else:
+        assert f"value = {expected_reset_offset} : i32" in compute_mlir
+        assert "emitc.add" in compute_mlir
 
 
 # A collective source that is also a receiver must publish its address through
