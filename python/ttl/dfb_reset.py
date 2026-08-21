@@ -154,7 +154,6 @@ def _transitive_participant_kernels(
                 suffix_index += 1
                 participant_name = f"{name_stem}_{suffix_index}"
             used_names.add(participant_name)
-            participant_names[id(participant)] = participant_name
             transitive_kernels[participant_name] = participant
     return transitive_kernels
 

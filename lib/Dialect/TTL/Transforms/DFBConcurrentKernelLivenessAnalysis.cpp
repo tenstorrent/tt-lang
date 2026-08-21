@@ -418,13 +418,6 @@ static bool hasEquivalentIterationSequence(const StaticIterationDomain &lhs,
   return lhs.tripCounts == rhs.tripCounts;
 }
 
-static bool
-hasSequentialIterationOrder(const StaticIterationDomain &iterationDomain) {
-  return llvm::all_of(iterationDomain.loops, [](Operation *loop) {
-    return isa<affine::AffineForOp, scf::ForOp>(loop);
-  });
-}
-
 // One statically counted run of an access occurrence.
 struct AccessRun {
   const DFBAccessOccurrence *access = nullptr;
@@ -490,6 +483,9 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     auto loop = dyn_cast_or_null<LoopLikeOpInterface>(parent);
     if (!parent || !region->hasOneBlock() ||
         nestedOperation->getBlock() != &region->front()) {
+      return std::nullopt;
+    }
+    if (loop && !isa<affine::AffineForOp, scf::ForOp>(parent)) {
       return std::nullopt;
     }
     if (!loop) {
@@ -1614,8 +1610,7 @@ static LogicalResult validateSynchronizedResetsAtNode(
           std::optional<StaticIterationDomain> uniformDomain =
               getUniformStaticIterationDomain(
                   occurrence.operation, *executionCount, node, domainState);
-          if (!uniformDomain || uniformDomain->loops.empty() ||
-              !hasSequentialIterationOrder(*uniformDomain)) {
+          if (!uniformDomain || uniformDomain->loops.empty()) {
             analysisFailure.set(
                 occurrence.operation,
                 ("repeated synchronized DFB reset with exact count " +
@@ -3345,10 +3340,10 @@ getParticipantIteration(const ValidatedSynchronizedReset &reset,
   return std::nullopt;
 }
 
-/// Models one representative interval when every access and its terminating
-/// collective reset execute once per iteration of the same sequential loop.
-/// The reset restores canonical cursor state, so physical allocation validates
-/// the per-iteration transactions rather than their dispatch-wide sum.
+// Models one representative interval when every access and its terminating
+// collective reset execute once per iteration of the same sequential loop.
+// The reset restores canonical cursor state, so physical allocation validates
+// the per-iteration transactions rather than their dispatch-wide sum.
 static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
     DFBLogicalLifecycle &logicalDFB, unsigned logicalIndex,
     LaunchNodeCoord node, SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
