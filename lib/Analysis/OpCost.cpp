@@ -179,6 +179,8 @@ std::optional<Cost> matchRow(const EngineCost &slot, const OpKey &opKey,
 
 } // namespace
 
+bool hasTable(Arch arch) { return !getTable(arch).empty(); }
+
 bool isKnownOp(llvm::StringRef op, Arch arch) {
   return findOp(op, arch) != nullptr;
 }

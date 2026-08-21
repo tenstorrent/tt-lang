@@ -164,19 +164,25 @@ struct Cost {
   bool isScalar() const { return fixed == 0.0; }
 };
 
+/// Whether any measurements exist for this architecture at all.
+///
+/// False means no sweep has run on it, so every other query answers nothing. A
+/// caller checks this once and says so, rather than reporting each operation in
+/// turn as unknown and leaving the reader to infer that the table is missing.
+bool hasTable(Arch arch);
+
 /// Whether the table knows this operation at all.
 ///
 /// False means the operation is absent, which is different from known and free:
 /// a caller should fail rather than assume zero, since the table covers every
 /// operation the dialect defines and an absence means the two have drifted.
-bool isKnownOp(llvm::StringRef op, Arch arch = Arch::Blackhole);
+bool isKnownOp(llvm::StringRef op, Arch arch);
 
 /// Whether `op` occupies `engine`.
-bool runsOnEngine(llvm::StringRef op, Engine engine,
-                  Arch arch = Arch::Blackhole);
+bool runsOnEngine(llvm::StringRef op, Engine engine, Arch arch);
 
 /// Whether `op` occupies no engine at all: known, and costing nothing.
-bool runsNowhere(llvm::StringRef op, Arch arch = Arch::Blackhole);
+bool runsNowhere(llvm::StringRef op, Arch arch);
 
 /// The cost of this operation on this engine in this configuration, or nothing.
 ///
@@ -191,7 +197,7 @@ bool runsNowhere(llvm::StringRef op, Arch arch = Arch::Blackhole);
 /// on, which is how an unverifiable number would otherwise reach a report.
 std::optional<Cost> lookup(llvm::StringRef op, Engine engine,
                            const OpKey &opKey, const KernelConfig &config,
-                           Arch arch = Arch::Blackhole);
+                           Arch arch);
 
 /// How many operations and measured rows back an architecture's table, for
 /// reports that want to state their own provenance.
@@ -199,14 +205,14 @@ struct TableStats {
   unsigned operations = 0;
   unsigned measuredRows = 0;
 };
-TableStats getTableStats(Arch arch = Arch::Blackhole);
+TableStats getTableStats(Arch arch);
 
 /// Every operation the table defines, in table order.
 ///
 /// The table covers the whole TTKernel dialect -- generation reads the
 /// operation list out of TTKernelOps.td and fails if the two disagree -- so
 /// this is also the dialect's operation list as of the last regeneration.
-llvm::ArrayRef<llvm::StringRef> getOperations(Arch arch = Arch::Blackhole);
+llvm::ArrayRef<llvm::StringRef> getOperations(Arch arch);
 
 /// How many measured rows back one (operation, engine), across every
 /// configuration.
@@ -216,8 +222,7 @@ llvm::ArrayRef<llvm::StringRef> getOperations(Arch arch = Arch::Blackhole);
 /// is missing data, the second is a key mismatch, and only the caller's config
 /// decides the second. `lookup` answers the second; this answers the
 /// first, and is what a coverage report needs.
-unsigned getMeasurementCount(llvm::StringRef op, Engine engine,
-                             Arch arch = Arch::Blackhole);
+unsigned getMeasurementCount(llvm::StringRef op, Engine engine, Arch arch);
 
 /// Name of an engine, for diagnostics.
 llvm::StringRef getEngineName(Engine engine);

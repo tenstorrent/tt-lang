@@ -129,7 +129,7 @@ void checkEveryRowIsReachable(Checks &checks) {
     llvm::SmallVector<Knob> knobs = splitKnobs(row.knobs);
     auto [opKey, config] = keyOf(row, knobs);
     std::optional<Cost> found =
-        opcost::lookup(row.op, row.engine, opKey, config);
+        opcost::lookup(row.op, row.engine, opKey, config, Arch::Blackhole);
     if (!found) {
       checks.expect(false, "no answer for its own key: " + describe(row));
       return;
@@ -139,7 +139,7 @@ void checkEveryRowIsReachable(Checks &checks) {
                       describe(row));
   });
   checks.expect(rows > 0, "the table holds no measurements at all");
-  checks.expect(rows == opcost::getTableStats().measuredRows,
+  checks.expect(rows == opcost::getTableStats(Arch::Blackhole).measuredRows,
                 "enumeration and getTableStats disagree on the row count");
   checks.finish("every measured row is reachable by its own key");
 }
@@ -158,7 +158,7 @@ void checkKnobDiscipline(Checks &checks) {
     }
     llvm::SmallVector<Knob> knobs = splitKnobs(row.knobs);
     auto [opKey, config] = keyOf(row, knobs);
-    if (!opcost::lookup(row.op, row.engine, opKey, config)) {
+    if (!opcost::lookup(row.op, row.engine, opKey, config, Arch::Blackhole)) {
       // A conflicted row: the reachability check above reports it. Anything
       // derived from it would report the same fault twice.
       return;
@@ -169,15 +169,16 @@ void checkKnobDiscipline(Checks &checks) {
     llvm::SmallVector<Knob> fewer(knobs.begin(), knobs.end() - 1);
     OpKey dropped = opKey;
     dropped.knobs = fewer;
-    checks.expect(!opcost::lookup(row.op, row.engine, dropped, config),
-                  "answered without a knob the row is keyed on: " +
-                      describe(row));
+    checks.expect(
+        !opcost::lookup(row.op, row.engine, dropped, config, Arch::Blackhole),
+        "answered without a knob the row is keyed on: " + describe(row));
 
     // No knobs at all.
     OpKey none = opKey;
     none.knobs = {};
-    checks.expect(!opcost::lookup(row.op, row.engine, none, config),
-                  "answered with no knobs supplied: " + describe(row));
+    checks.expect(
+        !opcost::lookup(row.op, row.engine, none, config, Arch::Blackhole),
+        "answered with no knobs supplied: " + describe(row));
 
     // One knob's value changed to something no sweep measured.
     llvm::SmallVector<Knob> wrong(knobs.begin(), knobs.end());
@@ -185,7 +186,8 @@ void checkKnobDiscipline(Checks &checks) {
     OpKey mismatched = opKey;
     mismatched.knobs = wrong;
     checks.expect(
-        !opcost::lookup(row.op, row.engine, mismatched, config),
+        !opcost::lookup(row.op, row.engine, mismatched, config,
+                        Arch::Blackhole),
         "answered with a knob set to a value it was not measured at: " +
             describe(row));
 
@@ -195,7 +197,7 @@ void checkKnobDiscipline(Checks &checks) {
     OpKey padded = opKey;
     padded.knobs = extra;
     std::optional<Cost> withExtra =
-        opcost::lookup(row.op, row.engine, padded, config);
+        opcost::lookup(row.op, row.engine, padded, config, Arch::Blackhole);
     checks.expect(withExtra && sameCost(*withExtra, row.cost),
                   "an unrelated knob changed the answer: " + describe(row));
   });
@@ -214,7 +216,7 @@ void checkKeyDiscipline(Checks &checks) {
     llvm::SmallVector<Knob> knobs = splitKnobs(row.knobs);
     auto [opKey, config] = keyOf(row, knobs);
     std::optional<Cost> found =
-        opcost::lookup(row.op, row.engine, opKey, config);
+        opcost::lookup(row.op, row.engine, opKey, config, Arch::Blackhole);
     if (!found) {
       return;
     }
@@ -224,21 +226,23 @@ void checkKeyDiscipline(Checks &checks) {
     // legitimately matching instead.
     OpKey otherIn = opKey;
     otherIn.inFormat = "NotAFormat";
-    checks.expect(!opcost::lookup(row.op, row.engine, otherIn, config),
-                  "answered for an input format it was not measured at: " +
-                      describe(row));
+    checks.expect(
+        !opcost::lookup(row.op, row.engine, otherIn, config, Arch::Blackhole),
+        "answered for an input format it was not measured at: " +
+            describe(row));
 
     KernelConfig otherOut = config;
     otherOut.outFormat = "NotAFormat";
-    checks.expect(!opcost::lookup(row.op, row.engine, opKey, otherOut),
-                  "answered for an output format it was not measured at: " +
-                      describe(row));
+    checks.expect(
+        !opcost::lookup(row.op, row.engine, opKey, otherOut, Arch::Blackhole),
+        "answered for an output format it was not measured at: " +
+            describe(row));
 
     KernelConfig otherFaces = config;
     otherFaces.faces = 4096;
-    checks.expect(!opcost::lookup(row.op, row.engine, opKey, otherFaces),
-                  "answered for a face count it was not measured at: " +
-                      describe(row));
+    checks.expect(
+        !opcost::lookup(row.op, row.engine, opKey, otherFaces, Arch::Blackhole),
+        "answered for a face count it was not measured at: " + describe(row));
 
     // Documented as not consulted: the sync mode changes DST capacity and the
     // math-to-pack handoff, neither of which alters an operation's isolated
@@ -247,7 +251,7 @@ void checkKeyDiscipline(Checks &checks) {
       KernelConfig synced = config;
       synced.dstSync = sync;
       std::optional<Cost> answer =
-          opcost::lookup(row.op, row.engine, opKey, synced);
+          opcost::lookup(row.op, row.engine, opKey, synced, Arch::Blackhole);
       checks.expect(answer && sameCost(*answer, *found),
                     "dstSync changed the answer: " + describe(row));
     }
@@ -264,10 +268,10 @@ void checkKeyDiscipline(Checks &checks) {
 /// that invented a number here would erase both.
 void checkUntimedSlotsStaySilent(Checks &checks) {
   unsigned untimed = 0;
-  for (llvm::StringRef op : opcost::getOperations()) {
+  for (llvm::StringRef op : opcost::getOperations(Arch::Blackhole)) {
     for (Engine engine : kEngines) {
-      if (!opcost::runsOnEngine(op, engine) ||
-          opcost::getMeasurementCount(op, engine) != 0) {
+      if (!opcost::runsOnEngine(op, engine, Arch::Blackhole) ||
+          opcost::getMeasurementCount(op, engine, Arch::Blackhole) != 0) {
         continue;
       }
       ++untimed;
@@ -279,9 +283,10 @@ void checkUntimedSlotsStaySilent(Checks &checks) {
         for (const KernelConfig &config :
              {KernelConfig{}, KernelConfig{"Float16_b", false, "Half", 4},
               KernelConfig{"Float32", true, "Full", 2}}) {
-          checks.expect(!opcost::lookup(op, engine, opKey, config),
-                        "an untimed slot answered: " + op + "/" +
-                            opcost::getEngineName(engine));
+          checks.expect(
+              !opcost::lookup(op, engine, opKey, config, Arch::Blackhole),
+              "an untimed slot answered: " + op + "/" +
+                  opcost::getEngineName(engine));
         }
       }
     }
@@ -294,29 +299,29 @@ void checkUntimedSlotsStaySilent(Checks &checks) {
 
 /// The three predicates and the operation list agree with each other.
 void checkSlotsAgree(Checks &checks) {
-  llvm::ArrayRef<llvm::StringRef> ops = opcost::getOperations();
-  checks.expect(ops.size() == opcost::getTableStats().operations,
+  llvm::ArrayRef<llvm::StringRef> ops = opcost::getOperations(Arch::Blackhole);
+  checks.expect(ops.size() == opcost::getTableStats(Arch::Blackhole).operations,
                 "getOperations and getTableStats disagree on the count");
 
   unsigned rows = 0;
   for (llvm::StringRef op : ops) {
-    checks.expect(opcost::isKnownOp(op),
+    checks.expect(opcost::isKnownOp(op, Arch::Blackhole),
                   "an operation the table lists is not known: " + op);
 
     bool anyEngine = false;
     for (Engine engine : kEngines) {
-      bool runs = opcost::runsOnEngine(op, engine);
+      bool runs = opcost::runsOnEngine(op, engine, Arch::Blackhole);
       anyEngine |= runs;
-      rows += opcost::getMeasurementCount(op, engine);
+      rows += opcost::getMeasurementCount(op, engine, Arch::Blackhole);
       checks.expect(
-          runs || opcost::getMeasurementCount(op, engine) == 0,
+          runs || opcost::getMeasurementCount(op, engine, Arch::Blackhole) == 0,
           "measurements on an engine the operation does not run on: " + op +
               "/" + opcost::getEngineName(engine));
     }
-    checks.expect(opcost::runsNowhere(op) == !anyEngine,
+    checks.expect(opcost::runsNowhere(op, Arch::Blackhole) == !anyEngine,
                   "runsNowhere disagrees with the engine slots: " + op);
   }
-  checks.expect(rows == opcost::getTableStats().measuredRows,
+  checks.expect(rows == opcost::getTableStats(Arch::Blackhole).measuredRows,
                 "per-slot counts do not sum to getTableStats");
   checks.finish("the operation list, the predicates and the counts agree");
 }
@@ -324,16 +329,19 @@ void checkSlotsAgree(Checks &checks) {
 /// An operation the table does not know is unknown rather than free.
 void checkUnknownOperation(Checks &checks) {
   constexpr llvm::StringLiteral kAbsent("not_a_ttkernel_operation");
-  checks.expect(!opcost::isKnownOp(kAbsent), "an absent operation is known");
-  checks.expect(!opcost::runsNowhere(kAbsent),
+  checks.expect(!opcost::isKnownOp(kAbsent, Arch::Blackhole),
+                "an absent operation is known");
+  checks.expect(!opcost::runsNowhere(kAbsent, Arch::Blackhole),
                 "an absent operation reads as running nowhere, which is what a "
                 "known and free operation reads as");
   for (Engine engine : kEngines) {
-    checks.expect(!opcost::runsOnEngine(kAbsent, engine),
+    checks.expect(!opcost::runsOnEngine(kAbsent, engine, Arch::Blackhole),
                   "an absent operation runs on an engine");
-    checks.expect(opcost::getMeasurementCount(kAbsent, engine) == 0,
-                  "an absent operation has measurements");
-    checks.expect(!opcost::lookup(kAbsent, engine, OpKey{}, KernelConfig{}),
+    checks.expect(
+        opcost::getMeasurementCount(kAbsent, engine, Arch::Blackhole) == 0,
+        "an absent operation has measurements");
+    checks.expect(!opcost::lookup(kAbsent, engine, OpKey{}, KernelConfig{},
+                                  Arch::Blackhole),
                   "an absent operation answered a cost");
   }
   checks.finish("an unknown operation answers nothing on every engine");
@@ -341,6 +349,10 @@ void checkUnknownOperation(Checks &checks) {
 
 /// An architecture with no table borrows nothing from the one that has data.
 void checkOtherArchIsEmpty(Checks &checks) {
+  checks.expect(opcost::hasTable(Arch::Blackhole),
+                "Blackhole has no table, so nothing here means anything");
+  checks.expect(!opcost::hasTable(Arch::Wormhole),
+                "Wormhole reports a table it does not have");
   checks.expect(opcost::getOperations(Arch::Wormhole).empty(),
                 "Wormhole lists operations");
   opcost::TableStats stats = opcost::getTableStats(Arch::Wormhole);
