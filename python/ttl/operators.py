@@ -91,8 +91,10 @@ def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
 
     The operation restores pointer, initialization, and occupancy state to an
     empty queue. It preserves descriptor configuration and payload bytes. It
-    does not complete arbitrary asynchronous NoC work; producers must complete
-    required transfers before the reset.
+    makes each participating data movement RISC drain its own outstanding NoC
+    commands before publishing boundary arrival. It cannot complete commands
+    issued by another core or a non-participating RISC, so every producer must
+    issue its required transfers before its local reset occurrence.
     """
     raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
 
