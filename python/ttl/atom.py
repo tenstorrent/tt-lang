@@ -291,7 +291,15 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     )
     dfb_resets: Dict[str, DFBReset] = dict(inlined_dfb_resets)
     captured_logical_kernels: Dict[str, Kernel] = {}
-    for capture_name in sorted(loaded_names & captured_values.keys()):
+    captured_names = sorted(loaded_names & captured_values.keys())
+    for capture_name in captured_names:
+        value = captured_values[capture_name]
+        if not isinstance(value, Kernel):
+            continue
+        if not any(value is kernel for kernel in logical_kernels.values()):
+            captured_logical_kernels[capture_name] = value
+
+    for capture_name in captured_names:
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
             raise ValueError(
@@ -302,8 +310,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
         elif isinstance(value, Kernel):
-            if not any(value is kernel for kernel in logical_kernels.values()):
-                captured_logical_kernels[capture_name] = value
+            continue
         elif isinstance(value, DispatchCondition):
             if capture_name in closure_values.globals:
                 raise ValueError(
