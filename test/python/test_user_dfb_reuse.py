@@ -711,6 +711,8 @@ def _make_synchronized_reset_kernel(
         participants=(compute_kernel, reader_kernel, writer_kernel),
     )
 
+    # The frontend traces both branches of closure-dependent conditionals, so
+    # selected and all-interface reset operations need separate definitions.
     if reset_all:
 
         @ttl.operation(grid=(grid_cols, 1))
@@ -840,55 +842,91 @@ def _make_repeated_synchronized_reset_kernel(data_format, reset_all):
         participants=(compute_kernel, reader_kernel, writer_kernel),
     )
 
-    @ttl.operation(grid=(1, 1))
-    def repeated_synchronized_reset_kernel(input_tensor, output_tensor):
-        reset_allocation = ttl.make_dfb_allocation_group()
-        stale_dfb = ttl.make_dfb(
-            data_format,
-            shape=(1, 2),
-            block_count=1,
-            allocation_group=reset_allocation,
-        )
-        current_dfb = ttl.make_dfb(
-            data_format,
-            shape=(1, 1),
-            block_count=3,
-            allocation_group=reset_allocation,
-        )
-        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+    if reset_all:
 
-        @ttl.compute(kernel=compute_kernel)
-        def compute():
-            for _reset_iteration in range(4):
-                if reset_all:
-                    ttl.reset_all_dfbs(reset)
-                else:
-                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
-            with current_dfb.wait() as current_source:
-                with output_dfb.reserve() as output_destination:
-                    output_destination.store(current_source)
+        @ttl.operation(grid=(1, 1))
+        def repeated_synchronized_reset_kernel(input_tensor, output_tensor):
+            reset_allocation = ttl.make_dfb_allocation_group()
+            stale_dfb = ttl.make_dfb(
+                data_format,
+                shape=(1, 2),
+                block_count=1,
+                allocation_group=reset_allocation,
+            )
+            current_dfb = ttl.make_dfb(
+                data_format,
+                shape=(1, 1),
+                block_count=3,
+                allocation_group=reset_allocation,
+            )
+            output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
 
-        @ttl.datamovement(kernel=reader_kernel)
-        def read():
-            for _reset_iteration in range(4):
-                with stale_dfb.reserve() as stale_destination:
-                    ttl.copy(input_tensor[0:1, 0:2], stale_destination).wait()
-                if reset_all:
+            @ttl.compute(kernel=compute_kernel)
+            def compute():
+                for _reset_iteration in range(4):
                     ttl.reset_all_dfbs(reset)
-                else:
-                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
-            with current_dfb.reserve() as current_destination:
-                ttl.copy(input_tensor[0, 0], current_destination).wait()
+                with current_dfb.wait() as current_source:
+                    with output_dfb.reserve() as output_destination:
+                        output_destination.store(current_source)
 
-        @ttl.datamovement(kernel=writer_kernel)
-        def write():
-            for _reset_iteration in range(4):
-                if reset_all:
+            @ttl.datamovement(kernel=reader_kernel)
+            def read():
+                for _reset_iteration in range(4):
+                    with stale_dfb.reserve() as stale_destination:
+                        ttl.copy(input_tensor[0:1, 0:2], stale_destination).wait()
                     ttl.reset_all_dfbs(reset)
-                else:
+                with current_dfb.reserve() as current_destination:
+                    ttl.copy(input_tensor[0, 0], current_destination).wait()
+
+            @ttl.datamovement(kernel=writer_kernel)
+            def write():
+                for _reset_iteration in range(4):
+                    ttl.reset_all_dfbs(reset)
+                with output_dfb.wait() as output_source:
+                    ttl.copy(output_source, output_tensor[0, 0]).wait()
+
+    else:
+
+        @ttl.operation(grid=(1, 1))
+        def repeated_synchronized_reset_kernel(input_tensor, output_tensor):
+            reset_allocation = ttl.make_dfb_allocation_group()
+            stale_dfb = ttl.make_dfb(
+                data_format,
+                shape=(1, 2),
+                block_count=1,
+                allocation_group=reset_allocation,
+            )
+            current_dfb = ttl.make_dfb(
+                data_format,
+                shape=(1, 1),
+                block_count=3,
+                allocation_group=reset_allocation,
+            )
+            output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+
+            @ttl.compute(kernel=compute_kernel)
+            def compute():
+                for _reset_iteration in range(4):
                     ttl.reset_dfbs(reset, dfbs=[stale_dfb])
-            with output_dfb.wait() as output_source:
-                ttl.copy(output_source, output_tensor[0, 0]).wait()
+                with current_dfb.wait() as current_source:
+                    with output_dfb.reserve() as output_destination:
+                        output_destination.store(current_source)
+
+            @ttl.datamovement(kernel=reader_kernel)
+            def read():
+                for _reset_iteration in range(4):
+                    with stale_dfb.reserve() as stale_destination:
+                        ttl.copy(input_tensor[0:1, 0:2], stale_destination).wait()
+                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+                with current_dfb.reserve() as current_destination:
+                    ttl.copy(input_tensor[0, 0], current_destination).wait()
+
+            @ttl.datamovement(kernel=writer_kernel)
+            def write():
+                for _reset_iteration in range(4):
+                    ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+                with output_dfb.wait() as output_source:
+                    ttl.copy(output_source, output_tensor[0, 0]).wait()
 
     return repeated_synchronized_reset_kernel
 
@@ -1907,9 +1945,9 @@ def test_repeated_synchronized_reset_run(
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
 
     for invocation_index in range(2):
-        element_indices = torch.arange(
-            2 * TILE * TILE, dtype=torch.float32
-        ).reshape(TILE, 2 * TILE)
+        element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+            TILE, 2 * TILE
+        )
         input_host = (
             (element_indices.remainder(257) - 128) / 64 + invocation_index
         ).to(dtype)
