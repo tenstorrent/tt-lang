@@ -2141,9 +2141,7 @@ def run_kernel_on_device(
         or num_pipe_global_semaphores > 0
         or num_dfb_resets > 0
         or runtime_resource_factory is not None
-        or any(
-            spec.pipe_computed_address_dfb_indices for spec in kernel_specs
-        )
+        or any(spec.pipe_computed_address_dfb_indices for spec in kernel_specs)
     )
     if not requires_persistent_resources:
         with runtime_resource_cache.lock:
