@@ -1715,14 +1715,19 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
   verify every pair assigned one index against the typed conflict model
 
   aggregate L1 bytes once per unique physical index
-  if assignment exceeds the L1 limit and is not known minimum:
+  authoritativeDFBBudget = L1 limit - synchronized-reset scratch
+  minimumSearchTrigger = authoritativeDFBBudget
+      - provisional conservative PipeNet reservation
+  if assignment exceeds minimumSearchTrigger and is not known minimum:
     minimumResult = exactMinimumIndexSearch(
         conflicts, pairwiseConflictLowerBound, searchStateLimit)
-    if minimumResult is SearchLimitReached:
+    if minimumResult is SearchLimitReached and
+        assignment exceeds authoritativeDFBBudget:
       reject with an inconclusive-search diagnostic
-    assignment = minimumResult.assignment
+    if minimumResult found an assignment:
+      assignment = minimumResult.assignment
     aggregate L1 bytes once per unique physical index
-  reject if the assignment exceeds the L1 limit
+  reject if the assignment exceeds authoritativeDFBBudget
   build one runtime descriptor for every physical index
   reject conflicting descriptors at one physical index
   reject if the internal assignment is not a dense zero-based range
@@ -1741,19 +1746,29 @@ applyPhysicalAllocationPlan(module, plan):
 ```
 
 First-fit is accepted whenever its valid assignment satisfies the physical
-index and L1 limits; proving a smaller assignment would not change compilation.
-Backtracking can grow exponentially, so exact search is reserved for cases
-where first-fit prevents acceptance. A physical-index failure asks one direct
+index limit and the provisional L1 search threshold; proving a smaller
+assignment would not change compilation. Backtracking can grow exponentially,
+so exact search is reserved for cases where first-fit prevents acceptance or
+exceeds that provisional threshold. A physical-index failure asks one direct
 question at the available index count instead of proving the minimum. A valid
-assignment that exceeds L1 requires a minimum physical-index-count search
-because a different sharing assignment may use less physical storage. Each
-exact query examines at most `exact-coloring-search-limit` deterministic states,
-which defaults to 1,000,000, to bound compile time. Reaching the limit reports
-that feasibility was not proved and identifies the option that increases the
-limit; it never reports a proved capacity failure. The planner completes every
+assignment that exceeds the authoritative DFB-plus-reset budget requires a
+minimum physical-index-count search because a different sharing assignment may
+use less physical storage. Each exact query examines at most
+`exact-coloring-search-limit` deterministic states, which defaults to
+1,000,000, to bound compile time. Reaching the limit reports that feasibility
+was not proved and identifies the option that increases the limit; it never
+reports a proved capacity failure. The planner completes every
 diagnostic-producing validation before `TTLFinalizeDFBIndices` changes any
 `dfb_id`, `cb_index`, kernel attribute, or module attribute. The finalizer only
 materializes the validated plan.
+
+Transport formation may record a conservative PipeNet L1 reservation before
+finalization. That reservation lowers the threshold that triggers minimum-index
+search, so finalization can select a smaller DFB assignment before exact PipeNet
+planning. It is not an authoritative rejection condition: finalization rejects
+only when DFB storage plus synchronized-reset scratch exceeds L1. Conversion
+then validates finalized DFB storage against the exact PipeNet scratch and
+GlobalSemaphore requirements.
 
 Finalization is idempotent on unchanged finalized IR. Reanalysis reconstructs
 the same logical identities, typed conflicts, physical indices, descriptors,
@@ -1981,11 +1996,15 @@ with releases before finalization.
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One
   fixed-limit exhaustive query runs when first-fit exceeds the physical-index
-  limit. Minimum physical-index-count search runs only when a valid assignment
-  exceeds the L1 budget. Each query is limited to 1,000,000 deterministic
-  states by default so difficult graphs cannot make compile time unbounded.
-  Limit exhaustion reports an inconclusive allocation; proven infeasibility
-  reports a capacity failure. DRAM spilling is tracked by
+  limit. Minimum physical-index-count search also runs when a valid assignment
+  exceeds the DFB-plus-reset L1 budget or a provisional threshold that reserves
+  conservative PipeNet resources. Only the DFB-plus-reset budget is
+  authoritative during finalization; exact combined resources are validated
+  during conversion. Each query is limited to 1,000,000 deterministic states by
+  default so difficult graphs cannot make compile time unbounded. Limit
+  exhaustion reports an inconclusive allocation only when acceptance requires
+  the search result; proven infeasibility reports a capacity failure. DRAM
+  spilling is tracked by
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
 
 - **Reachability cost.** Each launch node runs one graph traversal from every

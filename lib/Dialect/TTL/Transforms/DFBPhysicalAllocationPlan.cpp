@@ -654,9 +654,11 @@ computeAllocationBytes(ModuleOp moduleOp,
   return footprint.getTotalBytes();
 }
 
-/// Recomputes an assignment with the minimum physical-index count only when a
-/// valid first-fit assignment exceeds the L1 budget. Both user-reuse policies
-/// therefore share identical search and diagnostic behavior.
+/// Recomputes an assignment with the minimum physical-index count when a valid
+/// first-fit assignment exceeds either the authoritative DFB-plus-reset budget
+/// or the provisional threshold after a conservative PipeNet reservation. The
+/// reservation only triggers search; finalization rejects against the
+/// authoritative budget, and conversion validates exact PipeNet resources.
 static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
     std::optional<uint64_t> l1BudgetOverride,

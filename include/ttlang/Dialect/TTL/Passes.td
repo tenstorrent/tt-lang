@@ -962,11 +962,17 @@ def TTLFinalizeDFBIndices
     first-fit prevents acceptance and the pairwise-conflict lower bound does
     not already prove failure. The physical-index check asks directly whether
     an assignment fits the available indices. Minimum physical-index-count
-    search runs only when an otherwise valid assignment plus synchronized-reset
-    scratch exceeds the L1 budget.
+    search runs when an otherwise valid assignment plus synchronized-reset
+    scratch exceeds the L1 budget, or when it exceeds the provisional threshold
+    after subtracting a conservative PipeNet reservation recorded by transport
+    formation. The reservation triggers search but cannot make finalization
+    reject an assignment that satisfies the DFB-plus-reset budget. Conversion
+    validates the finalized allocation against exact PipeNet resources.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
-    allocation diagnostic; it does not report that hardware capacity was
+    allocation diagnostic only when acceptance requires the search result. A
+    reservation-only search may retain an authoritative-budget-valid first-fit
+    assignment. Limit exhaustion does not report that hardware capacity was
     proved insufficient.
 
     An assertions-enabled build accepts
