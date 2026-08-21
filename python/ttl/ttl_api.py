@@ -745,6 +745,7 @@ class CompiledTTNNKernel:
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
+        num_dfb_resets=0,
         opaque_include_paths=None,
         kernel_pipe_computed_address_dfb_indices=None,
         kernel_logical_selectors=None,
@@ -779,6 +780,7 @@ class CompiledTTNNKernel:
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet counters used by this kernel.
+            num_dfb_resets: Number of synchronized DFB reset boundaries.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
             kernel_logical_selectors: Logical selector for each compiled kernel.
@@ -799,6 +801,7 @@ class CompiledTTNNKernel:
         self.thread_to_kernel = thread_to_kernel or {}
         self.kernel_line_offsets = kernel_line_offsets or {}
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
+        self.num_dfb_resets = num_dfb_resets
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
         self.kernel_pipe_computed_address_dfb_indices = (
@@ -877,6 +880,7 @@ class CompiledTTNNKernel:
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
+            num_dfb_resets=self.num_dfb_resets,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
@@ -1136,6 +1140,7 @@ def _compile_ttnn_kernel(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_dfb_resets: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
     target_arch: Optional[str] = None,
     operation_name: str = "<anonymous>",
@@ -1399,6 +1404,7 @@ def _compile_ttnn_kernel(
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+        num_dfb_resets=num_dfb_resets,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
@@ -1447,6 +1453,7 @@ def _compile_ttnn_kernel(
             program_hash=program_hash,
             kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+            num_dfb_resets=num_dfb_resets,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
@@ -1790,6 +1797,14 @@ def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
     attr = module.operation.attributes.get(_ttl_ir.PIPE_SYNC_SEMAPHORE_COUNT_ATTR, None)
     if attr is None:
         return None
+    return int(attr)
+
+
+def _extract_dfb_reset_count(module) -> int:
+    """Read the number of synchronized DFB reset boundaries."""
+    attr = module.operation.attributes.get(_ttl_ir.DFB_RESET_COUNT_ATTR, None)
+    if attr is None:
+        return 0
     return int(attr)
 
 
@@ -2558,6 +2573,7 @@ def _lower_program_to_kernel(
                 "compiled module is missing "
                 f"{_ttl_ir.PIPE_SYNC_SEMAPHORE_COUNT_ATTR}"
             )
+        dfb_reset_count = _extract_dfb_reset_count(module)
         pipe_sram_scratch_bytes = _extract_pipe_sram_scratch_bytes(module)
         pipe_global_semaphore_count = _extract_pipe_global_semaphore_count(module)
 
@@ -2579,6 +2595,7 @@ def _lower_program_to_kernel(
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
+            num_dfb_resets=dfb_reset_count,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,

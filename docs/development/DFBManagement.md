@@ -111,6 +111,77 @@ pass requires the `ttl.dfb_allocations` module attribute emitted by successful
 finalization, then verifies that every declaration and lifecycle operand has a
 resolved logical ID.
 
+## Synchronized reset epochs
+
+Completing one DFB transaction leaves its hardware read and write pointers at
+their advanced ring positions. A later logical lifecycle cannot assume that a
+reused physical index starts at its descriptor base, even when the earlier
+lifecycle has zero occupancy. This prevents the compiler from assigning the
+same physical index to otherwise disjoint lifecycles that require canonical
+interface state.
+
+`DFBReset` identifies one worker-local synchronization boundary and its logical
+kernel participants. The built-in operations select either explicit DFBs or
+every DFB allocated by the program:
+
+```python
+compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+reset_boundary = ttl.DFBReset(
+    participants=(compute_kernel, reader_kernel, writer_kernel)
+)
+
+@ttl.compute(kernel=compute_kernel)
+def compute():
+    ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+
+@ttl.datamovement(kernel=reader_kernel)
+def read():
+    ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+
+@ttl.datamovement(kernel=writer_kernel)
+def write():
+    ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+```
+
+The same `DFBReset` value identifies the three occurrences as one dynamic
+boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
+every allocated physical DFB index. A declaration contains exactly one compute
+kernel and two data movement kernels, and it executes at most once per dispatch
+and launch node. Conditional occurrences must use equivalent structured
+conditions on all participants.
+
+The compiler treats the interval before the first reset, each interval between
+resets, and the interval after the last reset as separate allocation epochs.
+An epoch is an analysis interval; the compiler does not emit an epoch object.
+The liveness analysis proves that every selected DFB has a complete protocol
+lifecycle before the boundary, that no payload crosses it, and that every
+participant selects the same DFB set. The reset terminates the old lifecycle at
+canonical empty state. A later lifecycle can then reuse the physical index when
+its launch-node domain, storage, element type, and other allocation constraints
+are compatible. Missing participants, repeated dynamic instances, mismatched
+conditions or target sets, incomplete transactions, and unordered boundaries
+are compilation errors.
+
+On Blackhole, `convert-ttl-to-ttkernel` lowers each occurrence to
+`experimental::reset_dfb_interfaces(state_address, low_mask, high_mask)` from
+[`experimental_dfb_reset.h`](../../include/ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h).
+The compiler reserves one 16-byte synchronization record per declaration after
+PipeNet scratch storage, and the host initializes the combined scratch
+allocation to zero. DM1 coordinates DM0, UNPACK, and PACK through distinct L1
+state words. The data movement RISCs complete prior NoC work; UNPACK and PACK
+wait for their previously issued interface commands to retire. After entry
+synchronization, the selected interface owners reset their read pointer, write
+pointer, packer write-tile pointer, initialization state, and stream occupancy
+counters. An exit synchronization completes before any owner returns. MATH
+executes a no-op because it does not own DFB interface state.
+
+The operation does not clear payload bytes, change descriptor configuration,
+or complete arbitrary asynchronous NoC transfers. Producers must complete
+required data transfers before entering the boundary. Runtime lowering is
+currently restricted to Blackhole.
+
 ## DFB Lifecycle
 
 A DFB has two lifecycle halves: the producer (write) side driven by

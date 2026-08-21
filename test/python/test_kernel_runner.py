@@ -1678,6 +1678,33 @@ def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch)
     assert resources.expected_extra_common_runtime_args == 2
 
 
+def test_build_pipe_runtime_resources_zero_initializes_reset_state(monkeypatch):
+    observed_allocations = []
+
+    def allocate_scratch(core_ranges, num_bytes, device, *, zero_initialize=False):
+        observed_allocations.append((core_ranges, num_bytes, device, zero_initialize))
+        return _FakeTensor(device, address=0x4000)
+
+    monkeypatch.setattr(kernel_runner, "ttnn", object())
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    core_ranges = object()
+    device = object()
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[],
+        core_ranges=core_ranges,
+        pipe_sram_scratch_bytes=16,
+        device=device,
+        initialize_sram_scratch=True,
+    )
+
+    assert len(resources.scratch_tensors) == 1
+    assert resources.extra_common_runtime_args == [0x4000]
+    assert observed_allocations == [(core_ranges, 16, device, True)]
+
+
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
@@ -2499,13 +2526,16 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
         num_tensors=1,
         program_hash=-2,
         num_pipe_global_semaphores=3,
+        num_dfb_resets=2,
     )
 
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "NUM_DFB_RESETS = 2" in source
     assert "PROGRAM_HASH = 18446744073709551614" in source
     assert "return run_kernel_on_device(" in source
     assert "program_hash=PROGRAM_HASH" in source
     assert "num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES" in source
+    assert "num_dfb_resets=NUM_DFB_RESETS" in source
     assert "operation_name=OPERATION_NAME" in source
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
 

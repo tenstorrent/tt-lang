@@ -419,6 +419,31 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   }
   plan.transportPlan = std::move(*maybeTransportPlan);
   finalizePipeTransportResources(plan.transportPlan, plan.resourcePlan);
+  if (options.trailingSramScratchBytes < 0 ||
+      options.trailingSramScratchAlignment <= 0) {
+    module.emitError("invalid trailing SRAM scratch requirement");
+    return failure();
+  }
+  uint64_t scratchBytes = plan.resourcePlan.sramScratch.bytes;
+  uint64_t scratchAlignment = options.trailingSramScratchAlignment;
+  uint64_t alignmentPadding =
+      (scratchAlignment - scratchBytes % scratchAlignment) % scratchAlignment;
+  std::optional<uint64_t> alignedOffset =
+      llvm::checkedAddUnsigned(scratchBytes, alignmentPadding);
+  std::optional<uint64_t> totalScratchBytes =
+      alignedOffset
+          ? llvm::checkedAddUnsigned(
+                *alignedOffset,
+                static_cast<uint64_t>(options.trailingSramScratchBytes))
+          : std::nullopt;
+  if (!totalScratchBytes ||
+      *totalScratchBytes > static_cast<uint64_t>(INT64_MAX)) {
+    module.emitError("SRAM scratch requirement is not representable");
+    return failure();
+  }
+  plan.trailingSramScratchOffset = static_cast<int64_t>(*alignedOffset);
+  plan.resourcePlan.sramScratch.bytes =
+      static_cast<int64_t>(*totalScratchBytes);
   const PipeCapacityPlan *maybeCapacityPlan =
       options.enableCapacitySynchronization ? &plan.capacityPlan : nullptr;
   plan.resourceRequirements =
