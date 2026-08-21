@@ -736,12 +736,12 @@ convertEltwiseBinaryType(ttl::EltwiseBinaryType ttlType) {
 /// exists to carry the PACK configuration, so it is frequently not traceable
 /// to a bind_cb by itself; ttl-annotate-cb-associations records the index for
 /// exactly this case.
-static FailureOr<Value>
-lookupBcastOutputCB(Operation *op, Value output, func::FuncOp funcOp,
-                    const TypeConverter *typeConverter,
-                    ConversionPatternRewriter &rewriter, Location loc) {
-  auto outCB =
-      lookupAndConvertCB(output, funcOp, typeConverter, rewriter, loc);
+static FailureOr<Value> lookupBcastOutputCB(Operation *op, Value output,
+                                            func::FuncOp funcOp,
+                                            const TypeConverter *typeConverter,
+                                            ConversionPatternRewriter &rewriter,
+                                            Location loc) {
+  auto outCB = lookupAndConvertCB(output, funcOp, typeConverter, rewriter, loc);
   if (succeeded(outCB)) {
     return outCB;
   }
