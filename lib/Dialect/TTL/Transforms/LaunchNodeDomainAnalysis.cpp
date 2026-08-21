@@ -1309,7 +1309,7 @@ static bool proveEquivalentUnresolvedExecutionContexts(
               resolveLhsFunctionArgument, rhsValue, rhsLocation,
               rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
               proveAdditionalValueEquality, equalValueCache);
-      if (!equalValue && sameFunction && lhsLocation == rhsLocation &&
+      if (!equalValue && lhsLocation == rhsLocation &&
           requireConditionalExecution &&
           lhsFrame.kind == UnresolvedControlFrameKind::ScfIf) {
         equalValue = proveEquivalentDispatchConditionExpressions(
