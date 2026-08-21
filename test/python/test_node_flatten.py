@@ -6,8 +6,8 @@
 Test the flattened (dims=1) forms of ttl.node and ttl.grid_size.
 
 The specification flattens the highest-rank dimension into the one below it, so
-for a (cols, rows) grid the column coordinate varies fastest:
-ttl.node(dims=1) == y * cols + x and ttl.grid_size(dims=1) == cols * rows.
+for a (cols, rows) grid the row coordinate varies fastest:
+ttl.node(dims=1) == x * rows + y and ttl.grid_size(dims=1) == cols * rows.
 
 The grid is deliberately non-square so that transposing the flattening order
 produces a detectably permuted result rather than an identical one.
@@ -42,7 +42,7 @@ def flattened_index_copy(a, out):
     def dm_read():
         node = ttl.node(dims=1)
         with a_dfb.reserve() as a_blk:
-            tx = ttl.copy(a[node // GRID_COLS, node % GRID_COLS], a_blk)
+            tx = ttl.copy(a[node % GRID_ROWS, node // GRID_ROWS], a_blk)
             tx.wait()
 
     @ttl.datamovement()
@@ -53,7 +53,7 @@ def flattened_index_copy(a, out):
             tx.wait()
 
 
-def test_node_dims1_flattens_with_column_fastest(device):
+def test_node_dims1_flattens_with_row_fastest(device):
     """A node reached through its flattened index sees its own (x, y) tile."""
     shape = (GRID_ROWS * TILE_SIZE, GRID_COLS * TILE_SIZE)
 
