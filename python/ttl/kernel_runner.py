@@ -1009,7 +1009,9 @@ def _first_device(tensors: List[Any]) -> Any:
     raise ValueError("pipe runtime resource allocation requires a device tensor")
 
 
-def _allocate_l1_sharded_storage_tensor(core_ranges: Any, num_bytes: int, device: Any):
+def _allocate_l1_sharded_storage_tensor(
+    core_ranges: Any, num_bytes: int, device: Any, *, zero_initialize: bool = False
+):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, 32)
     elements_per_core = max(1, aligned_bytes // 4)
@@ -1025,7 +1027,8 @@ def _allocate_l1_sharded_storage_tensor(core_ranges: Any, num_bytes: int, device
         ttnn.BufferType.L1,
         shard_spec,
     )
-    return ttnn.empty(
+    allocator = ttnn.zeros if zero_initialize else ttnn.empty
+    return allocator(
         (num_cores, elements_per_core),
         dtype=ttnn.float32,
         layout=ttnn.ROW_MAJOR_LAYOUT,
@@ -1039,6 +1042,8 @@ def build_pipe_sram_scratch_tensors(
     core_ranges: Any,
     scratch_bytes: int,
     device: Optional[Any] = None,
+    *,
+    zero_initialize: bool = False,
 ) -> List[Any]:
     """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
     if scratch_bytes <= 0:
@@ -1051,7 +1056,14 @@ def build_pipe_sram_scratch_tensors(
     device = device if device is not None else _first_device(tensors)
     # [Device 2.0] This encodes compiler SRAM as a sharded TTNN tensor because
     # current generic_op has no typed device-side scratch allocation object.
-    return [_allocate_l1_sharded_storage_tensor(core_ranges, scratch_bytes, device)]
+    return [
+        _allocate_l1_sharded_storage_tensor(
+            core_ranges,
+            scratch_bytes,
+            device,
+            zero_initialize=zero_initialize,
+        )
+    ]
 
 
 def build_pipe_global_semaphores(
@@ -1125,6 +1137,7 @@ def build_pipe_runtime_resources(
     num_pipe_global_semaphores: int = 0,
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
+    initialize_sram_scratch: bool = False,
 ) -> PipeRuntimeResources:
     """Allocate pipe resources and build their appended common runtime args."""
     computed_address_dfb_indices = list(pipe_computed_address_dfb_indices or [])
@@ -1155,6 +1168,7 @@ def build_pipe_runtime_resources(
         core_ranges=core_ranges,
         scratch_bytes=pipe_sram_scratch_bytes,
         device=resource_device,
+        zero_initialize=initialize_sram_scratch,
     )
     global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
         tensors=tensors,
@@ -1189,7 +1203,7 @@ def build_pipe_sync_semaphore_descriptors(
     core_ranges: Any,
     count: int,
 ) -> List[Any]:
-    """Build local semaphore descriptors referenced by pipe lowering."""
+    """Build local semaphore descriptors referenced by PipeNet lowering."""
     if count <= 0:
         return []
 
@@ -1540,6 +1554,7 @@ def run_kernel_on_device(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_dfb_resets: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
@@ -1568,6 +1583,8 @@ def run_kernel_on_device(
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
+        num_dfb_resets: Number of synchronized DFB reset boundaries. A nonzero
+            count requires zero-initialized compiler scratch state.
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.
@@ -1638,6 +1655,7 @@ def run_kernel_on_device(
                 for dfb_index in spec.pipe_computed_address_dfb_indices
             }
         ),
+        initialize_sram_scratch=num_dfb_resets > 0,
     )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
@@ -1781,6 +1799,7 @@ def emit_runner_source(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_dfb_resets: int = 0,
     program_hash: Optional[int] = None,
     requires_runtime_resource_factory: bool = False,
 ) -> str:
@@ -1818,6 +1837,7 @@ def emit_runner_source(
     lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
+    lines.append(f"NUM_DFB_RESETS = {num_dfb_resets}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
     lines.append("KERNEL_PATHS = [")
@@ -1975,6 +1995,7 @@ def emit_runner_source(
     lines.append("        core_ranges=core_ranges,")
     lines.append("        program_hash=PROGRAM_HASH,")
     lines.append("        num_pipe_sync_semaphores=NUM_PIPE_SYNC_SEMAPHORES,")
+    lines.append("        num_dfb_resets=NUM_DFB_RESETS,")
     lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
     lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
     if requires_runtime_resource_factory:
@@ -2002,6 +2023,7 @@ def emit_runner_file(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_dfb_resets: int = 0,
     program_hash: Optional[int] = None,
     requires_runtime_resource_factory: bool = False,
 ) -> str:
@@ -2024,6 +2046,7 @@ def emit_runner_file(
         program_hash=program_hash,
         kernel_name=kernel_name,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+        num_dfb_resets=num_dfb_resets,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         requires_runtime_resource_factory=requires_runtime_resource_factory,

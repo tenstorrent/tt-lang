@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -45,6 +46,35 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 }
 
 } // namespace
+
+LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module) {
+  Operation *firstReset = nullptr;
+  module.walk([&](Operation *operation) -> WalkResult {
+    if (!isa<ResetDFBsOp, ResetAllDFBsOp>(operation)) {
+      return WalkResult::advance();
+    }
+    firstReset = operation;
+    return WalkResult::interrupt();
+  });
+  if (!firstReset) {
+    return success();
+  }
+
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(module, failureReason);
+  if (failed(targetArch)) {
+    module.emitOpError(failureReason);
+    return failure();
+  }
+  if (!*targetArch || **targetArch == ttcore::Arch::Blackhole) {
+    return success();
+  }
+  firstReset->emitOpError()
+      << "is supported only for Blackhole; selected target is "
+      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
+  return failure();
+}
 
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                                               std::string &failureReason) {

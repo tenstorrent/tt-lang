@@ -33,9 +33,6 @@ SCALAR_RESULT_HEADER = os.path.join(
 REPEATED_TRANSACTION_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "repeated_dfb_transactions.hpp"
 )
-SYNCHRONIZED_RESET_HEADER = os.path.join(
-    os.path.dirname(__file__), "include", "synchronized_dfb_reset.hpp"
-)
 
 
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
@@ -474,79 +471,71 @@ def _make_dispatch_condition_lifecycle_kernel(data_format, predicate_value):
     return dispatch_condition_lifecycle_kernel
 
 
-def _make_synchronized_reset_kernel(
-    data_format, enter_semaphore, exit_semaphore, all_local
-):
-    enter_semaphore_address = int(ttnn.get_global_semaphore_address(enter_semaphore))
-    exit_semaphore_address = int(ttnn.get_global_semaphore_address(exit_semaphore))
-    second_data_movement_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+def _make_synchronized_reset_kernel(data_format, reset_all):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     reset = ttl.DFBReset(
-        participants=(
-            ttl.KernelKind.COMPUTE,
-            ttl.KernelKind.DATA_MOVEMENT,
-            second_data_movement_kernel,
-        ),
-        scope=(ttl.DFBResetScope.ALL_LOCAL if all_local else ttl.DFBResetScope.TARGETS),
+        participants=(compute_kernel, reader_kernel, writer_kernel),
     )
 
-    if all_local:
+    if reset_all:
 
-        @ttl.operation()
-        def reset_dfb(target: ttl.DFB):
-            ttl.call_extern_func(
-                SYNCHRONIZED_RESET_HEADER,
-                "ttl_reset_all_dfb_state",
-                func_args=[
-                    enter_semaphore_address,
-                    exit_semaphore_address,
-                ],
-                dfb_reset=reset,
-                kernel=(
-                    ttl.KernelKind.COMPUTE,
-                    ttl.KernelKind.DATA_MOVEMENT,
-                    second_data_movement_kernel,
-                ),
-            )
+        @ttl.operation(grid=(1, 1))
+        def synchronized_reset_kernel(input_tensor, output_tensor):
+            stale_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+            current_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+            output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+
+            @ttl.compute(kernel=compute_kernel)
+            def compute():
+                ttl.reset_all_dfbs(reset)
+                with current_dfb.wait() as current_source:
+                    with output_dfb.reserve() as output_destination:
+                        output_destination.store(current_source)
+
+            @ttl.datamovement(kernel=reader_kernel)
+            def read():
+                with stale_dfb.reserve() as stale_destination:
+                    ttl.copy(input_tensor[0, 0], stale_destination).wait()
+                ttl.reset_all_dfbs(reset)
+                with current_dfb.reserve() as current_destination:
+                    ttl.copy(input_tensor[0, 0], current_destination).wait()
+
+            @ttl.datamovement(kernel=writer_kernel)
+            def write():
+                ttl.reset_all_dfbs(reset)
+                with output_dfb.wait() as output_source:
+                    ttl.copy(output_source, output_tensor[0, 0]).wait()
 
     else:
 
-        @ttl.operation()
-        def reset_dfb(target: ttl.DFB):
-            ttl.call_extern_func(
-                SYNCHRONIZED_RESET_HEADER,
-                "ttl_reset_dfb_state",
-                func_args=[
-                    target,
-                    enter_semaphore_address,
-                    exit_semaphore_address,
-                ],
-                dfb_reset=reset,
-                dfb_reset_targets=[target],
-                kernel=(
-                    ttl.KernelKind.COMPUTE,
-                    ttl.KernelKind.DATA_MOVEMENT,
-                    second_data_movement_kernel,
-                ),
-            )
+        @ttl.operation(grid=(1, 1))
+        def synchronized_reset_kernel(input_tensor, output_tensor):
+            stale_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+            current_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+            output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
 
-    @ttl.operation(grid=(1, 1))
-    def synchronized_reset_kernel(input_tensor, output_tensor):
-        stale_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
-        current_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
-        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=3)
+            @ttl.compute(kernel=compute_kernel)
+            def compute():
+                ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+                with current_dfb.wait() as current_source:
+                    with output_dfb.reserve() as output_destination:
+                        output_destination.store(current_source)
 
-        with stale_dfb.reserve() as stale_destination:
-            ttl.copy(input_tensor[0, 0], stale_destination).wait()
+            @ttl.datamovement(kernel=reader_kernel)
+            def read():
+                with stale_dfb.reserve() as stale_destination:
+                    ttl.copy(input_tensor[0, 0], stale_destination).wait()
+                ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+                with current_dfb.reserve() as current_destination:
+                    ttl.copy(input_tensor[0, 0], current_destination).wait()
 
-        reset_dfb(stale_dfb)
-
-        with current_dfb.reserve() as current_destination:
-            ttl.copy(input_tensor[0, 0], current_destination).wait()
-        with current_dfb.wait() as current_source:
-            with output_dfb.reserve() as output_destination:
-                output_destination.store(current_source)
-        with output_dfb.wait() as output_source:
-            ttl.copy(output_source, output_tensor[0, 0]).wait()
+            @ttl.datamovement(kernel=writer_kernel)
+            def write():
+                ttl.reset_dfbs(reset, dfbs=[stale_dfb])
+                with output_dfb.wait() as output_source:
+                    ttl.copy(output_source, output_tensor[0, 0]).wait()
 
     return synchronized_reset_kernel
 
@@ -938,24 +927,17 @@ def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
-@pytest.mark.parametrize("all_local", [False, True], ids=["targets", "all-local"])
+@pytest.mark.parametrize("reset_all", [False, True], ids=["selected", "all"])
 @pytest.mark.parametrize(
     ("memory_config", "to_device"),
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
 )
 def test_synchronized_reset_terminates_producer_epoch(
-    device, dtype, all_local, memory_config, to_device, monkeypatch, tmp_path
+    device, dtype, reset_all, memory_config, to_device, monkeypatch, tmp_path
 ):
-    core_ranges = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
-    )
-    enter_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
-    exit_semaphore = ttnn.create_global_semaphore(device, core_ranges, 0)
     data_format = "bf16" if dtype == torch.bfloat16 else "float32"
-    operation = _make_synchronized_reset_kernel(
-        data_format, enter_semaphore, exit_semaphore, all_local
-    )
+    operation = _make_synchronized_reset_kernel(data_format, reset_all)
 
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
@@ -964,7 +946,8 @@ def test_synchronized_reset_terminates_producer_epoch(
 
     final_mlir_path = tmp_path / "synchronized_reset.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
-    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+    for _invocation_index in range(2):
+        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
     # The producer-only DFB becomes canonical at the reset and shares with the
     # following source. The compute-produced output retains a distinct index.

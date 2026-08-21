@@ -20,6 +20,10 @@
 
 namespace mlir::tt::ttl {
 
+constexpr int64_t kDFBResetStateWordCount = 4;
+constexpr int64_t kDFBResetStateBytes =
+    kDFBResetStateWordCount * static_cast<int64_t>(sizeof(uint32_t));
+
 /// Returns the per-node L1 bytes occupied by one physical DFB descriptor.
 /// On failure, `failureReason` describes the invalid allocation type.
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
@@ -48,6 +52,9 @@ private:
 
 /// Returns the per-node DFB footprint of all declarations in `module`.
 FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
+
+/// Verifies that the selected target implements synchronized DFB reset.
+LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module);
 
 /// Returns the target's usable per-node L1 bytes or the supported fallback.
 uint64_t
