@@ -111,9 +111,7 @@ def test_store_requires_exact_shape(source_shape: tuple[int, ...]) -> None:
         shape=destination_shape,
         block_count=2,
     ).reserve()
-    source = Block.from_list(
-        [make_ones_tile() for _ in range(4)], shape=source_shape
-    )
+    source = Block.from_list([make_ones_tile() for _ in range(4)], shape=source_shape)
 
     with pytest.raises(ValueError, match="must exactly match destination shape"):
         destination.store(source)
