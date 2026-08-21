@@ -6,6 +6,7 @@
 
 from collections import defaultdict
 from dataclasses import FrozenInstanceError
+import gc
 import os
 import subprocess
 import sys
@@ -165,6 +166,7 @@ class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
         self.generic_op_calls = []
+        self.synchronize_calls = []
         self.next_address = 0x1000
 
     class TensorAccessorArgs:
@@ -261,6 +263,9 @@ class _FakeTTNN:
         def __init__(self, ranges):
             self.ranges = tuple(ranges)
 
+        def bounding_box(self):
+            return _FakeBoundingBox(self.ranges)
+
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
         cb_index, tensor, total_size, core_ranges, address_offset=0
@@ -276,6 +281,11 @@ class _FakeTTNN:
     @staticmethod
     def get_optimal_worker_cores_for_sharded_tensor(_tensor):
         return [_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(1, 0)]
+
+    @staticmethod
+    def corerange_to_cores(_core_ranges, row_wise=True):
+        assert row_wise
+        return [_FakeTTNN.CoreCoord(0, 0)]
 
     @staticmethod
     def generic_op(tensors, program):
@@ -298,6 +308,43 @@ class _FakeTTNN:
     @staticmethod
     def get_global_semaphore_address(semaphore):
         return semaphore["address"]
+
+    def synchronize_device(self, device):
+        self.synchronize_calls.append(device)
+
+
+class _LifetimeTrackedSemaphore:
+    def __init__(self, identifier, address, events):
+        self.identifier = identifier
+        self.address = address
+        self.events = events
+
+    def __del__(self):
+        self.events.append(("release", self.identifier))
+
+
+class _LifetimeTrackingTTNN(_FakeTTNN):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+        self.semaphore_refs = []
+
+    def create_global_semaphore(self, device, core_ranges, initial_value):
+        identifier = len(self.semaphore_refs)
+        semaphore = _LifetimeTrackedSemaphore(
+            identifier, self.next_address, self.events
+        )
+        self.next_address += 0x20
+        self.events.append(("allocate", identifier))
+        self.semaphore_refs.append(weakref.ref(semaphore))
+        return semaphore
+
+    @staticmethod
+    def get_global_semaphore_address(semaphore):
+        return semaphore.address
+
+    def synchronize_device(self, device):
+        self.events.append(("synchronize", device))
 
 
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
@@ -1410,12 +1457,12 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
-def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
+def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    device = object()
     owner = object()
-    committed_lifetimes = []
 
     def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
         assert len(tensors) == 1
@@ -1446,26 +1493,25 @@ def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
         num_pipe_sync_semaphores=1,
         runtime_resource_factory=make_resources,
         operation_name="resource_execution",
-        runtime_resource_lifetime_commit=committed_lifetimes.append,
+        device=device,
     )
 
     program = result["program"]
     assert [semaphore.id for semaphore in program.semaphores] == [0, 1]
     assert program.kernels[0].defines == [("MODE", "runtime")]
     assert program.kernels[0].runtime_args[1][0] == [8, 9]
-    assert committed_lifetimes == [(owner,)]
+    assert fake_ttnn.synchronize_calls == [device]
 
 
 def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
     fake_ttnn = _FakeTTNN()
+    device = object()
 
     def fail_generic_op(_tensors, _program):
         raise RuntimeError("device execution failed")
 
     fake_ttnn.generic_op = fail_generic_op
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     with pytest.raises(RuntimeError, match="device execution failed"):
         kernel_runner.run_kernel_on_device(
@@ -1477,18 +1523,14 @@ def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
                 lifetimes=(object(),)
             ),
             operation_name="failed_execution",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
+            device=device,
         )
 
-    assert retained_lifetimes == [(previous_owner,)]
+    assert fake_ttnn.synchronize_calls == [device]
 
 
 def test_run_kernel_plan_failure_preserves_runtime_resource_lifetimes(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     with pytest.raises(TypeError) as exception_info:
         kernel_runner.run_kernel_on_device(
@@ -1500,16 +1542,12 @@ def test_run_kernel_plan_failure_preserves_runtime_resource_lifetimes(monkeypatc
                 kernel_resources=[]
             ),
             operation_name="failed_execution",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
         )
 
     assert str(exception_info.value) == (
         "@ttl.operation 'failed_execution': kernel_resources must be a tuple, "
         "got list"
     )
-    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
@@ -1522,8 +1560,6 @@ def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
 
     fake_ttnn.KernelDescriptor = fail_kernel_descriptor
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     with pytest.raises(RuntimeError) as exception_info:
         kernel_runner.run_kernel_on_device(
@@ -1535,13 +1571,9 @@ def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
                 lifetimes=(object(),)
             ),
             operation_name="failed_execution",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
         )
 
     assert str(exception_info.value) == "descriptor construction failed"
-    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
@@ -1562,7 +1594,7 @@ def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
 
     fake_ttnn.generic_op = verify_lifetime
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    committed_lifetimes = []
+    device = object()
 
     result = kernel_runner.run_kernel_on_device(
         kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
@@ -1571,11 +1603,105 @@ def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
         core_ranges=_FakeCoreRanges(),
         runtime_resource_factory=make_resources,
         operation_name="lifetime_execution",
-        runtime_resource_lifetime_commit=committed_lifetimes.append,
+        device=device,
     )
 
     assert result == "executed"
-    assert committed_lifetimes == [(owner_reference[0](),)]
+    assert fake_ttnn.synchronize_calls == [device]
+    assert owner_reference[0]() is None
+
+
+def test_run_kernel_cache_replaces_portable_lifetimes_after_synchronization(
+    monkeypatch,
+):
+    events = []
+
+    class LifetimeOwner:
+        def __init__(self, identifier):
+            self.identifier = identifier
+            events.append(("allocate", identifier))
+
+        def __del__(self):
+            events.append(("release", self.identifier))
+
+    fake_ttnn = _FakeTTNN()
+    device = object()
+    fake_ttnn.synchronize_device = lambda synchronized_device: events.append(
+        ("synchronize", synchronized_device)
+    )
+    fake_ttnn.generic_op = lambda _tensors, _program: events.append(
+        ("dispatch", device)
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    owner_references = []
+
+    def make_resources(**_kwargs):
+        owner = LifetimeOwner(len(owner_references))
+        owner_references.append(weakref.ref(owner))
+        return ProgramRuntimeResources(lifetimes=(owner,))
+
+    for _invocation in range(2):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=make_resources,
+            runtime_resource_cache=cache,
+            device=device,
+        )
+
+    first_synchronize = events.index(("synchronize", device))
+    first_release = events.index(("release", 0))
+    second_allocation = events.index(("allocate", 1))
+    assert first_synchronize < first_release < second_allocation
+    assert owner_references[0]() is None
+    assert owner_references[1]() is cache.portable_resource_lifetimes[0]
+
+    kernel_runner.release_cached_runtime_resources(cache)
+    assert events[-2:] == [("synchronize", device), ("release", 1)]
+    assert owner_references[1]() is None
+
+
+def test_run_kernel_cache_discards_portable_lifetimes_after_dispatch_error(
+    monkeypatch,
+):
+    class LifetimeOwner:
+        pass
+
+    fake_ttnn = _FakeTTNN()
+    device = object()
+    owner_reference = []
+
+    def make_resources(**_kwargs):
+        owner = LifetimeOwner()
+        owner_reference.append(weakref.ref(owner))
+        return ProgramRuntimeResources(lifetimes=(owner,))
+
+    fake_ttnn.generic_op = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("dispatch failed")
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=make_resources,
+            runtime_resource_cache=cache,
+            device=device,
+        )
+
+    assert owner_reference[0]() is None
+    assert cache.portable_resource_lifetimes == ()
+    assert fake_ttnn.synchronize_calls == [device]
+    kernel_runner.release_cached_runtime_resources(cache)
+    assert fake_ttnn.synchronize_calls == [device]
+    assert owner_reference[0]() is None
 
 
 def test_run_kernel_checks_compiler_semaphore_ids_before_factory(monkeypatch):
@@ -1848,8 +1974,6 @@ def test_run_kernel_rejects_wrong_runtime_resource_factory_result(monkeypatch):
 def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     factory_error = ValueError("factory detail")
-    previous_owner = object()
-    retained_lifetimes = [(previous_owner,)]
 
     def fail_factory(**_kwargs):
         raise factory_error
@@ -1868,13 +1992,9 @@ def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch)
             core_ranges=_FakeCoreRanges(),
             runtime_resource_factory=fail_factory,
             operation_name="factory_failure",
-            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
-                0, lifetimes
-            ),
         )
 
     assert exception_info.value.__cause__ is factory_error
-    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_sets_custom_program_hash(monkeypatch):
@@ -1978,7 +2098,7 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     next_values = iter((7, 19))
-    retained_lifetimes = []
+    device = object()
 
     def make_resources(**_kwargs):
         return ProgramRuntimeResources(
@@ -2006,14 +2126,14 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
             program_hash=23,
             runtime_resource_factory=make_resources,
             operation_name="repeated_resources",
-            runtime_resource_lifetime_commit=retained_lifetimes.append,
+            device=device,
         )
         programs.append(result["program"])
 
     assert programs[0].custom_program_hash == programs[1].custom_program_hash
     assert programs[0].kernels[0].runtime_args[0][0] == [7]
     assert programs[1].kernels[0].runtime_args[0][0] == [19]
-    assert len(retained_lifetimes) == 2
+    assert kernel_runner.ttnn.synchronize_calls == [device, device]
 
 
 def test_build_generic_op_io_tensors_duplicates_single_output():
@@ -2047,27 +2167,331 @@ def test_build_generic_op_io_tensors_requires_user_output():
         kernel_runner.build_generic_op_io_tensors([], [object()])
 
 
-def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
-    fake_ttnn = _FakeTTNN()
+def test_run_kernel_replaces_global_semaphores_between_invocations(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
     )
     tensor = _FakeTensor(object())
-    lifetime = []
+    core_ranges = _FakeCoreRanges()
+    cache = kernel_runner.KernelRuntimeResourceCache()
 
     for _ in range(2):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[],
             tensors=[tensor],
             cb_configs=[],
-            core_ranges=_FakeCoreRanges(),
+            core_ranges=core_ranges,
             num_pipe_global_semaphores=2,
-            pipe_global_semaphore_lifetime=lifetime,
+            runtime_resource_cache=cache,
         )
 
-    assert len(fake_ttnn.create_calls) == 4
-    assert lifetime == fake_ttnn.create_calls[-2:]
+    assert fake_ttnn.events == [
+        ("allocate", 0),
+        ("allocate", 1),
+        ("synchronize", tensor.device()),
+        ("release", 1),
+        ("release", 0),
+        ("allocate", 2),
+        ("allocate", 3),
+    ]
+    assert [
+        semaphore.identifier for semaphore in cache.pipe_resources.global_semaphores
+    ] == [2, 3]
+
+
+def test_cached_dispatch_failure_discards_reset_state(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    build_initialization = []
+    scratch_generations = []
+
+    def build_resources(**kwargs):
+        build_initialization.append(kwargs["initialize_sram_scratch"])
+        scratch = object()
+        scratch_generations.append(scratch)
+        return kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[scratch],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[0x1000],
+            expected_extra_common_runtime_args=1,
+        )
+
+    dispatch_count = 0
+
+    def dispatch(_tensors, program):
+        nonlocal dispatch_count
+        dispatch_count += 1
+        if dispatch_count == 1:
+            raise RuntimeError("dispatch failed")
+        return program
+
+    monkeypatch.setattr(kernel_runner, "build_pipe_runtime_resources", build_resources)
+    fake_ttnn.generic_op = dispatch
+    device = object()
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    arguments = {
+        "kernel_specs": [],
+        "tensors": [_FakeTensor(device)],
+        "cb_configs": [],
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": 32,
+        "num_dfb_resets": 1,
+        "runtime_resource_cache": cache,
+    }
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        kernel_runner.run_kernel_on_device(**arguments)
+    assert cache.pipe_resources is None
+    kernel_runner.run_kernel_on_device(**arguments)
+
+    assert build_initialization == [True, True]
+    assert cache.pipe_resources.scratch_tensors[0] is scratch_generations[1]
+    assert fake_ttnn.synchronize_calls == [device]
+
+
+def test_cached_dispatch_failure_retains_state_when_sync_fails(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained_caches = []
+    monkeypatch.setattr(
+        kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    def dispatch(_tensors, _program):
+        raise RuntimeError("dispatch failed")
+
+    def fail_synchronization(_device):
+        raise ValueError("synchronization failed")
+
+    fake_ttnn.generic_op = dispatch
+    fake_ttnn.synchronize_device = fail_synchronization
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    with pytest.raises(RuntimeError, match="dispatch failed") as error:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+            runtime_resource_cache=cache,
+        )
+
+    assert "device synchronization also failed" in str(error.value.__notes__)
+    assert cache.pipe_resources is None
+    assert len(retained_caches) == 1
+    assert retained_caches[0].pipe_resources.global_semaphores[0] is not None
+
+
+def test_cached_pipe_resources_distinguish_reset_initialization(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    build_calls = []
+
+    def build_resources(**kwargs):
+        build_calls.append(kwargs["initialize_sram_scratch"])
+        return kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[object()],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[0x1000],
+            expected_extra_common_runtime_args=1,
+        )
+
+    monkeypatch.setattr(kernel_runner, "build_pipe_runtime_resources", build_resources)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    device = object()
+    arguments = {
+        "cache": cache,
+        "tensors": [],
+        "cb_configs": [],
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": 16,
+        "num_pipe_global_semaphores": 0,
+        "pipe_computed_address_dfb_indices": (),
+        "device": device,
+    }
+
+    first_without_reset = kernel_runner.get_cached_runtime_resources(
+        num_dfb_resets=0, **arguments
+    )
+    repeated_without_reset = kernel_runner.get_cached_runtime_resources(
+        num_dfb_resets=0, **arguments
+    )
+    first_with_reset = kernel_runner.get_cached_runtime_resources(
+        num_dfb_resets=1, **arguments
+    )
+    repeated_with_reset = kernel_runner.get_cached_runtime_resources(
+        num_dfb_resets=1, **arguments
+    )
+
+    assert first_without_reset is repeated_without_reset
+    assert first_with_reset is repeated_with_reset
+    assert first_with_reset is not first_without_reset
+    assert build_calls == [False, True]
+    assert fake_ttnn.synchronize_calls == [device]
+
+
+def test_run_kernel_synchronizes_uncached_runtime_resources(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakeTensor(device)],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        num_pipe_global_semaphores=1,
+    )
+
+    assert fake_ttnn.semaphore_refs[0]() is None
+    synchronize_index = fake_ttnn.events.index(("synchronize", device))
+    release_index = fake_ttnn.events.index(("release", 0))
+    assert synchronize_index < release_index
+
+
+def test_run_kernel_retains_uncached_resources_when_cleanup_cannot_synchronize(
+    monkeypatch,
+):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained_caches = []
+    monkeypatch.setattr(
+        kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    def failing_generic_op(_tensors, _program):
+        fake_ttnn.events.append(("dispatch", device))
+        raise RuntimeError("dispatch failed")
+
+    def failing_synchronize(_device):
+        fake_ttnn.events.append(("synchronize", device))
+        raise ValueError("synchronization failed")
+
+    fake_ttnn.generic_op = failing_generic_op
+    fake_ttnn.synchronize_device = failing_synchronize
+    with pytest.raises(RuntimeError, match="dispatch failed") as error:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+        )
+
+    dispatch_index = fake_ttnn.events.index(("dispatch", device))
+    synchronize_index = fake_ttnn.events.index(("synchronize", device))
+    assert dispatch_index < synchronize_index
+    assert "device synchronization also failed: synchronization failed" in str(
+        error.value.__notes__
+    )
+    assert fake_ttnn.semaphore_refs[0]() is not None
+    assert len(retained_caches) == 1
+    error.value.__traceback__ = None
+    del error
+
+    fake_ttnn.synchronize_device = lambda cleanup_device: fake_ttnn.events.append(
+        ("synchronize", cleanup_device)
+    )
+    kernel_runner.release_cached_runtime_resources(retained_caches.pop())
+    assert fake_ttnn.semaphore_refs[0]() is None
+
+
+def test_run_kernel_retains_uncached_resources_after_synchronization_error(
+    monkeypatch,
+):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained_caches = []
+    monkeypatch.setattr(
+        kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    device = object()
+
+    def successful_generic_op(_tensors, program):
+        fake_ttnn.events.append(("dispatch", device))
+        return program
+
+    def failing_synchronize(_device):
+        fake_ttnn.events.append(("synchronize", device))
+        raise ValueError("synchronization failed")
+
+    fake_ttnn.generic_op = successful_generic_op
+    fake_ttnn.synchronize_device = failing_synchronize
+    with pytest.raises(ValueError, match="synchronization failed"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+        )
+
+    dispatch_index = next(
+        index for index, event in enumerate(fake_ttnn.events) if event[0] == "dispatch"
+    )
+    synchronize_index = fake_ttnn.events.index(("synchronize", device))
+    assert dispatch_index < synchronize_index
+    assert fake_ttnn.semaphore_refs[0]() is not None
+    assert len(retained_caches) == 1
+
+    fake_ttnn.synchronize_device = lambda cleanup_device: fake_ttnn.events.append(
+        ("synchronize", cleanup_device)
+    )
+    kernel_runner.release_cached_runtime_resources(retained_caches.pop())
+    assert fake_ttnn.semaphore_refs[0]() is None
+
+
+def test_run_kernel_synchronizes_before_replacing_resource_variants(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    first_device = object()
+    second_device = object()
+    cache = kernel_runner.KernelRuntimeResourceCache()
+
+    for device in (first_device, second_device, first_device):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_global_semaphores=1,
+            runtime_resource_cache=cache,
+        )
+
+    synchronize_index = fake_ttnn.events.index(("synchronize", first_device))
+    release_index = fake_ttnn.events.index(("release", 0))
+    replacement_index = fake_ttnn.events.index(("allocate", 1))
+    assert synchronize_index < release_index < replacement_index
+    second_synchronize_index = fake_ttnn.events.index(("synchronize", second_device))
+    second_release_index = fake_ttnn.events.index(("release", 1))
+    restored_variant_index = fake_ttnn.events.index(("allocate", 2))
+    assert second_synchronize_index < second_release_index < restored_variant_index
 
 
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
@@ -2660,6 +3084,90 @@ def test_emitted_runner_requires_and_applies_runtime_resource_factory(monkeypatc
         descriptor.runtime_args[0].values for descriptor in plans[1].kernel_descriptors
     ] == [(17,), (18,)]
     assert plans[0].structural_fingerprint == plans[1].structural_fingerprint
+
+
+def test_emitted_runner_replaces_global_semaphore_owners(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        num_pipe_global_semaphores=1,
+    )
+    namespace = {"__name__": "generated_runner"}
+    exec(compile(source, "<generated-runner>", "exec"), namespace)
+
+    device = object()
+    tensor = _FakeTensor(device)
+    namespace["run"]([tensor], device=device)
+    first_owner = namespace["_RUNTIME_RESOURCE_CACHE"].pipe_resources.global_semaphores[
+        0
+    ]
+
+    namespace["run"]([tensor], device=device)
+    second_owner = namespace[
+        "_RUNTIME_RESOURCE_CACHE"
+    ].pipe_resources.global_semaphores[0]
+    assert second_owner is not first_owner
+    assert fake_ttnn.events[:3] == [
+        ("allocate", 0),
+        ("synchronize", device),
+        ("allocate", 1),
+    ]
+
+    del first_owner
+    del second_owner
+    namespace.clear()
+    gc.collect()
+    assert fake_ttnn.events == [
+        ("allocate", 0),
+        ("synchronize", device),
+        ("allocate", 1),
+        ("release", 0),
+        ("synchronize", device),
+        ("release", 1),
+    ]
+
+
+def test_emitted_runner_synchronizes_before_owner_destruction(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        num_pipe_global_semaphores=1,
+    )
+    namespace = {"__name__": "generated_runner"}
+    exec(compile(source, "<generated-runner>", "exec"), namespace)
+
+    device = object()
+    namespace["run"]([_FakeTensor(device)], device=device)
+    resource_owner = namespace["_RUNTIME_RESOURCE_CACHE"].pipe_resources
+    semaphore_reference = weakref.ref(resource_owner.global_semaphores[0])
+    del resource_owner
+    namespace.clear()
+    gc.collect()
+
+    assert fake_ttnn.events == [
+        ("allocate", 0),
+        ("synchronize", device),
+        ("release", 0),
+    ]
+    assert semaphore_reference() is None
 
 
 def test_emit_runner_source_accepts_physical_dfb_configs():
