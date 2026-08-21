@@ -1987,9 +1987,12 @@ def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
 
     The operation resets read and write pointers, the packer write-tile
     pointer, initialization state, and stream occupancy counters. It does not
-    clear payload bytes or complete arbitrary asynchronous NoC work; producers
-    must complete required transfers before entering the boundary. Runtime
-    lowering is supported only for Blackhole.
+    clear payload bytes or change the descriptor. Each participating data
+    movement RISC drains its own outstanding NoC commands before publishing
+    boundary arrival. The operation cannot complete commands issued by another
+    core or a non-participating RISC, so every producer must issue its required
+    transfers before its local boundary occurrence. Runtime lowering is
+    supported only for Blackhole.
   }];
   let arguments = (ins
     TTL_SynchronizedDFBResetAttr:$reset,

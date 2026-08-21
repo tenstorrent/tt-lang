@@ -174,18 +174,19 @@ The compiler reserves one 16-byte synchronization record per declaration after
 PipeNet scratch storage. The combined allocation is rounded to the runtime L1
 allocation quantum, included in transport selection and DFB budget validation,
 and initialized to zero by the host. DM1 coordinates DM0, UNPACK, and PACK
-through distinct L1 state words. The data movement RISCs complete prior NoC
-work; UNPACK and PACK wait for their previously issued interface commands to
-retire. After entry
+through distinct L1 state words. Each participating data movement RISC drains
+its own outstanding NoC commands before publishing arrival. UNPACK and PACK
+wait for their previously issued interface commands to retire. After entry
 synchronization, the selected interface owners reset their read pointer, write
 pointer, packer write-tile pointer, initialization state, and stream occupancy
 counters. An exit synchronization completes before any owner returns. MATH
 executes a no-op because it does not own DFB interface state.
 
 The operation does not clear payload bytes, change descriptor configuration,
-or complete arbitrary asynchronous NoC transfers. Producers must complete
-required data transfers before entering the boundary. Runtime lowering is
-currently restricted to Blackhole.
+or complete NoC commands issued by another core or a non-participating RISC.
+Every producer must issue its required transfers before its local boundary
+occurrence; the participating data movement RISC then completes its own
+outstanding commands. Runtime lowering is currently restricted to Blackhole.
 
 ## DFB Lifecycle
 
