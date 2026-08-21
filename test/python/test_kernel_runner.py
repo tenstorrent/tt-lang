@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 from types import SimpleNamespace
 from typing import NamedTuple
 import weakref
@@ -2360,6 +2361,147 @@ def test_run_kernel_replaces_global_semaphores_between_invocations(monkeypatch):
     assert [
         semaphore.identifier for semaphore in cache.pipe_resources.global_semaphores
     ] == [2, 3]
+
+
+def test_run_kernel_allows_concurrent_resource_free_invocations(monkeypatch):
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    invocation_lock = threading.Lock()
+    first_invocation_entered = threading.Event()
+    second_invocation_entered = threading.Event()
+    release_invocations = threading.Event()
+    invocation_count = 0
+    invocation_errors = []
+
+    def run_impl(**kwargs):
+        nonlocal invocation_count
+        assert kwargs["runtime_resource_cache"] is None
+        with invocation_lock:
+            invocation_count += 1
+            current_invocation = invocation_count
+        if current_invocation == 1:
+            first_invocation_entered.set()
+        else:
+            second_invocation_entered.set()
+        if not release_invocations.wait(timeout=2):
+            raise TimeoutError("resource-free invocations did not overlap")
+
+    def invoke():
+        try:
+            kernel_runner.run_kernel_on_device(
+                kernel_specs=[],
+                tensors=[],
+                cb_configs=[],
+                core_ranges=None,
+                runtime_resource_cache=cache,
+            )
+        except BaseException as error:
+            invocation_errors.append(error)
+
+    monkeypatch.setattr(kernel_runner, "_run_kernel_on_device_impl", run_impl)
+    first_thread = threading.Thread(target=invoke)
+    second_thread = threading.Thread(target=invoke)
+    first_thread.start()
+    assert first_invocation_entered.wait(timeout=1)
+    second_thread.start()
+    assert second_invocation_entered.wait(timeout=1)
+    release_invocations.set()
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert invocation_errors == []
+
+
+def test_run_kernel_serializes_resource_owning_invocations(monkeypatch):
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    invocation_lock = threading.Lock()
+    first_invocation_entered = threading.Event()
+    second_invocation_entered = threading.Event()
+    release_first_invocation = threading.Event()
+    invocation_count = 0
+    invocation_errors = []
+
+    def run_impl(**kwargs):
+        nonlocal invocation_count
+        assert kwargs["runtime_resource_cache"] is cache
+        with invocation_lock:
+            invocation_count += 1
+            current_invocation = invocation_count
+        if current_invocation == 1:
+            first_invocation_entered.set()
+            if not release_first_invocation.wait(timeout=2):
+                raise TimeoutError("first resource-owning invocation was not released")
+        else:
+            second_invocation_entered.set()
+
+    def invoke():
+        try:
+            kernel_runner.run_kernel_on_device(
+                kernel_specs=[],
+                tensors=[],
+                cb_configs=[],
+                core_ranges=None,
+                pipe_sram_scratch_bytes=32,
+                runtime_resource_cache=cache,
+            )
+        except BaseException as error:
+            invocation_errors.append(error)
+
+    monkeypatch.setattr(kernel_runner, "_run_kernel_on_device_impl", run_impl)
+    first_thread = threading.Thread(target=invoke)
+    second_thread = threading.Thread(target=invoke)
+    first_thread.start()
+    assert first_invocation_entered.wait(timeout=1)
+    second_thread.start()
+    assert not second_invocation_entered.wait(timeout=0.1)
+    release_first_invocation.set()
+    assert second_invocation_entered.wait(timeout=1)
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert invocation_errors == []
+
+
+def test_run_kernel_releases_cached_resources_before_resource_free_invocation(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resource-owning",),
+        device=device,
+        pipe_resources=kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[object()],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[],
+            expected_extra_common_runtime_args=0,
+        ),
+    )
+    dispatch_events = []
+
+    def run_impl(**kwargs):
+        assert kwargs["runtime_resource_cache"] is None
+        dispatch_events.append("dispatch")
+
+    monkeypatch.setattr(kernel_runner, "_run_kernel_on_device_impl", run_impl)
+    kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[],
+        cb_configs=[],
+        core_ranges=None,
+        runtime_resource_cache=cache,
+    )
+
+    assert fake_ttnn.synchronize_calls == [device]
+    assert dispatch_events == ["dispatch"]
+    assert cache.compatibility_key is None
+    assert cache.pipe_resources is None
 
 
 def test_cached_dispatch_failure_discards_reset_state(monkeypatch):

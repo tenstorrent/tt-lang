@@ -2135,6 +2135,22 @@ def run_kernel_on_device(
     }
     if runtime_resource_cache is None:
         return _run_kernel_on_device_impl(**arguments)
+
+    requires_persistent_resources = bool(
+        pipe_sram_scratch_bytes > 0
+        or num_pipe_global_semaphores > 0
+        or num_dfb_resets > 0
+        or runtime_resource_factory is not None
+        or any(
+            spec.pipe_computed_address_dfb_indices for spec in kernel_specs
+        )
+    )
+    if not requires_persistent_resources:
+        with runtime_resource_cache.lock:
+            _release_cached_runtime_resources_impl(runtime_resource_cache)
+        arguments["runtime_resource_cache"] = None
+        return _run_kernel_on_device_impl(**arguments)
+
     with runtime_resource_cache.lock:
         return _run_kernel_on_device_impl(**arguments)
 
