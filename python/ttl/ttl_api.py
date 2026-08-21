@@ -2438,23 +2438,26 @@ def _lower_program_to_kernel(
             ]
         # Runs last in the TTKernel stage: after the passes that create the ops
         # it reads, and before EmitC conversion turns circular-buffer calls into
-        # opaque verbatim strings. The measurements the estimate draws on are
-        # keyed on math fidelity, which the IR does not carry, so it is passed
-        # through here rather than recovered there.
-        if compiler_options.cost_estimate or compiler_options.cost_estimate_detail:
-            # Both flags go through as they were given, including the case where
-            # the detail view was asked for without the estimate: the pass
-            # rejects that pair, so the rule lives with the options it governs
-            # rather than being restated here.
-            estimate_options = [
-                f"enable={int(compiler_options.cost_estimate)}",
-                f"detail={int(compiler_options.cost_estimate_detail)}",
-            ]
-            if math_fidelity:
-                estimate_options.append(f"math-fidelity={math_fidelity}")
-            pipeline_passes.append(
-                "ttkernel-cost-estimate{" + " ".join(estimate_options) + "}"
-            )
+        # opaque verbatim strings. Always in the list and gated on its own
+        # `enable`, which is how ttl-to-ttkernel-pipeline carries it too, so both
+        # pipelines have one shape and a disabled estimate costs a pass that
+        # returns immediately.
+        #
+        # Both flags go through as they were given, including the case where the
+        # detail view was asked for without the estimate: the pass rejects that
+        # pair, so the rule lives with the options it governs rather than being
+        # restated here. Math fidelity is passed only when set, since the
+        # measurements keyed on it are unreachable without it and the IR does not
+        # carry it.
+        estimate_options = [
+            f"enable={int(compiler_options.cost_estimate)}",
+            f"detail={int(compiler_options.cost_estimate_detail)}",
+        ]
+        if math_fidelity:
+            estimate_options.append(f"math-fidelity={math_fidelity}")
+        pipeline_passes.append(
+            "ttkernel-cost-estimate{" + " ".join(estimate_options) + "}"
+        )
         pipeline_passes += [
             "convert-ttkernel-to-emitc",
             "symbol-dce",
