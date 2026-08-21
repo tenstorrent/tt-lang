@@ -754,6 +754,60 @@ def test_composition_instantiates_reset_identity_per_call_site():
         assert f"ttl.reset_dfbs({reset_name}, dfbs=" in compute_source
 
 
+def test_composition_remaps_equivalent_reset_participants():
+    """Equivalent composed kernels use the caller's selected handles."""
+
+    def make_reset_helper():
+        compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+        reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        reset = ttl.DFBReset(
+            participants=(compute_kernel, reader_kernel, writer_kernel)
+        )
+
+        @ttl.operation()
+        def reset_helper(target: ttl.DFB):
+            ttl.reset_dfbs(reset, dfbs=[target])
+
+        return reset_helper
+
+    first_helper = make_reset_helper()
+    second_helper = make_reset_helper()
+
+    @ttl.operation()
+    def composed_reset(first: ttl.DFB, second: ttl.DFB):
+        first_helper(first)
+        second_helper(second)
+
+    spec = composed_reset._spec
+    assert len(spec.logical_kernels) == 3
+    logical_kernels = tuple(spec.logical_kernels.values())
+    for reset in spec.dfb_resets.values():
+        assert all(
+            any(participant is kernel for kernel in logical_kernels)
+            for participant in reset.participants
+        )
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"first", "second"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reset_dfbs(") == 2
+
+
+def test_synchronized_dfb_reset_requires_positional_boundary():
+    """The public API matches the frontend's positional boundary syntax."""
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(participants=(compute_kernel, reader_kernel, writer_kernel))
+
+    with pytest.raises(TypeError, match="positional-only"):
+        ttl.reset_all_dfbs(reset=reset)
+
+
 def test_synchronized_dfb_reset_alias_topology_changes_operation_identity():
     """The cache identity distinguishes shared and independent reset instances."""
 

@@ -86,7 +86,7 @@ def call_extern_func(
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 
 
-def reset_dfbs(reset: DFBReset, *, dfbs) -> None:
+def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
     """Synchronize DFB interface owners and reset the listed interfaces.
 
     The operation restores pointer, initialization, and occupancy state to an
@@ -97,7 +97,7 @@ def reset_dfbs(reset: DFBReset, *, dfbs) -> None:
     raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
 
 
-def reset_all_dfbs(reset: DFBReset) -> None:
+def reset_all_dfbs(reset: DFBReset, /) -> None:
     """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
     raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
