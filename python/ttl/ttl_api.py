@@ -12,6 +12,7 @@ import inspect
 import os
 import random
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
@@ -113,10 +114,14 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    attach_runtime_resource_finalizer,
+    KernelRuntimeResourceCache,
     KernelSpec,
+    get_cached_runtime_resource_l1_bytes,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
+    release_cached_runtime_resources,
 )
 from .kernel import (
     Kernel,
@@ -290,7 +295,7 @@ def _make_cache_key(
     math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
-    l1_budget_override: int = 0,
+    l1_budget_override: Any = 0,
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
@@ -590,14 +595,24 @@ def _require_device(args):
     )
 
 
-def _resolve_l1_budget(args: tuple, compiler_options: CompilerOptions) -> int:
+def _resolve_l1_budget(
+    args: tuple,
+    compiler_options: CompilerOptions,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+) -> int:
     """Return the explicit or device-derived L1 compilation budget."""
     if compiler_options.l1_budget != 0:
         return compiler_options.l1_budget
     if not any(is_ttnn_tensor(arg) for arg in args):
         return 0
     try:
-        return get_min_remaining_l1_for_device(_require_device(args))
+        device = _require_device(args)
+        remaining_bytes = get_min_remaining_l1_for_device(device)
+        if runtime_resource_cache is not None:
+            remaining_bytes += get_cached_runtime_resource_l1_bytes(
+                runtime_resource_cache, device
+            )
+        return remaining_bytes
     except ValueError:
         return 0
 
@@ -753,6 +768,7 @@ class CompiledTTNNKernel:
         runtime_resource_factory: Optional[
             Callable[..., ProgramRuntimeResources]
         ] = None,
+        runtime_resource_cache=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -786,6 +802,7 @@ class CompiledTTNNKernel:
             kernel_logical_selectors: Logical selector for each compiled kernel.
             operation_name: User-facing operation name for runtime diagnostics.
             runtime_resource_factory: Optional per-invocation resource callback.
+            runtime_resource_cache: Operation-owned persistent L1 resources.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -831,10 +848,18 @@ class CompiledTTNNKernel:
                     "requires logical-kernel selectors for compiled kernel indices "
                     f"{missing_selector_indices}"
                 )
-        self._pipe_global_semaphore_lifetime = []
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
-        self._runtime_resource_lifetimes = ()
+        owns_runtime_resource_cache = runtime_resource_cache is None
+        self._runtime_resource_cache = (
+            KernelRuntimeResourceCache()
+            if owns_runtime_resource_cache
+            else runtime_resource_cache
+        )
+        if owns_runtime_resource_cache:
+            self._runtime_resource_finalizer = attach_runtime_resource_finalizer(
+                self, self._runtime_resource_cache
+            )
         self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
@@ -883,18 +908,11 @@ class CompiledTTNNKernel:
             num_dfb_resets=self.num_dfb_resets,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
-            runtime_resource_lifetime_commit=(
-                self._commit_runtime_resource_lifetimes
-                if self.runtime_resource_factory is not None
-                else None
-            ),
+            runtime_resource_cache=self._runtime_resource_cache,
+            device=device,
         )
-
-    def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
-        self._runtime_resource_lifetimes = lifetimes
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -1145,6 +1163,7 @@ def _compile_ttnn_kernel(
     target_arch: Optional[str] = None,
     operation_name: str = "<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1412,6 +1431,7 @@ def _compile_ttnn_kernel(
         kernel_logical_selectors=kernel_logical_selectors,
         operation_name=operation_name,
         runtime_resource_factory=runtime_resource_factory,
+        runtime_resource_cache=runtime_resource_cache,
     )
 
     if verbose:
@@ -2067,6 +2087,7 @@ def _compile_kernel(
     compiler_options: CompilerOptions = CompilerOptions(),
     l1_budget_override: int = 0,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -2088,6 +2109,7 @@ def _compile_kernel(
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
         l1_budget_override: Explicit or device-derived L1 allocation budget
+        runtime_resource_cache: Persistent resources shared by operation variants
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -2197,6 +2219,7 @@ def _compile_kernel(
         logical_kernels=[thread._logical_kernel for thread in threads],
         operation_name=f.__name__,
         runtime_resource_factory=runtime_resource_factory,
+        runtime_resource_cache=runtime_resource_cache,
     )
 
 
@@ -2219,6 +2242,7 @@ def _lower_program_to_kernel(
     logical_kernels=None,
     operation_name="<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -2602,6 +2626,7 @@ def _lower_program_to_kernel(
             target_arch=target_arch,
             operation_name=operation_name,
             runtime_resource_factory=runtime_resource_factory,
+            runtime_resource_cache=runtime_resource_cache,
         )
         return compiled_kernel
 
@@ -2647,6 +2672,8 @@ def _make_operation_wrapper(
     """Build the shared top-level operation cache and execution wrapper."""
     kernel_id = random.getrandbits(64)
     cache: Dict[tuple, CompiledTTNNKernel] = {}
+    cache_lock = threading.RLock()
+    runtime_resource_cache = KernelRuntimeResourceCache()
 
     @functools.wraps(function)
     def _wrapper(*args, **kwargs):
@@ -2666,32 +2693,34 @@ def _make_operation_wrapper(
             CompilerOptions.from_argv()
         )
         target_arch = _device_target_arch(runtime_args)
-        l1_budget_override = _resolve_l1_budget(runtime_args, compiler_options)
-
-        cache_key = _make_cache_key(
-            runtime_args,
-            resolved_grid=resolved_grid,
-            fp32_dest_acc_en=fp32_dest_acc_en,
-            dst_full_sync_en=dst_full_sync_en,
-            math_fidelity=math_fidelity,
-            target_arch=target_arch,
-            compiler_options=compiler_options,
-            l1_budget_override=l1_budget_override,
-        )
-
-        compiled_kernel = cache.get(cache_key)
-        if compiled_kernel is None:
-            compiled_kernel = compile_callback(
-                runtime_args,
-                kwargs,
-                resolved_grid,
-                hash((kernel_id, cache_key)),
-                target_arch,
-                compiler_options,
-                l1_budget_override,
+        with cache_lock:
+            l1_budget_override = _resolve_l1_budget(
+                runtime_args, compiler_options, runtime_resource_cache
             )
-            if compiled_kernel is not None:
-                cache[cache_key] = compiled_kernel
+            cache_key = _make_cache_key(
+                runtime_args,
+                resolved_grid=resolved_grid,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
+                target_arch=target_arch,
+                compiler_options=compiler_options,
+                l1_budget_override=l1_budget_override,
+            )
+            compiled_kernel = cache.get(cache_key)
+            if compiled_kernel is None:
+                compiled_kernel = compile_callback(
+                    runtime_args,
+                    kwargs,
+                    resolved_grid,
+                    hash((kernel_id, cache_key)),
+                    target_arch,
+                    compiler_options,
+                    l1_budget_override,
+                    runtime_resource_cache,
+                )
+                if compiled_kernel is not None:
+                    cache[cache_key] = compiled_kernel
 
         if compiled_kernel is None or not _should_execute():
             return None
@@ -2729,6 +2758,7 @@ def _make_operation_wrapper(
 
         return result
 
+    attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
     return _wrapper
 
 
@@ -2821,6 +2851,7 @@ def pykernel_gen(
             target_arch,
             compiler_options,
             l1_budget_override,
+            runtime_resource_cache,
         ):
             compile_kwargs = runtime_kwargs
             if _prepare_call is not None:
@@ -2843,6 +2874,7 @@ def pykernel_gen(
                 compiler_options=compiler_options,
                 l1_budget_override=l1_budget_override,
                 runtime_resource_factory=runtime_resource_factory,
+                runtime_resource_cache=runtime_resource_cache,
             )
 
         return _make_operation_wrapper(
