@@ -347,6 +347,167 @@ class _LifetimeTrackingTTNN(_FakeTTNN):
         self.events.append(("synchronize", device))
 
 
+def test_cached_l1_budget_excludes_only_owned_buffer_pages(monkeypatch):
+    device = object()
+    l1_buffer_type = object()
+    pages = [
+        SimpleNamespace(
+            address=0x1000,
+            core_x=0,
+            core_y=0,
+            page_size=32,
+            buffer_type=l1_buffer_type,
+        ),
+        SimpleNamespace(
+            address=0x1100,
+            core_x=0,
+            core_y=0,
+            page_size=4,
+            buffer_type=l1_buffer_type,
+        ),
+        SimpleNamespace(
+            address=0x2000,
+            core_x=1,
+            core_y=0,
+            page_size=48,
+            buffer_type=l1_buffer_type,
+        ),
+    ]
+    reports = SimpleNamespace(
+        get_device_info=lambda selected_device: SimpleNamespace(cb_limit=1024),
+        get_buffer_pages=lambda selected_device: pages,
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1_buffer_type),
+        _ttnn=SimpleNamespace(reports=reports),
+        corerange_to_cores=lambda core_ranges, row_wise: [_FakeCoreCoord(0, 0)],
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.KernelRuntimeResourceCache(
+        device=device,
+        owned_l1_buffer_addresses=frozenset((0x1000, 0x1100)),
+    )
+
+    remaining = kernel_runner.get_min_remaining_l1_excluding_cached_resources(
+        cache, device
+    )
+
+    assert remaining == 976
+
+
+@pytest.mark.parametrize("scratch_bytes", [16, 32])
+def test_cached_scratch_budget_uses_reported_allocation_pages(
+    monkeypatch, scratch_bytes
+):
+    device = object()
+    l1_buffer_type = object()
+    scratch_address = 0x3000
+    reports = SimpleNamespace(
+        get_device_info=lambda selected_device: SimpleNamespace(cb_limit=1024),
+        get_buffer_pages=lambda selected_device: [
+            SimpleNamespace(
+                address=scratch_address,
+                core_x=0,
+                core_y=0,
+                page_size=32,
+                buffer_type=l1_buffer_type,
+            )
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1_buffer_type),
+        _ttnn=SimpleNamespace(reports=reports),
+        corerange_to_cores=lambda core_ranges, row_wise: [_FakeCoreCoord(0, 0)],
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "build_pipe_runtime_resources",
+        lambda **kwargs: kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[object()],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[scratch_address],
+            expected_extra_common_runtime_args=1,
+            l1_buffer_addresses=frozenset((scratch_address,)),
+        ),
+    )
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    kernel_runner.get_cached_runtime_resources(
+        cache,
+        tensors=[],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        pipe_sram_scratch_bytes=scratch_bytes,
+        num_pipe_global_semaphores=0,
+        pipe_computed_address_dfb_indices=(),
+        num_dfb_resets=1,
+        device=device,
+    )
+
+    remaining = kernel_runner.get_min_remaining_l1_excluding_cached_resources(
+        cache, device
+    )
+
+    assert remaining == 1024
+
+
+def test_cached_global_semaphore_budget_uses_reported_allocation_pages(monkeypatch):
+    device = object()
+    l1_buffer_type = object()
+    semaphore_address = 0x4000
+    reports = SimpleNamespace(
+        get_device_info=lambda selected_device: SimpleNamespace(cb_limit=1024),
+        get_buffer_pages=lambda selected_device: [
+            SimpleNamespace(
+                address=semaphore_address,
+                core_x=0,
+                core_y=0,
+                page_size=4,
+                buffer_type=l1_buffer_type,
+            )
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1_buffer_type),
+        _ttnn=SimpleNamespace(reports=reports),
+        corerange_to_cores=lambda core_ranges, row_wise: [_FakeCoreCoord(0, 0)],
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "build_pipe_runtime_resources",
+        lambda **kwargs: kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[],
+            global_semaphores=[object()],
+            computed_address_dfb_tensors={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[semaphore_address],
+            expected_extra_common_runtime_args=1,
+            l1_buffer_addresses=frozenset((semaphore_address,)),
+        ),
+    )
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    kernel_runner.get_cached_runtime_resources(
+        cache,
+        tensors=[],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        pipe_sram_scratch_bytes=0,
+        num_pipe_global_semaphores=1,
+        pipe_computed_address_dfb_indices=(),
+        num_dfb_resets=0,
+        device=device,
+    )
+
+    remaining = kernel_runner.get_min_remaining_l1_excluding_cached_resources(
+        cache, device
+    )
+
+    assert remaining == 1024
+
+
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", None)
 
