@@ -4,6 +4,8 @@
 
 #include "PipePlanning.h"
 
+#include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
+
 #include "mlir/IR/Dominance.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -15,6 +17,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 #define DEBUG_TYPE "ttl-pipe-capacity-analysis"
 
@@ -436,6 +439,13 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                 *alignedOffset,
                 static_cast<uint64_t>(options.trailingSramScratchBytes))
           : std::nullopt;
+  constexpr uint64_t allocationAlignment =
+      static_cast<uint64_t>(kPipeSramScratchAlignmentBytes);
+  if (totalScratchBytes && *totalScratchBytes > 0 &&
+      *totalScratchBytes <=
+          std::numeric_limits<uint64_t>::max() - (allocationAlignment - 1)) {
+    totalScratchBytes = llvm::alignTo(*totalScratchBytes, allocationAlignment);
+  }
   if (!totalScratchBytes ||
       *totalScratchBytes > static_cast<uint64_t>(INT64_MAX)) {
     module.emitError("SRAM scratch requirement is not representable");

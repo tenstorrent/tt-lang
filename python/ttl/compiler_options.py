@@ -167,8 +167,8 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="l1_budget",
         type=int,
-        help="Override the L1 allocation budget in bytes used by DFB validation "
-        "and PipeTransport selection (default: auto-detect from device, or "
+        help="Override the combined DFB, PipeNet, and synchronized-reset L1 "
+        "allocation budget in bytes (default: auto-detect from device, or "
         "architecture default when no device is available).",
     )
     return p

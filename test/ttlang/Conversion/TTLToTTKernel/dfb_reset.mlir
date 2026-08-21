@@ -1,5 +1,6 @@
 // Verifies selected and all-DFB reset lowering, masks, and state allocation.
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false l1-budget-override=8256})' -o /dev/null
 
 // CHECK: module attributes {
 // CHECK-DAG: ttl.dfb_reset_count = 2 : i64
@@ -29,9 +30,11 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 // -----
 
 // Reset state follows PipeNet scratch instead of overlapping its address table.
+// The 8,192-byte DFB footprint plus 64-byte combined scratch exactly fits the
+// second RUN's 8,256-byte budget.
 // CHECK-LABEL: module attributes {
 // CHECK-SAME: ttl.dfb_reset_count = 1 : i64
-// CHECK-SAME: ttl.pipe_sram_scratch_bytes = 48 : i64
+// CHECK-SAME: ttl.pipe_sram_scratch_bytes = 64 : i64
 // CHECK-LABEL: func.func @pipe_and_reset
 // CHECK: %[[RESET_OFFSET:.*]] = arith.constant 32 : i32
 // CHECK: %[[RESET_STATE:.*]] = arith.addi {{.*}}, %[[RESET_OFFSET]] : i32
@@ -82,6 +85,25 @@ module attributes {
       ttl.yield
     }
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+    return
+  }
+}
+
+// -----
+
+// Three 16-byte reset records occupy one allocator-rounded 64-byte scratch
+// allocation.
+// CHECK-LABEL: module attributes {
+// CHECK-SAME: ttl.dfb_reset_count = 3 : i64
+// CHECK-SAME: ttl.pipe_sram_scratch_bytes = 64 : i64
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @three_reset_records()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    ttl.reset_dfbs <2, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     return
   }
 }

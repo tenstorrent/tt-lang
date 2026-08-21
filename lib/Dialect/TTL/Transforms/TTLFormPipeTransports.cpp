@@ -808,8 +808,22 @@ struct TTLFormPipeTransportsPass
     }
 
     IRRewriter rewriter(module.getContext());
-    uint64_t selectedScratchBytes =
-        static_cast<uint64_t>(conservativeResourcePlan.sramScratch.bytes);
+    FailureOr<uint64_t> resetScratchBytes =
+        getSynchronizedDFBResetStateAllocationBytes(module);
+    std::optional<uint64_t> initialScratchBytes =
+        succeeded(resetScratchBytes)
+            ? llvm::checkedAddUnsigned(
+                  static_cast<uint64_t>(
+                      conservativeResourcePlan.sramScratch.bytes),
+                  *resetScratchBytes)
+            : std::nullopt;
+    if (!initialScratchBytes) {
+      module.emitOpError(
+          "PipeNet and synchronized-reset scratch is not representable");
+      signalPassFailure();
+      return;
+    }
+    uint64_t selectedScratchBytes = *initialScratchBytes;
     for (PipeTransportLoopCandidate &candidate : candidates) {
       FailureOr<DFBAllocationFootprint> allocationFootprint =
           getDFBAllocationFootprint(module);
@@ -827,7 +841,7 @@ struct TTLFormPipeTransportsPass
                          selectedScratchBytes, budgetBytes);
       if (!grouping) {
         debugReject(candidate.loop,
-                    "no group with R > 1 fits the L1 DFB budget");
+                    "no group with R > 1 fits the combined L1 budget");
         continue;
       }
 
