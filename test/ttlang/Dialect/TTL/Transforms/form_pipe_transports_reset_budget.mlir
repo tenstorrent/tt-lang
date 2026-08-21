@@ -1,13 +1,13 @@
 // Verifies PipeTransport grouping reserves synchronized-reset scratch in L1.
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57408' | FileCheck %s --check-prefix=EXACT
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57407' | FileCheck %s --check-prefix=BELOW
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57600' | FileCheck %s --check-prefix=EXACT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57599' | FileCheck %s --check-prefix=BELOW
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
     buffer = dram, grid = [1, 1], memory = interleaved>
 
-// The selected R=2 grouping uses 57,376 DFB and PipeNet bytes. Its reset
-// record requires another allocator-rounded 32 bytes.
+// The selected R=2 grouping uses 57,600 target-aligned DFB and runtime bytes.
+// Its reset record shares the existing allocator-rounded scratch allocation.
 // EXACT-LABEL: func.func @point_to_point
 // EXACT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
 // EXACT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4}
