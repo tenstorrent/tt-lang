@@ -6,7 +6,7 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: core(dims=N) only supports dims=2.
+Validation test: core(dims=N) only supports dims=1 and dims=2.
 
 This test verifies that using dims=3 with core() raises ValueError.
 """
@@ -19,7 +19,7 @@ import ttnn
 import ttl
 
 
-# CHECK: core() currently only supports dims=2, got dims=3
+# CHECK: core() currently only supports dims=1 and dims=2, got dims=3
 @ttl.operation(grid=(2, 2))
 def invalid_core_dims_kernel(lhs, rhs, out):
     """This kernel should fail because core(dims=3) is not supported."""
