@@ -121,7 +121,6 @@ from .kernel_runner import (
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
-    release_cached_runtime_resources,
 )
 from .kernel import (
     Kernel,
