@@ -699,8 +699,8 @@ class Block:
         if src_shape != dst_shape:
             raise ValueError(
                 f"Shape mismatch in store(): source shape {src_shape} must exactly "
-                f"match destination shape {dst_shape}. Use an explicit block shape "
-                "operation before store()."
+                f"match destination shape {dst_shape}; store() does not reshape its "
+                "source."
             )
 
         src_tensor = items._buf
