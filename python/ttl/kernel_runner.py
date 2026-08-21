@@ -721,7 +721,7 @@ def _validate_runtime_resource_record_types(
     return resources
 
 
-_RESOURCE_PLAN_VERSION = 2
+_RESOURCE_PLAN_SCHEMA_VERSION = 2
 _RESOURCE_PLAN_PERSONALIZATION = b"ttlang-rr-plan"
 _RESOURCE_HASH_PERSONALIZATION = b"ttlang-rr-hash"
 
@@ -795,7 +795,7 @@ def _compute_resource_plan_fingerprint(
     return _digest_primitive_payload(
         (
             "operation-runtime-resource-plan",
-            _RESOURCE_PLAN_VERSION,
+            _RESOURCE_PLAN_SCHEMA_VERSION,
             kernel_payload,
             semaphore_payload,
             fabric_payload,
@@ -1641,7 +1641,7 @@ def combine_program_hash_with_runtime_resources(
     return _digest_primitive_payload(
         (
             "operation-runtime-resource-program-hash",
-            _RESOURCE_PLAN_VERSION,
+            _RESOURCE_PLAN_SCHEMA_VERSION,
             normalized_program_hash,
             structural_fingerprint,
         ),
