@@ -754,13 +754,12 @@ def node(*, dims):
     x = ttl.core_x()
     if dims_val == 2:
         return (x, ttl.core_y())
-    # Flattening folds the highest-rank dimension into the one below it, so x
-    # varies fastest and the row stride is the grid's column count.
-    cols = _get_current_grid()[0]
+    # The specification orders the second coordinate contiguously.
+    rows = _get_current_grid()[1]
     ctx = x.type.context
-    stride = arith.ConstantOp(IndexType.get(ctx), cols).result
-    row_base = arith.MulIOp(ttl.core_y(), stride).result
-    return arith.AddIOp(row_base, x).result
+    stride = arith.ConstantOp(IndexType.get(ctx), rows).result
+    column_base = arith.MulIOp(x, stride).result
+    return arith.AddIOp(column_base, ttl.core_y()).result
 
 
 @syntax("grid_size")
