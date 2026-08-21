@@ -207,7 +207,7 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. The shape of `expr` must exactly match the shape of the destination block, including its rank and every dimension extent. Use `ttl.block.squeeze`, `ttl.block.unsqueeze`, or `ttl.block.broadcast` to produce a matching shape before `store` when conversion is required. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
 
 For `ttl.math` functions and block operators see [Appendix B](#appendix-b-block-operators-and-math-functions).
 
