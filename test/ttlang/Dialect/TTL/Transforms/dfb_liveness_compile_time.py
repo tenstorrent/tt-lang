@@ -45,33 +45,57 @@ def build_stress_module() -> str:
 
 
 def build_structural_order_stress_module() -> str:
+    operation_identity = "dfb_structural_order_compile_time"
+    participant_list = (
+        f'<kind = compute, identity = "compute", operation = "{operation_identity}">, '
+        f'<kind = data_movement, identity = "reader", operation = "{operation_identity}">, '
+        f'<kind = data_movement, identity = "writer", operation = "{operation_identity}">'
+    )
     lines = [
-        "module attributes {ttl.launch_grid = [12, 10]} {",
-        "  func.func @dfb_structural_order_compile_time()",
-        "      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,",
-        "                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,",
-        "                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {",
-        "    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} "
-        f"{{dfb_id = 0 : index}} : {DFB_TYPE}",
-        "    %condition = arith.constant true",
+        "module attributes {ttl.launch_grid = [12, 10], "
+        "ttl.target_arch = #ttcore.arch<blackhole>} {"
     ]
-    lines.extend("    scf.if %condition {" for _ in range(RESET_NESTING_DEPTH))
-    lines.append("    scf.if %condition {")
-    reset_ordinal = 0
-    for branch_name in ("then", "else"):
-        if branch_name == "else":
-            lines.extend(["    } else {"])
-        for _ in range(RESET_COUNT_PER_BRANCH):
-            lines.append(
-                f'      ttl.opaque_call "reset_{branch_name}" dfb_reset '
-                f"<{reset_ordinal}, all_local = true, "
-                "participants[<kind = compute>]> () "
-                '{header = "reset.hpp"} : () -> ()'
-            )
-            reset_ordinal += 1
-    lines.append("    }")
-    lines.extend("    }" for _ in range(RESET_NESTING_DEPTH))
-    lines.extend(["    return", "  }", "}"])
+    participant_specs = (
+        ("compute", "compute", "compute", None),
+        ("reader", "data_movement", "noc", 0),
+        ("writer", "data_movement", "noc", 1),
+    )
+    for function_name, kernel_kind, thread_kind, noc_index in participant_specs:
+        lines.extend(
+            [
+                f"  func.func @{function_name}()",
+                f"      attributes {{ttl.kernel_thread = #ttkernel.thread<{thread_kind}>,",
+                "                  ttl.logical_kernel = "
+                f'#ttl.logical_kernel<kind = {kernel_kind}, identity = "{function_name}", '
+                f'operation = "{operation_identity}">,',
+            ]
+        )
+        if noc_index is not None:
+            lines.append(f"                  ttl.noc_index = {noc_index} : i32,")
+        lines.extend(
+            [
+                "                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {",
+                "    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} "
+                f"{{dfb_id = 0 : index}} : {DFB_TYPE}",
+                "    %condition = arith.constant true",
+            ]
+        )
+        lines.extend("    scf.if %condition {" for _ in range(RESET_NESTING_DEPTH))
+        lines.append("    scf.if %condition {")
+        reset_ordinal = 0
+        for branch_name in ("then", "else"):
+            if branch_name == "else":
+                lines.append("    } else {")
+            for _ in range(RESET_COUNT_PER_BRANCH):
+                lines.append(
+                    f"      ttl.reset_all_dfbs <{reset_ordinal}, "
+                    f"participants[{participant_list}]>"
+                )
+                reset_ordinal += 1
+        lines.append("    }")
+        lines.extend("    }" for _ in range(RESET_NESTING_DEPTH))
+        lines.extend(["    return", "  }"])
+    lines.append("}")
     return "\n".join(lines)
 
 
