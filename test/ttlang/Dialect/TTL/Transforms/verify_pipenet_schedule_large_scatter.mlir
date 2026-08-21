@@ -11,11 +11,13 @@ module attributes {ttl.launch_grid = [9 : i64, 8 : i64]} {
   // The receive leaf posts one reservation, waits for its payload, and makes
   // the completed DFB block available to its consumer.
   // CHECK-LABEL: func.func private @receive_once(
-  // CHECK-SAME: %[[RECV_CB:.*]]: !ttl.cb
   // CHECK-SAME: %[[RECV_PIPE:.*]]: !ttl.pipe
   func.func private @receive_once(
-      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) {
+    // CHECK-NEXT: %[[RECV_CB:.*]] = ttl.bind_cb
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // CHECK-NEXT: %[[RESERVE:.*]] = ttl.cb_reserve %[[RECV_CB]]
     %reserve = ttl.cb_reserve %recv_cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -34,67 +36,51 @@ module attributes {ttl.launch_grid = [9 : i64, 8 : i64]} {
   }
 
   func.func private @receive_2(
-      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) {
-    func.call @receive_once(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
-    func.call @receive_once(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_once(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_once(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
     func.return
   }
 
   func.func private @receive_4(
-      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) {
-    func.call @receive_2(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
-    func.call @receive_2(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_2(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_2(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
     func.return
   }
 
   func.func private @receive_8(
-      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) {
-    func.call @receive_4(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
-    func.call @receive_4(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_4(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_4(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
     func.return
   }
 
   func.func private @receive_16(
-      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) {
-    func.call @receive_8(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
-    func.call @receive_8(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_8(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    func.call @receive_8(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
     func.return
   }
 
   // CHECK-LABEL: func.func private @receive_32(
-  // CHECK-SAME: %[[RECV32_CB:.*]]: !ttl.cb
   // CHECK-SAME: %[[RECV32_PIPE:.*]]: !ttl.pipe
   func.func private @receive_32(
-      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) {
-    // CHECK-NEXT: call @receive_16(%[[RECV32_CB]], %[[RECV32_PIPE]])
-    func.call @receive_16(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
-    // CHECK-NEXT: call @receive_16(%[[RECV32_CB]], %[[RECV32_PIPE]])
-    func.call @receive_16(%recv_cb, %pipe)
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    // CHECK-NEXT: call @receive_16(%[[RECV32_PIPE]])
+    func.call @receive_16(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+    // CHECK-NEXT: call @receive_16(%[[RECV32_PIPE]])
+    func.call @receive_16(%pipe)
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
     // CHECK-NEXT: return
     func.return
   }
@@ -193,16 +179,12 @@ module attributes {ttl.launch_grid = [9 : i64, 8 : i64]} {
     // CHECK-NEXT: %[[ROOT_SEND_CB:.*]] = ttl.bind_cb
     %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // CHECK-NEXT: %[[ROOT_RECV_CB:.*]] = ttl.bind_cb
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // CHECK-NEXT: ttl.if_dst %[[PIPE]]
     ttl.if_dst %pipe
         : !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0> {
-      // CHECK-NEXT: call @receive_32(%[[ROOT_RECV_CB]], %[[PIPE]])
-      func.call @receive_32(%recv_cb, %pipe)
-          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-             !ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
+      // CHECK-NEXT: call @receive_32(%[[PIPE]])
+      func.call @receive_32(%pipe)
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>) -> ()
       // CHECK-NEXT: }
     }
     // CHECK-NEXT: ttl.if_src %[[PIPE]]

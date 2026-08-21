@@ -21,7 +21,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // An exact access domain absorbs an unresolved access whose upper bound is
 // contained by it. The tensor-backed DFB therefore retains exact root storage.
 
-// COMMON: module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// COMMON: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}]}], ttl.launch_grid = array<i64: 2, 1>}
 // COMMON-LABEL: func.func @bounded_unknown_copy
 
 #l1 = #ttl.layout<

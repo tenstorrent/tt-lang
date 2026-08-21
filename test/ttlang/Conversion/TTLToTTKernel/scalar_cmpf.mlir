@@ -96,6 +96,48 @@ module {
 
 // -----
 
+// f32 oeq lowers to ordered equality over IEEE-754 bit patterns.
+// CHECK-LABEL: func.func @cmpf_oeq_f32
+// CHECK-SAME: (%[[A:.*]]: i32, %[[B:.*]]: i32) -> i1
+// CHECK-NOT: arith.cmpf
+// CHECK: arith.cmpi eq, %[[A]], %[[B]] : i32
+// CHECK: %[[FALSE:.*]] = arith.constant false
+// CHECK-NEXT: %[[NEITHER_NAN:.*]] = arith.cmpi eq, {{.*}}, %[[FALSE]] : i1
+// CHECK-NEXT: %[[OEQ:.*]] = arith.andi {{.*}}, %[[NEITHER_NAN]] : i1
+// CHECK-NEXT: return %[[OEQ]] : i1
+module {
+  func.func @cmpf_oeq_f32(%a_int: i32, %b_int: i32) -> i1 {
+    %a = builtin.unrealized_conversion_cast %a_int : i32 to f32
+    %b = builtin.unrealized_conversion_cast %b_int : i32 to f32
+    %cmp = arith.cmpf oeq, %a, %b : f32
+    return %cmp : i1
+  }
+}
+
+// -----
+
+// bf16 une lowers to the inverse of ordered equality.
+// CHECK-LABEL: func.func @cmpf_une_bf16
+// CHECK-SAME: (%[[A:.*]]: i16, %[[B:.*]]: i16) -> i1
+// CHECK-NOT: arith.cmpf
+// CHECK: arith.cmpi eq, %[[A]], %[[B]] : i16
+// CHECK: %[[NAN_FALSE:.*]] = arith.constant false
+// CHECK-NEXT: %[[NEITHER_NAN:.*]] = arith.cmpi eq, {{.*}}, %[[NAN_FALSE]] : i1
+// CHECK-NEXT: %[[OEQ:.*]] = arith.andi {{.*}}, %[[NEITHER_NAN]] : i1
+// CHECK-NEXT: %[[FALSE:.*]] = arith.constant false
+// CHECK-NEXT: %[[UNE:.*]] = arith.cmpi eq, %[[OEQ]], %[[FALSE]] : i1
+// CHECK-NEXT: return %[[UNE]] : i1
+module {
+  func.func @cmpf_une_bf16(%a_int: i16, %b_int: i16) -> i1 {
+    %a = builtin.unrealized_conversion_cast %a_int : i16 to bf16
+    %b = builtin.unrealized_conversion_cast %b_int : i16 to bf16
+    %cmp = arith.cmpf une, %a, %b : bf16
+    return %cmp : i1
+  }
+}
+
+// -----
+
 // arith.truncf f32 -> bf16 lowered to bit extraction (shrui + trunci).
 // bf16 is the upper 16 bits of f32, so this is just a shift-right by 16.
 // CHECK-LABEL: func.func @truncf_f32_to_bf16
