@@ -89,7 +89,8 @@ def TTL_SynchronizedDFBResetAttr
     order is canonical and otherwise semantically insignificant. The
     participant set contains one compute kernel and both data movement kernels
     that own DFB interface state. Each participant executes the declaration at
-    most once per enclosing loop iteration and launch node.
+    most once at each point in the enclosing nested iteration sequence and
+    launch node.
   }];
   let parameters = (ins
     "int64_t":$ordinal,
