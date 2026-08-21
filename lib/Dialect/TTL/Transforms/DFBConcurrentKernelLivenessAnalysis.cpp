@@ -3769,6 +3769,8 @@ static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
     SmallVectorImpl<DFBPerNodeLifetimeDiagnostics> *lifetimeDiagnostics,
     ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
     const ResetBoundaryEvents &resetBoundaryEvents,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
+    const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
     const HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
@@ -3858,22 +3860,107 @@ static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
     return std::nullopt;
   }
 
+  const AccessEventSpan &terminatorEvents =
+      resetBoundaryEvents.at(terminator->reset);
+  SmallVector<AccessEventSpan> activeEventSpans;
+  activeEventSpans.reserve(activeAccesses.size());
+  for (const DFBAccessOccurrence *access : activeAccesses) {
+    std::optional<AccessEventSpan> events =
+        getAccessEventSpan(*access, operationEvents, accessEvents);
+    if (!events) {
+      return std::nullopt;
+    }
+    activeEventSpans.push_back(*events);
+  }
+  auto boundaryPrecedesRepeatedInterval = [&](const EventPair &boundary) {
+    return graph.strictlyPrecedes(boundary.completion,
+                                  terminatorEvents.first.entry) &&
+           llvm::all_of(activeEventSpans, [&](const AccessEventSpan &events) {
+             return graph.strictlyPrecedes(boundary.completion,
+                                           events.first.entry);
+           });
+  };
+  auto boundaryFollowsRepeatedInterval = [&](const EventPair &boundary) {
+    return graph.strictlyPrecedes(terminatorEvents.last.completion,
+                                  boundary.entry) &&
+           llvm::all_of(activeEventSpans, [&](const AccessEventSpan &events) {
+             return graph.strictlyPrecedes(events.last.completion,
+                                           boundary.entry);
+           });
+  };
+
+  // Singleton resets may coexist only outside the complete repeated run. An
+  // interleaving boundary cannot be represented by one interval summary.
+  for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
+    if (!reset.isModeledLifetimeBoundary() ||
+        !llvm::is_contained(reset.targetLogicalIndices, logicalIndex)) {
+      continue;
+    }
+    auto eventsIt = resetBoundaryEvents.find(reset.reset);
+    if (eventsIt == resetBoundaryEvents.end() ||
+        (!boundaryPrecedesRepeatedInterval(eventsIt->second.first) &&
+         !boundaryFollowsRepeatedInterval(eventsIt->second.last))) {
+      return std::nullopt;
+    }
+  }
+
+  const ValidatedDFBReconfiguration *entryReconfiguration = nullptr;
+  std::optional<EventPair> entryReconfigurationEvents;
+  for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
+    auto eventsIt =
+        reconfigurationBoundaryEvents.find(reconfiguration.boundary);
+    if (eventsIt == reconfigurationBoundaryEvents.end()) {
+      return std::nullopt;
+    }
+    bool precedes = boundaryPrecedesRepeatedInterval(eventsIt->second);
+    bool follows = boundaryFollowsRepeatedInterval(eventsIt->second);
+    if (precedes == follows) {
+      return std::nullopt;
+    }
+    if (precedes &&
+        (!entryReconfigurationEvents ||
+         graph.strictlyPrecedes(entryReconfigurationEvents->completion,
+                                eventsIt->second.entry))) {
+      entryReconfiguration = &reconfiguration;
+      entryReconfigurationEvents = eventsIt->second;
+    }
+  }
+  if (entryReconfiguration && entryReconfiguration->conditionalExecution) {
+    for (const DFBAccessOccurrence *access : activeAccesses) {
+      auto runIt = accessRuns.find(access);
+      if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
+          !proveEquivalentConditionalExecutionAtLaunchNodes(
+              access->operation, node,
+              entryReconfiguration->participantOperations.front(), node,
+              domainState)) {
+        return std::nullopt;
+      }
+    }
+  }
+
+  SmallVector<DFBPerNodeLifetime, 0> intervalLifetimes;
+  SmallVector<DFBPerNodeLifetimeDiagnostics, 0> intervalDiagnostics;
   DFBQuiescenceProof proof = computeProtocolLifetime(
-      logicalDFB, node, lifetimes, lifetimeDiagnostics, graph, structuralOrder,
-      operationEvents, accessEvents, executionCounts, accessRuns, domainState,
-      includeUnknownDomains, activeAccesses,
+      logicalDFB, node, intervalLifetimes,
+      lifetimeDiagnostics ? &intervalDiagnostics : nullptr, graph,
+      structuralOrder, operationEvents, accessEvents, executionCounts,
+      accessRuns, domainState, includeUnknownDomains, activeAccesses,
       /*hasCanonicalResetTerminator=*/true,
       /*expectedSelectedExecutionCount=*/terminator->executionCount);
-  assert(!lifetimes.empty() &&
+  assert(intervalLifetimes.size() == 1 &&
          "one repeated interval must produce one protocol lifetime");
+  assert((!lifetimeDiagnostics || intervalDiagnostics.size() == 1) &&
+         "one repeated interval must produce one diagnostic lifetime");
+  lifetimes.push_back(std::move(intervalLifetimes.front()));
+  if (lifetimeDiagnostics) {
+    lifetimeDiagnostics->push_back(std::move(intervalDiagnostics.front()));
+  }
   DFBPerNodeLifetime &lifetime = lifetimes.back();
   lifetime.quiescence = proof;
   if (!proof.proven()) {
     return proof;
   }
 
-  const AccessEventSpan &terminatorEvents =
-      resetBoundaryEvents.at(terminator->reset);
   lifetime.terminalCompletionEvents = {terminatorEvents.last.completion};
   lifetime.terminalStateCanonical = true;
 
@@ -3890,7 +3977,12 @@ static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
   epoch.readCursorRuns = lifetime.readCursorRuns;
   epoch.writePointerOwner = lifetime.writePointerOwner;
   epoch.readPointerOwner = lifetime.readPointerOwner;
-  epoch.activeConfigurationEpochs.push_back(std::nullopt);
+  if (entryReconfiguration) {
+    epoch.entryReconfigurationOrdinal =
+        entryReconfiguration->boundary.getOrdinal();
+  }
+  epoch.activeConfigurationEpochs.push_back(
+      epoch.entryReconfigurationOrdinal);
   epoch.terminalResetOrdinal = terminator->reset.getOrdinal();
   epoch.terminalStateCanonical = true;
   epoch.quiescence = proof;
@@ -3951,18 +4043,14 @@ static DFBQuiescenceProof computePerNodeLifetime(
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
     const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains = false) {
-  // A repeated reset can summarize one configuration epoch. When explicit
-  // reconfiguration boundaries exist, retain their exact partitioning below.
-  if (reconfigurations.empty()) {
-    if (std::optional<DFBQuiescenceProof> repeatedResetProof =
-            tryComputeRepeatedResetLifetime(
-                logicalDFB, logicalIndex, node, lifetimes,
-                lifetimeDiagnostics, synchronizedResets, resetBoundaryEvents,
-                graph, operationEvents, accessEvents, executionCounts,
-                accessRuns, domainState, structuralOrder,
-                includeUnknownDomains)) {
-      return *repeatedResetProof;
-    }
+  if (std::optional<DFBQuiescenceProof> repeatedResetProof =
+          tryComputeRepeatedResetLifetime(
+              logicalDFB, logicalIndex, node, lifetimes, lifetimeDiagnostics,
+              synchronizedResets, resetBoundaryEvents, reconfigurations,
+              reconfigurationBoundaryEvents, graph, operationEvents,
+              accessEvents, executionCounts, accessRuns, domainState,
+              structuralOrder, includeUnknownDomains)) {
+    return *repeatedResetProof;
   }
 
   SmallVector<OrderedLifecycleBoundary> boundaries;
@@ -4252,7 +4340,7 @@ static bool proveOrderedBefore(const DFBPerNodeLifetime &before,
 
 static bool intervalIsOutsideReset(ArrayRef<unsigned> earliestEntryEvents,
                                    ArrayRef<unsigned> terminalCompletionEvents,
-                                   AccessEventSpan resetEvents,
+                                   const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
   if (earliestEntryEvents.empty() || terminalCompletionEvents.empty()) {
     return false;
@@ -4271,7 +4359,7 @@ static bool intervalIsOutsideReset(ArrayRef<unsigned> earliestEntryEvents,
 }
 
 static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
-                                   AccessEventSpan resetEvents,
+                                   const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
   if (lifetime.epochs.empty()) {
     return intervalIsOutsideReset(lifetime.earliestEntryEvents,
@@ -4345,7 +4433,7 @@ static bool protocolRunsCrossReset(
 static bool unprovenLifecycleIsOutsideReset(
     const DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
     const AccessExecutionCounts &executionCounts, bool includeUnknownDomains,
-    AccessEventSpan resetEvents, const HappensBeforeGraph &graph,
+    const AccessEventSpan &resetEvents, const HappensBeforeGraph &graph,
     const StructuralOperationOrder &structuralOrder,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
