@@ -114,12 +114,24 @@ struct DFBTransactionRun {
 /// Protocol state proved for one access interval between synchronized resets.
 struct DFBLifecycleEpoch {
   SmallVector<unsigned> accessOccurrenceIndices;
+  SmallVector<unsigned> earliestEntryEvents;
+  SmallVector<unsigned> terminalCompletionEvents;
   SmallVector<DFBTransactionRun> transactionRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
+};
+
+/// A selected reset write that overlaps a non-target logical DFB lifecycle.
+struct DFBResetAllocationConflict {
+  unsigned targetLogicalIndex = 0;
+  unsigned overlappingLogicalIndex = 0;
+  LaunchNodeCoord node;
+  SynchronizedDFBResetAttr reset;
+  Operation *resetOperation = nullptr;
+  Operation *overlappingOperation = nullptr;
 };
 
 /// Immutable lifetime and hardware-state facts for one launched node.
@@ -202,6 +214,10 @@ public:
 
   ArrayRef<LaunchNodeCoord> getLaunchNodes() const { return launchNodes; }
 
+  ArrayRef<DFBResetAllocationConflict> getResetAllocationConflicts() const {
+    return resetAllocationConflicts;
+  }
+
   /// Returns true when one indexed lifetime ends before another on `node`.
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
@@ -218,6 +234,7 @@ private:
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
+  SmallVector<DFBResetAllocationConflict> resetAllocationConflicts;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };
