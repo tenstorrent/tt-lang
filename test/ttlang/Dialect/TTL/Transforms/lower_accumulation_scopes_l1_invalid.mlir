@@ -48,7 +48,7 @@ func.func @tensor_scope_with_released_contribution() {
   %c0 = arith.constant 0 : index
   %c4 = arith.constant 4 : index
   %c1 = arith.constant 1 : index
-  // expected-error @below {{cannot lower tensor accumulation scope to L1 packer accumulation: expected one same-type additive recurrence with one final store; select the automatic accumulation strategy or rewrite the loop}}
+  // expected-error @below {{cannot lower tensor accumulation scope to L1 packer accumulation: the contribution would be used after release}}
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%state: tensor<1x1x!ttcore.tile<32x32, bf16>>):

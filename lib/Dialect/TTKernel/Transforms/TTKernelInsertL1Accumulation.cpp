@@ -146,16 +146,6 @@ static void addPackCBs(scf::ForOp loop,
   packCBs.insert(loopPackCBs.begin(), loopPackCBs.end());
 }
 
-static bool packsToAnyCB(scf::ForOp loop,
-                         const llvm::SmallDenseSet<Value, 2> &packCBs) {
-  for (Value cb : getPackTileCBs(loop)) {
-    if (packCBs.contains(cb)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 static bool packsToAnyCB(Operation *operation,
                          const llvm::SmallDenseSet<Value, 2> &packCBs) {
   if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
@@ -165,6 +155,18 @@ static bool packsToAnyCB(Operation *operation,
     return packCBs.contains(packOp.getOutCb());
   }
   return false;
+}
+
+static bool containsAnyPack(Operation *operation) {
+  bool found = false;
+  operation->walk([&](Operation *nested) {
+    if (isa<ttk::PackTileOp, ttk::PackTileBlockOp>(nested)) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
 }
 
 static bool mayResetPackerL1Acc(Operation *operation) {
@@ -249,10 +251,10 @@ insertLocalL1AccEnableAfterReset(OpBuilder &builder, scf::ForOp loop,
 /// format, and unsupported formats have no valid L1-accumulation behavior.
 static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
   LogicalResult result = success();
-  loop->walk([&](ttk::PackTileOp packOp) {
-    auto cbType = dyn_cast<ttk::CBType>(packOp.getOutCb().getType());
+  auto verifyPackOutput = [&](Operation *packOp, Value outCB) {
+    auto cbType = dyn_cast<ttk::CBType>(outCB.getType());
     if (!cbType) {
-      result = packOp.emitOpError(
+      result = packOp->emitOpError(
           "L1 packer accumulation requires the pack output to be a typed "
           "dataflow buffer");
       return WalkResult::interrupt();
@@ -260,7 +262,7 @@ static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
 
     auto tileType = dyn_cast<ttcore::TileType>(cbType.getElementType());
     if (!tileType) {
-      result = packOp.emitOpError(
+      result = packOp->emitOpError(
           "L1 packer accumulation requires the pack output dataflow buffer to "
           "hold tile elements");
       return WalkResult::interrupt();
@@ -268,12 +270,22 @@ static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
 
     ttcore::DataType dataType = tileType.getDataType();
     if (!isL1AccumulationDataTypeSupported(dataType)) {
-      result = packOp.emitOpError()
+      result = packOp->emitOpError()
                << "L1 packer accumulation does not support output data type "
                << ttcore::DataTypeEnumToString(dataType)
                << "; use a supported output data type or select another "
                   "accumulation strategy";
       return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  };
+
+  loop->walk([&](Operation *operation) {
+    if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+      return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
+    }
+    if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+      return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
     }
     return WalkResult::advance();
   });
@@ -378,9 +390,15 @@ collectL1AccumulationLoopGroups(
 
       auto siblingLoop = dyn_cast<scf::ForOp>(operation);
       if (!siblingLoop) {
+        if (containsAnyPack(operation)) {
+          break;
+        }
         continue;
       }
       if (!isL1AccumulationLoop(siblingLoop)) {
+        if (containsAnyPack(siblingLoop)) {
+          break;
+        }
         continue;
       }
 
@@ -415,7 +433,7 @@ collectL1AccumulationLoopGroups(
         // L1-acc state affects subsequent packs, not cb_push_back itself.
         break;
       }
-      if (packsToAnyCB(operation, group.packCBs)) {
+      if (!isa<scf::ForOp>(operation) && containsAnyPack(operation)) {
         break;
       }
 
@@ -427,8 +445,7 @@ collectL1AccumulationLoopGroups(
         group.scopeEnd = operation;
         continue;
       }
-      if (!isL1AccumulationLoop(siblingLoop) &&
-          packsToAnyCB(siblingLoop, group.packCBs)) {
+      if (containsAnyPack(operation)) {
         break;
       }
       if (isL1AccumulationLoop(siblingLoop) &&

@@ -448,6 +448,12 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
     return failure();
   }
 
+  TensorAccumulationMatch releaseMatch = match;
+  releaseMatch.initialValue = initialValue;
+  if (getTensorAccumulationUseAfterOwnedRelease(releaseMatch, dfbIndex)) {
+    return failure();
+  }
+
   AttachCBOp attachedContribution;
   CBWaitOp contributionWait = getContributionWait(match, attachedContribution);
   if (!contributionWait || contributionWait.getNumTiles().has_value()) {
@@ -521,6 +527,26 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
   };
 }
 
+std::optional<TensorAccumulationReleasedValue>
+getTensorAccumulationUseAfterOwnedRelease(
+    const TensorAccumulationMatch &match,
+    const DFBAcquireReleaseIndex &dfbIndex) {
+  scf::ForOp loop = match.loop;
+  if (CBWaitOp initialWait = getTensorWait(match.initialValue)) {
+    if (hasOwnedReleaseBeforeUse(initialWait, loop.getOperation(), dfbIndex)) {
+      return TensorAccumulationReleasedValue::Initial;
+    }
+  }
+  AddOp add = match.add;
+  if (CBWaitOp contributionWait = getTensorWait(match.contribution)) {
+    if (hasOwnedReleaseBeforeUse(contributionWait, add.getOperation(),
+                                 dfbIndex)) {
+      return TensorAccumulationReleasedValue::Contribution;
+    }
+  }
+  return std::nullopt;
+}
+
 FailureOr<TensorL1PackAccumulationInfo>
 analyzeTensorAccumulationForL1Pack(const TensorAccumulationMatch &match,
                                    const DFBAcquireReleaseIndex *dfbIndex) {
@@ -531,16 +557,8 @@ analyzeTensorAccumulationForL1Pack(const TensorAccumulationMatch &match,
   }
 
   if (dfbIndex) {
-    if (CBWaitOp initialWait = getTensorWait(match.initialValue)) {
-      if (hasOwnedReleaseBeforeUse(initialWait, loop.getOperation(),
-                                   *dfbIndex)) {
-        return failure();
-      }
-    }
-    if (CBWaitOp contributionWait = getTensorWait(match.contribution)) {
-      if (hasOwnedReleaseBeforeUse(contributionWait, match.add, *dfbIndex)) {
-        return failure();
-      }
+    if (getTensorAccumulationUseAfterOwnedRelease(match, *dfbIndex)) {
+      return failure();
     }
   }
 

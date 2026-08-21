@@ -63,6 +63,25 @@ func.func @unsupported_l1_acc_output_format() attributes {ttkernel.thread = #ttk
 
 // -----
 
+// Test: L1 packer accumulation validates pack_tile_block output formats.
+func.func @unsupported_l1_acc_output_format_pack_block() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bfp_bf8>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    // expected-error @below {{'ttkernel.pack_tile_block' op L1 packer accumulation does not support output data type bfp_bf8; use a supported output data type or select another accumulation strategy}}
+    ttkernel.pack_tile_block(%c0, %cb, %c4) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bfp_bf8>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
+  return
+}
+
+// -----
+
 // Test: nested L1 accumulation loops must belong to one semantic scope.
 func.func @nested_mismatched_scope_ids() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>

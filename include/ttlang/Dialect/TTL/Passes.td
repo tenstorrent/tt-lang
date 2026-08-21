@@ -396,8 +396,7 @@ def TTKernelInsertL1Accumulation
     - For the second+ loop in a group, an enable before the loop to re-enable
       L1 acc after init ops that may reset packer state.
     - `pack_reconfig_l1_acc(0)` after the scope when no later pack can observe
-      the enabled state, or before a later non-group pack into one of the
-      group's output dataflow buffers.
+      the enabled state, or before a later non-group pack.
 
     Loops are identified by the `ttl.l1_acc_loop` (user-written) or
     `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`

@@ -396,6 +396,32 @@ emitTensorStrategyPlanningFailure(AccumulationScopeOp scope,
 }
 
 static LogicalResult
+emitTensorUseAfterReleaseError(AccumulationScopeOp scope,
+                               AccumulationStrategy strategy,
+                               TensorAccumulationReleasedValue releasedValue) {
+  if (strategy == AccumulationStrategy::Dst) {
+    return scope.emitOpError()
+           << "cannot lower tensor accumulation scope to DST: the "
+           << (releasedValue == TensorAccumulationReleasedValue::Initial
+                   ? "initial value"
+                   : "contribution")
+           << " would be used after release; move the release after the "
+              "recurrence or keep the accumulator stateful";
+  }
+  if (strategy == AccumulationStrategy::L1Pack) {
+    return scope.emitOpError()
+           << "cannot lower tensor accumulation scope to L1 packer "
+              "accumulation: the "
+           << (releasedValue == TensorAccumulationReleasedValue::Initial
+                   ? "initial value"
+                   : "contribution")
+           << " would be used after release; move the release after the "
+              "recurrence or keep the accumulator stateful";
+  }
+  return failure();
+}
+
+static LogicalResult
 verifyTensorL1PackLowering(AccumulationScopeOp scope,
                            const TensorAccumulationMatch &recurrence,
                            const DFBAcquireReleaseIndex &dfbIndex) {
@@ -416,6 +442,17 @@ verifyTensorL1PackLowering(AccumulationScopeOp scope,
         "the current strategy supports exactly one loop-carried tensor "
         "accumulator; select the automatic accumulation strategy or split the "
         "accumulators into separate loops");
+  }
+  if (std::optional<TensorAccumulationReleasedValue> releasedValue =
+          getTensorAccumulationUseAfterOwnedRelease(recurrence, dfbIndex)) {
+    if (*releasedValue == TensorAccumulationReleasedValue::Initial) {
+      return emitL1PackError(
+          "the initial value would be used after release; move the release "
+          "after the recurrence or keep the accumulator stateful");
+    }
+    return emitL1PackError(
+        "the contribution would be used after release; move the release after "
+        "the recurrence use or keep the accumulator stateful");
   }
   if (failed(analyzeTensorAccumulationForL1Pack(recurrence, &dfbIndex))) {
     return emitL1PackError(
@@ -450,6 +487,14 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
 
   TensorAccumulationMatch recurrence = match->recurrence;
   recurrence.initialValue = match->initialValue;
+
+  if (strategy != AccumulationStrategy::Auto) {
+    if (std::optional<TensorAccumulationReleasedValue> releasedValue =
+            getTensorAccumulationUseAfterOwnedRelease(recurrence, dfbIndex)) {
+      (void)emitTensorUseAfterReleaseError(scope, strategy, *releasedValue);
+      return failure();
+    }
+  }
 
   FailureOr<AccumulationCostModel> costModel =
       AccumulationCostModel::forOperation(scope.getOperation());

@@ -111,6 +111,12 @@ struct TensorL1PackAccumulationInfo {
   std::optional<int64_t> unitTileCount;
 };
 
+/// Loop-carried recurrence value that would be read after its DFB release.
+enum class TensorAccumulationReleasedValue {
+  Initial,
+  Contribution,
+};
+
 /// Placement constraint for the output reservation associated with a matched
 /// tensor accumulation.
 enum class TensorAccumulationReservePlacement {
@@ -153,6 +159,13 @@ FailureOr<TensorDstAccumulationInfo>
 analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
                                 Value initialValue,
                                 const DFBAcquireReleaseIndex &dfbIndex);
+
+/// Return the first loop-carried recurrence operand whose acquired DFB slot has
+/// an owned release before the lowering would read the value.
+std::optional<TensorAccumulationReleasedValue>
+getTensorAccumulationUseAfterOwnedRelease(
+    const TensorAccumulationMatch &match,
+    const DFBAcquireReleaseIndex &dfbIndex);
 
 /// Return packer L1 accumulation properties for `match` when legal.
 FailureOr<TensorL1PackAccumulationInfo> analyzeTensorAccumulationForL1Pack(
