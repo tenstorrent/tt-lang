@@ -10,7 +10,7 @@
 // CHECK: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
 // CHECK: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @unconditional_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -57,7 +57,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: quiescence=missing-protocol-effect
 // CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1]
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @tensor_crossing_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -106,7 +106,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: transactions=[2, 2, 2, 2]
 // CHECK-SAME: terminal_reset=0,terminal_state=canonical
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @safe_nondividing_run_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -156,7 +156,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=0 bounded=0
 // CHECK: quiescence=mismatched-transaction
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @straddling_nondividing_run_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -209,7 +209,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: quiescence=unsupported-control-flow
 // CHECK: Total DFB count: 2
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @independent_conditional_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -273,7 +273,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @nondividing_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -321,7 +321,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @all_dfbs_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -366,7 +366,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=0 bounded=0
 // CHECK: quiescence=incomplete-use-order{{.*}}evidence=ttl.cb_push
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @payload_crosses_reset()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -407,7 +407,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=0 bounded=0
 // CHECK: quiescence=incomplete-use-order
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @concurrent_access_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -459,7 +459,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @multiple_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -513,7 +513,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @conditional_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -581,7 +581,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @nested_conditional_reset_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -655,7 +655,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 2
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @opposite_reset_polarity_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
