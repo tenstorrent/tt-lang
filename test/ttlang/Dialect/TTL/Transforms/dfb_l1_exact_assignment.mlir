@@ -1,5 +1,7 @@
-// Tests minimum physical-index count when first-fit exceeds the L1 budget.
+// Tests minimum-index search under authoritative and reserved L1 pressure.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{l1-budget-override=1500000})' | FileCheck %s --check-prefix=PIPE
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{l1-budget-override=1500000 exact-coloring-search-limit=1})' | FileCheck %s --check-prefix=PIPE-LIMIT
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
 
 // REPORT: DFB conflict {{.*}} reason=concurrent-lifetime
@@ -10,6 +12,12 @@
 // Compilation therefore requires exact search to replace the valid first-fit
 // assignment with one that uses the minimum physical-index count.
 
+// With the 1,500,000-byte override, the first-fit DFB assignment itself fits.
+// The 32,000-byte conservative PipeNet reservation lowers the search trigger
+// to 1,468,000 bytes. The resulting two-index assignment proves that the
+// reservation alone triggered search; finalization then removes the transient
+// reservation attribute.
+
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}]}
 // CHECK-LABEL: func.func @l1_requires_minimum_assignment
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
@@ -18,7 +26,26 @@
 // CHECK-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 // CHECK-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 3 : index}
 
-module {
+// PIPE: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}]}
+// PIPE-NOT: ttl.pipe_conservative_l1_bytes
+// PIPE-LABEL: func.func @l1_requires_minimum_assignment
+// PIPE: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 0 : index}
+// PIPE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
+// PIPE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
+// PIPE-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 3 : index}
+
+// A reservation-only search that reaches its limit retains the valid
+// three-index first-fit assignment instead of reporting an inconclusive error.
+// PIPE-LIMIT: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}]}
+// PIPE-LIMIT-NOT: ttl.pipe_conservative_l1_bytes
+// PIPE-LIMIT-LABEL: func.func @l1_requires_minimum_assignment
+// PIPE-LIMIT-SAME: ttl.base_cta_index = 3 : i32
+// PIPE-LIMIT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// PIPE-LIMIT-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
+// PIPE-LIMIT-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 2 : index}
+// PIPE-LIMIT-NEXT: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 3 : index}
+
+module attributes {ttl.pipe_conservative_l1_bytes = 32000 : i64} {
   func.func @l1_requires_minimum_assignment()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
