@@ -10,7 +10,7 @@
 // threads are added to supply the credits, since a compute kernel waiting on
 // buffers nothing fills would deadlock rather than be estimated.
 
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @read() attributes {ttkernel.thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32} {
     %c6_i32 = arith.constant 6 : i32
     %0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, f32>>
@@ -111,7 +111,7 @@ module {
 // some arbitrary number of times. The trip count arrives as a function argument
 // here to keep the refusal to one cause; a compute kernel reading it through
 // `ttkernel.get_common_arg_val` would fail for a second, unrelated reason.
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute(%trip: index) attributes {dst_full_sync_en = false, fp32_dest_acc_en = false, ttkernel.thread = #ttkernel.thread<compute>} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index

@@ -17,7 +17,7 @@
 // lib/Analysis/CostTableBlackhole.inc rather than off this test's failure, since
 // the point of each is which row it came from.
 
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
       dst_full_sync_en = false,
       fp32_dest_acc_en = false,

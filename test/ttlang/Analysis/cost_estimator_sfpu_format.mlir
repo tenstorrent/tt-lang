@@ -9,7 +9,7 @@
 
 // A kernel that reads bf16 and packs f32. The two formats are not a conflict,
 // they are the pair the row was measured at, so the SFPU operations resolve.
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @unary_bf16_to_f32() attributes {
       dst_full_sync_en = false,
       fp32_dest_acc_en = false,
@@ -42,7 +42,7 @@ module {
 // The same kernel reading two formats. Which one the exponential saw is no
 // longer decidable from the buffers, so it answers nothing rather than guessing
 // -- while `add_tiles`, which names its own buffer, still resolves.
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @binary_mixed_inputs() attributes {
       dst_full_sync_en = false,
       fp32_dest_acc_en = false,

@@ -12,7 +12,7 @@
 // test for the table wiring: a lookup that stops matching shows up as a column
 // flipping away from meas.
 
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @read() attributes {ttkernel.thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32} {
     %c4_i32 = arith.constant 4 : i32
     %0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>

@@ -121,13 +121,25 @@ public:
     /// at all fails the estimate instead of landing here at zero.
     uint64_t cost = 0;
 
-    /// True when `cost` came from a measurement keyed to this kernel's exact
-    /// configuration. False means nothing was charged, for one of two reasons
-    /// the report keeps apart: no sweep timed this operation on this lane, or
-    /// one did in a configuration this kernel cannot match. Reported per
-    /// operation because a kernel is usually a mixture, and a mixed total
-    /// should not be read as if it were measured throughout.
-    bool measured = false;
+    /// Where this placement's cost came from.
+    ///
+    /// Recorded per placement because a kernel is usually a mixture, and a
+    /// mixed total should not be read as if it were measured throughout. Kept
+    /// on the placement rather than recomputed when rendering, so a report
+    /// answers for itself without asking the cost library again.
+    enum class Provenance {
+      /// A measurement keyed to this kernel's exact configuration.
+      Measured,
+      /// Measurements exist for this operation and engine, in no configuration
+      /// this kernel can supply. Charged nothing.
+      NoMatchingKey,
+      /// Nothing has timed this operation on this engine. Charged nothing.
+      Untimed,
+    };
+
+    Provenance provenance = Provenance::Untimed;
+
+    bool isMeasured() const { return provenance == Provenance::Measured; }
 
     ResourceEffect effect;
 
@@ -152,6 +164,11 @@ public:
   struct Report {
     /// Kernel-thread functions the estimator recognized, by symbol name.
     llvm::SmallVector<std::string> kernels;
+
+    /// The architecture the costs were measured on, recovered from the module.
+    std::string arch;
+    uint64_t tableRows = 0;
+    uint64_t tableOperations = 0;
     std::array<LaneReport, kNumLanes> lanes = {};
 
     /// Accumulated cost at which the last lane retires. Zero when scheduling

@@ -7,7 +7,7 @@
 // buffer in `ttl.unpack_to_dest_fp32`, so the answer is false for each of them
 // and copy_tile costs 42 on unpack rather than the 121 a listed buffer would.
 
-module {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @read() attributes {ttkernel.thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32} {
     %c4_i32 = arith.constant 4 : i32
     %0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>

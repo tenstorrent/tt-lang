@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelTraits.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -116,9 +117,9 @@ const llvm::StringSet<> &getNonFpuSrcCouplingOps() {
 /// lanes that only configures the unpacker -- can no longer be checked, because
 /// `add_tiles` and `add_tiles_init` are indistinguishable once the call names
 /// are gone.
-bool lanesAllowSrcCoupling(llvm::StringRef name) {
-  return opcost::runsOnEngine(name, Engine::Unpack) &&
-         opcost::runsOnEngine(name, Engine::Math);
+bool lanesAllowSrcCoupling(llvm::StringRef name, opcost::Arch arch) {
+  return opcost::runsOnEngine(name, Engine::Unpack, arch) &&
+         opcost::runsOnEngine(name, Engine::Math, arch);
 }
 
 /// Operations whose MATH half re-initializes the DST pipeline.
@@ -153,7 +154,7 @@ const llvm::StringSet<> &getDstSyncInitOps() {
   return ops;
 }
 
-ResourceEffect getResourceEffect(Operation *op, Lane lane) {
+ResourceEffect getResourceEffect(Operation *op, Lane lane, opcost::Arch arch) {
   llvm::StringRef name = op->getName().stripDialect();
 
   // The Src handshake is the one effect that depends on which lane the
@@ -162,10 +163,10 @@ ResourceEffect getResourceEffect(Operation *op, Lane lane) {
   // `lane`.
   bool coupled = op->hasTrait<ttkernel::TTKernelFPUOpTrait>() ||
                  getNonFpuSrcCouplingOps().contains(name);
-  assert(
-      (!coupled || !opcost::isKnownOp(name) || lanesAllowSrcCoupling(name)) &&
-      "Src coupling disagrees with the operation's lanes: an op that feeds "
-      "SrcA/SrcB has to run on both UNPACK and MATH");
+  assert((!coupled || !opcost::isKnownOp(name, arch) ||
+          lanesAllowSrcCoupling(name, arch)) &&
+         "Src coupling disagrees with the operation's lanes: an op that feeds "
+         "SrcA/SrcB has to run on both UNPACK and MATH");
   if (coupled) {
     if (lane == Lane::Trisc0Unpack) {
       return {ResourceEffect::Kind::SrcProduce, 0, 0};
@@ -297,10 +298,34 @@ Lane getDataMovementLane(func::FuncOp funcOp) {
   return Lane::Ncrisc;
 }
 
-/// Architecture the compiled-in measurements were taken on. Costs do not
-/// transfer across architectures, so a caller that does not know its target
-/// must not use them.
-constexpr llvm::StringLiteral kPerfTableArch("blackhole");
+/// The cost library's name for one ttcore architecture, or nothing when it has
+/// no notion of it.
+///
+/// Costs do not transfer across architectures, so an architecture the library
+/// cannot name is one it cannot answer for -- which is a refusal, not a reason
+/// to fall back on the architecture that happens to have a table.
+std::optional<opcost::Arch> getOpCostArch(ttcore::Arch arch) {
+  switch (arch) {
+  case ttcore::Arch::Blackhole:
+    return opcost::Arch::Blackhole;
+  case ttcore::Arch::WormholeB0:
+    return opcost::Arch::Wormhole;
+  case ttcore::Arch::Quasar:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+/// Name of an architecture for the report.
+llvm::StringRef getArchName(opcost::Arch arch) {
+  switch (arch) {
+  case opcost::Arch::Blackhole:
+    return "blackhole";
+  case opcost::Arch::Wormhole:
+    return "wormhole";
+  }
+  return "unknown";
+}
 
 /// Data format as the perf CSVs spell it.
 ///
@@ -633,16 +658,18 @@ uint64_t getChargedCost(const std::optional<opcost::Cost> &cost) {
 /// Recomputed from the table rather than stored per placement: it is a property
 /// of the (operation, engine) slot, and a report holds hundreds of thousands of
 /// placements.
-llvm::StringRef getCostSource(llvm::StringRef opName, Engine engine,
-                              bool measured) {
-  if (measured) {
+llvm::StringRef getCostSource(CostEstimator::PlacedOp::Provenance provenance) {
+  switch (provenance) {
+  case CostEstimator::PlacedOp::Provenance::Measured:
     return "meas";
+  // Rows exist that this kernel cannot key, which supplying the missing field
+  // closes; untimed means no rows at all, which waits on a sweep.
+  case CostEstimator::PlacedOp::Provenance::NoMatchingKey:
+    return "nokey";
+  case CostEstimator::PlacedOp::Provenance::Untimed:
+    return "untimed";
   }
-  llvm::StringRef bare = opName;
-  bare.consume_front("ttkernel.");
-  // A slot with rows that none of them match is a key mismatch, which supplying
-  // the missing field closes; a slot with no rows at all is missing data.
-  return opcost::getMeasurementCount(bare, engine) > 0 ? "nokey" : "untimed";
+  return "?";
 }
 
 } // namespace
@@ -689,9 +716,8 @@ std::string CostEstimator::Report::render() const {
       << " unmatched (measured in no configuration this kernel can supply), "
       << untimedPlacements << " untimed (nothing measured them); both charged 0"
       << "\n";
-  opcost::TableStats stats = opcost::getTableStats();
-  out << "  measured on " << kPerfTableArch << " from " << stats.measuredRows
-      << " rows over " << stats.operations
+  out << "  measured on " << arch << " from " << tableRows << " rows over "
+      << tableOperations
       << " operations; per-operation provenance in the detail view\n";
 
   out << "  kernels:";
@@ -773,7 +799,6 @@ std::string CostEstimator::Report::renderDetail() const {
     // be misread as measured throughout.
     out << "    " << llvm::left_justify("op", nameWidth)
         << "  start    end   cost   wait  src\n";
-    Engine engine = engineFor(lane);
     size_t listed =
         std::min<size_t>(laneReport.ops.size(), kMaxListedOpsPerLane);
     for (const PlacedOp &op :
@@ -782,9 +807,7 @@ std::string CostEstimator::Report::renderDetail() const {
           << llvm::format("%7" PRIu64 "%7" PRIu64 "%7" PRIu64 "%7" PRIu64,
                           op.start, op.finish, op.cost, op.stall);
       // Fixed width, so the source position that follows lines up.
-      out << "  "
-          << llvm::left_justify(
-                 getCostSource(op.name, engine, op.measured).str(), 7);
+      out << "  " << llvm::left_justify(getCostSource(op.provenance).str(), 7);
       std::string where = formatLoc(op.loc);
       if (!where.empty()) {
         out << "  [" << where << "]";
@@ -968,6 +991,43 @@ public:
   FailureOr<Report> estimate() {
     Report report;
     uint64_t ttkernelOps = 0;
+
+    // Which architecture the module targets, before any cost is asked for. A
+    // cost is only valid for the architecture it was measured on, and this is
+    // the only place that knows which one the module means -- so an answer that
+    // cannot be had is refused here rather than silently taken from whichever
+    // architecture has a table.
+    std::string reason;
+    FailureOr<std::optional<ttcore::Arch>> targetArch =
+        resolveTargetArch(module, reason);
+    if (failed(targetArch)) {
+      module.emitWarning() << "cost estimator cannot resolve the target "
+                              "architecture: "
+                           << reason;
+      return failure();
+    }
+    if (!*targetArch) {
+      module.emitWarning()
+          << "cost estimator does not know which architecture this module "
+             "targets: no '"
+          << kTargetArchAttrName
+          << "' and no device to read it from. Costs do not transfer between "
+             "architectures, so none is assumed";
+      return failure();
+    }
+    std::optional<opcost::Arch> resolved = getOpCostArch(**targetArch);
+    if (!resolved || !opcost::hasTable(*resolved)) {
+      module.emitWarning()
+          << "cost estimator has no cost table for "
+          << ttcore::stringifyArch(**targetArch)
+          << "; costs are not transferable from another architecture";
+      return failure();
+    }
+    arch = *resolved;
+    report.arch = getArchName(arch);
+    opcost::TableStats stats = opcost::getTableStats(arch);
+    report.tableRows = stats.measuredRows;
+    report.tableOperations = stats.operations;
 
     for (auto funcOp : module.getOps<func::FuncOp>()) {
       auto thread =
@@ -1223,6 +1283,9 @@ private:
     /// Kernel-wide, and not in the IR; see Options::mathFidelity.
     llvm::StringRef mathFidelity;
 
+    /// The module's architecture, resolved once by estimate().
+    const opcost::Arch *arch = nullptr;
+
     /// Input format for the operations that name no buffer; see KernelFormats.
     llvm::StringRef kernelFormat;
 
@@ -1266,7 +1329,8 @@ private:
       auto [it, inserted] = resolved.try_emplace(key);
       if (inserted) {
         opcost::OpKey opKey{inFormat, knobs.knobs};
-        it->second = opcost::lookup(name, engineFor(lane), opKey, config);
+        it->second =
+            opcost::lookup(name, engineFor(lane), opKey, config, *arch);
       }
       return it->second;
     }
@@ -1304,6 +1368,7 @@ private:
     KernelFormats formats = getKernelFormats(funcOp);
     ctx.config = getKernelConfig(funcOp, formats);
     ctx.mathFidelity = options.mathFidelity;
+    ctx.arch = &arch;
     ctx.kernelFormat = formats.in;
     ctx.unpackToDestCbs = getUnpackToDestCbs(funcOp);
 
@@ -1425,7 +1490,7 @@ private:
 
       // Messages keep the qualified name so they can be grepped against the IR.
       llvm::StringRef bare = op->getName().stripDialect();
-      if (!opcost::isKnownOp(bare)) {
+      if (!opcost::isKnownOp(bare, arch)) {
         // Unreachable while the table covers the dialect, which generation
         // enforces by reading the op list out of TTKernelOps.td. Kept because a
         // hand-edited table would otherwise place the operation on no lane at
@@ -1460,24 +1525,28 @@ private:
         // work, and skipping one it does occupy because nothing timed it would
         // drop its ordering and its resource effect along with its time.
         Engine engine = engineFor(lane);
-        if (!opcost::runsOnEngine(bare, engine)) {
+        if (!opcost::runsOnEngine(bare, engine, arch)) {
           return false;
         }
 
         std::optional<opcost::Cost> cost =
             ctx.resolve(op, bare, lane, inFormat);
+        PlacedOp::Provenance provenance;
         if (cost) {
+          provenance = PlacedOp::Provenance::Measured;
           ++report.measuredPlacements;
-        } else if (opcost::getMeasurementCount(bare, engine) > 0) {
+        } else if (opcost::getMeasurementCount(bare, engine, arch) > 0) {
+          provenance = PlacedOp::Provenance::NoMatchingKey;
           ++report.unmatchedPlacements;
         } else {
+          provenance = PlacedOp::Provenance::Untimed;
           ++report.untimedPlacements;
         }
 
-        ResourceEffect effect = getResourceEffect(op, lane);
+        ResourceEffect effect = getResourceEffect(op, lane, arch);
 
         PlacedOp placed{name.str(), op->getLoc(), getChargedCost(cost),
-                        cost.has_value(), effect};
+                        provenance, effect};
         if (placed.effect.kind != ResourceEffect::Kind::None &&
             placed.effect.tiles > 0) {
           if (std::optional<uint64_t> capacity = getCbCapacity(op)) {
@@ -1502,7 +1571,7 @@ private:
 
       // The table knows this operation, but not for the kind of kernel it
       // appeared in. Placing nothing would silently report it as free.
-      if (!placed && !opcost::runsNowhere(bare)) {
+      if (!placed && !opcost::runsNowhere(bare, arch)) {
         failToModel(name, op,
                     "'" + name + "' runs on no lane of a " +
                         (dmLane ? "data-movement" : "compute") +
@@ -1514,6 +1583,9 @@ private:
   /// Capacity in tiles per circular buffer, keyed by compile-time arg index and
   /// gathered while placing operations.
   llvm::DenseMap<unsigned, uint64_t> cbCapacity;
+
+  /// The module's architecture, resolved by estimate() before any placement.
+  opcost::Arch arch = opcost::Arch::Blackhole;
 
   /// DST halves available to MATH. `dst_full_sync_en` collapses them to one.
   unsigned dstHalves = 2;
