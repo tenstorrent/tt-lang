@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_DFBALLOCATIONLIMITS_H
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -23,6 +24,18 @@ namespace mlir::tt::ttl {
 constexpr int64_t kDFBResetStateWordCount = 4;
 constexpr int64_t kDFBResetStateBytes =
     kDFBResetStateWordCount * static_cast<int64_t>(sizeof(uint32_t));
+
+/// Collects one reset declaration per ordinal in deterministic order.
+LogicalResult
+collectSynchronizedDFBResets(ModuleOp module,
+                             SmallVectorImpl<SynchronizedDFBResetAttr> &resets);
+
+/// Returns the payload bytes required by all reset synchronization records.
+FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module);
+
+/// Returns the runtime scratch allocation for all reset synchronization state.
+FailureOr<uint64_t>
+getSynchronizedDFBResetStateAllocationBytes(ModuleOp module);
 
 /// Returns the per-node L1 bytes occupied by one physical DFB descriptor.
 /// On failure, `failureReason` describes the invalid allocation type.
@@ -52,6 +65,12 @@ private:
 
 /// Returns the per-node DFB footprint of all declarations in `module`.
 FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
+
+/// Validates finalized DFB storage plus one runtime scratch allocation.
+LogicalResult validateDFBAndScratchL1Bytes(
+    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
+    uint64_t scratchBytes,
+    std::optional<uint64_t> overrideBytes = std::nullopt);
 
 /// Verifies that the selected target implements synchronized DFB reset.
 LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module);

@@ -127,7 +127,8 @@ def TTLFormPipeTransports
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
     bytes. Selection counts the widened intermediate DFB types, a conservative
-    receiver-published address table, and the required transport scratch
+    receiver-published address table, required transport scratch, and
+    synchronized-reset scratch
     against the same L1 budget used by `ttl-validate-cb-budget`.
     `group-size = 1` disables grouping. A larger value is an upper bound; the
     pass selects a smaller group when required by the loop trip count or L1
@@ -139,7 +140,8 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the L1 DFB budget in bytes for transport selection.">
+           "Override the combined DFB and scratch L1 budget in bytes for "
+           "transport selection.">
   ];
 
   let dependentDialects = [
@@ -282,6 +284,10 @@ def TTLConvertTTLToTTKernel
     default; the global-only option preserves all local semaphore ids for
     application use.
 
+    The pass validates finalized DFB backing plus the exact PipeNet and
+    synchronized-reset scratch allocation against the selected per-core L1
+    budget before lowering the operations.
+
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     exact launch-node domains, and single-block event regions required by
@@ -308,7 +314,10 @@ def TTLConvertTTLToTTKernel
            "bool", "false",
            "Allocate all compiler-managed PipeNet synchronization counters "
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
-           "available to the application.">
+           "available to the application.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the per-core L1 budget used for finalized DFB and "
+           "scratch validation. 0 selects the target budget.">
   ];
 
   let dependentDialects = [
@@ -1022,7 +1031,8 @@ def TTLFinalizeDFBIndices
     first-fit prevents acceptance and the pairwise-conflict lower bound does
     not already prove failure. The physical-index check asks directly whether
     an assignment fits the available indices. Minimum physical-index-count
-    search runs only when an otherwise valid assignment exceeds the L1 budget.
+    search runs only when an otherwise valid assignment plus synchronized-reset
+    scratch exceeds the L1 budget.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
     allocation diagnostic; it does not report that hardware capacity was
@@ -1081,18 +1091,21 @@ def TTLFinalizeDFBIndices
     Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
            "uint64_t", "1000000",
            "Maximum states examined by exact DFB allocation before reporting "
-           "an inconclusive result.">
+           "an inconclusive result.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the per-core L1 budget used by DFB allocation. "
+           "0 selects the target budget.">
   ];
 }
 
 def TTLValidateCBBudget
     : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
-  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
-    circular buffer declared in the module and compares against a per-core
-    L1 budget.
+    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every DFB
+    declared in the module and the allocator-rounded synchronized-reset state,
+    then compares the total against a per-core L1 budget.
 
     For each `BindCBOp`, the pass computes:
       cb_bytes = total_elements * tile_size_bytes
@@ -1110,13 +1123,14 @@ def TTLValidateCBBudget
     the same static per-core CB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    This is a static "CB region vs budget" check. It does not model
-    other L1 consumers (kernel binaries, stack, runtime buffers).
+    This is a static DFB and reset-state check. Final conversion validates the
+    same DFB backing together with exact PipeNet and reset scratch. Neither
+    check models kernel binaries or stacks.
   }];
 
   let options = [
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override L1 CB budget (bytes). 0 means auto-detect from "
+           "Override L1 DFB budget (bytes). 0 means auto-detect from "
            "device attributes or use architecture default.">
   ];
 }

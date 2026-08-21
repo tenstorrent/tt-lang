@@ -28,7 +28,7 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
-// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 reuse-user-dfbs=true},
+// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 reuse-user-dfbs=true},
 // CHECK-NEXT: ttl-set-compute-kernel-config{{.*}},
 // CHECK-NEXT: func.func(
 // CHECK-NOT:    ttl-verify-pipenet-guards

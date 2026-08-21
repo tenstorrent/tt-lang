@@ -23,6 +23,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -644,6 +645,7 @@ computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
 /// therefore share identical search and diagnostic behavior.
 static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
+    std::optional<uint64_t> l1BudgetOverride,
     DFBAnalysisFailure &analysisFailure,
     llvm::function_ref<FailureOr<PhysicalAllocationCandidate>(bool)>
         computeAllocation) {
@@ -660,8 +662,24 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     analysisFailure.set(moduleOp, allocationSizeFailureReason);
     return failure();
   }
-  uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp);
-  if (*allocationBytes > l1BudgetBytes && !allocation->minimumProven) {
+  FailureOr<uint64_t> resetStateBytes =
+      getSynchronizedDFBResetStateAllocationBytes(moduleOp);
+  if (failed(resetStateBytes)) {
+    analysisFailure.set(moduleOp,
+                        "failed to compute synchronized-reset scratch size");
+    return failure();
+  }
+  uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp, l1BudgetOverride);
+  if (*resetStateBytes > l1BudgetBytes) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "synchronized-reset scratch requires " << *resetStateBytes
+                  << " L1 bytes but the budget is " << l1BudgetBytes;
+    analysisFailure.set(moduleOp, messageStream.str());
+    return failure();
+  }
+  uint64_t dfbBudgetBytes = l1BudgetBytes - *resetStateBytes;
+  if (*allocationBytes > dfbBudgetBytes && !allocation->minimumProven) {
     allocation = computeAllocation(/*requireMinimum=*/true);
     if (failed(allocation)) {
       return failure();
@@ -680,11 +698,20 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
                                "the target L1 budget", analysisFailure);
     return failure();
   }
-  if (*allocationBytes > l1BudgetBytes) {
+  if (*allocationBytes > dfbBudgetBytes) {
+    std::optional<uint64_t> combinedBytes =
+        llvm::checkedAddUnsigned(*allocationBytes, *resetStateBytes);
+    if (!combinedBytes) {
+      analysisFailure.set(
+          moduleOp, "combined DFB and reset allocation is not representable");
+      return failure();
+    }
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB allocation requires " << *allocationBytes
-                  << " L1 bytes but the target supports " << l1BudgetBytes;
+    messageStream << "DFB and synchronized-reset allocation requires "
+                  << *combinedBytes << " L1 bytes but the budget is "
+                  << l1BudgetBytes << " (DFB=" << *allocationBytes
+                  << ", reset scratch=" << *resetStateBytes << ")";
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();
   }
@@ -855,6 +882,7 @@ validateTensorBackingRanges(ArrayRef<DFBPhysicalIndexAssignment> assignments,
 DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     Operation *operation, bool reuseUserDFBs,
     std::uint64_t exactColoringSearchStateLimit,
+    std::optional<uint64_t> l1BudgetOverride,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     AnalysisManager analysisManager) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
@@ -898,9 +926,9 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
         moduleOp, liveness, plan.conflictModel, *targetCapacity,
         analysisFailure, exactColoringSearchStateLimit, requireMinimum);
   };
-  FailureOr<PhysicalAllocationCandidate> allocation =
-      computeAllocationWithinL1(moduleOp, exactColoringSearchStateLimit,
-                                analysisFailure, computeAllocation);
+  FailureOr<PhysicalAllocationCandidate> allocation = computeAllocationWithinL1(
+      moduleOp, exactColoringSearchStateLimit, l1BudgetOverride,
+      analysisFailure, computeAllocation);
   if (failed(allocation)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);

@@ -85,8 +85,8 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(0)};
   Option<uint32_t> l1BudgetOverride{
       *this, "l1-budget-override",
-      llvm::cl::desc("Override the L1 allocation budget used by DFB validation "
-                     "and PipeTransport selection."),
+      llvm::cl::desc("Override the combined DFB, PipeNet, and synchronized-"
+                     "reset L1 allocation budget."),
       llvm::cl::init(0)};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",

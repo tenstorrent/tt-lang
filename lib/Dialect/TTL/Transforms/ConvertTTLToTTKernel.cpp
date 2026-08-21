@@ -43,7 +43,6 @@
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
@@ -1575,44 +1574,18 @@ struct DFBResetLoweringPlan {
 
 static FailureOr<DFBResetLoweringPlan>
 buildDFBResetLoweringPlan(ModuleOp module) {
-  llvm::MapVector<int64_t, SynchronizedDFBResetAttr> resetByOrdinal;
-  Operation *invalidReset = nullptr;
-  module.walk([&](Operation *operation) -> WalkResult {
-    SynchronizedDFBResetAttr reset;
-    if (auto selected = dyn_cast<ResetDFBsOp>(operation)) {
-      reset = selected.getReset();
-    } else if (auto all = dyn_cast<ResetAllDFBsOp>(operation)) {
-      reset = all.getReset();
-    } else {
-      return WalkResult::advance();
-    }
-    auto [resetIt, inserted] =
-        resetByOrdinal.try_emplace(reset.getOrdinal(), reset);
-    if (!inserted && resetIt->second != reset) {
-      invalidReset = operation;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  if (invalidReset) {
-    invalidReset->emitOpError(
-        "reset ordinal identifies inconsistent participant sets");
+  SmallVector<SynchronizedDFBResetAttr> orderedResets;
+  if (failed(collectSynchronizedDFBResets(module, orderedResets))) {
     return failure();
   }
-
-  SmallVector<SynchronizedDFBResetAttr> orderedResets;
-  orderedResets.reserve(resetByOrdinal.size());
-  for (const auto &entry : resetByOrdinal) {
-    orderedResets.push_back(entry.second);
-  }
-  llvm::sort(orderedResets,
-             [](SynchronizedDFBResetAttr lhs, SynchronizedDFBResetAttr rhs) {
-               return lhs.getOrdinal() < rhs.getOrdinal();
-             });
-  if (orderedResets.size() >
-      static_cast<uint64_t>(std::numeric_limits<int64_t>::max() /
-                            kDFBResetStateBytes)) {
-    module.emitOpError("DFB reset synchronization state is not representable");
+  FailureOr<uint64_t> scratchBytes = getSynchronizedDFBResetStateBytes(module);
+  if (failed(scratchBytes) ||
+      *scratchBytes >
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    if (succeeded(scratchBytes)) {
+      module.emitOpError(
+          "DFB reset synchronization state is not representable");
+    }
     return failure();
   }
 
@@ -1621,8 +1594,7 @@ buildDFBResetLoweringPlan(ModuleOp module) {
     plan.stateOffsetByReset.try_emplace(
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
   }
-  plan.scratchBytes =
-      static_cast<int64_t>(orderedResets.size()) * kDFBResetStateBytes;
+  plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
 
   WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
     std::optional<int64_t> dfbIndex = getCBIndex(bind.getResult());
@@ -2293,11 +2265,10 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 //===----------------------------------------------------------------------===//
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
-static LogicalResult
-lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                      TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName, bool pipeComputedAddresses,
-                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly) {
+static LogicalResult lowerTTLOpsToTTKernel(
+    ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
+    StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
+    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2402,6 +2373,24 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
   resetLoweringPlan->scratchBaseOffset =
       pipeModulePlan.getTrailingSramScratchOffset();
+  FailureOr<DFBAllocationFootprint> allocationFootprint =
+      getDFBAllocationFootprint(mod);
+  if (failed(allocationFootprint)) {
+    mod.emitOpError("failed to compute finalized DFB allocation sizes");
+    return failure();
+  }
+  const PipeResourceRequirements &resourceRequirements =
+      pipeModulePlan.getResourceRequirements();
+  if (resourceRequirements.sramScratchBytes < 0) {
+    mod.emitOpError("PipeNet and reset scratch allocation is negative");
+    return failure();
+  }
+  if (failed(validateDFBAndScratchL1Bytes(
+          mod, *allocationFootprint,
+          static_cast<uint64_t>(resourceRequirements.sramScratchBytes),
+          l1BudgetOverride))) {
+    return failure();
+  }
   applyPipeModuleAttributes(mod, pipeModulePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
@@ -2758,9 +2747,12 @@ struct TTLConvertTTLToTTKernelPass
     expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
-    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
-                                     pipeComputedAddresses, pipeCapacitySync,
-                                     pipeGlobalSemaphoresOnly))) {
+    if (failed(lowerTTLOpsToTTKernel(
+            mod, ctx, typeConverter, getName(), pipeComputedAddresses,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            l1BudgetOverride == 0
+                ? std::nullopt
+                : std::optional<uint64_t>(l1BudgetOverride)))) {
       signalPassFailure();
       return;
     }

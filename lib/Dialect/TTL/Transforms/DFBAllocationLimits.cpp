@@ -4,6 +4,8 @@
 
 #include "DFBAllocationLimits.h"
 
+#include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
+
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
@@ -12,12 +14,15 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Target/TargetInfo.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -46,6 +51,79 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 }
 
 } // namespace
+
+LogicalResult collectSynchronizedDFBResets(
+    ModuleOp module, SmallVectorImpl<SynchronizedDFBResetAttr> &resets) {
+  resets.clear();
+  llvm::MapVector<int64_t, SynchronizedDFBResetAttr> resetByOrdinal;
+  Operation *invalidReset = nullptr;
+  module.walk([&](Operation *operation) -> WalkResult {
+    SynchronizedDFBResetAttr reset;
+    if (auto selected = dyn_cast<ResetDFBsOp>(operation)) {
+      reset = selected.getReset();
+    } else if (auto all = dyn_cast<ResetAllDFBsOp>(operation)) {
+      reset = all.getReset();
+    } else {
+      return WalkResult::advance();
+    }
+    auto [resetIt, inserted] =
+        resetByOrdinal.try_emplace(reset.getOrdinal(), reset);
+    if (!inserted && resetIt->second != reset) {
+      invalidReset = operation;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (invalidReset) {
+    invalidReset->emitOpError(
+        "reset ordinal identifies inconsistent participant sets");
+    return failure();
+  }
+
+  resets.reserve(resets.size() + resetByOrdinal.size());
+  for (const auto &entry : resetByOrdinal) {
+    resets.push_back(entry.second);
+  }
+  llvm::sort(resets,
+             [](SynchronizedDFBResetAttr lhs, SynchronizedDFBResetAttr rhs) {
+               return lhs.getOrdinal() < rhs.getOrdinal();
+             });
+  return success();
+}
+
+FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module) {
+  SmallVector<SynchronizedDFBResetAttr> resets;
+  if (failed(collectSynchronizedDFBResets(module, resets))) {
+    return failure();
+  }
+  std::optional<uint64_t> stateBytes =
+      llvm::checkedMulUnsigned(static_cast<uint64_t>(resets.size()),
+                               static_cast<uint64_t>(kDFBResetStateBytes));
+  if (!stateBytes) {
+    module.emitOpError("DFB reset synchronization state is not representable");
+    return failure();
+  }
+  return *stateBytes;
+}
+
+FailureOr<uint64_t>
+getSynchronizedDFBResetStateAllocationBytes(ModuleOp module) {
+  FailureOr<uint64_t> stateBytes = getSynchronizedDFBResetStateBytes(module);
+  if (failed(stateBytes)) {
+    return failure();
+  }
+  if (*stateBytes == 0) {
+    return 0;
+  }
+  constexpr uint64_t scratchAlignment =
+      static_cast<uint64_t>(kPipeSramScratchAlignmentBytes);
+  if (*stateBytes >
+      std::numeric_limits<uint64_t>::max() - (scratchAlignment - 1)) {
+    module.emitOpError("DFB reset scratch allocation is not representable");
+    return failure();
+  }
+  return llvm::alignTo(*stateBytes, scratchAlignment);
+}
 
 LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module) {
   Operation *firstReset = nullptr;
@@ -206,6 +284,29 @@ FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
     return failure();
   }
   return footprint;
+}
+
+LogicalResult validateDFBAndScratchL1Bytes(
+    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
+    uint64_t scratchBytes, std::optional<uint64_t> overrideBytes) {
+  FailureOr<uint64_t> dfbBytes = allocationFootprint.getTotalBytes();
+  std::optional<uint64_t> requiredBytes =
+      succeeded(dfbBytes) ? llvm::checkedAddUnsigned(*dfbBytes, scratchBytes)
+                          : std::nullopt;
+  if (!requiredBytes) {
+    module.emitOpError(
+        "combined DFB and scratch allocation is not representable");
+    return failure();
+  }
+  uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
+  if (*requiredBytes <= budgetBytes) {
+    return success();
+  }
+  module.emitOpError() << "combined DFB and scratch allocation requires "
+                       << *requiredBytes << " L1 bytes but the budget is "
+                       << budgetBytes << " (DFB=" << *dfbBytes
+                       << ", scratch=" << scratchBytes << ")";
+  return failure();
 }
 
 uint64_t getUsableDFBL1Bytes(ModuleOp module,

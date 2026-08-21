@@ -82,12 +82,14 @@ convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
 ttl-insert-cb-sync             (FuncOp)   Insert remaining DFB synchronization
 ttl-verify-pipenet-guards      (Module)   Verify PipeNet launch-node domains
 ttl-verify-pipenet-schedule    (Module)   Verify PipeNet event ordering
+ttl-form-pipe-transports       (Module)   Group eligible repeated transfers
 ttl-coalesce-dfb-acquires      (FuncOp)   Coalesce adjacent DFB acquisitions
 ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
 ttl-set-compute-kernel-config  (ModuleOp) Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
 ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
+ttl-validate-cb-budget         (Module)   Validate static DFB and reset storage
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
 ```
@@ -155,23 +157,26 @@ conditions on all participants.
 The compiler treats the interval before the first reset, each interval between
 resets, and the interval after the last reset as separate allocation epochs.
 An epoch is an analysis interval; the compiler does not emit an epoch object.
-The liveness analysis proves that every selected DFB has a complete protocol
-lifecycle before the boundary, that no payload crosses it, and that every
-participant selects the same DFB set. The reset terminates the old lifecycle at
-canonical empty state. A later lifecycle can then reuse the physical index when
-its launch-node domain, storage, element type, and other allocation constraints
-are compatible. Missing participants, repeated dynamic instances, mismatched
-conditions or target sets, incomplete transactions, and unordered boundaries
-are compilation errors.
+The liveness analysis proves that every selected DFB has either a balanced
+protocol lifecycle or bounded producer-only occupancy before the boundary,
+that no pre-reset payload is consumed afterward, and that every participant
+selects the same DFB set. The reset discards producer-only occupancy and
+terminates the old lifecycle at canonical empty state. A later lifecycle can
+then reuse the physical index when its launch-node domain, storage, element
+type, and other allocation constraints are compatible. Missing participants,
+repeated dynamic instances, mismatched conditions or target sets, incomplete
+transactions, and unordered boundaries are compilation errors.
 
 On Blackhole, `convert-ttl-to-ttkernel` lowers each occurrence to
 `experimental::reset_dfb_interfaces(state_address, low_mask, high_mask)` from
 [`experimental_dfb_reset.h`](../../include/ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h).
 The compiler reserves one 16-byte synchronization record per declaration after
-PipeNet scratch storage, and the host initializes the combined scratch
-allocation to zero. DM1 coordinates DM0, UNPACK, and PACK through distinct L1
-state words. The data movement RISCs complete prior NoC work; UNPACK and PACK
-wait for their previously issued interface commands to retire. After entry
+PipeNet scratch storage. The combined allocation is rounded to the runtime L1
+allocation quantum, included in transport selection and DFB budget validation,
+and initialized to zero by the host. DM1 coordinates DM0, UNPACK, and PACK
+through distinct L1 state words. The data movement RISCs complete prior NoC
+work; UNPACK and PACK wait for their previously issued interface commands to
+retire. After entry
 synchronization, the selected interface owners reset their read pointer, write
 pointer, packer write-tile pointer, initialization state, and stream occupancy
 counters. An exit synchronization completes before any owner returns. MATH
