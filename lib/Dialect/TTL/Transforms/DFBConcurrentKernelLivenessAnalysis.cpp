@@ -2104,6 +2104,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
       epochLifetime.terminalCompletionEvents = {boundary.events.completion};
       epochLifetime.terminalStateCanonical = true;
     }
+    epoch.earliestEntryEvents = epochLifetime.earliestEntryEvents;
+    epoch.terminalCompletionEvents = epochLifetime.terminalCompletionEvents;
     lifetime.resetEpochs.push_back(std::move(epoch));
 
     if (!hasActiveEpoch) {
@@ -2155,6 +2157,98 @@ static bool proveOrderedBefore(const DFBPerNodeLifetime &before,
       return graph.strictlyPrecedes(terminal, earliest);
     });
   });
+}
+
+static bool intervalIsOutsideReset(ArrayRef<unsigned> earliestEntryEvents,
+                                   ArrayRef<unsigned> terminalCompletionEvents,
+                                   EventPair resetEvents,
+                                   const HappensBeforeGraph &graph) {
+  if (earliestEntryEvents.empty() || terminalCompletionEvents.empty()) {
+    return false;
+  }
+  bool beforeReset =
+      llvm::all_of(terminalCompletionEvents, [&](unsigned terminalCompletion) {
+        return graph.strictlyPrecedes(terminalCompletion, resetEvents.entry);
+      });
+  bool afterReset =
+      llvm::all_of(earliestEntryEvents, [&](unsigned earliestEntry) {
+        return graph.strictlyPrecedes(resetEvents.completion, earliestEntry);
+      });
+  return beforeReset || afterReset;
+}
+
+static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
+                                   EventPair resetEvents,
+                                   const HappensBeforeGraph &graph) {
+  if (lifetime.resetEpochs.empty()) {
+    return intervalIsOutsideReset(lifetime.earliestEntryEvents,
+                                  lifetime.terminalCompletionEvents,
+                                  resetEvents, graph);
+  }
+  return llvm::all_of(
+      lifetime.resetEpochs, [&](const DFBLifecycleEpoch &epoch) {
+        return intervalIsOutsideReset(epoch.earliestEntryEvents,
+                                      epoch.terminalCompletionEvents,
+                                      resetEvents, graph);
+      });
+}
+
+static Operation *getResetOverlapEvidence(const DFBLogicalLifecycle &logicalDFB,
+                                          const DFBPerNodeLifetime &lifetime) {
+  if (lifetime.quiescence.evidence) {
+    return lifetime.quiescence.evidence;
+  }
+  if (!lifetime.earliestAccessOccurrenceIndices.empty()) {
+    return logicalDFB.accesses[lifetime.earliestAccessOccurrenceIndices.front()]
+        .operation;
+  }
+  return logicalDFB.declarations.front();
+}
+
+static void collectResetAllocationConflicts(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
+    const ResetBoundaryEvents &resetBoundaryEvents,
+    const HappensBeforeGraph &graph, LaunchNodeCoord node,
+    bool usePossibleLifetimes,
+    SmallVectorImpl<DFBResetAllocationConflict> &conflicts) {
+  for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
+    auto resetEvents = resetBoundaryEvents.find(reset.reset);
+    if (resetEvents == resetBoundaryEvents.end()) {
+      continue;
+    }
+    for (unsigned targetLogicalIndex : reset.targetLogicalIndices) {
+      for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
+        unsigned overlappingLogicalIndex =
+            static_cast<unsigned>(indexedLogicalDFB.index());
+        const DFBLogicalLifecycle &logicalDFB = indexedLogicalDFB.value();
+        if (llvm::is_contained(reset.targetLogicalIndices,
+                               overlappingLogicalIndex)) {
+          continue;
+        }
+        const DFBPerNodeLifetime *lifetime =
+            usePossibleLifetimes ? logicalDFB.findPossibleNodeLifetime(node)
+                                 : logicalDFB.findNodeLifetime(node);
+        if (!lifetime || !lifetime->mayBeActive ||
+            lifetimeIsOutsideReset(*lifetime, resetEvents->second, graph)) {
+          continue;
+        }
+        bool alreadyRecorded = llvm::any_of(
+            conflicts, [&](const DFBResetAllocationConflict &conflict) {
+              return conflict.targetLogicalIndex == targetLogicalIndex &&
+                     conflict.overlappingLogicalIndex ==
+                         overlappingLogicalIndex &&
+                     conflict.node == node && conflict.reset == reset.reset;
+            });
+        if (alreadyRecorded) {
+          continue;
+        }
+        conflicts.push_back({targetLogicalIndex, overlappingLogicalIndex, node,
+                             reset.reset, reset.participantOperations.front(),
+                             getResetOverlapEvidence(logicalDFB, *lifetime)});
+      }
+    }
+  }
 }
 
 } // namespace
@@ -2374,6 +2468,10 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       logicalDFB.nodeLifetimes.back().quiescence = proof;
     }
 
+    collectResetAllocationConflicts(
+        logicalDFBs, validatedResets, resetBoundaryEvents, graph, node,
+        /*usePossibleLifetimes=*/false, resetAllocationConflicts);
+
     SmallVector<llvm::BitVector> nodeOrdering(
         logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
     for (unsigned beforeIndex = 0; beforeIndex < logicalDFBs.size();
@@ -2434,6 +2532,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
     }
+
+    collectResetAllocationConflicts(logicalDFBs, validatedResets,
+                                    possibleResetBoundaryEvents, possibleGraph,
+                                    node, /*usePossibleLifetimes=*/true,
+                                    resetAllocationConflicts);
 
     SmallVector<llvm::BitVector> conditionalNodeOrdering(
         logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));

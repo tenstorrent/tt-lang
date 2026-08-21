@@ -70,6 +70,8 @@ static llvm::StringRef getConflictReasonName(DFBConflictReason reason) {
     return "pointer-owner-mismatch";
   case DFBConflictReason::ConcurrentLifetime:
     return "concurrent-lifetime";
+  case DFBConflictReason::ResetDomainWrite:
+    return "reset-domain-write";
   case DFBConflictReason::StaticConfigurationMismatch:
     return "static-configuration-mismatch";
   }

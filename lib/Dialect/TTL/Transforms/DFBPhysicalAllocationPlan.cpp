@@ -67,6 +67,19 @@ public:
         addPairConflicts(model, liveness, lhsIndex, rhsIndex);
       }
     }
+    for (const DFBResetAllocationConflict &conflict :
+         liveness.getResetAllocationConflicts()) {
+      unsigned targetIndex = conflict.targetLogicalIndex;
+      unsigned overlappingIndex = conflict.overlappingLogicalIndex;
+      if (targetIndex == overlappingIndex ||
+          model.adjacency[targetIndex].test(overlappingIndex)) {
+        continue;
+      }
+      addEvidence(model, logicalDFBs[targetIndex],
+                  logicalDFBs[overlappingIndex], targetIndex, overlappingIndex,
+                  DFBConflictReason::ResetDomainWrite, conflict.node,
+                  conflict.resetOperation, conflict.overlappingOperation);
+    }
     DenseMap<int64_t, unsigned> logicalIndexById;
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
       logicalIndexById.try_emplace(logicalDFB.logicalId, logicalIndex);
