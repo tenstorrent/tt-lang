@@ -1252,8 +1252,14 @@ def TTKernelCostEstimate
     estimator cannot account for -- an operation the cost table does not know,
     control flow it cannot resolve, a loop it cannot unroll -- is warned about at
     the operation responsible, and the report says only that no estimate is
-    available. The pass never signals failure: the estimate is opt-in and mutates
-    nothing, so a gap in it does not fail a compile.
+    available. Nothing found in the IR fails the pass: the estimate is opt-in and
+    mutates nothing, so a gap in it does not fail a compile.
+
+    Off unless `enable` says otherwise, so that a pipeline can carry it
+    unconditionally. The one thing that does fail the pass is being asked for the
+    detail view with the estimate itself disabled: the detail view is part of the
+    report, and there is no report to add it to, so the request is refused rather
+    than silently ignored.
 
     Costs come from TTLangOpCost, which holds measurements alone. A placement no
     measurement covers is charged nothing and counted, so a report says how much
@@ -1276,11 +1282,15 @@ def TTKernelCostEstimate
   }];
 
   let options = [
+    Option<"enable", "enable", "bool", "false",
+           "Produce the estimate. Off by default, so a pipeline can carry the "
+           "pass unconditionally and a caller opts in.">,
     Option<"outputPath", "output", "std::string", "\"\"",
            "Path to write the report (empty for stdout)">,
     Option<"detail", "detail", "bool", "false",
            "Also print per-lane operation tables and an event-boundary "
-           "timeline. Off by default: both are capped but still long.">,
+           "timeline. Off by default: both are capped but still long. An error "
+           "without `enable`, since it adds to a report that would not exist.">,
     Option<"mathFidelity", "math-fidelity", "std::string", "\"\"",
            "Math fidelity the kernel runs at, as the cost table spells it: "
            "LoFi, HiFi2, HiFi3 or HiFi4. The IR does not carry it -- it is a "

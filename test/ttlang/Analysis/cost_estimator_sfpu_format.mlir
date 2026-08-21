@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --split-input-file --pass-pipeline='builtin.module(ttkernel-cost-estimate{detail=1})' %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ttlang-opt --split-input-file --pass-pipeline='builtin.module(ttkernel-cost-estimate{enable=1 detail=1})' %s -o /dev/null 2>&1 | FileCheck %s
 
 // The format an SFPU operation was measured on, which it does not name itself.
 //

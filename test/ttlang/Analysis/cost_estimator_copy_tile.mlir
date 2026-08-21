@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttkernel-cost-estimate=detail=1 %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ttlang-opt --ttkernel-cost-estimate='enable=1 detail=1' %s -o /dev/null 2>&1 | FileCheck %s
 
 // The unary datacopy path, which the eltwise test in this directory does not
 // reach. Its three compute ops are the ones perf_copy_tile measures, and every

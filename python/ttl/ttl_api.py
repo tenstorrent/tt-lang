@@ -2441,9 +2441,15 @@ def _lower_program_to_kernel(
         # opaque verbatim strings. The measurements the estimate draws on are
         # keyed on math fidelity, which the IR does not carry, so it is passed
         # through here rather than recovered there.
-        if compiler_options.cost_estimate:
-            detail = int(compiler_options.cost_estimate_detail)
-            estimate_options = [f"detail={detail}"]
+        if compiler_options.cost_estimate or compiler_options.cost_estimate_detail:
+            # Both flags go through as they were given, including the case where
+            # the detail view was asked for without the estimate: the pass
+            # rejects that pair, so the rule lives with the options it governs
+            # rather than being restated here.
+            estimate_options = [
+                f"enable={int(compiler_options.cost_estimate)}",
+                f"detail={int(compiler_options.cost_estimate_detail)}",
+            ]
             if math_fidelity:
                 estimate_options.append(f"math-fidelity={math_fidelity}")
             pipeline_passes.append(

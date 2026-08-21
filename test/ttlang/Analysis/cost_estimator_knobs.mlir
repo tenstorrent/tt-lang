@@ -1,6 +1,6 @@
-// RUN: ttlang-opt --pass-pipeline='builtin.module(ttkernel-cost-estimate{detail=1})' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNKEYED
-// RUN: ttlang-opt --pass-pipeline='builtin.module(ttkernel-cost-estimate{detail=1 math-fidelity=HiFi4})' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=HIFI4
-// RUN: ttlang-opt --pass-pipeline='builtin.module(ttkernel-cost-estimate{detail=1 math-fidelity=LoFi})' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=LOFI
+// RUN: ttlang-opt --pass-pipeline='builtin.module(ttkernel-cost-estimate{enable=1 detail=1})' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNKEYED
+// RUN: ttlang-opt --pass-pipeline='builtin.module(ttkernel-cost-estimate{enable=1 detail=1 math-fidelity=HiFi4})' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=HIFI4
+// RUN: ttlang-opt --pass-pipeline='builtin.module(ttkernel-cost-estimate{enable=1 detail=1 math-fidelity=LoFi})' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=LOFI
 
 // The knobs a measurement can be keyed on, and where each one comes from.
 //

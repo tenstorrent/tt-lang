@@ -35,11 +35,26 @@ struct TTKernelCostEstimatePass
       TTKernelCostEstimatePass>::TTKernelCostEstimateBase;
 
   void runOnOperation() override {
-    // Nothing below signals pass failure. The estimate is opt-in and mutates
-    // nothing, so a program the estimator cannot account for is a gap in the
-    // estimator, not a reason to fail a compile that would otherwise succeed.
-    // The analysis warns at each operation responsible; this pass reports that
-    // no estimate is coming and lets the pipeline continue.
+    // The detail view is part of the report, so asking for it with the estimate
+    // disabled asks for something that cannot exist. Refused rather than
+    // ignored: a caller who typed it wants the tables, and silence would look
+    // like the kernel had nothing to say.
+    if (detail && !enable) {
+      getOperation().emitError()
+          << "cost estimate detail was requested with the estimate disabled: "
+             "pass 'enable' to produce a report for it to add to";
+      signalPassFailure();
+      return;
+    }
+    if (!enable) {
+      return;
+    }
+
+    // Nothing past here signals pass failure. The estimate is opt-in and
+    // mutates nothing, so a program the estimator cannot account for is a gap
+    // in the estimator, not a reason to fail a compile that would otherwise
+    // succeed. The analysis warns at each operation responsible; this pass
+    // reports that no estimate is coming and lets the pipeline continue.
     std::string text;
 
     CostEstimator::Options options;

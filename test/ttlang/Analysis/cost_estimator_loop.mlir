@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --split-input-file --ttkernel-cost-estimate=detail=1 %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ttlang-opt --split-input-file --ttkernel-cost-estimate='enable=1 detail=1' %s -o /dev/null 2>&1 | FileCheck %s
 
 // Loops, which the estimator unrolls in place rather than costing once.
 //

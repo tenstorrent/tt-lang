@@ -1,4 +1,10 @@
-// RUN: ttlang-opt --ttkernel-cost-estimate=detail=1 %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ttlang-opt --ttkernel-cost-estimate='enable=1 detail=1' %s -o /dev/null 2>&1 | FileCheck %s
+// The detail view is part of the report, so asking for it without the
+// estimate is refused rather than ignored.
+// RUN: not ttlang-opt --ttkernel-cost-estimate='detail=1' %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOENABLE
+// NOENABLE: error: cost estimate detail was requested with the estimate disabled
+// NOENABLE-SAME: pass 'enable'
+// NOENABLE-NOT: cost estimate:
 
 // Three kernel threads over two input CBs and one output, four tiles per block.
 // The reader and writer only move credits, which is all the compute kernel needs
