@@ -199,7 +199,7 @@ class AxisNeighborTransfer(StructuredTransfer):
 class StencilTransfer(StructuredTransfer):
     """Union of directed translations within one domain component."""
 
-    offsets: Tuple[Coordinate, ...]
+    offsets: Iterable[Sequence[int]]
     wrap: bool
 
 
@@ -207,14 +207,14 @@ class StencilTransfer(StructuredTransfer):
 class GatherTransfer(StructuredTransfer):
     """Per-slice transfer relation from every device to one component root."""
 
-    root: DeviceRef
+    root: Any
 
 
 @dataclass(frozen=True)
 class ScatterTransfer(StructuredTransfer):
     """Per-slice transfer relation from one component source to every device."""
 
-    source: DeviceRef
+    source: Any
 
 
 @dataclass(frozen=True)
@@ -476,18 +476,6 @@ class TransferGraph:
         wrap: bool = False,
     ) -> "TransferGraph":
         component_name = cls._default_component(domain, component)
-        component_info = domain.components[domain.component_index(component_name)]
-        _require_int(axis, "axis")
-        _require_int(offset, "offset")
-        if axis < 0 or axis >= len(component_info.extent):
-            raise ValueError(
-                f"axis {axis} is out of bounds for component {component_name!r} "
-                f"rank {len(component_info.extent)}"
-            )
-        if offset <= 0:
-            raise ValueError(f"offset must be positive, got {offset}")
-        if not isinstance(wrap, bool):
-            raise TypeError(f"wrap must be a bool, got {wrap!r}")
         return cls(
             domain,
             structured=AxisNeighborTransfer(
@@ -505,12 +493,7 @@ class TransferGraph:
         component_name = cls._default_component(domain, component)
         return cls(
             domain,
-            structured=GatherTransfer(
-                component_name=component_name,
-                root=cls._resolve_component_endpoint(
-                    domain, component_name, root, "gather root"
-                ),
-            ),
+            structured=GatherTransfer(component_name=component_name, root=root),
         )
 
     @classmethod
@@ -523,14 +506,11 @@ class TransferGraph:
         wrap: bool = False,
     ) -> "TransferGraph":
         component_name = cls._default_component(domain, component)
-        component_info = domain.components[domain.component_index(component_name)]
-        if not isinstance(wrap, bool):
-            raise TypeError(f"wrap must be a bool, got {wrap!r}")
         return cls(
             domain,
             structured=StencilTransfer(
                 component_name=component_name,
-                offsets=_normalize_stencil_offsets(offsets, len(component_info.extent)),
+                offsets=offsets,
                 wrap=wrap,
             ),
         )
@@ -542,12 +522,7 @@ class TransferGraph:
         component_name = cls._default_component(domain, component)
         return cls(
             domain,
-            structured=ScatterTransfer(
-                component_name=component_name,
-                source=cls._resolve_component_endpoint(
-                    domain, component_name, source, "scatter source"
-                ),
-            ),
+            structured=ScatterTransfer(component_name=component_name, source=source),
         )
 
     @classmethod

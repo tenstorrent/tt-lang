@@ -581,7 +581,6 @@ def _compile_atom(
         args=args,
         launch_grid=grid,
         num_outs=num_outs,
-        pipenets=pipe_graph,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
