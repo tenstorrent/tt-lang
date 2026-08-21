@@ -120,26 +120,27 @@ module {
 // comes from the kernel's buffers, which here all hold bf16.
 //
 // Three shapes, and the middle one is why the clamp has to be answered: the same
-// approximate exponential costs 112 clamped and 29 with the check skipped. The
+// approximate exponential costs 112 clamped and 29 with the check skipped, and
+// its init moves the other way, 85 against 132. The
 // last pair carries no attributes at all, which is what tt-lang emits for a plain
 // `ttl.exp` -- the Python wrapper drops every flag left at its default -- so the
 // knobs answer metal's defaults on its behalf and it lands on the exact,
 // clamped path at 73 and 152.
 // UNKEYED: ttkernel.exp_tile_init {{.*}} 85 {{.*}} meas
 // UNKEYED-NEXT: ttkernel.exp_tile {{.*}} 112 {{.*}} meas
-// UNKEYED-NEXT: ttkernel.exp_tile_init {{.*}} 129 {{.*}} meas
+// UNKEYED-NEXT: ttkernel.exp_tile_init {{.*}} 132 {{.*}} meas
 // UNKEYED-NEXT: ttkernel.exp_tile {{.*}} 29 {{.*}} meas
 // UNKEYED-NEXT: ttkernel.exp_tile_init {{.*}} 73 {{.*}} meas
 // UNKEYED-NEXT: ttkernel.exp_tile {{.*}} 152 {{.*}} meas
 // HIFI4: ttkernel.exp_tile_init {{.*}} 85 {{.*}} meas
 // HIFI4-NEXT: ttkernel.exp_tile {{.*}} 112 {{.*}} meas
-// HIFI4-NEXT: ttkernel.exp_tile_init {{.*}} 129 {{.*}} meas
+// HIFI4-NEXT: ttkernel.exp_tile_init {{.*}} 132 {{.*}} meas
 // HIFI4-NEXT: ttkernel.exp_tile {{.*}} 29 {{.*}} meas
 // HIFI4-NEXT: ttkernel.exp_tile_init {{.*}} 73 {{.*}} meas
 // HIFI4-NEXT: ttkernel.exp_tile {{.*}} 152 {{.*}} meas
 // LOFI: ttkernel.exp_tile_init {{.*}} 85 {{.*}} meas
 // LOFI-NEXT: ttkernel.exp_tile {{.*}} 112 {{.*}} meas
-// LOFI-NEXT: ttkernel.exp_tile_init {{.*}} 129 {{.*}} meas
+// LOFI-NEXT: ttkernel.exp_tile_init {{.*}} 132 {{.*}} meas
 // LOFI-NEXT: ttkernel.exp_tile {{.*}} 29 {{.*}} meas
 // LOFI-NEXT: ttkernel.exp_tile_init {{.*}} 73 {{.*}} meas
 // LOFI-NEXT: ttkernel.exp_tile {{.*}} 152 {{.*}} meas

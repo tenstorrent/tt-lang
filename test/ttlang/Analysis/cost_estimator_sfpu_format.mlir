@@ -34,7 +34,7 @@ module {
 // CHECK-NEXT: 0 unmatched {{.*}}, 4 untimed
 // CHECK: TRISC1 math
 // CHECK: ttkernel.copy_tile {{.*}} 19 {{.*}} meas
-// CHECK: ttkernel.exp_tile_init {{.*}} 85 {{.*}} meas
+// CHECK: ttkernel.exp_tile_init {{.*}} 88 {{.*}} meas
 // CHECK-NEXT: ttkernel.exp_tile {{.*}} 112 {{.*}} meas
 
 // -----
