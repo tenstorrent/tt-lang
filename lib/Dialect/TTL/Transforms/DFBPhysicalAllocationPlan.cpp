@@ -624,14 +624,15 @@ static void setInvalidDFBPageSizeFailure(CircularBufferType dfbType,
 
 /// Returns the L1 bytes required by the unique physical assignments.
 static FailureOr<uint64_t>
-computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+computeAllocationBytes(ModuleOp moduleOp,
+                       ArrayRef<DFBPhysicalIndexAssignment> assignments,
                        std::string &failureReason) {
   DFBAllocationFootprint footprint;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     if (assignment.tensorBacking) {
       continue;
     }
-    if (failed(footprint.add(assignment.physicalIndex,
+    if (failed(footprint.add(moduleOp, assignment.physicalIndex,
                              cast<CircularBufferType>(assignment.type),
                              failureReason))) {
       return failure();
@@ -657,7 +658,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
 
   std::string allocationSizeFailureReason;
   FailureOr<uint64_t> allocationBytes = computeAllocationBytes(
-      allocation->assignments, allocationSizeFailureReason);
+      moduleOp, allocation->assignments, allocationSizeFailureReason);
   if (failed(allocationBytes)) {
     analysisFailure.set(moduleOp, allocationSizeFailureReason);
     return failure();
@@ -679,19 +680,34 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     return failure();
   }
   uint64_t dfbBudgetBytes = l1BudgetBytes - *resetStateBytes;
-  if (*allocationBytes > dfbBudgetBytes && !allocation->minimumProven) {
+  uint64_t minimumSearchTriggerBytes = dfbBudgetBytes;
+  if (auto pipeReservation = moduleOp->getAttrOfType<IntegerAttr>(
+          kPipeConservativeL1BytesAttrName)) {
+    if (pipeReservation.getValue().isNegative()) {
+      analysisFailure.set(moduleOp,
+                          "conservative PipeNet L1 reservation is negative");
+      return failure();
+    }
+    uint64_t pipeBytes = pipeReservation.getValue().getZExtValue();
+    minimumSearchTriggerBytes = pipeBytes > minimumSearchTriggerBytes
+                                    ? 0
+                                    : minimumSearchTriggerBytes - pipeBytes;
+  }
+  if (*allocationBytes > minimumSearchTriggerBytes &&
+      !allocation->minimumProven) {
     allocation = computeAllocation(/*requireMinimum=*/true);
     if (failed(allocation)) {
       return failure();
     }
-    allocationBytes = computeAllocationBytes(allocation->assignments,
+    allocationBytes = computeAllocationBytes(moduleOp, allocation->assignments,
                                              allocationSizeFailureReason);
     if (failed(allocationBytes)) {
       analysisFailure.set(moduleOp, allocationSizeFailureReason);
       return failure();
     }
   }
-  if (allocation->exactSearchLimitReached) {
+  if (allocation->exactSearchLimitReached &&
+      *allocationBytes > dfbBudgetBytes) {
     setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
                                allocation->exactSearchStateCount,
                                exactColoringSearchStateLimit,

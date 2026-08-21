@@ -16,6 +16,14 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 import torch
 import ttl
 import ttnn
+from ttl import ttl_api
+
+
+def _blackhole_compile_target(_runtime_args):
+    return "blackhole"
+
+
+ttl_api._device_target_arch = _blackhole_compile_target
 
 
 def make_reset_operation():

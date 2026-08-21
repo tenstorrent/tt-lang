@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "DFBAllocationLimits.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 
@@ -30,6 +31,7 @@ namespace mlir::tt::ttl {
 namespace {
 
 constexpr uint64_t kFallbackUsableL1Bytes = static_cast<uint64_t>(1432 * 1024);
+constexpr uint64_t kGlobalSemaphorePayloadBytes = 4;
 
 std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
@@ -51,6 +53,25 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 }
 
 } // namespace
+
+FailureOr<uint64_t> getL1AllocationSizeBytes(ModuleOp module,
+                                             uint64_t payloadBytes) {
+  if (payloadBytes == 0) {
+    return 0;
+  }
+  std::string failureReason;
+  FailureOr<uint64_t> allocationQuantum =
+      resolveTargetL1AllocationQuantumBytes(module, failureReason);
+  if (failed(allocationQuantum) || *allocationQuantum == 0) {
+    return failure();
+  }
+  std::optional<uint64_t> roundedNumerator =
+      llvm::checkedAddUnsigned(payloadBytes, *allocationQuantum - 1);
+  if (!roundedNumerator) {
+    return failure();
+  }
+  return (*roundedNumerator / *allocationQuantum) * *allocationQuantum;
+}
 
 LogicalResult collectSynchronizedDFBResets(
     ModuleOp module, SmallVectorImpl<SynchronizedDFBResetAttr> &resets) {
@@ -112,17 +133,13 @@ getSynchronizedDFBResetStateAllocationBytes(ModuleOp module) {
   if (failed(stateBytes)) {
     return failure();
   }
-  if (*stateBytes == 0) {
-    return 0;
-  }
-  constexpr uint64_t scratchAlignment =
-      static_cast<uint64_t>(kPipeSramScratchAlignmentBytes);
-  if (*stateBytes >
-      std::numeric_limits<uint64_t>::max() - (scratchAlignment - 1)) {
+  FailureOr<uint64_t> allocationBytes =
+      getL1AllocationSizeBytes(module, *stateBytes);
+  if (failed(allocationBytes)) {
     module.emitOpError("DFB reset scratch allocation is not representable");
     return failure();
   }
-  return llvm::alignTo(*stateBytes, scratchAlignment);
+  return *allocationBytes;
 }
 
 LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module) {
@@ -145,7 +162,13 @@ LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module) {
     module.emitOpError(failureReason);
     return failure();
   }
-  if (!*targetArch || **targetArch == ttcore::Arch::Blackhole) {
+  if (!*targetArch) {
+    firstReset->emitOpError(
+        "requires a resolved target architecture; synchronized DFB reset is "
+        "supported only for Blackhole");
+    return failure();
+  }
+  if (**targetArch == ttcore::Arch::Blackhole) {
     return success();
   }
   firstReset->emitOpError()
@@ -198,11 +221,29 @@ FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
   return *allocationBytes;
 }
 
-FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
+FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
+                                                CircularBufferType type,
+                                                std::string &failureReason) {
+  FailureOr<uint64_t> payloadBytes =
+      getDFBAllocationSizeBytes(type, failureReason);
+  if (failed(payloadBytes)) {
+    return failure();
+  }
+  FailureOr<uint64_t> allocationBytes =
+      getL1AllocationSizeBytes(module, *payloadBytes);
+  if (failed(allocationBytes)) {
+    failureReason = "DFB L1 allocation size is not representable";
+    return failure();
+  }
+  return *allocationBytes;
+}
+
+FailureOr<bool> DFBAllocationFootprint::add(ModuleOp module,
+                                            int64_t physicalIndex,
                                             CircularBufferType type,
                                             std::string &failureReason) {
   FailureOr<uint64_t> allocationBytes =
-      getDFBAllocationSizeBytes(type, failureReason);
+      getDFBL1AllocationSizeBytes(module, type, failureReason);
   if (failed(allocationBytes)) {
     return failure();
   }
@@ -274,9 +315,12 @@ DFBAllocationFootprint::getSortedPhysicalIndices() const {
 FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
   DFBAllocationFootprint footprint;
   WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
+    if (bindOp.getTensorBackingAttr()) {
+      return WalkResult::advance();
+    }
     std::string failureReason;
     FailureOr<bool> increased = footprint.add(
-        bindOp.getCbIndex().getSExtValue(),
+        module, bindOp.getCbIndex().getSExtValue(),
         cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
     return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
   });
@@ -286,26 +330,77 @@ FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
   return footprint;
 }
 
-LogicalResult validateDFBAndScratchL1Bytes(
+FailureOr<DFBAllocationFootprint>
+getLogicalDFBAllocationFootprint(ModuleOp module,
+                                 const DFBLogicalIdentityAnalysis &identities) {
+  DFBAllocationFootprint footprint;
+  WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
+    if (bindOp.getTensorBackingAttr()) {
+      return WalkResult::advance();
+    }
+    std::string failureReason;
+    FailureOr<bool> increased = footprint.add(
+        module, identities.getLogicalId(bindOp),
+        cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
+    return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
+  });
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+  return footprint;
+}
+
+FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(ModuleOp module,
+                                              int64_t semaphoreCount) {
+  if (semaphoreCount < 0) {
+    return failure();
+  }
+  FailureOr<uint64_t> semaphoreAllocationBytes =
+      getL1AllocationSizeBytes(module, kGlobalSemaphorePayloadBytes);
+  if (failed(semaphoreAllocationBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
+      static_cast<uint64_t>(semaphoreCount), *semaphoreAllocationBytes);
+  if (!allocationBytes) {
+    return failure();
+  }
+  return *allocationBytes;
+}
+
+LogicalResult validateCombinedDFBResourceL1Bytes(
     ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
-    uint64_t scratchBytes, std::optional<uint64_t> overrideBytes) {
+    uint64_t scratchBytes, int64_t globalSemaphoreCount,
+    std::optional<uint64_t> overrideBytes) {
   FailureOr<uint64_t> dfbBytes = allocationFootprint.getTotalBytes();
+  FailureOr<uint64_t> scratchAllocationBytes =
+      getL1AllocationSizeBytes(module, scratchBytes);
+  FailureOr<uint64_t> globalSemaphoreBytes =
+      getGlobalSemaphoreL1Bytes(module, globalSemaphoreCount);
   std::optional<uint64_t> requiredBytes =
-      succeeded(dfbBytes) ? llvm::checkedAddUnsigned(*dfbBytes, scratchBytes)
-                          : std::nullopt;
+      succeeded(dfbBytes) && succeeded(scratchAllocationBytes)
+          ? llvm::checkedAddUnsigned(*dfbBytes, *scratchAllocationBytes)
+          : std::nullopt;
+  if (requiredBytes && succeeded(globalSemaphoreBytes)) {
+    requiredBytes =
+        llvm::checkedAddUnsigned(*requiredBytes, *globalSemaphoreBytes);
+  } else if (failed(globalSemaphoreBytes)) {
+    requiredBytes = std::nullopt;
+  }
   if (!requiredBytes) {
-    module.emitOpError(
-        "combined DFB and scratch allocation is not representable");
+    module.emitOpError("combined L1 allocation size is not representable");
     return failure();
   }
   uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
   if (*requiredBytes <= budgetBytes) {
     return success();
   }
-  module.emitOpError() << "combined DFB and scratch allocation requires "
+  module.emitOpError() << "combined DFB and runtime resources require "
                        << *requiredBytes << " L1 bytes but the budget is "
                        << budgetBytes << " (DFB=" << *dfbBytes
-                       << ", scratch=" << scratchBytes << ")";
+                       << ", scratch=" << *scratchAllocationBytes
+                       << ", global semaphores=" << *globalSemaphoreBytes
+                       << ")";
   return failure();
 }
 

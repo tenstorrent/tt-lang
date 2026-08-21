@@ -1,5 +1,5 @@
 // Verifies an allocator-rounded reset record participates in the DFB budget.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=2080})' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=2112})' | FileCheck %s
 
 // CHECK-LABEL: module attributes
 // CHECK: ttl.reset_all_dfbs

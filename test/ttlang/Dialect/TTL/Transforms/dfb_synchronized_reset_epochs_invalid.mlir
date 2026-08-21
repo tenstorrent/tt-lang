@@ -1,7 +1,7 @@
 // Tests invalid synchronized dataflow-buffer reset contracts.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})'
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @missing_participant()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -15,7 +15,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @target_mismatch_compute()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">} {
@@ -46,7 +46,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @repeated_reset_reader()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
@@ -82,7 +82,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @condition_mismatch_compute()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">} {

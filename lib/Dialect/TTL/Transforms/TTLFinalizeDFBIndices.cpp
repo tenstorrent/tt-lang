@@ -192,6 +192,7 @@ struct TTLFinalizeDFBIndicesPass
 
     OpBuilder builder(moduleOp.getContext());
     applyPhysicalAllocationPlan(moduleOp, builder, allocationPlan);
+    moduleOp->removeAttr(kPipeConservativeL1BytesAttrName);
   }
 };
 

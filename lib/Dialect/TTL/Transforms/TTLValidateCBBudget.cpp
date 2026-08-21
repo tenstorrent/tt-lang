@@ -94,7 +94,7 @@ struct TTLValidateCBBudgetPass
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
       std::string failureReason;
       FailureOr<bool> increased =
-          footprint.add(physicalIndex, cbType, failureReason);
+          footprint.add(moduleOp, physicalIndex, cbType, failureReason);
       if (failed(increased)) {
         bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();

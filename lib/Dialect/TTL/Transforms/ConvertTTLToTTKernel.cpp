@@ -2385,12 +2385,13 @@ static LogicalResult lowerTTLOpsToTTKernel(
     mod.emitOpError("PipeNet and reset scratch allocation is negative");
     return failure();
   }
-  if (failed(validateDFBAndScratchL1Bytes(
+  if (failed(validateCombinedDFBResourceL1Bytes(
           mod, *allocationFootprint,
           static_cast<uint64_t>(resourceRequirements.sramScratchBytes),
-          l1BudgetOverride))) {
+          resourceRequirements.globalSemaphoreCount, l1BudgetOverride))) {
     return failure();
   }
+  mod->removeAttr(kPipeConservativeL1BytesAttrName);
   applyPipeModuleAttributes(mod, pipeModulePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();

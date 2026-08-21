@@ -1,5 +1,5 @@
 // Verifies final DFB allocation reserves synchronized-reset scratch.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=2080})' -o /dev/null
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=2112})' -o /dev/null
 
 module attributes {
   ttl.launch_grid = [1, 1],
