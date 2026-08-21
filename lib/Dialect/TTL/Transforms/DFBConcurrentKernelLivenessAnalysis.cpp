@@ -124,6 +124,7 @@ struct SynchronizedResetOccurrence {
   SynchronizedDFBResetAttr reset;
   LogicalKernelAttr participant;
   SmallVector<unsigned> targetLogicalIndices;
+  bool allDFBs = false;
   LaunchNodeDomain launchDomain = LaunchNodeDomain::unknown();
 };
 
@@ -652,43 +653,44 @@ static LogicalResult collectLogicalDFBs(
         unknownAccessOperations.push_back(operation);
       }
     }
-    if (auto call = dyn_cast<OpaqueCallOp>(operation);
-        call && call.getDfbResetAttr()) {
-      func::FuncOp kernel = call->getParentOfType<func::FuncOp>();
+    auto selectedReset = dyn_cast<ResetDFBsOp>(operation);
+    auto allDFBsReset = dyn_cast<ResetAllDFBsOp>(operation);
+    if (selectedReset || allDFBsReset) {
+      SynchronizedDFBResetAttr reset =
+          selectedReset ? selectedReset.getReset() : allDFBsReset.getReset();
+      func::FuncOp kernel = operation->getParentOfType<func::FuncOp>();
       auto logicalKernel =
           kernel
               ? kernel->getAttrOfType<LogicalKernelAttr>(kLogicalKernelAttrName)
               : LogicalKernelAttr();
       if (!logicalKernel ||
-          !llvm::is_contained(call.getDfbResetAttr().getParticipants(),
-                              logicalKernel)) {
+          !llvm::is_contained(reset.getParticipants(), logicalKernel)) {
         analysisFailure.set(
-            call, "synchronized DFB reset must execute in one of its declared "
-                  "logical-kernel participants");
+            operation,
+            "synchronized DFB reset must execute in one of its declared "
+            "logical-kernel participants");
         return WalkResult::interrupt();
       }
       SynchronizedResetOccurrence occurrence;
-      occurrence.operation = call;
-      occurrence.reset = call.getDfbResetAttr();
+      occurrence.operation = operation;
+      occurrence.reset = reset;
       occurrence.participant = logicalKernel;
-      for (Value target : call.getDFBDependencyOperands()) {
+      occurrence.allDFBs = static_cast<bool>(allDFBsReset);
+      ValueRange resetDFBs =
+          selectedReset ? selectedReset.getDfbs() : ValueRange();
+      for (Value target : resetDFBs) {
         FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(target);
         if (failed(logicalId)) {
           analysisFailure.set(
-              call, "synchronized DFB reset target must resolve to ttl.bind_cb "
-                    "before physical index allocation");
+              operation,
+              "synchronized DFB reset DFB must resolve to ttl.bind_cb before "
+              "physical index allocation");
           return WalkResult::interrupt();
         }
         auto logicalIt = logicalIndexById.find(*logicalId);
         assert(logicalIt != logicalIndexById.end() &&
                "resolved reset target must have a logical lifecycle");
         unsigned logicalIndex = logicalIt->second;
-        if (logicalDFBs[logicalIndex].tensorBacking) {
-          analysisFailure.set(
-              call,
-              "synchronized DFB reset does not support tensor-backed targets");
-          return WalkResult::interrupt();
-        }
         occurrence.targetLogicalIndices.push_back(logicalIndex);
       }
       llvm::sort(occurrence.targetLogicalIndices);
@@ -778,7 +780,7 @@ static LogicalResult collectLogicalDFBs(
   }
 
   for (SynchronizedResetOccurrence &reset : resetOccurrences) {
-    if (!reset.reset.getAllLocal()) {
+    if (!reset.allDFBs) {
       continue;
     }
     for (unsigned logicalIndex = 0; logicalIndex < logicalDFBs.size();
@@ -897,21 +899,26 @@ collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
 static LogicalResult validateSynchronizedResetDeclarations(
     ArrayRef<SynchronizedResetOccurrence> occurrences,
     DFBAnalysisFailure &analysisFailure) {
-  llvm::MapVector<int64_t, SynchronizedDFBResetAttr> resetByOrdinal;
+  struct ResetDeclaration {
+    SynchronizedDFBResetAttr reset;
+    bool allDFBs = false;
+  };
+  llvm::MapVector<int64_t, ResetDeclaration> resetByOrdinal;
   for (const SynchronizedResetOccurrence &occurrence : occurrences) {
     int64_t ordinal = occurrence.reset.getOrdinal();
-    auto [resetIt, inserted] =
-        resetByOrdinal.try_emplace(ordinal, occurrence.reset);
-    if (!inserted && resetIt->second != occurrence.reset) {
+    auto [resetIt, inserted] = resetByOrdinal.try_emplace(
+        ordinal, ResetDeclaration{occurrence.reset, occurrence.allDFBs});
+    if (!inserted && (resetIt->second.reset != occurrence.reset ||
+                      resetIt->second.allDFBs != occurrence.allDFBs)) {
       analysisFailure.set(
           occurrence.operation,
           "synchronized DFB reset ordinal identifies inconsistent "
-          "scope or participant set");
+          "operation or participant set");
       return failure();
     }
   }
   for (const auto &resetEntry : resetByOrdinal) {
-    SynchronizedDFBResetAttr reset = resetEntry.second;
+    SynchronizedDFBResetAttr reset = resetEntry.second.reset;
     for (LogicalKernelAttr participant : reset.getParticipants()) {
       if (llvm::none_of(occurrences, [&](const auto &occurrence) {
             return occurrence.reset == reset &&
@@ -2175,6 +2182,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     return;
   }
   if (logicalDFBs.empty()) {
+    if (!resetOccurrences.empty()) {
+      errorOperation = resetOccurrences.front().operation;
+      errorMessage =
+          "synchronized DFB reset requires at least one DFB allocation";
+    }
     return;
   }
 

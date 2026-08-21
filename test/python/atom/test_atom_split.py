@@ -687,29 +687,14 @@ def test_dispatch_condition_alias_topology_changes_operation_identity():
 
 def test_composition_preserves_one_synchronized_dfb_reset_identity():
     """Inlining and splitting preserve one reset across all participants."""
-    second_data_movement = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-    reset = ttl.DFBReset(
-        participants=(
-            second_data_movement,
-            ttl.KernelKind.DATA_MOVEMENT,
-            ttl.KernelKind.COMPUTE,
-        )
-    )
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(participants=(compute_kernel, reader_kernel, writer_kernel))
 
     @ttl.operation()
     def reset_helper(target: ttl.DFB):
-        ttl.call_extern_func(
-            "reset.hpp",
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=(
-                ttl.KernelKind.COMPUTE,
-                ttl.KernelKind.DATA_MOVEMENT,
-                second_data_movement,
-            ),
-        )
+        ttl.reset_dfbs(reset, dfbs=[target])
 
     @ttl.operation()
     def composed_reset(target: ttl.DFB):
@@ -733,33 +718,20 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
         _kind_src(result, KernelKind.DATA_MOVEMENT, 1),
     ]
     for source in participant_sources:
-        assert source.count("dfb_reset=") == 1
-        assert f"dfb_reset={reset_name}" in source
-        assert "dfb_reset_targets=[target]" in source
+        assert source.count("ttl.reset_dfbs(") == 1
+        assert f"ttl.reset_dfbs({reset_name}, dfbs=[target])" in source
 
 
 def test_composition_instantiates_reset_identity_per_call_site():
     """Repeated helper calls denote distinct dynamic reset instances."""
-    reset = ttl.DFBReset(
-        participants=(
-            ttl.KernelKind.COMPUTE,
-            ttl.KernelKind.DATA_MOVEMENT,
-        )
-    )
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(participants=(compute_kernel, reader_kernel, writer_kernel))
 
     @ttl.operation()
     def reset_helper(target: ttl.DFB):
-        ttl.call_extern_func(
-            "reset.hpp",
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=(
-                ttl.KernelKind.COMPUTE,
-                ttl.KernelKind.DATA_MOVEMENT,
-            ),
-        )
+        ttl.reset_dfbs(reset, dfbs=[target])
 
     @ttl.operation()
     def repeated_reset(first: ttl.DFB, second: ttl.DFB):
@@ -779,17 +751,17 @@ def test_composition_instantiates_reset_identity_per_call_site():
     )
     compute_source = _kind_src(result, KernelKind.COMPUTE)
     for reset_name in spec.dfb_resets:
-        assert f"dfb_reset={reset_name}" in compute_source
+        assert f"ttl.reset_dfbs({reset_name}, dfbs=" in compute_source
 
 
 def test_synchronized_dfb_reset_alias_topology_changes_operation_identity():
     """The cache identity distinguishes shared and independent reset instances."""
 
     def make_operation(shared_identity):
-        participants = (
-            ttl.KernelKind.COMPUTE,
-            ttl.KernelKind.DATA_MOVEMENT,
-        )
+        compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+        reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        participants = (compute_kernel, reader_kernel, writer_kernel)
         first_reset = ttl.DFBReset(participants=participants)
         second_reset = (
             first_reset if shared_identity else ttl.DFBReset(participants=participants)
@@ -797,28 +769,8 @@ def test_synchronized_dfb_reset_alias_topology_changes_operation_identity():
 
         @ttl.operation()
         def reset_operation(first: ttl.DFB, second: ttl.DFB):
-            ttl.call_extern_func(
-                "reset.hpp",
-                "first",
-                func_args=[first],
-                dfb_reset=first_reset,
-                dfb_reset_targets=[first],
-                kernel=(
-                    ttl.KernelKind.COMPUTE,
-                    ttl.KernelKind.DATA_MOVEMENT,
-                ),
-            )
-            ttl.call_extern_func(
-                "reset.hpp",
-                "second",
-                func_args=[second],
-                dfb_reset=second_reset,
-                dfb_reset_targets=[second],
-                kernel=(
-                    ttl.KernelKind.COMPUTE,
-                    ttl.KernelKind.DATA_MOVEMENT,
-                ),
-            )
+            ttl.reset_dfbs(first_reset, dfbs=[first])
+            ttl.reset_dfbs(second_reset, dfbs=[second])
 
         return reset_operation
 
@@ -828,71 +780,28 @@ def test_synchronized_dfb_reset_alias_topology_changes_operation_identity():
     assert shared._spec.operation_identity != independent._spec.operation_identity
 
 
-def test_synchronized_dfb_reset_preserves_separate_participant_calls():
-    """One reset identity may be evaluated separately by each participant."""
-    reset = ttl.DFBReset(
-        participants=(
-            ttl.KernelKind.COMPUTE,
-            ttl.KernelKind.DATA_MOVEMENT,
-        )
-    )
+def test_synchronized_dfb_reset_is_replicated_to_every_participant():
+    """One reset call creates one operation in each declared logical kernel."""
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(participants=(compute_kernel, reader_kernel, writer_kernel))
 
     @ttl.operation()
-    def separate_reset_participants(target: ttl.DFB):
-        ttl.call_extern_func(
-            "reset.hpp",
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=ttl.KernelKind.COMPUTE,
-        )
-        ttl.call_extern_func(
-            "reset.hpp",
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=ttl.KernelKind.DATA_MOVEMENT,
-        )
+    def reset_participants(target: ttl.DFB):
+        ttl.reset_dfbs(reset, dfbs=[target])
 
-    spec = separate_reset_participants._spec
+    spec = reset_participants._spec
+    assert len(spec.logical_kernels) == 3
     result = split_function_body(
         spec.fn_ast,
         dfb_param_names={"target"},
         logical_kernels=spec.logical_kernels,
         selector_scope=spec.frozen_scope,
     )
-    assert _kind_src(result, KernelKind.COMPUTE).count("dfb_reset=") == 1
-    assert _kind_src(result, KernelKind.DATA_MOVEMENT).count("dfb_reset=") == 1
-
-
-def test_synchronized_dfb_reset_rejects_undeclared_participant_selection():
-    """Every selected logical kernel must occur in the participant set."""
-    reset = ttl.DFBReset(participants=(ttl.KernelKind.COMPUTE,))
-
-    @ttl.operation()
-    def undeclared_reset_participant(target: ttl.DFB):
-        ttl.call_extern_func(
-            "reset.hpp",
-            "reset",
-            func_args=[target],
-            dfb_reset=reset,
-            dfb_reset_targets=[target],
-            kernel=ttl.KernelKind.DATA_MOVEMENT,
-        )
-
-    spec = undeclared_reset_participant._spec
-    with pytest.raises(
-        ValueError,
-        match="outside the DFBReset participant set",
-    ):
-        split_function_body(
-            spec.fn_ast,
-            dfb_param_names={"target"},
-            logical_kernels=spec.logical_kernels,
-            selector_scope=spec.frozen_scope,
-        )
+    assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reset_dfbs(") == 1
+    assert _kind_src(result, KernelKind.DATA_MOVEMENT, 0).count("ttl.reset_dfbs(") == 1
+    assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
 
 
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():

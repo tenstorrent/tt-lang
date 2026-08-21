@@ -45,8 +45,6 @@ def call_extern_func(
     kernel: Optional[ExternalKernelSelection] = None,
     result_type: Optional[ScalarType] = None,
     condition_result: Optional[DispatchCondition] = None,
-    dfb_reset: Optional[DFBReset] = None,
-    dfb_reset_targets=None,
 ) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
@@ -84,14 +82,24 @@ def call_extern_func(
     dispatch-stable condition. Its scalar type comes from the declaration. The
     call must be repeat-safe and cannot access DFB state.
 
-    ``dfb_reset`` declares that the call synchronizes every participant and
-    resets the complete interface state of ``dfb_reset_targets`` before it
-    returns. The reset descriptor and targets are compile-time metadata; the
-    external function remains responsible for implementing the declared
-    synchronization and reset. An ``ALL_LOCAL`` reset omits
-    ``dfb_reset_targets`` and resets every worker-local DFB interface.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+def reset_dfbs(reset: DFBReset, *, dfbs) -> None:
+    """Synchronize DFB interface owners and reset the listed interfaces.
+
+    The operation restores pointer, initialization, and occupancy state to an
+    empty queue. It preserves descriptor configuration and payload bytes. It
+    does not complete arbitrary asynchronous NoC work; producers must complete
+    required transfers before the reset.
+    """
+    raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
+
+
+def reset_all_dfbs(reset: DFBReset) -> None:
+    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+    raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 
 class DFBEffect:

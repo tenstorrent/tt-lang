@@ -1940,6 +1940,47 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Synchronized dataflow buffer reset
+//===----------------------------------------------------------------------===//
+
+def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Synchronize DFB owners and reset selected interfaces";
+  let description = [{
+    `ttl.reset_dfbs` is one worker-local synchronization boundary shared by
+    the three logical kernels named by `reset`. Each participant executes the
+    same zero-or-one dynamic instance per dispatch and launch node. Before any
+    participant returns, the operation completes prior DFB-interface work and
+    restores the listed DFBs to canonical empty protocol state without
+    changing descriptor configuration or payload storage.
+
+    The operation resets read and write pointers, the packer write-tile
+    pointer, initialization state, and stream occupancy counters. It does not
+    clear payload bytes or complete arbitrary asynchronous NoC work; producers
+    must complete required transfers before entering the boundary. Runtime
+    lowering is supported only for Blackhole.
+  }];
+  let arguments = (ins
+    TTL_SynchronizedDFBResetAttr:$reset,
+    Variadic<TTL_CircularBuffer>:$dfbs
+  );
+  let assemblyFormat = "$reset `(` $dfbs `:` type($dfbs) `)` attr-dict";
+  let hasVerifier = 1;
+}
+
+def TTL_ResetAllDFBsOp
+    : TTL_Op<"reset_all_dfbs", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Synchronize DFB owners and reset every local interface";
+  let description = [{
+    `ttl.reset_all_dfbs` has the synchronization and state-reset semantics of
+    `ttl.reset_dfbs`, applied to every worker-local DFB allocated by the
+    program. It does not take DFB operands because the complete allocation set
+    is resolved after physical DFB indices are finalized.
+  }];
+  let arguments = (ins TTL_SynchronizedDFBResetAttr:$reset);
+  let assemblyFormat = "$reset attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 
@@ -2009,17 +2050,6 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     access a DFB, declare DFB effects, or declare unknown DFB access because
     condition evaluation is stable and repeat-safe rather than stateful.
 
-    `dfb_reset` declares a worker-local synchronized reset. Its participant set
-    names every logical kernel that executes the same dynamic reset instance.
-    For a targeted reset, `dependency_dfb_operands` names the DFB interfaces
-    whose read pointer, write pointer, occupancy, and initialization state are
-    canonical when the call returns. An `all_local` reset applies to every
-    worker-local DFB interface and has no dependency operands. This contract is
-    separate from `dfb_effects`: reset targets are not payload accesses and do
-    not imply reserve, push, wait, or pop. The external implementation must
-    provide the declared synchronization and state reset. The compiler does
-    not infer either property from the callee or header name.
-
     Example:
     ```mlir
     ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
@@ -2039,8 +2069,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
     UnitAttr:$unknown_dfb_access,
-    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result,
-    OptionalAttr<TTL_SynchronizedDFBResetAttr>:$dfb_reset
+    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result
   );
   let results = (outs Optional<AnyTypeOf<[I32, I64]>>:$result);
   let assemblyFormat = [{
@@ -2050,7 +2079,6 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
      type($dependency_dfb_operands) `)`)?
     (`dfb_effects` $dfb_effects^)?
-    (`dfb_reset` $dfb_reset^)?
     ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
