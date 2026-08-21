@@ -40,10 +40,10 @@ module {
 // two-tile transactions wrap safely in the logical two-tile DFB, but the
 // second transaction would straddle a three-tile physical envelope.
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @envelope_cursor_producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "envelope_cursor">,
                   ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
                   ttl.crta_indices = []} {
     // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<6> members=[11, 12] physical envelope of 3 tiles makes logical DFB 11 cross the ring boundary on launch node (0,0)}}
@@ -59,7 +59,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
     scf.for %transaction = %lower to %upper step %step {
       ttl.opaque_call "produce_two" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
     }
-    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%first) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "envelope_cursor">, <kind = data_movement, identity = "reader", operation = "envelope_cursor">, <kind = data_movement, identity = "writer", operation = "envelope_cursor">]>(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     %second_slot = ttl.cb_reserve %second
         : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -69,7 +69,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
   func.func @envelope_cursor_consumer()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "envelope_cursor">,
                   ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
     %first = ttl.bind_cb {cb_index = 0, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<6>, dfb_id = 11 : index}
@@ -83,11 +83,23 @@ module attributes {ttl.launch_grid = [1, 1]} {
     scf.for %transaction = %lower to %upper step %step {
       ttl.opaque_call "consume_two" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>] () {header = "consumer.hpp"} : () -> ()
     }
-    ttl.opaque_call "reset" dfb_reset <0, all_local = false, participants[<kind = compute>, <kind = data_movement>]> (%first) {header = "reset.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "envelope_cursor">, <kind = data_movement, identity = "reader", operation = "envelope_cursor">, <kind = data_movement, identity = "writer", operation = "envelope_cursor">]>(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     %second_slot = ttl.cb_wait %second
         : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_pop %second : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @envelope_cursor_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "envelope_cursor">,
+                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<6>, dfb_id = 11 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "envelope_cursor">, <kind = data_movement, identity = "reader", operation = "envelope_cursor">, <kind = data_movement, identity = "writer", operation = "envelope_cursor">]>(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     return
   }
 }
@@ -371,10 +383,10 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // A reset can canonicalize queue state but cannot reconfigure one physical
 // index from tensor-backed storage to scratch storage.
 
-module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+module attributes {ttl.launch_grid = array<i64: 1, 1>, ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @tensor_to_scratch_transition()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "tensor_to_scratch">,
                   ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
     %tensor_backed = ttl.bind_cb {cb_index = 0, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<12>, dfb_id = 23 : index,
@@ -385,8 +397,26 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         {allocation_group = #ttl.dfb_allocation_group<12>, dfb_id = 24 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.opaque_call "tensor_use" dfb_dependencies(%tensor_backed : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
-    ttl.opaque_call "reset" dfb_reset <0, all_local = true, participants[<kind = compute>]> () {header = "reset.hpp"} : () -> ()
+    ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "tensor_to_scratch">, <kind = data_movement, identity = "reader", operation = "tensor_to_scratch">, <kind = data_movement, identity = "writer", operation = "tensor_to_scratch">]>
     ttl.opaque_call "scratch_use" dfb_dependencies(%scratch : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    return
+  }
+
+  func.func @tensor_to_scratch_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "tensor_to_scratch">,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "tensor_to_scratch">, <kind = data_movement, identity = "reader", operation = "tensor_to_scratch">, <kind = data_movement, identity = "writer", operation = "tensor_to_scratch">]>
+    return
+  }
+
+  func.func @tensor_to_scratch_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "tensor_to_scratch">,
+                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "tensor_to_scratch">, <kind = data_movement, identity = "reader", operation = "tensor_to_scratch">, <kind = data_movement, identity = "writer", operation = "tensor_to_scratch">]>
     return
   }
 }
