@@ -484,55 +484,41 @@ FailureOr<ttcore::TileType> getRequiredTileType(Type type, StringRef role,
 
 FailureOr<BroadcastCapability>
 getBroadcastCapability(Operation *operation, std::string &failureReason) {
-  if (auto broadcast = dyn_cast<BlockBroadcastOp>(operation)) {
-    FailureOr<ttcore::TileType> inputType = getRequiredTileType(
-        broadcast.getInput().getType(), "broadcast input", failureReason);
+  auto buildCapability = [&](Value input, Value result,
+                             std::optional<BcastType> tileBroadcast)
+      -> FailureOr<BroadcastCapability> {
+    FailureOr<ttcore::TileType> inputType =
+        getRequiredTileType(input.getType(), "broadcast input", failureReason);
     if (failed(inputType)) {
       return failure();
     }
     FailureOr<ttcore::TileType> resultType = getRequiredTileType(
-        broadcast.getResult().getType(), "broadcast result", failureReason);
+        result.getType(), "broadcast result", failureReason);
     if (failed(resultType)) {
       return failure();
     }
+    return BroadcastCapability{*inputType, *resultType, tileBroadcast};
+  };
+
+  if (auto broadcast = dyn_cast<BlockBroadcastOp>(operation)) {
     auto inputTensorType =
         dyn_cast<RankedTensorType>(broadcast.getInput().getType());
     if (!inputTensorType) {
       failureReason = "expected broadcast input to be a ranked tensor";
       return failure();
     }
-    return BroadcastCapability{
-        *inputType, *resultType,
-        getTileBroadcastType(broadcast.getDims(), inputTensorType.getRank())};
+    return buildCapability(
+        broadcast.getInput(), broadcast.getResult(),
+        getTileBroadcastType(broadcast.getDims(), inputTensorType.getRank()));
   }
   if (auto broadcast = dyn_cast<TileBcastOp>(operation)) {
-    FailureOr<ttcore::TileType> inputType = getRequiredTileType(
-        broadcast.getInput().getType(), "broadcast input", failureReason);
-    if (failed(inputType)) {
-      return failure();
-    }
-    FailureOr<ttcore::TileType> resultType = getRequiredTileType(
-        broadcast.getResult().getType(), "broadcast result", failureReason);
-    if (failed(resultType)) {
-      return failure();
-    }
-    return BroadcastCapability{*inputType, *resultType,
-                               broadcast.getBcastType()};
+    return buildCapability(broadcast.getInput(), broadcast.getResult(),
+                           broadcast.getBcastType());
   }
   if (auto broadcast = dyn_cast<TileBinaryBcastOp>(operation)) {
     // Only the rhs is broadcast; the lhs is a plain full-tile unpack source.
-    FailureOr<ttcore::TileType> inputType = getRequiredTileType(
-        broadcast.getRhs().getType(), "broadcast input", failureReason);
-    if (failed(inputType)) {
-      return failure();
-    }
-    FailureOr<ttcore::TileType> resultType = getRequiredTileType(
-        broadcast.getResult().getType(), "broadcast result", failureReason);
-    if (failed(resultType)) {
-      return failure();
-    }
-    return BroadcastCapability{*inputType, *resultType,
-                               broadcast.getBcastType()};
+    return buildCapability(broadcast.getRhs(), broadcast.getResult(),
+                           broadcast.getBcastType());
   }
   failureReason = "has no broadcast capability representation";
   return failure();
