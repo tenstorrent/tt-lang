@@ -35,6 +35,8 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_SRAM_SCRATCH_BYTES_ATTR") =
       nb::str(kPipeSramScratchBytesAttrName.data(),
               kPipeSramScratchBytesAttrName.size());
+  m.attr("DFB_RESET_COUNT_ATTR") =
+      nb::str(kDFBResetCountAttrName.data(), kDFBResetCountAttrName.size());
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
@@ -114,7 +116,7 @@ void populateTTLModule(nb::module_ &m) {
   tt_attribute_class<SynchronizedDFBResetAttr>(m, "SynchronizedDFBResetAttr")
       .def_static(
           "get",
-          [](MlirContext context, int64_t ordinal, bool allLocal,
+          [](MlirContext context, int64_t ordinal,
              const std::vector<MlirAttribute> &participants) {
             MLIRContext *cppContext = unwrap(context);
             SmallVector<LogicalKernelAttr> participantAttrs;
@@ -125,17 +127,15 @@ void populateTTLModule(nb::module_ &m) {
             }
             SynchronizedDFBResetAttr attribute =
                 SynchronizedDFBResetAttr::getCheckedInstance(
-                    UnknownLoc::get(cppContext), cppContext, ordinal, allLocal,
+                    UnknownLoc::get(cppContext), cppContext, ordinal,
                     participantAttrs);
             if (!attribute) {
               throw nb::value_error("invalid synchronized DFB reset");
             }
             return wrap(attribute);
           },
-          nb::arg("context"), nb::arg("ordinal"), nb::arg("all_local"),
-          nb::arg("participants"))
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("participants"))
       .def_prop_ro("ordinal", &SynchronizedDFBResetAttr::getOrdinal)
-      .def_prop_ro("all_local", &SynchronizedDFBResetAttr::getAllLocal)
       .def_prop_ro("participants", [](SynchronizedDFBResetAttr attribute) {
         std::vector<MlirAttribute> participants;
         participants.reserve(attribute.getParticipants().size());

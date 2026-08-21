@@ -307,6 +307,17 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             dispatch_conditions[capture_name] = value
         elif isinstance(value, DFBReset):
             dfb_resets[capture_name] = value
+            for participant_index, participant in enumerate(value.participants):
+                if any(
+                    participant is kernel
+                    for kernel in (
+                        *logical_kernels.values(),
+                        *captured_logical_kernels.values(),
+                    )
+                ):
+                    continue
+                participant_name = f"{capture_name}__participant_{participant_index}"
+                captured_logical_kernels[participant_name] = participant
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -333,12 +344,12 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     reset_topology = _dfb_reset_topology(dfb_resets, reset_kernels)
     if reset_topology:
         encoded_reset_topology = ";".join(
-            f"{ordinal}:{scope.name}:"
+            f"{ordinal}:"
             + ",".join(
                 f"{participant_kind}:{participant_identity}"
                 for participant_kind, participant_identity in participants
             )
-            for ordinal, scope, participants in reset_topology
+            for ordinal, participants in reset_topology
         )
         reset_topology_digest = hashlib.sha256(
             encoded_reset_topology.encode("utf-8")

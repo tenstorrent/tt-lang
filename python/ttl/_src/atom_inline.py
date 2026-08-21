@@ -446,8 +446,15 @@ def _add_logical_kernel_bindings(
     logical_kernels: Dict[str, Kernel],
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
+    reset_participant_ids = {
+        id(participant)
+        for reset in spec.dfb_resets.values()
+        for participant in reset.participants
+    }
     for name, kernel in spec.logical_kernels.items():
-        if name not in loaded_names or name in bindings:
+        if (
+            name not in loaded_names and id(kernel) not in reset_participant_ids
+        ) or name in bindings:
             continue
         existing_name = next(
             (
@@ -509,7 +516,6 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=reset.participants,
-                scope=reset.scope,
             )
             reset_instances[id(reset)] = reset_instance
         fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)

@@ -65,21 +65,20 @@ def TTL_SynchronizedDFBResetAttr
     The ordinal is module-local and has no runtime meaning. Equal attributes
     reference the same reset instance. Distinct ordinals identify independent
     reset instances. Participant order is canonical and otherwise semantically
-    insignificant. `all_local` means that the external operation resets every
-    worker-local DFB interface; otherwise each occurrence supplies the exact
-    target set.
+    insignificant. The participant set contains one compute kernel and both
+    data movement kernels that own DFB interface state. Each participant
+    executes the declaration at most once per dispatch and launch node.
   }];
   let parameters = (ins
     "int64_t":$ordinal,
-    "bool":$allLocal,
     ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
   );
-  let assemblyFormat = "`<` $ordinal `,` `all_local` `=` $allLocal `,` `participants` `[` $participants `]` `>`";
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
   let genVerifyDecl = 1;
   let extraClassDeclaration = [{
     static SynchronizedDFBResetAttr getCheckedInstance(
         ::mlir::Location location, ::mlir::MLIRContext *context,
-        int64_t ordinal, bool allLocal,
+        int64_t ordinal,
         ::llvm::ArrayRef<LogicalKernelAttr> participants);
   }];
 }

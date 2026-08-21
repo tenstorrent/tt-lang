@@ -89,7 +89,7 @@ llvm::LogicalResult DispatchConditionAttr::verify(
 
 llvm::LogicalResult SynchronizedDFBResetAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
-    bool allLocal, ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants) {
   if (ordinal < 0) {
     return emitError() << "synchronized DFB reset ordinal must be nonnegative";
   }
@@ -98,11 +98,22 @@ llvm::LogicalResult SynchronizedDFBResetAttr::verify(
            << "synchronized DFB reset requires at least one participant";
   }
   llvm::DenseSet<Attribute> uniqueParticipants;
+  unsigned computeCount = 0;
+  unsigned dataMovementCount = 0;
   for (LogicalKernelAttr participant : participants) {
     if (!uniqueParticipants.insert(participant).second) {
       return emitError()
              << "synchronized DFB reset participants must be distinct";
     }
+    if (participant.getKind() == LogicalKernelKind::Compute) {
+      ++computeCount;
+    } else if (participant.getKind() == LogicalKernelKind::DataMovement) {
+      ++dataMovementCount;
+    }
+  }
+  if (computeCount != 1 || dataMovementCount != 2) {
+    return emitError() << "synchronized DFB reset participants must contain "
+                          "one compute kernel and two data movement kernels";
   }
   auto participantKey = [](LogicalKernelAttr participant) {
     int identityKind = 0;
@@ -129,10 +140,10 @@ llvm::LogicalResult SynchronizedDFBResetAttr::verify(
 }
 
 SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
-    Location location, MLIRContext *context, int64_t ordinal, bool allLocal,
+    Location location, MLIRContext *context, int64_t ordinal,
     ArrayRef<LogicalKernelAttr> participants) {
   return SynchronizedDFBResetAttr::getChecked(
-      [location]() { return emitError(location); }, context, ordinal, allLocal,
+      [location]() { return emitError(location); }, context, ordinal,
       participants);
 }
 
@@ -2684,37 +2695,6 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
       }
     }
   }
-  SynchronizedDFBResetAttr reset = getDfbResetAttr();
-  if (reset) {
-    if (reset.getAllLocal() == !dependencies.empty()) {
-      return emitOpError(
-          reset.getAllLocal()
-              ? "all-local synchronized DFB reset cannot declare DFB "
-                "dependencies"
-              : "targeted synchronized DFB reset requires DFB dependencies");
-    }
-    if (getResult()) {
-      return emitOpError("synchronized DFB reset call cannot return a value");
-    }
-    if (getDfbEffects() || getUnknownDfbAccess()) {
-      return emitOpError(
-          "synchronized DFB reset cannot declare protocol effects or unknown "
-          "DFB access");
-    }
-    llvm::DenseSet<Value> targets;
-    for (Value target : dependencies) {
-      if (!targets.insert(target).second) {
-        return emitOpError("synchronized DFB reset targets must be distinct");
-      }
-    }
-    for (Value indexDFB : getDFBIndexOperands()) {
-      if (!targets.contains(indexDFB)) {
-        return emitOpError(
-            "every DFB index consumed by a synchronized reset call must be a "
-            "reset target");
-      }
-    }
-  }
   if (DispatchConditionAttr condition = getConditionResultAttr()) {
     if (!getResult()) {
       return emitOpError("condition result requires one scalar result");
@@ -2725,8 +2705,21 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
              << condition.getScalarType();
     }
     if (!getTemplateDfbOperands().empty() || !dependencies.empty() ||
-        getDfbEffects() || getUnknownDfbAccess() || reset) {
+        getDfbEffects() || getUnknownDfbAccess()) {
       return emitOpError("condition result call cannot access DFB state");
+    }
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ResetDFBsOp::verify() {
+  if (getDfbs().empty()) {
+    return emitOpError("requires at least one DFB");
+  }
+  llvm::DenseSet<Value> uniqueDFBs;
+  for (Value dfb : getDfbs()) {
+    if (!uniqueDFBs.insert(dfb).second) {
+      return emitOpError("DFBs must be distinct");
     }
   }
   return success();

@@ -9,57 +9,45 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from enum import Enum, auto
 from typing import Iterator, Mapping
 
-from .kernel import Kernel, KernelKind, KernelSelector
-
-
-class DFBResetScope(Enum):
-    """Set of worker-local DFB interfaces reset by one declaration."""
-
-    TARGETS = auto()
-    ALL_LOCAL = auto()
+from .kernel import Kernel, KernelKind
 
 
 @dataclass(frozen=True, eq=False)
 class DFBReset:
     """One worker-local synchronized DFB reset instance.
 
-    Every participant executes the same dynamic reset instance. The external
-    operation must synchronize all participants and reset the read pointer,
-    write pointer, occupancy, and initialization state of every declared
-    target before any participant returns. ``ALL_LOCAL`` applies the contract
-    to every worker-local DFB interface without explicit target operands.
+    ``participants`` contains one compute ``Kernel`` and two data movement
+    ``Kernel`` handles created in the same enclosing operation factory. A call
+    to ``ttl.reset_dfbs`` or ``ttl.reset_all_dfbs`` is replicated to those
+    three logical kernels. One declaration may execute at most once per
+    dispatch and launch node. Runtime lowering is supported only on Blackhole.
     """
 
-    participants: tuple[KernelSelector, ...]
-    scope: DFBResetScope = DFBResetScope.TARGETS
+    participants: tuple[Kernel, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.participants, tuple) or not self.participants:
             raise TypeError("DFBReset participants must be a nonempty tuple")
-        seen_kinds: set[KernelKind] = set()
         seen_kernels: set[int] = set()
         for participant in self.participants:
-            if isinstance(participant, KernelKind):
-                if participant in seen_kinds:
-                    raise ValueError("DFBReset participants must be distinct")
-                seen_kinds.add(participant)
-                continue
             if not isinstance(participant, Kernel):
                 raise TypeError(
-                    "DFBReset participants must contain only KernelKind or "
-                    f"Kernel values, got {type(participant).__name__}"
+                    "DFBReset participants must contain only Kernel values, "
+                    f"got {type(participant).__name__}"
                 )
             identity = id(participant)
             if identity in seen_kernels:
                 raise ValueError("DFBReset participants must be distinct")
             seen_kernels.add(identity)
-        if not isinstance(self.scope, DFBResetScope):
-            raise TypeError(
-                "DFBReset scope must be a ttl.DFBResetScope, got "
-                f"{type(self.scope).__name__}"
+        participant_kinds = [participant.kind for participant in self.participants]
+        compute_count = participant_kinds.count(KernelKind.COMPUTE)
+        data_movement_count = participant_kinds.count(KernelKind.DATA_MOVEMENT)
+        if compute_count != 1 or data_movement_count != 2:
+            raise ValueError(
+                "DFBReset participants must contain one compute kernel and "
+                "two data movement kernels"
             )
 
 
@@ -69,12 +57,8 @@ class _BoundDFBReset:
     ordinal: int
 
     @property
-    def participants(self) -> tuple[KernelSelector, ...]:
+    def participants(self) -> tuple[Kernel, ...]:
         return self.declaration.participants
-
-    @property
-    def scope(self) -> DFBResetScope:
-        return self.declaration.scope
 
 
 class _DFBResetBinder:
@@ -117,10 +101,8 @@ def _bind_dfb_resets(resets: Mapping[str, DFBReset]) -> dict[str, _BoundDFBReset
 
 
 def _participant_topology(
-    participant: KernelSelector, logical_kernels: Mapping[str, Kernel]
+    participant: Kernel, logical_kernels: Mapping[str, Kernel]
 ) -> tuple[str, str]:
-    if isinstance(participant, KernelKind):
-        return ("kind", participant.name)
     for name, kernel in logical_kernels.items():
         if participant is kernel:
             return ("kernel", name)
@@ -144,12 +126,11 @@ def _participant_topology(
 
 def _dfb_reset_topology(
     resets: Mapping[str, DFBReset], logical_kernels: Mapping[str, Kernel]
-) -> tuple[tuple[int, DFBResetScope, tuple[tuple[str, str], ...]], ...]:
+) -> tuple[tuple[int, tuple[tuple[str, str], ...]], ...]:
     bindings = _bind_dfb_resets(resets)
     return tuple(
         (
             binding.ordinal,
-            binding.scope,
             tuple(
                 sorted(
                     _participant_topology(participant, logical_kernels)
@@ -161,4 +142,4 @@ def _dfb_reset_topology(
     )
 
 
-__all__ = ["DFBReset", "DFBResetScope"]
+__all__ = ["DFBReset"]

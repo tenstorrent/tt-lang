@@ -20,7 +20,6 @@ from .condition import DispatchCondition, _bind_dispatch_conditions
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
 
-
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
 _DFB_RELEASE_METHODS: Final = frozenset(("push", "pop"))
 
@@ -314,10 +313,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 reset_identity = id(value)
                 ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
                 participant_tokens = []
-                for participant in value.participants:
-                    if isinstance(participant, KernelKind):
-                        participant_tokens.append(f"kind:{participant.name}")
-                        continue
+                for participant_index, participant in enumerate(value.participants):
                     if participant._implicit_role is not None:
                         participant_tokens.append(
                             "role:"
@@ -327,14 +323,14 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                         continue
                     participant_name = kernel_capture_names.get(id(participant))
                     if participant_name is None:
-                        raise TypeError(
-                            "DFBReset participant Kernel must be captured by "
-                            "the enclosing @ttl.operation"
+                        participant_tokens.append(
+                            "reset-kernel:"
+                            f"{participant_index}:{participant.kind.name}"
                         )
-                    participant_tokens.append(f"kernel:{participant_name}")
+                    else:
+                        participant_tokens.append(f"kernel:{participant_name}")
                 encoded = (
-                    f"dfb-reset:{ordinal}:{value.scope.name}:"
-                    + ",".join(sorted(participant_tokens))
+                    f"dfb-reset:{ordinal}:" + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")
             else:
                 encoded = _encode_identity_capture(name, value, active_functions)
