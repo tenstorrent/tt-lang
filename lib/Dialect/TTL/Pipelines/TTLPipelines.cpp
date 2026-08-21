@@ -98,6 +98,13 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
   }
+  {
+    TTKernelCostEstimateOptions estimateOpts;
+    estimateOpts.enable = options.costEstimate;
+    estimateOpts.detail = options.costEstimateDetail;
+    estimateOpts.mathFidelity = options.costEstimateMathFidelity;
+    pm.addPass(createTTKernelCostEstimate(estimateOpts));
+  }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());

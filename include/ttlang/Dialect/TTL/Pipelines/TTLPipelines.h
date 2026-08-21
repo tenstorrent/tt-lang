@@ -104,6 +104,25 @@ struct TTLToTTKernelPipelineOptions
           "Clone TTKernel functions that branch on a core coordinate once "
           "per launch coordinate (ttkernel-specialize-cores)."),
       llvm::cl::init(false)};
+  Option<bool> costEstimate{
+      *this, "cost-estimate",
+      llvm::cl::desc("Report how the program's work splits across the five "
+                     "RISCs of a Tensix core (ttkernel-cost-estimate). Reads "
+                     "the IR and mutates nothing."),
+      llvm::cl::init(false)};
+  Option<bool> costEstimateDetail{
+      *this, "cost-estimate-detail",
+      llvm::cl::desc("Add per-lane operation tables and an event-boundary "
+                     "timeline to the cost estimate. An error without "
+                     "cost-estimate."),
+      llvm::cl::init(false)};
+  Option<std::string> costEstimateMathFidelity{
+      *this, "cost-estimate-math-fidelity",
+      llvm::cl::desc("Math fidelity the kernel runs at, as the cost table "
+                     "spells it: LoFi, HiFi2, HiFi3 or HiFi4. TTKernel IR does "
+                     "not carry it, so the measurements keyed on it stay "
+                     "unmatched unless it is given."),
+      llvm::cl::init("")};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

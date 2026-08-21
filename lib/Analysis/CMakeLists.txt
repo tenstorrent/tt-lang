@@ -18,6 +18,7 @@ target_include_directories(TTLangOpCost PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_mlir_library(TTLangAnalysis
   PARTIAL_SOURCES_INTENDED
+  CostEstimator.cpp
   ExecutionCountAnalysis.cpp
   IntegerExpressionEvaluator.cpp
   LoopIterationUtils.cpp
@@ -29,8 +30,12 @@ add_mlir_library(TTLangAnalysis
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRControlFlowInterfaces
+  MLIRFuncDialect
   MLIRIR
   MLIRLoopLikeInterface
   MLIRSCFDialect
   MLIRTensorDialect
+  MLIRTTKernelDialect
+  MLIRTTLDialect
+  TTLangOpCost
 )

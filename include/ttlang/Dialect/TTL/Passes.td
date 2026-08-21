@@ -1234,4 +1234,73 @@ def TTKernelCombinePackTiles
   ];
 }
 
+def TTKernelCostEstimate
+    : Pass<"ttkernel-cost-estimate", "::mlir::ModuleOp"> {
+  let summary = "Estimate per-core cost from TTKernel IR";
+  let description = [{
+    Non-mutating analysis pass that runs `mlir::tt::CostEstimator` and reports
+    how the program's work splits across the five RISCs of a Tensix core.
+
+    Must run after `ttkernel-insert-inits` and `ttkernel-combine-pack-tiles`,
+    which create operations the estimate depends on, and before
+    `convert-ttkernel-to-emitc`, which turns circular-buffer calls into opaque
+    verbatim strings. Placing it last in the TTKernel stage also means the
+    constant operands carrying tile counts are already folded.
+
+    An estimate covers every operation in the module or is not produced at all,
+    so an unmodelled kernel is never mistaken for a cheap one. Anything the
+    estimator cannot account for -- an operation the cost table does not know,
+    control flow it cannot resolve, a loop it cannot unroll -- is warned about at
+    the operation responsible, and the report says only that no estimate is
+    available. Nothing found in the IR fails the pass: the estimate is opt-in and
+    mutates nothing, so a gap in it does not fail a compile.
+
+    Off unless `enable` says otherwise, so that a pipeline can carry it
+    unconditionally. The one thing that does fail the pass is being asked for the
+    detail view with the estimate itself disabled: the detail view is part of the
+    report, and there is no report to add it to, so the request is refused rather
+    than silently ignored.
+
+    Costs come from TTLangOpCost, which holds measurements alone. A placement no
+    measurement covers is charged nothing and counted, so a report says how much
+    of itself is measured instead of blending guesses into one number.
+
+    Example output:
+    ```
+    cost estimate: 108 of 134 placements measured (81%)
+      26 unmatched (measured in no configuration this kernel can supply), 0 untimed (nothing measured them); both charged 0
+      measured on blackhole from 3045 rows over 197 operations; per-operation provenance in the detail view
+      kernels: compute read write
+      NCRISC reader: 43 ops, 2140 busy, 0 stalled, 7185 drained, 23% utilized
+      TRISC0 unpack: 23 ops, 3460 busy, 3580 stalled, 2285 drained, 37% utilized
+      TRISC1 math: 23 ops, 5060 busy, 2360 stalled, 1905 drained, 54% utilized
+      TRISC2 pack: 23 ops, 3460 busy, 4780 stalled, 1085 drained, 37% utilized
+      BRISC writer: 22 ops, 1085 busy, 8240 stalled, 0 drained, 12% utilized
+      latency: 8999
+      busiest lane: TRISC1 math (4984 busy)
+    ```
+  }];
+
+  let options = [
+    Option<"enable", "enable", "bool", "false",
+           "Produce the estimate. Off by default, so a pipeline can carry the "
+           "pass unconditionally and a caller opts in.">,
+    Option<"outputPath", "output", "std::string", "\"\"",
+           "Path to write the report (empty for stdout)">,
+    Option<"detail", "detail", "bool", "false",
+           "Also print per-lane operation tables and an event-boundary "
+           "timeline. Off by default: both are capped but still long. An error "
+           "without `enable`, since it adds to a report that would not exist.">,
+    Option<"mathFidelity", "math-fidelity", "std::string", "\"\"",
+           "Math fidelity the kernel runs at, as the cost table spells it: "
+           "LoFi, HiFi2, HiFi3 or HiFi4. The IR does not carry it -- it is a "
+           "runtime compute-config field -- so the measurements keyed on it "
+           "stay unmatched unless it is given here.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD
