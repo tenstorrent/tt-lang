@@ -117,17 +117,21 @@ def unicast_grouped_transport_storage(inp, out):
 def test_unicast_dataflow_capacity_loop(
     device, dtype, rtol, atol, counter_storage_options, recv_block_count
 ):
-    inp_torch = torch.randn(32, 32, dtype=dtype)
-    out_torch = torch.zeros(32, 32, dtype=dtype)
+    operation = _capacity_loop_op(recv_block_count, counter_storage_options)
+    for invocation_index in range(3):
+        inp_torch = (
+            torch.randn(32, 32, dtype=torch.float32) + invocation_index * 4
+        ).to(dtype)
+        out_torch = torch.zeros(32, 32, dtype=dtype)
 
-    inp = to_dram(inp_torch, device)
-    out = to_dram(out_torch, device)
+        inp = to_dram(inp_torch, device)
+        out = to_dram(out_torch, device)
 
-    _capacity_loop_op(recv_block_count, counter_storage_options)(inp, out)
-    ttnn.synchronize_device(device)
+        operation(inp, out)
+        ttnn.synchronize_device(device)
 
-    result = ttnn.to_torch(out)
-    assert_allclose(result.float(), inp_torch.float(), rtol=rtol, atol=atol)
+        result = ttnn.to_torch(out)
+        assert_allclose(result.float(), inp_torch.float(), rtol=rtol, atol=atol)
 
 
 # Distinct tiles prove that transport-owned slots advance in sender/receiver
