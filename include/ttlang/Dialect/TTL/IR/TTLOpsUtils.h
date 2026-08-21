@@ -163,6 +163,69 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
 }
 
+/// Returns true when `operation` executes only in a then-region guarded by
+/// `condition`.
+inline bool isOperationInThenRegionGuardedBy(mlir::Operation *operation,
+                                             mlir::Value condition) {
+  for (mlir::Operation *ancestor = operation->getParentOp(), *child = operation;
+       ancestor; child = ancestor, ancestor = ancestor->getParentOp()) {
+    auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(ancestor);
+    if (!ifOp || ifOp.getCondition() != condition) {
+      continue;
+    }
+    return ifOp.getThenRegion().isAncestor(child->getParentRegion());
+  }
+  return false;
+}
+
+/// Returns true when `value` denotes the inactive branch of a conditionally
+/// acquired dataflow buffer.
+inline bool isInactiveGuardedDFBYield(mlir::Value value) {
+  value = traceUnrealizedCasts(value);
+  auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>();
+  return cast && cast.getInputs().empty() &&
+         cast->hasAttr("ttl.inactive_guarded_dfb");
+}
+
+/// Returns the reserve that produced `view` when `use` is executed under the
+/// same condition as a conditionally yielded reserve.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view,
+                                                       mlir::Operation *use) {
+  if (auto reserve = findCBReserveForView(view)) {
+    return reserve;
+  }
+
+  view = traceUnrealizedCasts(view);
+  if (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return findCBReserveForView(slice.getSource(), use);
+  }
+  if (auto extract = view.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return findCBReserveForView(extract.getTensor(), use);
+  }
+  auto result = mlir::dyn_cast<mlir::OpResult>(view);
+  if (!result) {
+    return nullptr;
+  }
+  auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner());
+  if (!ifOp || ifOp.getElseRegion().empty() ||
+      !isOperationInThenRegionGuardedBy(use, ifOp.getCondition())) {
+    return nullptr;
+  }
+
+  unsigned resultIndex = result.getResultNumber();
+  auto thenYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+      ifOp.getThenRegion().front().getTerminator());
+  auto elseYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+      ifOp.getElseRegion().front().getTerminator());
+  if (!thenYield || !elseYield ||
+      resultIndex >= thenYield.getResults().size() ||
+      resultIndex >= elseYield.getResults().size() ||
+      !isInactiveGuardedDFBYield(elseYield.getResults()[resultIndex])) {
+    return nullptr;
+  }
+  return findCBReserveForView(thenYield.getResults()[resultIndex], use);
+}
+
 /// Return the user reserve that produced a pipe receive destination block.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));

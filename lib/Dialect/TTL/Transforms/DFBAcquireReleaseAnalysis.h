@@ -150,6 +150,10 @@ Value getDFBAcquireDFB(Operation *op);
 /// Returns the DFB operand of a `ttl.cb_push` or `ttl.cb_pop`.
 Value getDFBReleaseDFB(Operation *op);
 
+/// Returns true if `op` is acquired under an `scf.if` condition and yielded
+/// from that region with an inactive value in the else region.
+bool isGuardedDFBAcquire(Operation *op);
+
 /// Returns the number of whole DFB blocks acquired or released by `op`.
 ///
 /// Returns `std::nullopt` when the transaction size is not a positive multiple

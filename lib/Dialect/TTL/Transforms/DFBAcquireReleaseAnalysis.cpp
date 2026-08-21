@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -94,18 +95,86 @@ static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
          !mayAccessDFBStorage(operation);
 }
 
-// Project `op` into the acquire block so nested regions can be ordered against
-// the acquire interval. This keeps the interval computation block local while
-// still noticing releases nested under control-flow operations.
-static bool projectToAcquireBlock(DFBAcquireInterval interval, Operation *op,
-                                  Operation *&projected,
-                                  bool ignoreBoundary = false) {
-  Block *block = interval.acquire->getBlock();
+struct DFBAcquireOrdering {
+  Block *block = nullptr;
+  Operation *start = nullptr;
+  scf::IfOp guard;
+
+  bool isGuarded() const { return guard != nullptr; }
+};
+
+static scf::IfOp getDirectThenRegionIf(Operation *operation) {
+  auto ifOp = dyn_cast_or_null<scf::IfOp>(operation->getParentOp());
+  if (!ifOp || operation->getBlock()->getParent() != &ifOp.getThenRegion()) {
+    return {};
+  }
+  return ifOp;
+}
+
+static std::optional<unsigned>
+getGuardedDFBAcquireResultIndex(Operation *acquire, scf::IfOp ifOp) {
+  if (ifOp.getElseRegion().empty()) {
+    return std::nullopt;
+  }
+  auto thenYield =
+      dyn_cast<scf::YieldOp>(ifOp.getThenRegion().front().getTerminator());
+  auto elseYield =
+      dyn_cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
+  if (!thenYield || !elseYield) {
+    return std::nullopt;
+  }
+
+  for (auto [index, yielded] : llvm::enumerate(thenYield.getResults())) {
+    if (findCBAcquireOp(yielded) != acquire) {
+      continue;
+    }
+    if (index >= elseYield.getResults().size() ||
+        !isInactiveGuardedDFBYield(elseYield.getResults()[index])) {
+      return std::nullopt;
+    }
+    return index;
+  }
+  return std::nullopt;
+}
+
+static DFBAcquireOrdering getDFBAcquireOrdering(Operation *acquire) {
+  if (scf::IfOp ifOp = getDirectThenRegionIf(acquire)) {
+    if (getGuardedDFBAcquireResultIndex(acquire, ifOp)) {
+      return {ifOp->getBlock(), ifOp.getOperation(), ifOp};
+    }
+  }
+  return {acquire->getBlock(), acquire, {}};
+}
+
+static bool isAfterOrSame(Operation *operation, Operation *other) {
+  return operation == other || isBefore(other, operation);
+}
+
+// Project `op` into the interval ordering block so nested regions can be
+// compared against the acquire interval.
+static bool projectToIntervalOrderingBlock(DFBAcquireInterval interval,
+                                           Operation *op, Operation *&projected,
+                                           bool ignoreBoundary = false) {
+  DFBAcquireOrdering ordering = getDFBAcquireOrdering(interval.acquire);
+  if (ordering.isGuarded() &&
+      !isOperationInThenRegionGuardedBy(op, ordering.guard.getCondition())) {
+    return false;
+  }
+
+  Block *block = ordering.block;
   projected = op->getBlock() == block ? op : block->findAncestorOpInBlock(*op);
   if (!projected) {
     return false;
   }
-  if (!isBefore(interval.acquire, projected)) {
+  if (projected == ordering.start) {
+    Operation *nestedProjection =
+        op->getBlock() == interval.acquire->getBlock()
+            ? op
+            : interval.acquire->getBlock()->findAncestorOpInBlock(*op);
+    if (!nestedProjection || !isBefore(interval.acquire, nestedProjection)) {
+      return false;
+    }
+  } else if (!isBefore(ordering.start, projected)) {
     return false;
   }
   if (!ignoreBoundary && interval.kindBoundary &&
@@ -128,7 +197,7 @@ static void updateLatestUse(Operation *candidate, Operation *&latest) {
 static void updateBoundary(Value dfb, Operation *acquire,
                            ArrayRef<Operation *> acquires,
                            Operation *&boundary) {
-  Block *block = acquire->getBlock();
+  DFBAcquireOrdering ordering = getDFBAcquireOrdering(acquire);
   for (Operation *other : acquires) {
     if (other == acquire) {
       continue;
@@ -136,11 +205,13 @@ static void updateBoundary(Value dfb, Operation *acquire,
     if (getDFBAcquireDFB(other) != dfb) {
       continue;
     }
-    Operation *ancestor = block->findAncestorOpInBlock(*other);
+    Operation *ancestor = other->getBlock() == ordering.block
+                              ? other
+                              : ordering.block->findAncestorOpInBlock(*other);
     if (!ancestor) {
       continue;
     }
-    if (!isBefore(acquire, ancestor)) {
+    if (!isBefore(ordering.start, ancestor)) {
       continue;
     }
     if (!boundary || isBefore(ancestor, boundary)) {
@@ -183,6 +254,10 @@ Value getDFBReleaseDFB(Operation *op) {
     return push.getCb();
   }
   return cast<CBPopOp>(op).getCb();
+}
+
+bool isGuardedDFBAcquire(Operation *op) {
+  return getDFBAcquireOrdering(op).isGuarded();
 }
 
 static std::optional<DFBAcquireReleaseKind>
@@ -390,14 +465,15 @@ DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
 }
 
 Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
-  Operation *last = interval.acquire;
+  Operation *last = getDFBAcquireOrdering(interval.acquire).start;
   llvm::DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
   auto extend = [&](Operation *user, bool ignoreBoundary,
                     bool propagateResults) {
     Operation *projected = nullptr;
-    if (!projectToAcquireBlock(interval, user, projected, ignoreBoundary)) {
+    if (!projectToIntervalOrderingBlock(interval, user, projected,
+                                        ignoreBoundary)) {
       return false;
     }
     if (!visited.insert(user).second) {
@@ -422,7 +498,17 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
         if (isa<CBPushOp, CBPopOp>(user)) {
           continue;
         }
-        extend(user, ignoreBoundary, /*propagateResults=*/true);
+        if (!extend(user, ignoreBoundary, /*propagateResults=*/true)) {
+          continue;
+        }
+        if (auto yield = dyn_cast<scf::YieldOp>(user)) {
+          if (auto ifOp = dyn_cast<scf::IfOp>(yield->getParentOp())) {
+            unsigned resultIndex = use.getOperandNumber();
+            if (resultIndex < ifOp.getNumResults()) {
+              worklist.push_back(ifOp.getResult(resultIndex));
+            }
+          }
+        }
       }
     }
   };
@@ -473,7 +559,8 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
                                       Operation *lastOwnedUse,
                                       ArrayRef<Operation *> releases) {
   DFBReleaseSearch result;
-  Block *block = interval.acquire->getBlock();
+  DFBAcquireOrdering ordering = getDFBAcquireOrdering(interval.acquire);
+  Block *block = ordering.block;
   DFBProtocolEffectKind releaseEffectKind =
       interval.kind == DFBAcquireReleaseKind::Producer
           ? DFBProtocolEffectKind::Push
@@ -488,9 +575,31 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
       continue;
     }
 
+    if (ordering.isGuarded()) {
+      scf::IfOp releaseIf = getDirectThenRegionIf(release);
+      if (!releaseIf || releaseIf == ordering.guard ||
+          releaseIf.getCondition() != ordering.guard.getCondition() ||
+          releaseIf->getBlock() != block) {
+        continue;
+      }
+      Operation *projected = releaseIf.getOperation();
+      if (!isAfterOrSame(projected, ordering.start)) {
+        continue;
+      }
+      if (interval.kindBoundary &&
+          !isBefore(projected, interval.kindBoundary)) {
+        continue;
+      }
+      if (lastOwnedUse && !isAfterOrSame(projected, lastOwnedUse)) {
+        continue;
+      }
+      result.sameLevelReleases.push_back(release);
+      continue;
+    }
+
     if (release->getBlock() == block) {
       Operation *projected = nullptr;
-      if (projectToAcquireBlock(interval, release, projected)) {
+      if (projectToIntervalOrderingBlock(interval, release, projected)) {
         result.sameLevelReleases.push_back(release);
         continue;
       }
@@ -498,8 +607,8 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
       // use that crosses the next-acquire boundary, accept that release as
       // owned by the original acquire.
       if (useExtendsPastBoundary &&
-          projectToAcquireBlock(interval, release, projected,
-                                /*ignoreBoundary=*/true) &&
+          projectToIntervalOrderingBlock(interval, release, projected,
+                                         /*ignoreBoundary=*/true) &&
           !isBefore(projected, lastOwnedUse)) {
         result.sameLevelReleases.push_back(release);
       }
@@ -507,7 +616,7 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
     }
 
     Operation *projected = nullptr;
-    if (!projectToAcquireBlock(interval, release, projected)) {
+    if (!projectToIntervalOrderingBlock(interval, release, projected)) {
       continue;
     }
     result.nestedReleases.push_back(release);

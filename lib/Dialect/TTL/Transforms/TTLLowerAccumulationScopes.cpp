@@ -516,9 +516,10 @@ static void assignResidentContributionReleases(
 }
 
 /// Lower one tensor accumulation scope according to the selected strategy.
-static LogicalResult lowerTensorAccumulationScope(
-    const TensorAccumulationScopeLoweringPlan &plan,
-    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter) {
+static LogicalResult
+lowerTensorAccumulationScope(const TensorAccumulationScopeLoweringPlan &plan,
+                             const DFBAcquireReleaseIndex &dfbIndex,
+                             RewriterBase &rewriter) {
   AccumulationScopeOp scope = plan.scope;
   if (plan.kind == TensorAccumulationScopeLoweringKind::Stateful) {
     return lowerStatefulTensorAccumulationScope(scope, rewriter);
@@ -539,9 +540,8 @@ static LogicalResult lowerTensorAccumulationScope(
     return success();
   }
 
-  [[maybe_unused]] LogicalResult lowered =
-      lowerTensorAccumulationToL1Pack(recurrence, plan.scopeId, dfbIndex,
-                                      rewriter);
+  [[maybe_unused]] LogicalResult lowered = lowerTensorAccumulationToL1Pack(
+      recurrence, plan.scopeId, dfbIndex, rewriter);
   assert(succeeded(lowered) && "L1 pack legality was checked before mutation");
   eraseAccumulationScopeWrapper(scope, rewriter,
                                 getScopeBlockArgumentReplacements(scope));

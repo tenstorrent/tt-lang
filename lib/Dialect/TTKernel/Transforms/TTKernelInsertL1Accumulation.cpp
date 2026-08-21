@@ -167,6 +167,83 @@ static bool packsToAnyCB(Operation *operation,
   return false;
 }
 
+static bool mayResetPackerL1Acc(Operation *operation) {
+  // Copy initialization does not reset packer L1-accumulation state.
+  return isa<ttk::PackReconfigDataFormatOp>(operation) ||
+         (operation->hasTrait<ttk::TTKernelInitOpTrait>() &&
+          !isa<ttk::CopyTileInitOp>(operation));
+}
+
+static bool containsPackReconfigL1Acc(Operation *operation) {
+  bool found = false;
+  operation->walk([&](ttk::PackReconfigL1AccOp) {
+    found = true;
+    return WalkResult::interrupt();
+  });
+  return found;
+}
+
+static bool hasPackerL1AccResetSinceReconfig(Operation *operation,
+                                             scf::ForOp boundaryLoop) {
+  for (Operation *cursor = operation; cursor;) {
+    Block *block = cursor->getBlock();
+    if (!block) {
+      return false;
+    }
+    for (auto iter = Block::reverse_iterator(Block::iterator(cursor));
+         iter != block->rend(); ++iter) {
+      Operation *candidate = &*iter;
+      if (containsPackReconfigL1Acc(candidate)) {
+        return false;
+      }
+      if (mayResetPackerL1Acc(candidate)) {
+        return true;
+      }
+    }
+    Operation *parent = block->getParentOp();
+    if (!parent || parent == boundaryLoop.getOperation()) {
+      return false;
+    }
+    cursor = parent;
+  }
+  return false;
+}
+
+static void
+insertLocalL1AccEnableAfterReset(OpBuilder &builder, scf::ForOp loop,
+                                 const llvm::SmallDenseSet<Value, 2> &packCBs,
+                                 AccumulationInitialMode initialMode) {
+  llvm::SmallDenseSet<Operation *, 4> visitedPacks;
+  loop->walk([&](Operation *operation) {
+    if (!packsToAnyCB(operation, packCBs) ||
+        !visitedPacks.insert(operation).second ||
+        findL1AccLoop(operation) != loop ||
+        !hasPackerL1AccResetSinceReconfig(operation, loop)) {
+      return;
+    }
+
+    Location loc = operation->getLoc();
+    builder.setInsertionPoint(operation);
+    if (initialMode == AccumulationInitialMode::AccumulateExisting) {
+      Value enableFlag = buildI32Const(builder, loc, 1);
+      ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
+      return;
+    }
+
+    if (!mayNeedOverwriteModeEnable(loop)) {
+      return;
+    }
+
+    Value laterIteration =
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
+                              loop.getInductionVar(), loop.getLowerBound());
+    auto ifOp = scf::IfOp::create(builder, loc, laterIteration);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    Value enableFlag = buildI32Const(builder, loc, 1);
+    ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
+  });
+}
+
 /// Verify that every pack in an L1 accumulation loop targets a supported output
 /// format. Packer L1 accumulation is an additive write to the destination data
 /// format, and unsupported formats have no valid L1-accumulation behavior.
@@ -506,6 +583,14 @@ struct TTKernelInsertL1AccumulationPass
         builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
         Value enableFlag = buildI32Const(builder, loc, 1);
         ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
+      }
+
+      for (scf::ForOp loop : group.loops) {
+        FailureOr<AccumulationInitialMode> loopInitialMode =
+            getL1AccInitialMode(loop);
+        assert(succeeded(loopInitialMode) && "validated before grouping");
+        insertLocalL1AccEnableAfterReset(builder, loop, group.packCBs,
+                                         *loopInitialMode);
       }
 
       // Disable L1 acc after the group's scope end (typically cb_push_back).

@@ -35,14 +35,28 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Return true when `operation` contains a non-accumulating store to the exact
-/// view SSA value. Exact matching is required because this pass does not have
-/// alias metadata for proving that two different slice values identify the
-/// same output tile set.
+static Value stripDFBAssociation(Value view) {
+  view = traceUnrealizedCasts(view);
+  while (auto attach = view.getDefiningOp<AttachCBOp>()) {
+    view = traceUnrealizedCasts(attach.getTensor());
+  }
+  return view;
+}
+
+static bool isSameStoredView(Value lhs, Value rhs) {
+  if (!lhs || !rhs) {
+    return lhs == rhs;
+  }
+  return lhs == rhs || stripDFBAssociation(lhs) == stripDFBAssociation(rhs);
+}
+
+/// Return true when `operation` contains a non-accumulating store to the same
+/// storage view. DFB association ops do not change storage identity. Slice and
+/// extract ops remain distinct because this pass has no alias proof for them.
 static bool containsPlainStoreToView(Operation *operation, Value view) {
   bool found = false;
   operation->walk([&](StoreOp store) {
-    if (!store.getAccumulate() && store.getView() == view) {
+    if (!store.getAccumulate() && isSameStoredView(store.getView(), view)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -51,13 +65,44 @@ static bool containsPlainStoreToView(Operation *operation, Value view) {
   return found;
 }
 
+static Value getGuardedThenYieldedView(Value view, Operation *use) {
+  view = traceUnrealizedCasts(view);
+  if (auto attach = view.getDefiningOp<AttachCBOp>()) {
+    view = traceUnrealizedCasts(attach.getTensor());
+  }
+
+  auto result = dyn_cast<OpResult>(view);
+  if (!result) {
+    return {};
+  }
+  auto ifOp = dyn_cast<scf::IfOp>(result.getOwner());
+  if (!ifOp || ifOp.getElseRegion().empty() ||
+      !isOperationInThenRegionGuardedBy(use, ifOp.getCondition())) {
+    return {};
+  }
+
+  unsigned resultIndex = result.getResultNumber();
+  auto thenYield =
+      dyn_cast<scf::YieldOp>(ifOp.getThenRegion().front().getTerminator());
+  auto elseYield =
+      dyn_cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
+  if (!thenYield || !elseYield ||
+      resultIndex >= thenYield.getResults().size() ||
+      resultIndex >= elseYield.getResults().size() ||
+      !isInactiveGuardedDFBYield(elseYield.getResults()[resultIndex])) {
+    return {};
+  }
+  return thenYield.getResults()[resultIndex];
+}
+
 /// Determine whether iteration 0 should overwrite L1 or accumulate onto a value
 /// produced by a preceding non-accumulating store to the same output view.
 static FailureOr<AccumulationInitialMode>
 getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
   Value view = store.getView();
+  Value guardedThenView = getGuardedThenYieldedView(view, store.getOperation());
   Value targetDFB;
-  if (auto reserve = findCBReserveForView(view)) {
+  if (auto reserve = findCBReserveForView(view, store.getOperation())) {
     targetDFB = reserve.getCb();
   } else {
     targetDFB = getAttachedCB(view);
@@ -71,7 +116,8 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
          iter != block->rend(); ++iter) {
       Operation *operation = &*iter;
       if (auto priorStore = dyn_cast<StoreOp>(operation)) {
-        if (priorStore.getView() == view) {
+        if (isSameStoredView(priorStore.getView(), view) ||
+            isSameStoredView(priorStore.getView(), guardedThenView)) {
           if (priorStore.getAccumulate()) {
             return failure();
           }
@@ -95,6 +141,10 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
           containsPlainStoreToView(operation, view)) {
         return failure();
       }
+      if (guardedThenView && operation->getNumRegions() > 0 &&
+          containsPlainStoreToView(operation, guardedThenView)) {
+        return AccumulationInitialMode::AccumulateExisting;
+      }
     }
     Operation *parentOp = block->getParentOp();
     if (!parentOp || isa<func::FuncOp>(parentOp)) {
@@ -106,10 +156,14 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
   return AccumulationInitialMode::Overwrite;
 }
 
-/// Collect direct accumulating stores whose nearest enclosing loop is `loop`.
-/// Conditional accumulation is rejected before inserting scopes because the L1
-/// packer enable point is tied to loop iteration 0, not to dynamic control flow
-/// inside the loop.
+static bool isGuardedDFBAccumulatingStore(StoreOp store) {
+  return !findCBReserveForView(store.getView()) &&
+         findCBReserveForView(store.getView(), store.getOperation());
+}
+
+/// Collect accumulating stores whose nearest enclosing loop is `loop`.
+/// Conditional stores are accepted only when the output view is the
+/// same-guard DFB value produced by a conditional acquire.
 static FailureOr<SmallVector<StoreOp, 2>>
 collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
   SmallVector<StoreOp, 2> stores;
@@ -122,7 +176,8 @@ collectDFBAccumulationStores(scf::ForOp loop, bool &hadFailure) {
       plainStores.push_back(store);
       return WalkResult::advance();
     }
-    if (store->getParentOp() != loop.getOperation()) {
+    if (store->getParentOp() != loop.getOperation() &&
+        !isGuardedDFBAccumulatingStore(store)) {
       store.emitOpError()
           << "+= inside a conditional is not supported (#504); move the "
              "condition outside the accumulation loop or use a separate loop "

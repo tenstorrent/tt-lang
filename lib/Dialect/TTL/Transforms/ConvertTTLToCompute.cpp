@@ -184,7 +184,7 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
   size_t numInputs = computeOp.getNumInputs();
 
   FailureOr<unsigned> outputIndex =
-      computeOp.getOutputIndexForView(store.getView());
+      computeOp.getOutputIndexForView(store.getView(), store.getOperation());
   assert(succeeded(outputIndex) &&
          "planned store must map to one formal compute output");
   AffineMap outputMap = indexingMaps[numInputs + *outputIndex];

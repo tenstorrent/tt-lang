@@ -342,6 +342,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     /// TODO(#797): Encode this association in `ttl.tile_store` and remove
     /// DFB-based discovery.
     FailureOr<unsigned> getOutputIndexForView(Value view);
+    FailureOr<unsigned> getOutputIndexForView(Value view, Operation *use);
 
     // Return whether the body contains an op of the given type.
     template <typename OpTy>

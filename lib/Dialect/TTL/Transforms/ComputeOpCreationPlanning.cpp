@@ -1010,7 +1010,8 @@ buildOutputPublicationPlan(Operation *source) {
   DenseMap<Value, Operation *> firstReserveByDFB;
 
   for (StoreOp store : stores.getPlan()) {
-    CBReserveOp reserve = findCBReserveForView(store.getView());
+    CBReserveOp reserve =
+        findCBReserveForView(store.getView(), store.getOperation());
     if (!reserve) {
       return PlanningResult<OutputPublicationPlan, OutputPublicationRejection>::
           invalidIR(store,
@@ -1571,7 +1572,8 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
     failureReason = "store input is not dataflow-buffer-backed";
     return failure();
   }
-  CBReserveOp reserve = findCBReserveForView(store.getView());
+  CBReserveOp reserve =
+      findCBReserveForView(store.getView(), store.getOperation());
   if (!reserve) {
     failureReason = "store view does not originate from ttl.cb_reserve";
     return failure();

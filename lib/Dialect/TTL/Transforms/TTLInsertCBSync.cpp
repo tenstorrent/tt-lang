@@ -66,6 +66,15 @@ planMissingReleases(ArrayRef<Operation *> acquires,
       continue;
     }
 
+    if (isGuardedDFBAcquire(acquire)) {
+      return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
+          acquire,
+          ("conditional dataflow buffer " + effectName +
+           " requires an explicit release after its guarded uses under the "
+           "same condition")
+              .str());
+    }
+
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {
       if (!isa<ConcreteReleaseOp>(nestedRelease)) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(

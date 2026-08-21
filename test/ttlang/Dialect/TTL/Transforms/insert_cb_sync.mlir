@@ -1029,3 +1029,48 @@ func.func @wait_result_through_for_iter_args() attributes {ttl.kernel_thread = #
   }
   func.return
 }
+
+// -----
+
+// Test 31: Same-condition guarded reserve and push are treated as one
+// acquisition interval. The pass must not insert an unconditional push for a
+// reserve that executes only under the condition.
+
+// CHECK-LABEL: func.func @guarded_reserve_same_condition_push
+// CHECK: %[[CONDITION:.*]] = arith.constant true
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK: scf.if %[[CONDITION]]
+// CHECK: ttl.cb_reserve %[[DFB]]
+// CHECK: unrealized_conversion_cast
+// CHECK: scf.for
+// CHECK: scf.if %[[CONDITION]]
+// CHECK: ttl.store
+// CHECK: scf.if %[[CONDITION]] {
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: }
+// CHECK-NEXT: return
+func.func @guarded_reserve_same_condition_push(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %condition = arith.constant true
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %view = scf.if %condition -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %arg0, %reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %inactive = "builtin.unrealized_conversion_cast"() {ttl.inactive_guarded_dfb} : () -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %inactive : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  scf.for %i = %c0 to %c1 step %c1 {
+    scf.if %condition {
+      ttl.store %arg0, %view {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+  }
+  scf.if %condition {
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  }
+  func.return
+}

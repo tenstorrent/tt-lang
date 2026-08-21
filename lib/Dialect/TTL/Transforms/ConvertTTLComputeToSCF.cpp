@@ -200,7 +200,7 @@ static scf::LoopNest generateAccumulatingLoops(
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
       FailureOr<unsigned> outputIndex =
-          op.getOutputIndexForView(store.getView());
+          op.getOutputIndexForView(store.getView(), store.getOperation());
       assert(succeeded(outputIndex) &&
              "verified store must map to one formal compute output");
       storeInfos.push_back(
