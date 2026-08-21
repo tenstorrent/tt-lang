@@ -2601,9 +2601,10 @@ collectCumulativeSynchronizationEdges(
   return synchronizationEdges;
 }
 
-static bool isCumulativeQueueScheduleFeasible(
-    const CumulativeQueueSide &producer, const CumulativeQueueSide &consumer,
-    std::uint64_t capacity) {
+static bool
+isCumulativeQueueScheduleFeasible(const CumulativeQueueSide &producer,
+                                  const CumulativeQueueSide &consumer,
+                                  std::uint64_t capacity) {
   std::size_t producerIndex = 0;
   std::size_t consumerIndex = 0;
   std::uint64_t occupiedTiles = 0;
@@ -2645,10 +2646,8 @@ static bool isCumulativeQueueScheduleFeasible(
 
   while (producerIndex != producer.orderedRuns.size() ||
          consumerIndex != consumer.orderedRuns.size()) {
-    bool producerAdvanced =
-        tryAdvance(producer.orderedRuns, producerIndex);
-    bool consumerAdvanced =
-        tryAdvance(consumer.orderedRuns, consumerIndex);
+    bool producerAdvanced = tryAdvance(producer.orderedRuns, producerIndex);
+    bool consumerAdvanced = tryAdvance(consumer.orderedRuns, consumerIndex);
     if (!producerAdvanced && !consumerAdvanced) {
       return false;
     }
@@ -2720,7 +2719,7 @@ static bool tryAddCumulativeQueueEdges(
       *producer.side, *consumer.side,
       static_cast<std::uint64_t>(physicalTileCount));
   if (!graph.tryAddEdgesAndUpdateReachability(*synchronizationEdges,
-                                               scheduleFeasible)) {
+                                              scheduleFeasible)) {
     LLVM_DEBUG({
       llvm::dbgs() << "cumulative queue rejection logical_dfb="
                    << logicalDFB.logicalId << " launch_node=(" << node.x << ','
@@ -4066,6 +4065,13 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
   }
 
+  for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    logicalDFB.accessContractsComplete = llvm::all_of(
+        logicalDFB.accesses, [](const DFBAccessOccurrence &access) {
+          return access.protocolEffect || access.nonTransactionalAccess;
+        });
+  }
+
   StructuralOperationOrder structuralOrder(module);
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
@@ -4249,7 +4255,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-    logicalDFB.bounded = logicalDFB.launchDomain.known &&
+    logicalDFB.bounded = logicalDFB.accessContractsComplete &&
+                         logicalDFB.launchDomain.known &&
                          !logicalDFB.nodeLifetimes.empty() &&
                          llvm::all_of(logicalDFB.nodeLifetimes,
                                       [](const DFBPerNodeLifetime &lifetime) {
@@ -4263,7 +4270,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                               lifetime.quiescence.proven();
                      });
     logicalDFB.conditionallyBounded =
-        !logicalDFB.launchDomain.known && hasProvenConditionalLifecycle &&
+        logicalDFB.accessContractsComplete && !logicalDFB.launchDomain.known &&
+        hasProvenConditionalLifecycle &&
         llvm::all_of(logicalDFB.possibleNodeLifetimes,
                      [](const DFBPerNodeLifetime &lifetime) {
                        return !lifetime.mayBeActive ||

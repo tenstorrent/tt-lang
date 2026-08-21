@@ -193,20 +193,21 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// One unresolved access prevents the union for its logical DFB from becoming
-// exact, even when the complete protocol access has an exact domain.
+// One unresolved external access makes the lifecycle incomplete even when the
+// storage domain is exact.
 
 // REUSE-LABEL: func.func @one_unresolved_access
 // REUSE: %[[MIXED:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 16 : index}
 // REUSE-NEXT: %[[EXACT:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 17 : index}
 
 // REPORT: DFB logical_id=16 bounded=0 compiler_created=0
-// REPORT-SAME: domain=unknown
+// REPORT-SAME: access_contracts_complete=0
+// REPORT-SAME: domain={(0,0), (1,0)}
 // REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(0,0), (1,0)}
 // REPORT: access 4 effect=none tiles=0 sequence=0 domain=unknown
 // REPORT: DFB logical_id=17 bounded=1 compiler_created=0
 // REPORT-SAME: domain={(0,0), (1,0)}
-// REPORT: DFB conflict lhs=16 rhs=17 reason=unknown-launch-node-domain
+// REPORT: DFB conflict lhs=16 rhs=17 reason=unproven-quiescence
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @one_unresolved_access(%runtime_offset: index)

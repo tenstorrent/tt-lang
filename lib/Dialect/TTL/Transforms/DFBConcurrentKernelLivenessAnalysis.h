@@ -154,6 +154,7 @@ struct DFBLogicalLifecycle {
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;
+  bool accessContractsComplete = true;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;
