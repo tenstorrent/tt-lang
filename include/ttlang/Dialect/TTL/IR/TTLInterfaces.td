@@ -7,6 +7,46 @@
 
 include "mlir/IR/OpBase.td"
 
+def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
+  let description = [{
+    Operations that expose dataflow buffer dependencies and ordered protocol
+    actions. Dependencies identify every statically known DFB storage access.
+    Protocol effects identify synchronous reserve, push, wait, and pop actions
+    that occur on every operation execution, in execution order. Unknown access
+    is distinct from a malformed or partial effect summary and conservatively
+    applies to user-managed DFB storage.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return DFB dependencies addressed by DFBProtocolEffect::dependencyIndex.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
+      /*methodName=*/"getDFBDependencyOperands",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return ordered, synchronous protocol effects.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DFBProtocolEffect>",
+      /*methodName=*/"getDFBProtocolEffects",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return DFBs whose physical indices are consumed by the operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
+      /*methodName=*/"getDFBIndexOperands",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return {};">,
+    InterfaceMethod<
+      /*desc=*/"Return true when the operation may access unlisted user DFBs.",
+      /*retTy=*/"bool",
+      /*methodName=*/"hasUnknownDFBAccess",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return false;">
+  ];
+}
+
 def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
   let description = [{
     Tensor-level ops whose tile-level lowerings may read one or more

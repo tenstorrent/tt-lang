@@ -171,8 +171,8 @@ jobs:
     secrets: inherit
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
-      run_galaxy_tests: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}
-      run_loudbox_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests }}
+      run_galaxy_tests: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}
+      run_loudbox_tests: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests) }}
 
   build-docs:
     name: Build documentation

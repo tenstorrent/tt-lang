@@ -79,7 +79,7 @@ module attributes {
 
 // -----
 
-// A finalized lifecycle operand must resolve to a DFB declaration.
+// A finalized protocol action must resolve to a DFB declaration.
 // The empty allocation table is synthetic and isolates this precondition.
 
 module attributes {
@@ -89,10 +89,28 @@ module attributes {
   func.func @unresolved_dfb_operand(
       %dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{`ttl-verify-dfb-spsc` requires every DFB lifecycle operand to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
+    // expected-error @below {{`ttl-verify-dfb-spsc` requires every DFB protocol action to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
     %block = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// External-call effects require the same finalized identity as concrete
+// protocol operations.
+
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {
+  func.func @unresolved_external_effect(
+      %dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{`ttl-verify-dfb-spsc` requires every DFB protocol action to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
+    ttl.opaque_call "produce" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
 }

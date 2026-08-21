@@ -8,9 +8,11 @@ each argument according to its source category. It does not inspect the C++
 body or validate the foreign function signature.
 
 External code must complete all synchronous and asynchronous resource accesses
-before returning. The allocator therefore treats the call as one opaque access
-interval, but the call does not reveal reserve/wait/push/pop effects implemented
-inside C++.
+before returning. DFB behavior is declared rather than inferred:
+`ttl.opaque_call` exposes dependencies, ordered protocol effects, and unknown
+access through `DFBAccessOpInterface`. A dependency occurrence with no listed
+effect remains an opaque access for the call duration. A complete effect summary
+can establish the lifecycle facts required for physical-index reuse.
 
 The Python interface currently supports void calls.
 
@@ -98,136 +100,121 @@ kernel kinds and identities.
 
 ## Operation runtime resources
 
-An operation can provide TTNN resources that are created for each invocation:
+### Motivation
 
-```python
-def make_collective(runtime_owner):
-    sender = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+TT-Metal separates reusable program structure from values supplied for each
+dispatch. Kernel configuration, core placement, JIT definitions, program
+semaphore layout, and the runtime-argument schema determine the program
+structure. Per-core runtime-argument words may change when the cached program
+executes again. Program execution may also depend on host or device objects
+whose owners must remain alive through dispatch.
 
-    def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
-        assert len(tensors) == 2
-        semaphore = ttnn.SemaphoreDescriptor(
-            first_free_semaphore_id,
-            core_ranges=core_ranges,
-            initial_value=0,
-        )
-        return ttl.ProgramRuntimeResources(
-            semaphore_descriptors=(semaphore,),
-            kernel_resources=(
-                ttl.KernelRuntimeResources(
-                    kernel=sender,
-                    runtime_args=(
-                        ttl.CoreRuntimeArgs(
-                            ttnn.CoreCoord(0, 0),
-                            (first_free_semaphore_id, 0),
-                        ),
-                        ttl.CoreRuntimeArgs(
-                            ttnn.CoreCoord(1, 0),
-                            (first_free_semaphore_id, 1),
-                        ),
-                    ),
-                    defines=(ttl.KernelDefine("FABRIC_2D", "1"),),
-                ),
-            ),
-            lifetimes=(runtime_owner, semaphore),
-        )
+External TT-Lang kernels can require caller-defined program semaphores and JIT
+definitions, per-core dispatch words, and host owners. These resources may
+depend on the current tensors, device, launch range, and semaphore IDs already
+reserved by the compiler. `runtime_resource_factory` supplies them for each
+device execution without exposing target-specific kernel descriptor identities.
 
-    @ttl.operation(grid=(2, 1), runtime_resource_factory=make_resources)
-    def collective(input_tensor, output_tensor):
-        ttl.call_extern_func(
-            HEADER,
-            "collective_sender",
-            func_args=[input_tensor, output_tensor],
-            kernel=sender,
-        )
+### Resource model
 
-    return collective
-```
+`@ttl.operation(runtime_resource_factory=...)` calls the factory once for each
+device execution, before the runner constructs program descriptors. The
+callback receives the current tensors, complete operation core range, and first
+semaphore ID after the compiler-owned range. It returns frozen
+`ProgramRuntimeResources` records with the following cache and lifetime
+semantics:
 
-The factory has the keyword-only contract
-`(tensors, core_ranges, first_free_semaphore_id)`. `tensors` contains the
-current invocation tensors, `core_ranges` is the operation worker-core range,
-and `first_free_semaphore_id` is the first ID after compiler-managed
-semaphores. The callback executes for every invocation; its result is not
-cached.
+| Resource | Role | Invocation and cache treatment |
+| --- | --- | --- |
+| `semaphore_descriptors` | Program semaphore structure. | IDs, ranges, core types, and initial values participate in cache identity. |
+| `KernelDefine` | JIT compilation input. | Names and values participate in cache identity and apply to every specialized descriptor for the logical kernel. |
+| `CoreRuntimeArgs` | Per-core dispatch values. | Logical destination, core, and vector length participate in cache identity; argument words may change on a cache hit. |
+| `lifetimes` | Host ownership only. | Object identities do not participate in cache identity; references remain alive through execution. |
 
-The factory returns frozen typed records:
+The factory runs for each device execution even when its structural result
+selects an existing cached program. This preserves TT-Metal's distinction
+between stable program structure and current dispatch values.
 
-| Record | Purpose |
-| --- | --- |
-| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, and retained owners. |
-| `KernelRuntimeResources` | Selects one logical kernel and supplies per-core runtime arguments and JIT definitions. |
-| `CoreRuntimeArgs` | Associates one ordered integer vector with one worker coordinate. |
-| `KernelDefine` | Associates one definition name with its string value. |
+The [operation runtime resources reference](../sphinx/reference/operation-runtime-resources.md)
+defines the callback signature, public records, and usage example.
 
-All collection fields are tuples. Runtime values accept integer-indexable
-objects except booleans. Coordinates and semaphore ranges must be inside the
-operation range. Caller semaphore IDs must be unique and greater than or equal
-to `first_free_semaphore_id`. Invalid or incomplete resources raise before
-caller descriptors are materialized; execution never receives a partial caller
-resource plan.
+### Planning and materialization
 
-`KernelKind` selects the compiler-owned canonical kernel of that kind. A
-captured `Kernel` is an explicit operation-owned identity and is required to
-distinguish multiple logical kernels of the same kind. The operation body and
-factory must capture the same `Kernel` declaration. A handle owned by another
-operation, an unbound handle, or a physical processor string is invalid.
+The runner validates the complete factory result and constructs a frozen
+`ProgramResourcePlan` before creating any `KernelDescriptor` or
+`ProgramDescriptor`. Planning validates record types, logical ownership, core
+membership, unique semaphore IDs, the compiler/caller semaphore boundary, and
+the unique destination of every per-core runtime argument. The plan contains
+one resource entry for every compiled kernel descriptor, including descriptors
+with no caller resources.
 
-Core specialization can produce several TTNN descriptors for one logical
-identity. Definitions are copied to every matching descriptor because the
-descriptors compile the same source. Runtime argument records are partitioned
-by coordinate, and every record must match exactly one descriptor. Overlapping
-specialized descriptor ranges are an internal compiler error. Caller runtime
-arguments remain associated with their selected logical descriptor.
+Descriptor construction consumes this plan without repeating selector lookup,
+specialization routing, or cache policy. Planning does not modify compiled
+kernel state or TTNN program state. A factory or planning failure occurs before
+the runner constructs TTNN kernel or program descriptors and cannot produce a
+partially materialized program.
 
-Resource structure participates in the TT-Metal program-cache identity. The
-structural fingerprint includes logical identities, descriptor coordinates,
-definitions, runtime-vector lengths, and caller semaphore properties. Runtime
-values, tensor addresses, and lifetime object identities are excluded, so a
-cached program can receive new invocation values. Changing a definition or
-semaphore structure selects a different program-cache identity.
+### Logical identity and specialization
 
-Objects in `lifetimes` remain referenced through execution. The compiled
-operation replaces its retained owner tuple only after successful execution,
-so a failed invocation preserves the previous valid owners.
+TT-Metal attaches definitions and runtime arguments to a `KernelDescriptor`.
+TT-Lang does not expose descriptor indices as source identities: processor
+assignment and descriptor order are target decisions, and core specialization
+can materialize one logical kernel as several descriptors over disjoint core
+sets. Resources therefore select the compiler-owned canonical kernel with
+`KernelKind` or an explicit operation-owned kernel with `Kernel`.
 
-An emitted runner for a resource-aware operation requires the factory on every
-call:
+The selected logical identity is retained on every `KernelSpec`, independent
+of generated symbols, physical processors, and descriptor order. The planner
+maps each resource to descriptors with the same identity.
 
-```python
-runner.run(
-    tensors,
-    runtime_resource_factory=make_resources,
-    device=device,
-)
-```
+The planner groups descriptors by logical identity and verifies that
+specialized descriptors for one identity cover disjoint core sets. A
+definition applies to every descriptor in the group because the descriptors
+compile the same logical source. A per-core runtime argument applies only to
+the descriptor whose core set contains that coordinate. Missing and multiple
+destinations are errors.
 
-The runner reconstructs serialized logical identities and uses the normal
-planner and materializer. It does not serialize live owners or create
-replacement topology resources.
+### Program cache identity
+
+The runner combines the compiled operation hash with a deterministic structural
+fingerprint of the resource plan. Logical destinations, descriptor core sets,
+definitions, runtime-argument coordinates and vector lengths, and caller
+semaphore properties affect the fingerprint. Runtime-argument words, tensor
+addresses, and lifetime object identities do not.
+
+Changing a JIT definition or semaphore layout therefore selects a different
+cached program. Changing only runtime-argument words reuses the same program
+structure and supplies the current values to TT-Metal for that dispatch.
+
+### Lifetimes and failures
+
+Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
+execution. The factory result and its lifetime tuple remain local while the
+runner plans, materializes, and executes the program. After successful
+execution, the compiled operation stores the new tuple until a later successful
+execution replaces it. A factory, planning, materialization, or execution
+failure preserves the tuple from the last successful execution.
+
+### Emitted runners and simulation
+
+Emitted Python runners serialize logical identities and use the same planner
+and materializer as decorated operation execution. A resource-aware emitted
+runner requires the factory on every call because live resource objects and
+dispatch values are not serialized.
 
 Operation runtime resources are a hardware execution interface. The simulator
 does not model TTNN program descriptors or per-core kernel runtime arguments
 and rejects `runtime_resource_factory` as an unsupported `ttl.operation`
 argument.
 
-### Consumer migration
-
-Resource dictionaries keyed by physical processor strings must be replaced by
-typed logical selectors. Use `KernelKind.COMPUTE` or
-`KernelKind.DATA_MOVEMENT` for the compiler-owned canonical kernel. Declare and
-capture a `Kernel` for each explicitly owned logical kernel when an operation
-has several kernels of one kind. Composition helpers merge resources by bound
-logical identity, preserve runtime-vector order, reject conflicting
-definitions, and return unique semaphore descriptors.
-
 ## Argument contract
 
 | Source argument | Generated C++ interface | Restrictions |
 | --- | --- | --- |
 | `ttl.dfb_descriptor(dfb)` in `template_args` | `ttlang::DFBDescriptor<...>` template type | Declares a direct DFB dependency. |
-| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args` or a `ttl.dfb_descriptor` template argument. |
+| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args`, `ttl.dfb_descriptor`, or `dfb_dependencies`. |
 | DFB in `func_args` | Physical DFB index `uint32_t` parameter | Declares a direct DFB dependency. |
+| DFB in `dfb_dependencies` | No generated C++ argument | Declares dependency-only storage access. Entries must be distinct and must not duplicate automatic dependencies. |
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
@@ -238,10 +225,37 @@ definitions, and return unique semaphore descriptors.
 A bare DFB in `template_args` is ambiguous and rejected. The explicit wrapper
 selects allocation metadata or an integer index.
 
-## Typed DFB descriptors
+## DFB dependency and effect representation
 
-A descriptor supplies the finalized physical allocation properties required by
-an external DFB protocol:
+The [external-functions reference](../sphinx/reference/external-functions.md)
+defines the Python API and static-expression rules. Every statically known DFB
+accessed by external code must be declared as a dependency. The `dfb_effects`
+summary is optional: without it, each dependency remains an opaque access for
+the call duration. A complete, accurate summary can prove a bounded lifecycle
+and permit physical-index reuse.
+
+`OpaqueCallOp::getDFBDependencyOperands()` returns dependency occurrences in
+this order:
+
+1. DFB occurrences in `func_args`.
+2. DFB descriptor occurrences in `template_args`.
+3. DFBs in `dfb_dependencies`.
+
+Each occurrence receives its position in that returned value sequence as its IR
+index; the sequence does not describe execution. It preserves occurrences
+rather than uniquing SSA values. Operand adaptation can map distinct source
+operands to the same DFB, but each occurrence retains its own access contract.
+
+Each Python effect explicitly names the affected DFB. For example,
+`ttl.DFBEffect.wait(source, tiles=1)` means that the external function executes
+a one-tile wait on `source`. The frontend resolves `source` to its dependency
+occurrence and stores that occurrence index in `DFBProtocolEffectAttr`. The IR
+attribute therefore contains a typed action, a dependency index, and a positive
+static tile count no greater than the DFB capacity; the dependency index is not
+an execution position.
+
+The following call declares two descriptor dependencies and four external
+protocol actions:
 
 ```python
 ttl.call_extern_func(
@@ -251,11 +265,106 @@ ttl.call_extern_func(
         ttl.dfb_descriptor(source),
         ttl.dfb_descriptor(destination),
     ],
+    dfb_effects=[
+        ttl.DFBEffect.reserve(destination, tiles=1),
+        ttl.DFBEffect.wait(source, tiles=1),
+        ttl.DFBEffect.push(destination, tiles=1),
+        ttl.DFBEffect.pop(source, tiles=1),
+    ],
     kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
-The call lowers to a C++ template invocation equivalent to:
+`dfb_effects` is one call-wide execution sequence. List position specifies the
+order in which the external C++ executes protocol actions, including actions on
+different DFBs. Different DFBs do not share an order position; their actions
+occupy distinct positions in the same sequence. The call above produces this
+dependency sequence and effect sequence:
+
+```text
+Sequence returned by getDFBDependencyOperands():
+
+  index 0: source
+  index 1: destination
+
+External-call execution sequence:
+
+  call entry
+      |
+      v
+  [0] reserve destination, 1 tile  (dependency 1)
+      |
+      v
+  [1] wait source, 1 tile          (dependency 0)
+      |
+      v
+      copy source -> destination   (ordinary C++ storage access)
+      |
+      v
+  [2] push destination, 1 tile     (dependency 1)
+      |
+      v
+  [3] pop source, 1 tile           (dependency 0)
+      |
+      v
+    return
+
+Per-DFB protocol subsequences:
+
+  source:      wait [1] ----------------------------> pop [3]
+  destination: reserve [0] --------> push [2]
+```
+
+The global positions preserve the cross-DFB relation: destination is reserved
+before source is popped, so their lifetimes overlap. The compiler uses this
+relation when deciding whether physical-index reuse is valid.
+
+The frontend resolves static tile and repeat expressions, recursively expands
+`ttl.DFBEffect.repeat`, and rejects an empty repeat body or a flattened sequence
+longer than 4096 actions before creating IR. A repeat inserts each copy of its
+body into the same call-wide sequence. The 4096-action bound matches other
+bounded static event enumerations in the compiler and limits both frontend
+materialization and downstream per-effect analysis. It is not a hardware
+limit. A repeat has no IR or runtime representation.
+
+`ttl.opaque_call` implements `DFBAccessOpInterface`, which supplies four facts
+without exposing the operation's operand-segment representation to analyses:
+
+| Interface fact | Meaning |
+| --- | --- |
+| DFB dependencies | Every statically declared storage-access occurrence. |
+| Protocol effects | Synchronous reserve, push, wait, and pop actions in call execution order. |
+| DFB index operands | DFBs whose finalized physical indices reach external C++. |
+| Unknown access | The call may access unlisted user-managed DFBs. |
+
+An effect summary describes actions performed by external C++; it does not
+create executable TTL operations. Every listed action must execute on every
+execution of the call and complete before return. Conditional external actions
+require corresponding TTL control flow around a call with an unconditional
+summary. Work that remains active after return requires a separate completion
+contract and cannot be represented by these effects.
+
+An occurrence with no effect is a possible read and write for the complete
+call. Ordinary storage accesses between summarized acquisitions and releases
+remain inside the corresponding lifetime. A partial effect sequence is valid
+metadata but cannot prove a bounded lifecycle for that DFB. When the same DFB
+has multiple dependency occurrences, every occurrence requires effects to
+eliminate the opaque call-duration access. For allocation,
+`unknown_dfb_access` conservatively adds the call as an opaque occurrence on
+every user-managed DFB, including listed DFBs, in each affected allocation
+scope. The compiler does not infer facts from the callee name, header, emitted
+C++, or integer DFB identity.
+
+DFB ownership, synchronization insertion, SPSC verification, and physical
+allocation consume this common interface. Their use of opaque and effectful
+accesses is described in
+[Dataflow Buffer Management](DFBManagement.md#external-calls).
+
+## Typed DFB descriptors
+
+A descriptor supplies the finalized physical allocation properties required by
+an external DFB protocol. The two descriptor arguments in the `external_copy`
+call above lower to a C++ template invocation equivalent to:
 
 ```c++
 external_copy<
@@ -271,9 +380,23 @@ constant expressions:
 ```c++
 template <typename Source, typename Destination>
 inline void external_copy() {
+  static_assert(Source::pages_per_block == Destination::pages_per_block);
+  static_assert(Source::page_size_bytes == Destination::page_size_bytes);
   cb_reserve_back(Destination::index, Destination::pages_per_block);
   cb_wait_front(Source::index, Source::pages_per_block);
-  // Copy and release the same page counts before returning.
+
+  auto *source_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(
+      get_read_ptr(Source::index));
+  auto *destination_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(
+      get_write_ptr(Destination::index));
+  constexpr uint32_t total_words =
+      Source::pages_per_block * Source::page_size_bytes / sizeof(uint32_t);
+  for (uint32_t word_index = 0; word_index < total_words; ++word_index) {
+    destination_ptr[word_index] = source_ptr[word_index];
+  }
+
+  cb_push_back(Destination::index, Destination::pages_per_block);
+  cb_pop_front(Source::index, Source::pages_per_block);
 }
 ```
 
@@ -291,13 +414,14 @@ ttl.call_extern_func(
     HEADER,
     "legacy_copy",
     template_args=[ttl.get_dfb_id(source)],
-    func_args=[source],
+    dfb_dependencies=[source],
     kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
-The ordinary DFB operand is required because an integer index argument does not
-declare that the external function accesses DFB storage.
+The dependency-only operand is required because an integer index argument does
+not declare that the external function accesses DFB storage. It does not add a
+C++ function argument.
 
 ## Tensor arguments
 
@@ -328,14 +452,19 @@ separate runtime-argument interface.
 
 ## Lowering
 
-The Python AST emits ordered typed attributes for static values and a separate
-operand segment for referenced DFBs. TTL to TTKernel conversion resolves DFB
-indices and materializes descriptor metadata before the DFB type loses its
-block geometry. TTKernel to EmitC resolves constants and descriptor types, and
-C++ emission inserts the required prelude and header during its existing
+The Python AST emits ordered typed attributes for static values and separate
+operand segments for template, dependency-only, and function-argument DFBs.
+Dependency occurrences, protocol effects, and unknown access remain in TTL for
+analysis and verification. TTL to TTKernel conversion resolves DFB indices and
+materializes descriptor metadata before the DFB type loses its block geometry;
+it discards dependency-only and effect metadata because those facts do not
+alter the C++ call. TTKernel to EmitC resolves constants and descriptor types,
+and C++ emission inserts the required prelude and header during its existing
 operation scan.
 
 See `examples/external_dfb_reuse.py` for two external calls surrounded by
 visible TTL protocol operations. An acknowledgment proves that the result
 lifetimes do not overlap, while typed descriptor operands keep each opaque call
-inside the corresponding lifetime.
+inside the corresponding lifetime. See
+`test/python/call_extern_func_dfb_effects.py` for dependency-only operands,
+ordered effect expansion, unknown access, and generated-C++ invariance.

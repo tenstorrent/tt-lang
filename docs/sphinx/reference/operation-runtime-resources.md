@@ -1,9 +1,18 @@
 # Operation Runtime Resources
 
-`@ttl.operation` accepts a `runtime_resource_factory` callback for resources
-that depend on the current invocation. The callback provides caller-created
-program semaphores, per-logical-kernel runtime arguments and definitions, and
-host objects that must remain alive through execution.
+TT-Metal programs separate reusable structure from dispatch values. Kernel
+definitions, program semaphore layout, and runtime-argument schema determine
+which program can be reused; per-core runtime-argument words may change for
+each dispatch. Execution may also require host or device objects to remain
+alive while the program runs.
+
+The `runtime_resource_factory` callback supplies caller-defined program
+semaphores and JIT definitions, per-core dispatch words, and host owners for a
+TT-Lang operation. It runs once for each device execution, before the runner
+constructs program descriptors and after the current tensors, launch range,
+and compiler-reserved semaphore IDs are known. Resources select logical kernels
+rather than generated descriptor indices, which can change with target
+selection and core specialization.
 
 The callback has the following keyword-only contract:
 
@@ -16,8 +25,10 @@ def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
 - `core_ranges` contains the operation worker cores.
 - `first_free_semaphore_id` is the first ID after compiler-managed semaphores.
 
-The callback executes once for every operation invocation and returns a
-`ttl.ProgramRuntimeResources`. The callback result is not cached.
+The callback executes once for every device execution and returns a
+`ttl.ProgramRuntimeResources`. The callback result is not cached. Its structural
+fingerprint may select an existing cached TT-Metal program, while its current
+runtime-argument words are supplied for that dispatch.
 
 ## Typed Records
 
@@ -30,8 +41,12 @@ All resource records are frozen, and all collection fields are tuples.
 | `CoreRuntimeArgs` | Associates one ordered integer vector with one worker coordinate. |
 | `KernelDefine` | Associates one definition name with its string value. |
 | `FabricManagerClaim` | Identifies one external fabric manager and its logical kernel. |
-| `FabricConnectionBinding` | Associates one captured manager claim with its connection requirements and ABI identity. |
+| `FabricConnectionBinding` | Associates a manager claim with its connection requirements and ABI identity. |
 | `FabricConnectionRequirement` | Reserves one fixed forwarding link for specified logical devices and worker nodes. |
+
+`KernelDefine` is compile-affecting program structure even though the factory
+returns it for each execution. `CoreRuntimeArgs.values` contains the dispatch
+words that may change while the cached program is reused.
 
 The following example creates one caller semaphore and configures an
 operation-owned data-movement kernel:
@@ -87,83 +102,46 @@ reference](external-functions.md) describes logical-kernel selection.
 
 ## External Fabric Managers
 
-An opaque external kernel may own routing-plane connections that must not
-overlap compiler-generated managers. A captured `FabricManagerClaim` records
-that ownership without exposing the external kernel's runtime-argument ABI:
+An external kernel may own routing-plane connections that must not overlap
+compiler-generated managers. A captured `FabricManagerClaim` records this
+ownership without exposing the external kernel's runtime-argument ABI.
+`acquire()`, `use()`, and `release()` describe a manager lifetime across opaque
+calls; `scoped()` describes one call that acquires, uses, and releases it.
+Ownership begins when the acquire call starts and ends after the release call
+returns.
 
-```python
-external_sender = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-external_manager = ttl.FabricManagerClaim("external", kernel=external_sender)
-
-def sender(input_tensor, output_tensor):
-    ttl.call_extern_func(
-        HEADER,
-        "open_connections",
-        func_args=[],
-        kernel=external_sender,
-        fabric_manager_effects=(external_manager.acquire(),),
-    )
-    ttl.call_extern_func(
-        HEADER,
-        "use_connections",
-        func_args=[input_tensor, output_tensor],
-        kernel=external_sender,
-        fabric_manager_effects=(external_manager.use(),),
-    )
-    ttl.call_extern_func(
-        HEADER,
-        "close_connections",
-        func_args=[],
-        kernel=external_sender,
-        fabric_manager_effects=(external_manager.release(),),
-    )
-```
-
-Use `ttl.PIPE_SOURCE_KERNEL` as the claim kernel when the external manager must
-execute on the compiler-owned PipeNet source kernel.
-
-Ownership begins at entry to the acquire call because that opaque call may open
-connections. It ends after the release call returns. Every `use()` must occur
-strictly between one acquire and release. `scoped()` declares one opaque call
-that acquires, uses, and releases the manager. Acquire, use, and release
-effects must occur in the selected logical kernel's straight-line entry block.
-A scoped effect may occur in structured control flow when the compiler proves
-its exact launch-node domain.
-
-An expand-only operation forwards captured claims to the final grid-bearing
-operation. Acquire, use, and release effects may therefore reside in separate
-composed helpers. The claim binds once when the final operation is registered;
-reusing the same claim in two independent grid-bearing operations is invalid.
-
-The runtime resource factory supplies one `FabricConnectionBinding` for every
+The runtime resource factory supplies one `FabricConnectionBinding` for each
 captured claim. Its requirements must cover every active logical-device and
-worker-node instance of the selected kernel. A conditional scoped effect uses
-its proven launch-node domain instead of the complete executable descriptor;
-a proven empty domain requires no worker binding. `fixed_link_index` is an
-external ABI constraint, not a preference; target binding rejects it when the
-active control plane does not expose that link for the destination. The
-compiler places external and generated manager intervals in one interference
-graph, validates every link assignment before descriptor mutation, and
-reserves the external link without interpreting or modifying external runtime
-arguments.
+worker-node instance of the selected kernel. `fixed_link_index` is an ABI
+constraint: target binding rejects a link that the active control plane does
+not expose for the destination. The compiler validates external and generated
+manager intervals together before modifying program descriptors.
 
-The claim identity, `abi_identity`, logical endpoints, worker nodes, and fixed
-links participate in program-cache identity. Objects in the binding's
-`lifetimes` tuple remain referenced through execution.
+Claim identity, `abi_identity`, logical endpoints, worker nodes, and fixed links
+participate in program-cache identity. Objects in a binding's `lifetimes` tuple
+remain referenced through execution.
 
 ## Validation and Specialization
 
-Runtime resource planning validates the complete factory result before TTNN
-descriptor construction. Invalid resources raise an exception without
-materializing a partial program. Validation includes the following rules:
+Runtime resource planning validates the complete factory result before the
+runner constructs a TTNN `KernelDescriptor` or `ProgramDescriptor`. Invalid
+resources raise an exception without materializing a partial program.
+Validation includes the following rules:
 
+- The result and every nested resource use the documented record and tuple
+  types.
+- Every explicit `Kernel` is bound to the executing operation and identifies
+  an emitted logical kernel.
 - Runtime argument coordinates and semaphore ranges must be inside the
   operation worker range.
+- Each runtime argument coordinate occurs at most once per logical kernel, and
+  its values are integer-indexable non-boolean objects.
 - Caller semaphore IDs must be unique and greater than or equal to
   `first_free_semaphore_id`.
-- Definition names and values must be strings, and definitions for one logical
-  kernel must not conflict.
-- Runtime argument vectors for one descriptor must have equal lengths.
+- Each logical kernel may have at most one `KernelRuntimeResources` entry.
+- Definition names and values must be strings, and each definition name must
+  occur at most once in that entry.
+
 Core specialization can produce several descriptors for one logical kernel.
 Definitions apply to every descriptor for that identity. Runtime arguments are
 partitioned by coordinate, and every coordinate must match exactly one
@@ -172,10 +150,11 @@ descriptor.
 ## Program Cache and Lifetimes
 
 Resource structure participates in program-cache identity. The identity
-includes logical kernels, descriptor coordinates, definitions, runtime-vector
-lengths, caller semaphore properties, and external fabric binding structure.
-Runtime values, tensor addresses, and lifetime object identities are excluded,
-so cached programs accept new invocation values.
+includes logical destinations, descriptor coordinates, definitions,
+runtime-argument coordinates and vector lengths, caller semaphore properties,
+and external fabric binding structure. Runtime-argument words, tensor
+addresses, and lifetime object identities are excluded, so cached programs
+accept new dispatch values.
 
 Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
 execution. A successful invocation replaces the retained owner tuple. A failed
@@ -195,8 +174,8 @@ runner.run(
 ```
 
 The runner reconstructs logical-kernel identities and uses the same planner and
-materializer as normal execution. It does not serialize live owners or create
-replacement topology resources.
+materializer as decorated operation execution. It does not serialize live
+owners or dispatch values; the caller supplies them through the factory.
 
 Operation runtime resources are a hardware execution interface. The simulator
 does not model TTNN program descriptors or per-core kernel runtime arguments

@@ -38,15 +38,15 @@ def test_hardware_event_policy_and_manual_controls() -> None:
     assert ci_workflow.count("run_galaxy_tests:") == 2
     assert ci_workflow.count("run_loudbox_tests:") == 2
     assert (
-        "run_galaxy_tests: ${{ (github.event_name == 'push' "
-        "&& github.ref == 'refs/heads/main') || "
-        "github.event_name == 'schedule' || "
+        "run_galaxy_tests: ${{ github.event_name == 'schedule' || "
         "(github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}"
         in ci_workflow
     )
     assert (
-        "run_loudbox_tests: ${{ github.event_name == 'workflow_dispatch' "
-        "&& inputs.run_loudbox_tests }}" in ci_workflow
+        "run_loudbox_tests: ${{ github.event_name == 'pull_request' || "
+        "(github.event_name == 'push' && github.ref == 'refs/heads/main') || "
+        "(github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests) }}"
+        in ci_workflow
     )
     assert call_build.count("run_galaxy_tests:") == 2
     assert call_build.count("run_loudbox_tests:") == 2

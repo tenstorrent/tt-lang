@@ -10,10 +10,14 @@
 //===----------------------------------------------------------------------===//
 //
 // This utility computes ownership between DFB acquire operations and matching
-// release operations:
+// closing operations:
 //
 //   ttl.cb_reserve -> ttl.cb_push
 //   ttl.cb_wait    -> ttl.cb_pop
+//
+// A push relinquishes producer access to reserved slots and publishes their
+// tiles. A pop relinquishes consumer access to waited slots and returns their
+// capacity to the producer. Neither operation deallocates the DFB.
 //
 // The analysis is intentionally local to a kernel and to one acquire class.
 // Producer intervals and consumer intervals are independent because
@@ -23,10 +27,12 @@
 // DFB operations use the DFB value itself.
 //
 // The interval queries let `ttl-insert-cb-sync` place missing releases after
-// their owned uses. The immutable index additionally matches existing
-// releases to acquisitions by FIFO tile count for DFB value lifetime analysis.
-// Keeping both models here gives them one definition of acquire/release kinds,
-// DFB identity, and transfer counts.
+// their owned uses. They recognize release effects exposed by
+// `DFBAccessOpInterface`, so an external call can close an interval without a
+// separate lifecycle operation. The immutable index additionally matches
+// concrete releases to acquisitions by FIFO tile count for DFB value lifetime
+// analysis. Keeping both models here gives them one definition of
+// acquire/release kinds, DFB identity, and transfer counts.
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Operation.h"
@@ -45,7 +51,7 @@
 
 namespace mlir::tt::ttl {
 
-/// Classifies the DFB pointer advanced by an acquire/release pair.
+/// Classifies a reserve/push producer interval or wait/pop consumer interval.
 enum class DFBAcquireReleaseKind { Producer, Consumer };
 
 /// Half-open ownership interval for one DFB acquire operation.
@@ -68,7 +74,7 @@ struct DFBAcquireInterval {
   Operation *kindBoundary = nullptr;
 };
 
-/// Releases found inside one acquire interval.
+/// Push or pop actions that close one acquire interval.
 struct DFBReleaseSearch {
   /// Releases in the acquire block or projected into that block.
   SmallVector<Operation *> sameLevelReleases;
@@ -133,7 +139,9 @@ bool isDFBAcquireOp(Operation *op);
 /// Returns true for DFB release ops accepted by this analysis.
 bool isDFBReleaseOp(Operation *op);
 
-/// Returns the explicit transaction count or the DFB block size.
+/// Returns the tile count of a concrete DFB lifecycle operation.
+///
+/// `operation` must expose exactly one protocol effect.
 int64_t getDFBLifecycleTileCount(Operation *operation);
 
 /// Returns the DFB operand of a `ttl.cb_reserve` or `ttl.cb_wait`.
@@ -156,6 +164,18 @@ struct DFBAcquireReleaseOperations {
   SmallVector<Operation *> pops;
   SmallVector<Operation *> acquisitions;
   SmallVector<Operation *> releases;
+
+  /// Producer release candidates used by synchronization insertion.
+  /// Includes concrete `ttl.cb_push` ops and operations that summarize push
+  /// effects. Entries identify operations; release matching selects the effect
+  /// for the acquired DFB.
+  SmallVector<Operation *> producerProtocolReleases;
+
+  /// Consumer release candidates used by synchronization insertion.
+  /// Includes concrete `ttl.cb_pop` ops and operations that summarize pop
+  /// effects. Entries identify operations; release matching selects the effect
+  /// for the acquired DFB.
+  SmallVector<Operation *> consumerProtocolReleases;
 };
 
 /// Collects DFB lifecycle operations from `func` in walk order.
@@ -181,11 +201,11 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval);
 /// When `lastOwnedUse` is null, only the strict range before the next same-kind
 /// acquire is searched. When non-null and it extends past that boundary, the
 /// search also accepts releases after `lastOwnedUse`; this makes repeated
-/// auto-sync insertion idempotent.
-DFBReleaseSearch
-findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
-                     ArrayRef<Operation *> releases,
-                     const llvm::DenseSet<Operation *> *erased = nullptr);
+/// auto-sync insertion idempotent. `releases` may contain concrete lifecycle
+/// operations or operations that summarize external protocol effects.
+DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
+                                      Operation *lastOwnedUse,
+                                      ArrayRef<Operation *> releases);
 
 /// Immutable release-to-acquisition relations for one kernel.
 ///

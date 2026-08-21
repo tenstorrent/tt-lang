@@ -35,11 +35,34 @@ def call_extern_func(
     *,
     template_args=None,
     func_args=None,
+    dfb_dependencies=None,
+    dfb_effects=None,
+    unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
     fabric_manager_effects=(),
 ) -> None:
     """Call external C++ in selected logical kernels.
+
+    Args:
+        header: Header that declares the external function.
+        callee: External C++ function name.
+        template_args: Static values and explicit DFB wrappers emitted as C++
+            template arguments.
+        func_args: Values emitted as C++ function arguments.
+        dfb_dependencies: DFBs accessed by external C++ without adding C++
+            arguments. Entries must be mutually distinct and must not duplicate
+            automatic dependencies in ``func_args`` or DFB descriptor template
+            arguments.
+        dfb_effects: Optional call-wide sequence of synchronous DFB protocol
+            actions performed on every call execution. A complete summary can
+            permit physical-index reuse and does not emit protocol calls.
+        unknown_dfb_access: Whether external C++ may access unlisted
+            user-managed DFBs, conservatively restricting physical-index reuse.
+        include_paths: Compile-time directories added to external header
+            lookup.
+        kernel: Logical kernel selector or nonempty tuple of distinct
+            selectors.
 
     ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``.
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
@@ -49,6 +72,41 @@ def call_extern_func(
     declares external fabric-manager ownership at call entry and completion.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+class DFBEffect:
+    """Ordered synchronous DFB actions performed by an external call.
+
+    Tile and repeat counts accept static integer expressions over literals,
+    integer captures, and module globals using ``+``, ``-``, ``*``, ``//``,
+    and ``%``. Runtime values and booleans are invalid counts. Floor-division
+    and modulo divisors must be nonzero.
+    """
+
+    @staticmethod
+    def repeat(count: int, effects, /):
+        """Repeat an ordered DFB-effect sequence a static nonnegative count."""
+        raise RuntimeError("ttl.DFBEffect.repeat() is valid only in a compiled kernel")
+
+    @staticmethod
+    def reserve(dfb, *, tiles: int):
+        """Declare a producer reservation completed by the external call."""
+        raise RuntimeError("ttl.DFBEffect.reserve() is valid only in a compiled kernel")
+
+    @staticmethod
+    def push(dfb, *, tiles: int):
+        """Declare a producer publication completed by the external call."""
+        raise RuntimeError("ttl.DFBEffect.push() is valid only in a compiled kernel")
+
+    @staticmethod
+    def wait(dfb, *, tiles: int):
+        """Declare a consumer wait completed by the external call."""
+        raise RuntimeError("ttl.DFBEffect.wait() is valid only in a compiled kernel")
+
+    @staticmethod
+    def pop(dfb, *, tiles: int):
+        """Declare that the external call returns consumed DFB capacity."""
+        raise RuntimeError("ttl.DFBEffect.pop() is valid only in a compiled kernel")
 
 
 def dfb_descriptor(dfb):
@@ -1190,6 +1248,20 @@ def _get_block_scalar_type(block):
     )
 
 
+def _as_index_values(block, coords):
+    context = block.type.context
+    index_type = IndexType.get(context)
+    index_values = []
+    for coord in coords:
+        if isinstance(coord, int):
+            index_values.append(arith.ConstantOp(index_type, coord))
+        elif hasattr(coord, "type") and isinstance(coord.type, IndexType):
+            index_values.append(coord)
+        else:
+            index_values.append(arith.IndexCastOp(index_type, coord))
+    return index_values
+
+
 @syntax("raw_element_read")
 def raw_element_read(block, *coords):
     """Read a scalar element from a block at flat coordinates.
@@ -1211,16 +1283,24 @@ def raw_element_read(block, *coords):
     if len(coords) < 1:
         raise ValueError("raw_element_read requires at least one coordinate")
     scalar_type = _get_block_scalar_type(block)
-    ctx = block.type.context
-    index_vals = []
-    for c in coords:
-        if isinstance(c, int):
-            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
-        elif hasattr(c, "type") and isinstance(c.type, IndexType):
-            index_vals.append(c)
-        else:
-            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
-    return ttl.raw_element_read(scalar_type, block, index_vals)
+    return ttl.raw_element_read(scalar_type, block, _as_index_values(block, coords))
+
+
+@syntax("read_index")
+def read_index(block, *coords):
+    """Read a nonnegative scalar element as an index.
+
+    Coordinates follow ``raw_element_read``. Fractional values truncate
+    toward zero. The source value must be finite, nonnegative, and no greater
+    than INT32_MAX; behavior is undefined otherwise.
+
+    Only supported in data movement (noc) threads.
+    """
+    if len(coords) < 1:
+        raise ValueError("read_index requires at least one coordinate")
+    # Validate before op construction so unsupported dtypes raise in Python.
+    _get_block_scalar_type(block)
+    return ttl.read_index(block, _as_index_values(block, coords))
 
 
 @syntax("raw_element_write")
@@ -1252,14 +1332,7 @@ def raw_element_write(block, *args):
     coord_args = args[:-1]
     val = args[-1]
     ctx = block.type.context
-    index_vals = []
-    for c in coord_args:
-        if isinstance(c, int):
-            index_vals.append(arith.ConstantOp(IndexType.get(ctx), c))
-        elif hasattr(c, "type") and isinstance(c.type, IndexType):
-            index_vals.append(c)
-        else:
-            index_vals.append(arith.IndexCastOp(IndexType.get(ctx), c))
+    index_vals = _as_index_values(block, coord_args)
 
     block_scalar_type = _get_block_scalar_type(block)
     if hasattr(val, "type") and val.type != block_scalar_type:
@@ -1282,7 +1355,9 @@ __all__ = [
     "exp",
     "raw_element_read",
     "raw_element_write",
+    "read_index",
     "call_extern_func",
+    "DFBEffect",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",

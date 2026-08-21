@@ -52,6 +52,7 @@ _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     "copy": _Placement.DATA_MOVEMENT,
     "element_read": _Placement.DATA_MOVEMENT,
     "element_write": _Placement.DATA_MOVEMENT,
+    "read_index": _Placement.DATA_MOVEMENT,
     # Compute
     "fill": KernelKind.COMPUTE,
     "matmul": KernelKind.COMPUTE,
@@ -90,10 +91,11 @@ _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     "signpost": _Placement.CONTROL,
 }
 
-# ttl.<ns>.<name>(...) -> logical kind for every name in the namespace.
-_TTL_NAMESPACES: Dict[str, KernelKind] = {
+# Every ttl.<ns>.<name>(...) in a namespace shares one placement classification.
+_TTL_NAMESPACES: Dict[str, Union[KernelKind, _Placement]] = {
     "math": KernelKind.COMPUTE,
     "block": KernelKind.COMPUTE,
+    "DFBEffect": _Placement.CONTROL,
 }
 
 # Pipe source and destination callbacks have distinct logical affinities.
@@ -379,14 +381,14 @@ def _classify_ttl_call(
         outer = func.value
         if isinstance(outer.value, ast.Name) and outer.value.id == "ttl":
             namespace = outer.attr
-            kind = _TTL_NAMESPACES.get(namespace)
-            if kind is None:
+            classification = _TTL_NAMESPACES.get(namespace)
+            if classification is None:
                 raise _split_error(
                     func,
                     f"unknown ttl.{namespace}.{func.attr}(...) call; register "
                     f"namespace 'ttl.{namespace}' in atom_split._TTL_NAMESPACES",
                 )
-            return frozenset({kind})
+            return _materialize_kernels(classification, data_movement_kernels)
 
     return None
 
