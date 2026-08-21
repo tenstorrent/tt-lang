@@ -341,7 +341,7 @@ def _expand_call(
         external_pipenets,
         suffix,
     )
-    _add_logical_kernel_bindings(
+    selected_kernels = _add_logical_kernel_bindings(
         spec,
         bindings,
         scope,
@@ -361,6 +361,7 @@ def _expand_call(
         scope,
         reserved_names,
         dfb_resets,
+        selected_kernels,
         suffix,
     )
 
@@ -444,8 +445,9 @@ def _add_logical_kernel_bindings(
     scope: Dict[str, object],
     reserved_names: Set[str],
     logical_kernels: Dict[str, Kernel],
-) -> None:
+) -> Dict[int, Kernel]:
     loaded_names = _loaded_names(spec.fn_ast.body)
+    selected_kernels: Dict[int, Kernel] = {}
     reset_participant_ids = {
         id(participant)
         for reset in spec.dfb_resets.values()
@@ -468,7 +470,9 @@ def _add_logical_kernel_bindings(
             existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
             scope[existing_name] = kernel
             logical_kernels[existing_name] = kernel
+        selected_kernels[id(kernel)] = logical_kernels[existing_name]
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+    return selected_kernels
 
 
 def _add_dispatch_condition_bindings(
@@ -503,6 +507,7 @@ def _add_dfb_reset_bindings(
     scope: Dict[str, object],
     reserved_names: Set[str],
     dfb_resets: Dict[str, DFBReset],
+    selected_kernels: Dict[int, Kernel],
     suffix: str,
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
@@ -515,7 +520,10 @@ def _add_dfb_reset_bindings(
             # Each composed call executes a distinct dynamic reset. Aliases
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
-                participants=reset.participants,
+                participants=tuple(
+                    selected_kernels[id(participant)]
+                    for participant in reset.participants
+                ),
             )
             reset_instances[id(reset)] = reset_instance
         fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
