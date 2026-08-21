@@ -3717,24 +3717,26 @@ static bool proveOrderedBefore(const DFBPerNodeLifetime &before,
 
 static bool intervalIsOutsideReset(ArrayRef<unsigned> earliestEntryEvents,
                                    ArrayRef<unsigned> terminalCompletionEvents,
-                                   EventPair resetEvents,
+                                   const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
   if (earliestEntryEvents.empty() || terminalCompletionEvents.empty()) {
     return false;
   }
   bool beforeReset =
       llvm::all_of(terminalCompletionEvents, [&](unsigned terminalCompletion) {
-        return graph.strictlyPrecedes(terminalCompletion, resetEvents.entry);
+        return graph.strictlyPrecedes(terminalCompletion,
+                                      resetEvents.first.entry);
       });
   bool afterReset =
       llvm::all_of(earliestEntryEvents, [&](unsigned earliestEntry) {
-        return graph.strictlyPrecedes(resetEvents.completion, earliestEntry);
+        return graph.strictlyPrecedes(resetEvents.last.completion,
+                                      earliestEntry);
       });
   return beforeReset || afterReset;
 }
 
 static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
-                                   EventPair resetEvents,
+                                   const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
   if (lifetime.resetEpochs.empty()) {
     return intervalIsOutsideReset(lifetime.earliestEntryEvents,

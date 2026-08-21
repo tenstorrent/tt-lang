@@ -102,6 +102,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
   func.func @repeated_all_compute()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_all">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index
@@ -115,6 +116,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_all">,
                   ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index
@@ -128,6 +130,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_all">,
                   ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index

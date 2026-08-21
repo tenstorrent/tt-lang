@@ -141,6 +141,69 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 
 // -----
 
+// A conditional reset cannot define one reset instance per loop interval.
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @conditional_repeated_reset_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "conditional_repeated_reset">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    %zero = arith.constant 0 : i64
+    scf.for %iteration = %lower to %upper step %step {
+      %value = ttl.opaque_call "compute_active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+      %active = arith.cmpi ne, %value, %zero : i64
+      scf.if %active {
+        // expected-error @below {{'ttl.reset_dfbs' op synchronized DFB reset must execute at most once per dispatch and launch node or once per iteration of an immutable sequential structured loop nest}}
+        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "reader", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "writer", operation = "conditional_repeated_reset">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      }
+    }
+    return
+  }
+
+  func.func @conditional_repeated_reset_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "conditional_repeated_reset">,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    %zero = arith.constant 0 : i64
+    scf.for %iteration = %lower to %upper step %step {
+      %value = ttl.opaque_call "reader_active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+      %active = arith.cmpi ne, %value, %zero : i64
+      scf.if %active {
+        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "reader", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "writer", operation = "conditional_repeated_reset">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      }
+    }
+    return
+  }
+
+  func.func @conditional_repeated_reset_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "conditional_repeated_reset">,
+                  ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    %zero = arith.constant 0 : i64
+    scf.for %iteration = %lower to %upper step %step {
+      %value = ttl.opaque_call "writer_active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
+      %active = arith.cmpi ne, %value, %zero : i64
+      scf.if %active {
+        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "reader", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "writer", operation = "conditional_repeated_reset">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // All participants must execute the same number of reset instances.
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -195,6 +258,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
   func.func @sequence_mismatch_compute()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "sequence_mismatch">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index
@@ -208,6 +272,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "sequence_mismatch">,
                   ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index
@@ -221,6 +286,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "sequence_mismatch">,
                   ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
@@ -236,17 +302,18 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
-// Parallel iterations have no shared sequential reset ordinal.
+// Parallel iterations do not have an exact sequential reset count.
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @parallel_reset_compute()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "parallel_reset">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
     scf.parallel (%iteration) = (%lower) to (%upper) step (%step) {
-      // expected-error @below {{'ttl.reset_all_dfbs' op repeated synchronized DFB reset with exact count 2 must execute once in every iteration of an immutable sequential structured loop nest}}
+      // expected-error @below {{'ttl.reset_all_dfbs' op synchronized DFB reset must execute at most once per dispatch and launch node or once per iteration of an immutable sequential structured loop nest}}
       ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "parallel_reset">, <kind = data_movement, identity = "reader", operation = "parallel_reset">, <kind = data_movement, identity = "writer", operation = "parallel_reset">]>
     }
     return
@@ -256,6 +323,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "parallel_reset">,
                   ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
@@ -269,6 +337,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "parallel_reset">,
                   ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
