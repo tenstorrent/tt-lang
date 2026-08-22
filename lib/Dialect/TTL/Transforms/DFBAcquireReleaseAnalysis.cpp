@@ -630,6 +630,17 @@ DFBAcquireReleaseIndex::getTransaction(Operation *acquire) const {
   return transaction->second;
 }
 
+SmallVector<Operation *>
+DFBAcquireReleaseIndex::getAcquisitions(DFBAcquireReleaseKind kind) const {
+  SmallVector<Operation *> acquisitions;
+  for (Operation *acquisition : acquisitionOrder) {
+    if (getTransaction(acquisition).kind == kind) {
+      acquisitions.push_back(acquisition);
+    }
+  }
+  return acquisitions;
+}
+
 const DFBReleaseOwnership &
 DFBAcquireReleaseIndex::getReleaseOwnership(Operation *release) const {
   auto ownership = releaseOwnership.find(release);
@@ -644,6 +655,17 @@ DFBAcquireReleaseIndex::getReleaseIntervalOwners(Operation *release) const {
   assert(owners != releaseIntervalOwners.end() &&
          "operation is not an indexed DFB release");
   return owners->second;
+}
+
+SmallVector<Operation *>
+DFBAcquireReleaseIndex::getReleases(DFBAcquireReleaseKind kind) const {
+  SmallVector<Operation *> releases;
+  for (Operation *release : releaseOrder) {
+    if (getReleaseOwnership(release).kind == kind) {
+      releases.push_back(release);
+    }
+  }
+  return releases;
 }
 
 } // namespace mlir::tt::ttl

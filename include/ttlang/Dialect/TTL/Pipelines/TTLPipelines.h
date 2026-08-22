@@ -109,6 +109,9 @@ struct TTLToTTKernelPipelineOptions
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
+/// Add tensor recurrence formation, lowering, and fallback materialization.
+void buildTTLTensorRecurrencePipeline(mlir::OpPassManager &pm);
+
 /// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 

@@ -2570,8 +2570,13 @@ def _lower_program_to_kernel(
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
         )
+        tensor_recurrence_pipeline = (
+            "ttl-form-accumulation-scopes,"
+            "ttl-lower-accumulation-scopes,"
+            "ttl-materialize-loop-state"
+        )
         pipeline_passes = [
-            "func.func(ttl-materialize-loop-state)",
+            f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(ttl-create-producer-compute)",

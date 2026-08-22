@@ -88,6 +88,45 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // -----
 
+// Direct f32 tile operations in ttl.dst_section constrain kernel config even
+// when they are not nested in ttl.compute.
+// DEFAULT-LABEL: func.func @direct_f32_dst_section_auto_enable
+// DEFAULT-SAME: dst_full_sync_en = false
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// DEFAULT-SAME: ttl.unpack_to_dest_fp32 = array<i32: 0>
+// NO-MATMUL-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
+// NO-REDUCE-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
+// FPUOFF-LABEL: func.func @direct_f32_dst_section_auto_enable
+// FPUOFF-SAME: fp32_dest_acc_en = true
+func.func @direct_f32_dst_section_auto_enable(
+    %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+  %zero = arith.constant 0 : index
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 16, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %input_attached = ttl.attach_cb %input, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %tile = tensor.extract %input_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.dst_section {
+    %dst_token, %copied = ttl.copy_tile %tile[%zero, %zero] into dst[%zero]
+        : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    ttl.tile_store %copied, %output[%zero, %zero] from dst[%zero]
+        : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+  }
+  return
+}
+
+// -----
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // A bf16 kernel without an accumulation preference selects default DST mode.

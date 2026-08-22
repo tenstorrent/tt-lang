@@ -73,9 +73,9 @@ static bool isTensorStateIndex(ArrayRef<TensorLoopState> states,
   });
 }
 
-/// Seeds each compiler-allocated state DFB before the rewritten loop. The
-/// pre-loop store preserves zero-trip scf.for semantics without keeping tensor
-/// values in the loop signature.
+/// Copies each initial state value to its compiler-allocated DFB before the
+/// rewritten loop. The pre-loop store preserves zero-trip scf.for semantics
+/// without keeping tensor values in the loop signature.
 static void createInitialStores(ArrayRef<TensorLoopState> states,
                                 scf::ForOp loop, RewriterBase &rewriter) {
   for (TensorLoopState state : states) {
