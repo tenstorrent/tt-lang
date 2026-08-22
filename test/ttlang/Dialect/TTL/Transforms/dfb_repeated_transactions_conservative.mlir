@@ -13,6 +13,8 @@
 // REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch
 // REPORT: quiescence=incomplete-use-order {{.*}} kernel=@unrelated_opaque_access
 
+// Producer and consumer transaction counts must match.
+
 module {
   func.func @mismatched_count()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
@@ -37,6 +39,8 @@ module {
 
 // -----
 
+// A second wait before the first pop leaves consumer acquisitions overlapping.
+
 module {
   func.func @overlapping_consumer_acquires()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
@@ -54,6 +58,8 @@ module {
 }
 
 // -----
+
+// Producer and consumer tile counts must match at every transaction position.
 
 module {
   func.func @mismatched_tiles()
@@ -79,6 +85,8 @@ module {
 
 // -----
 
+// A dynamic loop trip count cannot define an exact transaction run.
+
 module {
   func.func @dynamic_trip_count(%upper: index)
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
@@ -101,6 +109,8 @@ module {
 }
 
 // -----
+
+// Separate loops do not prove aligned reserve and push executions.
 
 module {
   func.func @differing_iteration_domains()
@@ -128,6 +138,8 @@ module {
 
 // -----
 
+// A runtime condition inside the loop prevents uniform per-iteration proof.
+
 module {
   func.func @conditional_iteration(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
@@ -153,6 +165,8 @@ module {
 }
 
 // -----
+
+// A payload access after the consumer release is outside the owned interval.
 
 module {
   func.func @access_outside_interval()
@@ -180,6 +194,8 @@ module {
 }
 
 // -----
+
+// Lifecycles controlled by different NoC processors cannot share one index.
 
 module {
   func.func @pointer_owner_noc0()
@@ -221,6 +237,8 @@ module {
 }
 
 // -----
+
+// An unknown external DFB access prevents a complete lifetime proof.
 
 module {
   func.func @unrelated_opaque_access()
