@@ -697,11 +697,6 @@ static bool proveEqualValuesAtLaunchNodes(
   }
   cache[cacheKey] = false;
 
-  if (lhsValue == rhsValue && lhsCoord == rhsCoord) {
-    cache[cacheKey] = true;
-    return true;
-  }
-
   std::optional<llvm::APInt> maybeLhsValue =
       createLaunchNodeIntegerEvaluator(lhsCoord, &state).evaluate(lhsValue);
   std::optional<llvm::APInt> maybeRhsValue =
@@ -777,6 +772,11 @@ static bool proveEqualValuesAtLaunchNodes(
                                       resolveRhsFunctionArgument, state, cache);
     cache[cacheKey] = equal;
     return equal;
+  }
+
+  if (lhsValue == rhsValue && lhsCoord == rhsCoord) {
+    cache[cacheKey] = true;
+    return true;
   }
 
   Operation *lhsDefiningOp = lhsValue.getDefiningOp();
