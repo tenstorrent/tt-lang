@@ -1009,7 +1009,9 @@ def TTLFinalizeDFBIndices
     separately labels a counterfactual per-node analysis that assumes
     unknown-domain accesses may be active while preserving exact-zero
     inactivity. Those diagnostic attempts do not establish boundedness or
-    affect the conflict relation.
+    affect the conflict relation. If node-dependent IR has no launch grid, the
+    report retains logical DFB and access facts but omits per-node rows because
+    no base launch nodes are available.
 
     Every storage-accessing operation with a direct DFB operand is treated as a
     runtime access from operation entry through completion. Every direct DFB

@@ -13,6 +13,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
+#include <cassert>
+#include <tuple>
+
 namespace mlir::tt::ttl {
 
 namespace {
@@ -177,10 +180,10 @@ static void printAccesses(llvm::raw_ostream &output,
 }
 
 static void printOccurrences(llvm::raw_ostream &output,
-                             const DFBPerNodeLifetime &lifetime) {
+                             const DFBPerNodeLifetimeDiagnostics &diagnostics) {
   output << '[';
-  llvm::interleaveComma(lifetime.reportedOccurrences, output,
-                        [&](const DFBPerNodeAccessOccurrence &occurrence) {
+  llvm::interleaveComma(diagnostics.occurrences, output,
+                        [&](const DFBDiagnosticAccessOccurrence &occurrence) {
                           output << occurrence.occurrenceIndex << ':';
                           if (occurrence.exactExecutionCount) {
                             output << *occurrence.exactExecutionCount;
@@ -191,57 +194,86 @@ static void printOccurrences(llvm::raw_ostream &output,
   output << ']';
 }
 
-static bool hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
-                                    const DFBPerNodeLifetime &rhs) {
+static bool
+hasEqualDiagnosticFacts(const DFBPerNodeLifetime &lhs,
+                        const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
+                        const DFBPerNodeLifetime &rhs,
+                        const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
   if (lhs.quiescence.failure != rhs.quiescence.failure ||
       lhs.quiescence.evidence != rhs.quiescence.evidence ||
-      lhs.mayBeActive != rhs.mayBeActive ||
-      lhs.reportedOccurrences.size() != rhs.reportedOccurrences.size() ||
-      lhs.earliestAccessOccurrenceIndices !=
-          rhs.earliestAccessOccurrenceIndices ||
-      lhs.terminalAccessOccurrenceIndices !=
-          rhs.terminalAccessOccurrenceIndices ||
       lhs.transactionTileCounts != rhs.transactionTileCounts ||
       lhs.writePointerOwner != rhs.writePointerOwner ||
-      lhs.readPointerOwner != rhs.readPointerOwner) {
+      lhs.readPointerOwner != rhs.readPointerOwner ||
+      !(lhsDiagnostics == rhsDiagnostics)) {
     return false;
   }
-  return llvm::equal(lhs.reportedOccurrences, rhs.reportedOccurrences,
-                     [](const DFBPerNodeAccessOccurrence &lhsOccurrence,
-                        const DFBPerNodeAccessOccurrence &rhsOccurrence) {
-                       return lhsOccurrence.occurrenceIndex ==
-                                  rhsOccurrence.occurrenceIndex &&
-                              lhsOccurrence.exactExecutionCount ==
-                                  rhsOccurrence.exactExecutionCount;
-                     });
+  return true;
 }
 
+static void
+printLifetimeFacts(llvm::raw_ostream &output,
+                   const DFBPerNodeLifetime &lifetime,
+                   const DFBPerNodeLifetimeDiagnostics &diagnostics) {
+  output << " evidence=";
+  printOperation(output, lifetime.quiescence.evidence);
+  output << " occurrences=";
+  printOccurrences(output, diagnostics);
+  output << " transactions=";
+  printValues(output, lifetime.transactionTileCounts);
+  output << " write_owner=";
+  printPointerOwner(output, lifetime.writePointerOwner);
+  output << " read_owner=";
+  printPointerOwner(output, lifetime.readPointerOwner);
+  output << " earliest_accesses=";
+  printValues(output, diagnostics.earliestAccessOccurrenceIndices);
+  output << " terminal_accesses=";
+  printValues(output, diagnostics.terminalAccessOccurrenceIndices);
+}
+
+struct LifetimeWithDiagnostics {
+  const DFBPerNodeLifetime *lifetime = nullptr;
+  const DFBPerNodeLifetimeDiagnostics *diagnostics = nullptr;
+};
+
 struct DiagnosticLifetimeGroup {
-  const DFBPerNodeLifetime *representative = nullptr;
+  LifetimeWithDiagnostics representative;
   SmallVector<LaunchNodeCoord> nodes;
 };
 
 static void printDiagnosticLifetimes(
     llvm::raw_ostream &output,
-    llvm::ArrayRef<const DFBPerNodeLifetime *> diagnosticLifetimes) {
+    const DFBLogicalLifecycleDiagnostics &allocationDiagnostics) {
+  assert(
+      allocationDiagnostics.counterfactualNodeLifetimes.size() ==
+          allocationDiagnostics.counterfactualNodeLifetimeDiagnostics.size() &&
+      "counterfactual lifetimes must have allocation-report data");
   SmallVector<DiagnosticLifetimeGroup> groups;
-  for (const DFBPerNodeLifetime *lifetime : diagnosticLifetimes) {
+  for (auto lifetimeAndDiagnostics : llvm::zip_equal(
+           allocationDiagnostics.counterfactualNodeLifetimes,
+           allocationDiagnostics.counterfactualNodeLifetimeDiagnostics)) {
+    const DFBPerNodeLifetime &lifetime = std::get<0>(lifetimeAndDiagnostics);
+    const DFBPerNodeLifetimeDiagnostics &diagnostics =
+        std::get<1>(lifetimeAndDiagnostics);
     auto groupIt = llvm::find_if(groups, [&](const auto &group) {
-      return hasEqualDiagnosticFacts(*group.representative, *lifetime);
+      return hasEqualDiagnosticFacts(*group.representative.lifetime,
+                                     *group.representative.diagnostics,
+                                     lifetime, diagnostics);
     });
     if (groupIt == groups.end()) {
-      groups.push_back({lifetime, {lifetime->node}});
+      groups.push_back({{&lifetime, &diagnostics}, {lifetime.node}});
     } else {
-      groupIt->nodes.push_back(lifetime->node);
+      groupIt->nodes.push_back(lifetime.node);
     }
   }
 
   for (const DiagnosticLifetimeGroup &group : groups) {
-    const DFBPerNodeLifetime &lifetime = *group.representative;
+    const DFBPerNodeLifetime &lifetime = *group.representative.lifetime;
+    const DFBPerNodeLifetimeDiagnostics &diagnostics =
+        *group.representative.diagnostics;
     output << "  diagnostic_nodes quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
            << " domain_assumption=unknown-may-be-active may_be_active="
-           << lifetime.mayBeActive << " node_count=" << group.nodes.size();
+           << diagnostics.mayBeActive << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
       llvm::interleaveComma(group.nodes, output, [&](LaunchNodeCoord node) {
@@ -252,53 +284,35 @@ static void printDiagnosticLifetimes(
       output << " exemplar=";
       printNode(output, lifetime.node);
     }
-    output << " evidence=";
-    printOperation(output, lifetime.quiescence.evidence);
-    output << " occurrences=";
-    printOccurrences(output, lifetime);
-    output << " transactions=";
-    printValues(output, lifetime.transactionTileCounts);
-    output << " write_owner=";
-    printPointerOwner(output, lifetime.writePointerOwner);
-    output << " read_owner=";
-    printPointerOwner(output, lifetime.readPointerOwner);
-    output << " earliest_accesses=";
-    printValues(output, lifetime.earliestAccessOccurrenceIndices);
-    output << " terminal_accesses=";
-    printValues(output, lifetime.terminalAccessOccurrenceIndices);
+    printLifetimeFacts(output, lifetime, diagnostics);
     output << '\n';
   }
 }
 
 static void printNodeLifetimes(llvm::raw_ostream &output,
                                const DFBLogicalLifecycle &logicalDFB) {
-  for (const DFBPerNodeLifetime &lifetime : logicalDFB.nodeLifetimes) {
+  if (!logicalDFB.allocationDiagnostics) {
+    assert(logicalDFB.nodeLifetimes.empty() &&
+           "authoritative lifetimes require completed analysis");
+    return;
+  }
+  const DFBLogicalLifecycleDiagnostics &allocationDiagnostics =
+      *logicalDFB.allocationDiagnostics;
+  assert(logicalDFB.nodeLifetimes.size() ==
+             allocationDiagnostics.nodeLifetimeDiagnostics.size() &&
+         "exact lifetimes must have allocation-report data");
+  for (auto [lifetime, diagnostics] :
+       llvm::zip_equal(logicalDFB.nodeLifetimes,
+                       allocationDiagnostics.nodeLifetimeDiagnostics)) {
     output << "  node ";
     printNode(output, lifetime.node);
     output << " quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
-           << " domain_assumption=exact evidence=";
-    printOperation(output, lifetime.quiescence.evidence);
-    output << " occurrences=";
-    printOccurrences(output, lifetime);
-    output << " transactions=";
-    printValues(output, lifetime.transactionTileCounts);
-    output << " write_owner=";
-    printPointerOwner(output, lifetime.writePointerOwner);
-    output << " read_owner=";
-    printPointerOwner(output, lifetime.readPointerOwner);
-    output << " earliest_accesses=";
-    printValues(output, lifetime.earliestAccessOccurrenceIndices);
-    output << " terminal_accesses=";
-    printValues(output, lifetime.terminalAccessOccurrenceIndices);
+           << " domain_assumption=exact";
+    printLifetimeFacts(output, lifetime, diagnostics);
     output << '\n';
   }
-  SmallVector<const DFBPerNodeLifetime *> diagnosticLifetimes;
-  for (const DFBPerNodeLifetime &lifetime :
-       logicalDFB.diagnosticNodeLifetimes) {
-    diagnosticLifetimes.push_back(&lifetime);
-  }
-  printDiagnosticLifetimes(output, diagnosticLifetimes);
+  printDiagnosticLifetimes(output, allocationDiagnostics);
 }
 
 static void printConflictEvidence(llvm::raw_ostream &output,

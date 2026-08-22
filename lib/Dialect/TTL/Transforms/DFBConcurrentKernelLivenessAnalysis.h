@@ -22,6 +22,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -91,24 +92,46 @@ struct DFBAccessOccurrence {
   Operation *unanalyzableDomainOperation = nullptr;
 };
 
-/// Execution count retained for one access in the debug report.
-struct DFBPerNodeAccessOccurrence {
+/// Execution count retained for one access in the allocation report.
+struct DFBDiagnosticAccessOccurrence {
   /// Index into the logical lifecycle's access occurrence list.
   unsigned occurrenceIndex = 0;
 
   /// Exact executions on the node, or null when the count is unknown.
   std::optional<std::uint64_t> exactExecutionCount;
+
+  bool operator==(const DFBDiagnosticAccessOccurrence &rhs) const {
+    return occurrenceIndex == rhs.occurrenceIndex &&
+           exactExecutionCount == rhs.exactExecutionCount;
+  }
+};
+
+/// Per-node data collected only for the allocation report.
+struct DFBPerNodeLifetimeDiagnostics {
+  /// False when counterfactual analysis proves that no access executes.
+  bool mayBeActive = true;
+
+  /// Execution-count row for every access considered on the launch node.
+  SmallVector<DFBDiagnosticAccessOccurrence> occurrences;
+
+  /// Every access whose entry belongs to the minimal lifetime frontier.
+  SmallVector<unsigned> earliestAccessOccurrenceIndices;
+
+  /// Accesses whose completion defines the retained terminal frontier.
+  SmallVector<unsigned> terminalAccessOccurrenceIndices;
+
+  bool operator==(const DFBPerNodeLifetimeDiagnostics &rhs) const {
+    return mayBeActive == rhs.mayBeActive && occurrences == rhs.occurrences &&
+           earliestAccessOccurrenceIndices ==
+               rhs.earliestAccessOccurrenceIndices &&
+           terminalAccessOccurrenceIndices ==
+               rhs.terminalAccessOccurrenceIndices;
+  }
 };
 
 /// Immutable lifetime and hardware-state facts for one launched node.
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
-
-  /// False when counterfactual analysis proves no access executes on `node`.
-  bool mayBeActive = true;
-
-  /// Per-access execution counts retained for allocation diagnostics.
-  SmallVector<DFBPerNodeAccessOccurrence> reportedOccurrences;
 
   /// Minimal access-entry event IDs under the proved happens-before relation.
   SmallVector<unsigned> earliestEntryEvents;
@@ -116,17 +139,19 @@ struct DFBPerNodeLifetime {
   /// Completion event IDs after which the DFB is quiescent.
   SmallVector<unsigned> terminalCompletionEvents;
 
-  /// Access occurrence indices corresponding to `earliestEntryEvents`.
-  SmallVector<unsigned> earliestAccessOccurrenceIndices;
-
-  /// Access occurrence indices corresponding to `terminalCompletionEvents`.
-  SmallVector<unsigned> terminalAccessOccurrenceIndices;
-
   /// One tile count per transaction tuple, paired by occurrence order.
   SmallVector<int64_t> transactionTileCounts;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   DFBQuiescenceProof quiescence;
+};
+
+/// Allocation-report data omitted from normal liveness analysis.
+struct DFBLogicalLifecycleDiagnostics {
+  SmallVector<DFBPerNodeLifetime, 0> counterfactualNodeLifetimes;
+  SmallVector<DFBPerNodeLifetimeDiagnostics, 0> nodeLifetimeDiagnostics;
+  SmallVector<DFBPerNodeLifetimeDiagnostics, 0>
+      counterfactualNodeLifetimeDiagnostics;
 };
 
 /// Immutable protocol and per-node lifetime facts for one logical DFB.
@@ -139,7 +164,7 @@ struct DFBLogicalLifecycle {
   SmallVector<DFBAccessOccurrence> accesses;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
-  SmallVector<DFBPerNodeLifetime, 0> diagnosticNodeLifetimes;
+  std::unique_ptr<DFBLogicalLifecycleDiagnostics> allocationDiagnostics;
   bool bounded = false;
 
   /// Returns the lifetime for `node`, or null when the DFB is inactive there.

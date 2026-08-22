@@ -1508,6 +1508,10 @@ counterfactual evidence only. They do not mark the DFB bounded, add lifetime
 ordering, or change the conflict relation. Nodes with identical diagnostic
 facts are grouped to keep large launch grids readable.
 
+If node-dependent IR has no launch grid, no base launch nodes are available
+for the counterfactual evaluation. The report retains logical DFB and access
+facts but omits per-node rows.
+
 The allocation graph uses one vertex per logical DFB and one edge per pair
 that cannot share. Assigning a graph color means assigning a physical DFB
 index; vertices joined by an edge must receive different indices. A clique is

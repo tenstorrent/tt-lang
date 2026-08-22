@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
@@ -245,13 +246,13 @@ static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
 }
 
 // Finds every access without a proved predecessor so all possible lifetime
-// starts constrain reuse and remain traceable in the debug report.
-static SmallVector<const DFBAccessOccurrence *> findMinimalEntryAccesses(
+// starts constrain reuse.
+static SmallVector<unsigned> findMinimalEntryEvents(
     ArrayRef<const DFBAccessOccurrence *> accesses,
     const HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents) {
-  SmallVector<const DFBAccessOccurrence *> minimal;
+  SmallVector<unsigned> minimal;
   for (const DFBAccessOccurrence *candidate : accesses) {
     std::optional<EventPair> candidateEvents =
         getAccessEvents(*candidate, operationEvents, accessEvents);
@@ -264,8 +265,9 @@ static SmallVector<const DFBAccessOccurrence *> findMinimalEntryAccesses(
       return otherEvents &&
              graph.strictlyPrecedes(otherEvents->entry, candidateEvents->entry);
     });
-    if (!hasPredecessor) {
-      minimal.push_back(candidate);
+    if (!hasPredecessor &&
+        !llvm::is_contained(minimal, candidateEvents->entry)) {
+      minimal.push_back(candidateEvents->entry);
     }
   }
   return minimal;
@@ -689,6 +691,7 @@ static void addMatchedPushWaitEdges(
 static DFBQuiescenceProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
     SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
+    SmallVectorImpl<DFBPerNodeLifetimeDiagnostics> *lifetimeDiagnostics,
     const HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, EventPair> &accessEvents,
@@ -697,6 +700,15 @@ static DFBQuiescenceProof computePerNodeLifetime(
     bool includeUnknownDomains = false) {
   DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
   lifetime.node = node;
+  DFBPerNodeLifetimeDiagnostics *diagnostics = nullptr;
+  if (reportedExecutionCounts) {
+    assert(lifetimeDiagnostics &&
+           "reported execution counts require lifetime diagnostics");
+    diagnostics = &lifetimeDiagnostics->emplace_back();
+  } else {
+    assert(!lifetimeDiagnostics &&
+           "lifetime diagnostics require reported execution counts");
+  }
   SmallVector<const DFBAccessOccurrence *> reserves;
   SmallVector<const DFBAccessOccurrence *> pushes;
   SmallVector<const DFBAccessOccurrence *> waits;
@@ -715,7 +727,7 @@ static DFBQuiescenceProof computePerNodeLifetime(
       assert(executionCountIt != reportedExecutionCounts->end() &&
              "every reported DFB access must have an execution-count fact");
       executionCount = executionCountIt->second;
-      lifetime.reportedOccurrences.push_back(
+      diagnostics->occurrences.push_back(
           {static_cast<unsigned>(accessIndex), executionCount});
     }
     if (includeUnknownDomains && executionCount && *executionCount == 0) {
@@ -747,7 +759,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
   }
 
   if (includeUnknownDomains && activeAccesses.empty()) {
-    lifetime.mayBeActive = false;
+    assert(diagnostics &&
+           "counterfactual lifetimes require allocation-report data");
+    diagnostics->mayBeActive = false;
     return {};
   }
 
@@ -866,23 +880,22 @@ static DFBQuiescenceProof computePerNodeLifetime(
               activeAccess->operation};
     }
   }
-  SmallVector<const DFBAccessOccurrence *> earliestAccesses =
-      findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
-                               accessEvents);
-  for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
-    std::optional<EventPair> earliestEvents =
-        getAccessEvents(*earliestAccess, operationEvents, accessEvents);
-    assert(earliestEvents && "minimal access must have modeled events");
-    if (!llvm::is_contained(lifetime.earliestEntryEvents,
-                            earliestEvents->entry)) {
-      lifetime.earliestEntryEvents.push_back(earliestEvents->entry);
-    }
-    lifetime.earliestAccessOccurrenceIndices.push_back(
-        static_cast<unsigned>(earliestAccess - logicalDFB.accesses.data()));
-  }
+  lifetime.earliestEntryEvents = findMinimalEntryEvents(
+      activeAccesses, graph, operationEvents, accessEvents);
   lifetime.terminalCompletionEvents = {terminalEvents->completion};
-  lifetime.terminalAccessOccurrenceIndices = {
-      static_cast<unsigned>(pops.back() - logicalDFB.accesses.data())};
+  if (diagnostics) {
+    for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
+      std::optional<EventPair> activeEvents =
+          getAccessEvents(*activeAccess, operationEvents, accessEvents);
+      if (activeEvents && llvm::is_contained(lifetime.earliestEntryEvents,
+                                             activeEvents->entry)) {
+        diagnostics->earliestAccessOccurrenceIndices.push_back(
+            static_cast<unsigned>(activeAccess - logicalDFB.accesses.data()));
+      }
+    }
+    diagnostics->terminalAccessOccurrenceIndices = {
+        static_cast<unsigned>(pops.back() - logicalDFB.accesses.data())};
+  }
   if (lifetime.earliestEntryEvents.empty()) {
     return {DFBQuiescenceFailureReason::IncompleteUseOrder,
             pops.back()->operation};
@@ -1035,6 +1048,12 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   orderedBeforeByNode.reserve(launchNodes.size());
   bool collectAllocationDiagnostics = false;
   LLVM_DEBUG(collectAllocationDiagnostics = true);
+  if (collectAllocationDiagnostics) {
+    for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+      logicalDFB.allocationDiagnostics =
+          std::make_unique<DFBLogicalLifecycleDiagnostics>();
+    }
+  }
   for (LaunchNodeCoord node : launchNodes) {
     std::optional<AccessExecutionCounts> reportedExecutionCounts;
     if (collectAllocationDiagnostics) {
@@ -1056,9 +1075,14 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       if (!knownLaunchNodeDomainContains(logicalDFB.launchDomain, node)) {
         continue;
       }
+      DFBLogicalLifecycleDiagnostics *allocationDiagnostics =
+          logicalDFB.allocationDiagnostics.get();
       DFBQuiescenceProof proof = computePerNodeLifetime(
-          logicalDFB, node, logicalDFB.nodeLifetimes, graph, operationEvents,
-          accessEvents, domainState,
+          logicalDFB, node, logicalDFB.nodeLifetimes,
+          allocationDiagnostics
+              ? &allocationDiagnostics->nodeLifetimeDiagnostics
+              : nullptr,
+          graph, operationEvents, accessEvents, domainState,
           reportedExecutionCounts ? &*reportedExecutionCounts : nullptr);
       logicalDFB.nodeLifetimes.back().quiescence = proof;
     }
@@ -1102,12 +1126,16 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       if (logicalDFB.launchDomain.known) {
         continue;
       }
+      DFBLogicalLifecycleDiagnostics &allocationDiagnostics =
+          *logicalDFB.allocationDiagnostics;
       DFBQuiescenceProof proof = computePerNodeLifetime(
-          logicalDFB, node, logicalDFB.diagnosticNodeLifetimes, diagnosticGraph,
-          diagnosticOperationEvents, diagnosticAccessEvents, domainState,
-          &*reportedExecutionCounts,
+          logicalDFB, node, allocationDiagnostics.counterfactualNodeLifetimes,
+          &allocationDiagnostics.counterfactualNodeLifetimeDiagnostics,
+          diagnosticGraph, diagnosticOperationEvents, diagnosticAccessEvents,
+          domainState, &*reportedExecutionCounts,
           /*includeUnknownDomains=*/true);
-      logicalDFB.diagnosticNodeLifetimes.back().quiescence = proof;
+      allocationDiagnostics.counterfactualNodeLifetimes.back().quiescence =
+          proof;
     }
   }
 
