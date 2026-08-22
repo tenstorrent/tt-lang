@@ -145,9 +145,11 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // REUSE-NEXT: %[[SECOND_SUBSET:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 15 : index}
 
 // REPORT: DFB logical_id=14 bounded=0 compiler_created=0
+// REPORT-SAME: access_completion_proven=0
 // REPORT-SAME: domain={(0,0)}
 // REPORT: access 0 effect=none tiles=0 sequence=0 opaque_external=1 domain={(0,0)}
 // REPORT: DFB logical_id=15 bounded=0 compiler_created=0
+// REPORT-SAME: access_completion_proven=0
 // REPORT-SAME: domain={(1,0)}
 // REPORT-NOT: DFB conflict lhs=14 rhs=15
 // REPORT: DFB assignment: logical DFB 14 -> physical index 0 (unbounded)
@@ -192,6 +194,45 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// An untyped external access makes an overlapping lifecycle incomplete. The
+// compiler cannot prove lifecycle completion and keeps the physical indices
+// distinct.
+
+// REUSE-LABEL: func.func @overlapping_incomplete_access_contract
+// REUSE: %[[INCOMPLETE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 20 : index}
+// REUSE-NEXT: %[[COMPLETE:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 21 : index}
+
+// REPORT: DFB logical_id=20 bounded=0 compiler_created=0
+// REPORT-SAME: access_completion_proven=0
+// REPORT-SAME: domain={(0,0), (1,0)}
+// REPORT: DFB logical_id=21 bounded=1 compiler_created=0
+// REPORT-SAME: access_completion_proven=1
+// REPORT-SAME: domain={(0,0), (1,0)}
+// REPORT: DFB conflict lhs=20 rhs=21 reason=access-completion-not-proven
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @overlapping_incomplete_access_contract()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %incomplete = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 20 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %complete = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 21 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "untyped_access" (%incomplete)
+        {header = "effects.hpp"}
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    ttl.opaque_call "complete_lifecycle"
+        dfb_dependencies(%complete : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "effects.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // One unresolved access prevents the union for its logical DFB from becoming
 // exact, even when the complete protocol access has an exact domain.
 
@@ -200,6 +241,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // REUSE-NEXT: %[[EXACT:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 17 : index}
 
 // REPORT: DFB logical_id=16 bounded=0 compiler_created=0
+// REPORT-SAME: access_completion_proven=0
 // REPORT-SAME: domain=unknown
 // REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(0,0), (1,0)}
 // REPORT: access 4 effect=none tiles=0 sequence=0 opaque_external=1 domain=unknown

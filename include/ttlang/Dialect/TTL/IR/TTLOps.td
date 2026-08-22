@@ -2078,22 +2078,24 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     the DFB changed when it returns. One dependency occurrence cannot declare
     both a protocol effect and an inspection because their relative execution
     order would be unspecified. Effects and accesses omitted for a dependency
-    occurrence leave its access opaque. If one DFB occupies multiple dependency
-    occurrences, every occurrence requires its own summary to avoid an opaque
-    access. The
-    `unknown_dfb_access` unit attribute declares that the callee may also access
-    unlisted user-managed DFBs and disables physical-index reuse in affected
-    allocation scopes.
+    occurrence leave its access opaque and incomplete for reuse with another
+    logical DFB on a shared launch node unless a matching synchronized reset
+    proves lifecycle completion. If one DFB occupies multiple dependency
+    occurrences, every occurrence requires its own summary or the same reset-
+    completion proof. The `unknown_dfb_access` unit attribute declares that the
+    callee may also access unlisted user-managed DFBs and adds an opaque
+    occurrence to each affected DFB. Exact disjoint launch-node domains remain
+    eligible for physical-index sharing.
 
-    A named DFB dependency occurrence without `dfb_effects` contributes an
-    opaque storage access that begins at call entry. Its protocol and
-    asynchronous interface work may remain live after the call. When the call
-    is ordered before a synchronized DFB reset through the same participating
-    logical kernel, reset completion terminates the access and canonicalizes
-    its unknown protocol state. The reset implementation must complete each
-    participant's earlier interface work before publishing arrival. Storage
-    reuse is permitted only after the reset. This does not validate the
-    callee's internal queue protocol.
+    A named DFB dependency occurrence without `dfb_effects` or `dfb_accesses`
+    contributes an opaque storage access that begins at call entry. Its protocol
+    and asynchronous interface work may remain live after the call. When the
+    call is ordered before a synchronized DFB reset through the same
+    participating logical kernel, reset completion terminates the access and
+    canonicalizes its unknown protocol state. The reset implementation must
+    complete each participant's earlier interface work before publishing
+    arrival. Storage reuse is permitted only after the reset. This does not
+    validate the callee's internal queue protocol.
 
     Every action declared by `dfb_effects` must occur before the call returns.
     Interface work still active after return must remain ordered by the

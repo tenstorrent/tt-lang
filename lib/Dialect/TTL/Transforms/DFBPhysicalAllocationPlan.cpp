@@ -421,6 +421,15 @@ private:
           lhs.launchDomain.intersectWith(rhs.launchDomain);
       llvm::append_range(sharedNodes, exactSharedNodes.nodes);
     }
+    if (sharedNodes.empty()) {
+      return;
+    }
+    if (!lhs.accessCompletionProven || !rhs.accessCompletionProven) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::AccessCompletionNotProven, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
     for (LaunchNodeCoord node : sharedNodes) {
       const DFBPerNodeLifetime *lhsLifetime =
           useConditionalProof ? lhs.findPossibleNodeLifetime(node)

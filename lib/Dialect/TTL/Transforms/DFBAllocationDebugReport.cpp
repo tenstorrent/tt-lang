@@ -525,7 +525,8 @@ void printDFBAllocationDebugReport(
     if (logicalDFB.hasOpaqueExternalAccess) {
       output << " opaque_external_access=1";
     }
-    output << " allocation_group=";
+    output << " access_completion_proven=" << logicalDFB.accessCompletionProven
+           << " allocation_group=";
     if (logicalDFB.allocationGroup) {
       Attribute allocationGroup = logicalDFB.allocationGroup;
       allocationGroup.print(output);

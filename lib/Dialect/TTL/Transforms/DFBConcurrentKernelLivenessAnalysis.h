@@ -253,6 +253,7 @@ struct DFBLogicalLifecycle {
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;
   bool hasOpaqueExternalAccess = false;
+  bool accessCompletionProven = true;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;

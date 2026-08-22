@@ -4479,12 +4479,38 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
          "per-node order relations must cover the launch grid");
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-    logicalDFB.bounded =
-        logicalDFB.launchDomain.known && !logicalDFB.nodeLifetimes.empty() &&
+    bool exactLifecyclesComplete =
+        !logicalDFB.nodeLifetimes.empty() &&
         llvm::all_of(logicalDFB.nodeLifetimes,
                      [](const DFBPerNodeLifetime &lifetime) {
                        return lifetime.completionProof.proven();
                      });
+    bool possibleLifecyclesComplete =
+        !logicalDFB.possibleNodeLifetimes.empty() &&
+        llvm::all_of(logicalDFB.possibleNodeLifetimes,
+                     [](const DFBPerNodeLifetime &lifetime) {
+                       return !lifetime.mayBeActive ||
+                              lifetime.completionProof.proven();
+                     });
+    bool opaqueExternalAccessesComplete = logicalDFB.launchDomain.known
+                                              ? exactLifecyclesComplete
+                                              : possibleLifecyclesComplete;
+    logicalDFB.accessCompletionProven = llvm::all_of(
+        logicalDFB.accesses, [&](const DFBAccessOccurrence &access) {
+          if (access.getProtocolEffect() ||
+              access.getNonTransactionalAccess()) {
+            return true;
+          }
+          if (access.opaqueExternalAccess) {
+            return opaqueExternalAccessesComplete;
+          }
+          // Separate acquire and release operations establish queue ownership
+          // for the slot transferred by ttl.copy.
+          return isa<CopyOp>(access.operation);
+        });
+    logicalDFB.bounded = logicalDFB.accessCompletionProven &&
+                         logicalDFB.launchDomain.known &&
+                         exactLifecyclesComplete;
     bool hasProvenConditionalLifecycle =
         llvm::any_of(logicalDFB.possibleNodeLifetimes,
                      [](const DFBPerNodeLifetime &lifetime) {
@@ -4493,7 +4519,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                               lifetime.completionProof.proven();
                      });
     logicalDFB.conditionallyBounded =
-        !logicalDFB.launchDomain.known && hasProvenConditionalLifecycle &&
+        logicalDFB.accessCompletionProven && !logicalDFB.launchDomain.known &&
+        hasProvenConditionalLifecycle &&
         llvm::all_of(logicalDFB.possibleNodeLifetimes,
                      [](const DFBPerNodeLifetime &lifetime) {
                        return !lifetime.mayBeActive ||

@@ -10,6 +10,7 @@
 
 // CHECK: DFB allocation liveness report
 // CHECK: DFB logical_id=0 bounded=0 compiler_created=0
+// CHECK-SAME: access_completion_proven=0
 // CHECK-SAME: domain=unknown
 // CHECK: access 0 effect=reserve tiles=1 sequence=0 domain=unknown
 // CHECK: access 4 effect=none tiles=0 sequence=0 opaque_external=1 domain=unknown
@@ -18,16 +19,19 @@
 // CHECK: possible_nodes lifecycle_completion=missing-protocol-effect domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=10 exemplar=(0,0)
 // CHECK-SAME: occurrences=[0:unresolved, 1:unresolved, 2:unresolved, 3:unresolved, 4:unresolved]
 // CHECK: DFB logical_id=1 bounded=0 compiler_created=0
+// CHECK-SAME: access_completion_proven=0
 // CHECK-SAME: domain=unknown
 // CHECK: possible_nodes lifecycle_completion=missing-protocol-effect domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=10 exemplar=(0,0)
 // CHECK-SAME: occurrences=[0:unresolved]
 // CHECK: DFB logical_id=2 bounded=0 compiler_created=0
+// CHECK-SAME: access_completion_proven=1
 // CHECK-SAME: domain=unknown
 // CHECK: possible_nodes lifecycle_completion=unsupported-control-flow domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=1 nodes={(0,0)}
 // CHECK-SAME: occurrences=[0:unresolved, 1:unresolved, 2:unresolved, 3:unresolved]
 // CHECK: possible_nodes lifecycle_completion=complete domain_assumption=unknown-possible may_be_active=0 conditional_execution=0 node_count=9 exemplar=(1,0)
 // CHECK-SAME: occurrences=[0:0, 1:0, 2:0, 3:0]
 // CHECK: DFB logical_id=3 bounded=0 compiler_created=0
+// CHECK-SAME: access_completion_proven=0
 // CHECK-SAME: domain=unknown
 // CHECK: possible_nodes lifecycle_completion=missing-protocol-effect domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=10 exemplar=(0,0)
 // CHECK-SAME: occurrences=[0:unresolved, 1:1, 2:1, 3:1, 4:1]

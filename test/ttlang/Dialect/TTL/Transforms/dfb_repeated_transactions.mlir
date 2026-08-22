@@ -3,13 +3,12 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
 
 // A loop producer and an explicit external consumer describe the same four
-// transactions, but the unsummarized producer access may change protocol state.
-// Both DFBs therefore remain distinct.
+// transactions. Typed inspections preserve the producer queue state.
 
 // REUSE-LABEL: func.func @loop_to_explicit
-// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE-SAME: ttl.base_cta_index = 1 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REUSE-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+// REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
 
 module {
   func.func @loop_to_explicit()
@@ -22,13 +21,13 @@ module {
     %step = arith.constant 1 : index
     scf.for %transaction = %lower to %upper step %step {
       %reserved = ttl.cb_reserve %first : <[1, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x4x!ttcore.tile<32x32, bf16>>
-      ttl.opaque_call "producer_use" dfb_dependencies(%first : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) () {header = "producer_use.hpp"} : () -> ()
+      ttl.opaque_call "producer_use" dfb_dependencies(%first : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "producer_use.hpp"} : () -> ()
       ttl.cb_push %first : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
     }
     ttl.opaque_call "explicit_consumer" dfb_dependencies(%first : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>, #ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>, #ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>, #ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>] () {header = "consumer.hpp"} : () -> ()
     scf.for %transaction = %lower to %upper step %step {
       %reserved = ttl.cb_reserve %second : <[1, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x4x!ttcore.tile<32x32, bf16>>
-      ttl.opaque_call "producer_use" dfb_dependencies(%second : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) () {header = "producer_use.hpp"} : () -> ()
+      ttl.opaque_call "producer_use" dfb_dependencies(%second : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "producer_use.hpp"} : () -> ()
       ttl.cb_push %second : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
     }
     ttl.opaque_call "explicit_consumer" dfb_dependencies(%second : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>, #ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>, #ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>, #ttl.dfb_protocol_effect<wait, 0, 4>, #ttl.dfb_protocol_effect<pop, 0, 4>] () {header = "consumer.hpp"} : () -> ()
@@ -118,13 +117,12 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // -----
 
 // An explicit producer summary and a loop consumer describe matching
-// transactions, but the unsummarized consumer access may change protocol
-// state. Both DFBs therefore remain distinct.
+// transactions. Typed inspections preserve the consumer queue state.
 
 // REUSE-LABEL: func.func @explicit_to_loop
-// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE-SAME: ttl.base_cta_index = 1 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REUSE-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+// REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
 
 module {
   func.func @explicit_to_loop()
@@ -138,13 +136,13 @@ module {
     ttl.opaque_call "explicit_producer" dfb_dependencies(%first : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>, #ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>, #ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>, #ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>] () {header = "producer.hpp"} : () -> ()
     scf.for %transaction = %lower to %upper step %step {
       %available = ttl.cb_wait %first : <[1, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x4x!ttcore.tile<32x32, bf16>>
-      ttl.opaque_call "consumer_use" dfb_dependencies(%first : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) () {header = "consumer_use.hpp"} : () -> ()
+      ttl.opaque_call "consumer_use" dfb_dependencies(%first : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "consumer_use.hpp"} : () -> ()
       ttl.cb_pop %first : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
     }
     ttl.opaque_call "explicit_producer" dfb_dependencies(%second : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>, #ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>, #ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>, #ttl.dfb_protocol_effect<reserve, 0, 4>, #ttl.dfb_protocol_effect<push, 0, 4>] () {header = "producer.hpp"} : () -> ()
     scf.for %transaction = %lower to %upper step %step {
       %available = ttl.cb_wait %second : <[1, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x4x!ttcore.tile<32x32, bf16>>
-      ttl.opaque_call "consumer_use" dfb_dependencies(%second : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) () {header = "consumer_use.hpp"} : () -> ()
+      ttl.opaque_call "consumer_use" dfb_dependencies(%second : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "consumer_use.hpp"} : () -> ()
       ttl.cb_pop %second : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
     }
     return
@@ -198,8 +196,8 @@ module {
 
 // -----
 
-// Unsummarized accesses in the straight-line producer and consumer may change
-// protocol state, so the combined DFB lifetime remains unbounded.
+// Typed inspections preserve queue state between each acquisition and release,
+// so the producer and consumer each define two complete transactions.
 
 // REUSE-LABEL: func.func @straight_line_producer
 // REUSE-SAME: ttl.base_cta_index = 1 : i32
@@ -207,10 +205,10 @@ module {
 // REUSE-LABEL: func.func @straight_line_consumer
 // REUSE-SAME: ttl.base_cta_index = 1 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REPORT: DFB logical_id=0 bounded=0
-// REPORT: node (0,0) lifecycle_completion=missing-protocol-effect
-// REPORT-SAME: evidence=ttl.opaque_call kernel=@straight_line_producer
-// REPORT-SAME: transactions=[]
+// REPORT: DFB logical_id=0 bounded=1
+// REPORT-SAME: access_completion_proven=1
+// REPORT: node (0,0) lifecycle_completion=complete
+// REPORT-SAME: transactions=[1, 1]
 
 module {
   func.func @straight_line_producer()
@@ -219,10 +217,10 @@ module {
                   ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %reserved_0 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.opaque_call "producer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "producer_use.hpp"} : () -> ()
+    ttl.opaque_call "producer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "producer_use.hpp"} : () -> ()
     ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %reserved_1 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.opaque_call "producer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "producer_use.hpp"} : () -> ()
+    ttl.opaque_call "producer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "producer_use.hpp"} : () -> ()
     ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }
@@ -232,10 +230,10 @@ module {
                   ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %waited_0 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.opaque_call "consumer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "consumer_use.hpp"} : () -> ()
+    ttl.opaque_call "consumer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "consumer_use.hpp"} : () -> ()
     ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %waited_1 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.opaque_call "consumer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "consumer_use.hpp"} : () -> ()
+    ttl.opaque_call "consumer_use" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "consumer_use.hpp"} : () -> ()
     ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }
