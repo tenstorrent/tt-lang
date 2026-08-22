@@ -1621,10 +1621,14 @@ whether reuse is valid.
 `dfb_accesses` describes typed synchronous accesses without queue transactions.
 `ttl.DFBAccess.inspect(dfb)` states that the callee may read the selected DFB's
 descriptor or contents but does not publish, consume, or leave that DFB changed.
-The call remains a storage access, so reuse still requires strict lifetime
-order; the summary establishes an identity queue-state transition. One
-dependency occurrence cannot declare both a protocol effect and a
-non-transactional access.
+`ttl.DFBAccess.modify(dfb)` states that the callee may read or write the
+selected DFB and may leave its contents changed, but does not publish, consume,
+or change its queue position. Both contracts remain storage accesses, so reuse
+still requires strict lifetime order. Each establishes an identity queue-state
+transition. A repeated `modify` access remains live from its first invocation
+through its last invocation; it does not imply that the contents are dead
+between invocations. One dependency occurrence cannot declare both a protocol
+effect and a non-transactional access.
 
 `unknown_dfb_access` represents access to user-managed DFBs absent from the
 declared dependencies. For allocation, liveness analysis conservatively adds
@@ -1636,12 +1640,12 @@ compiler-created DFB accesses require listed operands.
 Every declared effect action must complete before the callee returns. Associated
 interface work may remain active while the declared protocol retains ownership;
 it must complete before the terminal consumer release or a synchronized reset.
-For a named dependency with no effect summary, a synchronized reset ordered
-after the call may terminate the opaque access and canonicalize protocol state.
-The reset must complete earlier interface work before publishing arrival. This
-does not validate the callee's internal protocol. Unlisted access declared by
-`unknown_dfb_access` remains unbounded. The frontend and IR representation are
-described in
+For a named dependency with neither an effect nor a non-transactional access
+summary, a synchronized reset ordered after the call may terminate the opaque
+access and canonicalize protocol state. The reset must complete earlier
+interface work before publishing arrival. This does not validate the callee's
+internal protocol. Unlisted access declared by `unknown_dfb_access` remains
+unbounded. The frontend and IR representation are described in
 [External Function Interop Lowering](ExternalFuncInteropLowering.md).
 
 An exact static `dfb_effects` sequence may describe cumulative queue state

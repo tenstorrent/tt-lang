@@ -1446,13 +1446,13 @@ def _make_allocation_group_kernel(data_format):
     return allocation_group_kernel
 
 
-def _make_inspect_access_kernel(data_format):
+def _make_modify_access_kernel(data_format):
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
 
     @ttl.operation(grid=(1, 1))
-    def inspect_access_kernel(raw_source, output_tensor):
+    def modify_access_kernel(raw_source, output_tensor):
         shared_allocation = ttl.make_dfb_allocation_group()
         source_descriptor = ttl.make_dfb(
             data_format,
@@ -1487,7 +1487,7 @@ def _make_inspect_access_kernel(data_format):
                     ttl.DFBEffect.reserve(external_result, tiles=1),
                     ttl.DFBEffect.push(external_result, tiles=1),
                 ],
-                dfb_accesses=[ttl.DFBAccess.inspect(source_descriptor)],
+                dfb_accesses=[ttl.DFBAccess.modify(source_descriptor)],
             )
             with external_result.wait() as source:
                 with later_queue.reserve() as destination:
@@ -1501,7 +1501,7 @@ def _make_inspect_access_kernel(data_format):
             with output.wait() as source:
                 ttl.copy(source, output_tensor[0, 0]).wait()
 
-    return inspect_access_kernel
+    return modify_access_kernel
 
 
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
@@ -1553,6 +1553,8 @@ _node_scoped_bf16_allocation_kernel = _make_node_scoped_allocation_kernel("bf16"
 _node_scoped_f32_allocation_kernel = _make_node_scoped_allocation_kernel("float32")
 _inspect_bf16_kernel = _make_inspect_access_kernel("bf16")
 _inspect_f32_kernel = _make_inspect_access_kernel("float32")
+_modify_bf16_kernel = _make_modify_access_kernel("bf16")
+_modify_f32_kernel = _make_modify_access_kernel("float32")
 
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
@@ -2234,8 +2236,8 @@ def test_allocation_group_reuses_interleaved_reset_epochs(
 @pytest.mark.parametrize(
     ("operation", "dtype"),
     [
-        (_inspect_bf16_kernel, torch.bfloat16),
-        (_inspect_f32_kernel, torch.float32),
+        (_modify_bf16_kernel, torch.bfloat16),
+        (_modify_f32_kernel, torch.float32),
     ],
     ids=["bf16", "f32"],
 )
@@ -2244,7 +2246,7 @@ def test_allocation_group_reuses_interleaved_reset_epochs(
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
 )
-def test_inspect_access_reuses_allocation_group(
+def test_modify_access_reuses_allocation_group(
     device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
 ):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
@@ -2254,7 +2256,7 @@ def test_inspect_access_reuses_allocation_group(
     second_source = to_l1_sharded(second_host, device)
     output_tensor = to_device(torch.zeros_like(first_host), device)
 
-    final_mlir_path = tmp_path / "inspect_access.mlir"
+    final_mlir_path = tmp_path / "modify_access.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
     operation(first_source, output_tensor, options="--ttl-reuse-user-dfbs")
     operation(second_source, output_tensor, options="--ttl-reuse-user-dfbs")

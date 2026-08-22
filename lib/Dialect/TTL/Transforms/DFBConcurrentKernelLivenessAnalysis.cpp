@@ -3518,7 +3518,14 @@ static DFBQuiescenceProof computeProtocolLifetime(
       llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
         return access->opaqueExternalAccess;
       });
-  if (opaqueExternalAccess != activeAccesses.end()) {
+  bool hasProtocolAccess =
+      llvm::any_of(activeAccesses, [](const DFBAccessOccurrence *access) {
+        return access->getProtocolEffect() != nullptr;
+      });
+  bool resetTerminatedOpaqueProtocol =
+      opaqueExternalAccess != activeAccesses.end();
+  bool nonTransactionalOnly = false;
+  if (resetTerminatedOpaqueProtocol) {
     if (!hasCanonicalResetTerminator) {
       return {DFBQuiescenceFailureReason::MissingProtocolEffect,
               (*opaqueExternalAccess)->operation};
@@ -3526,6 +3533,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     auto unscopedOpaqueAccess =
         llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
           return !access->getProtocolEffect() &&
+                 !access->getNonTransactionalAccess() &&
                  isa<OpaqueCallOp>(access->operation) &&
                  !access->opaqueExternalAccess;
         });
@@ -3533,35 +3541,28 @@ static DFBQuiescenceProof computeProtocolLifetime(
       return {DFBQuiescenceFailureReason::MissingProtocolEffect,
               (*unscopedOpaqueAccess)->operation};
     }
-    DFBQuiescenceProof proof = populateCallDurationLifetime();
-    if (!proof.proven()) {
-      return proof;
-    }
-    lifetime.resetCanonicalizedOpaqueProtocol = true;
-    return {};
-  }
-
-  bool hasProtocolAccess =
-      llvm::any_of(activeAccesses, [](const DFBAccessOccurrence *access) {
-        return access->getProtocolEffect();
-      });
-  if (!hasProtocolAccess) {
-    bool inspectionOnly = !activeAccesses.empty() &&
-                          llvm::all_of(activeAccesses, [](const auto *access) {
-                            return access->isNonTransactionalAccess(
-                                DFBNonTransactionalAccessKind::Inspect);
-                          });
-    if (!inspectionOnly) {
+  } else if (!hasProtocolAccess) {
+    nonTransactionalOnly =
+        !activeAccesses.empty() &&
+        llvm::all_of(activeAccesses, [](const auto *access) {
+          return access->getNonTransactionalAccess() != nullptr;
+        });
+    if (!nonTransactionalOnly) {
       return {DFBQuiescenceFailureReason::MissingProtocolEffect,
               activeAccesses.empty() ? logicalDFB.declarations.front()
                                      : activeAccesses.front()->operation};
     }
+  }
+
+  if (resetTerminatedOpaqueProtocol || nonTransactionalOnly) {
     DFBQuiescenceProof proof = populateCallDurationLifetime();
     if (!proof.proven()) {
       return proof;
     }
-    lifetime.conditionalExecutionProven = includeUnknownDomains;
-    lifetime.inspectionOnly = true;
+    lifetime.resetCanonicalizedOpaqueProtocol = resetTerminatedOpaqueProtocol;
+    lifetime.conditionalExecutionProven =
+        nonTransactionalOnly && includeUnknownDomains;
+    lifetime.nonTransactionalOnly = nonTransactionalOnly;
     return {};
   }
 
@@ -4215,6 +4216,9 @@ static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
   }
   epoch.activeConfigurationEpochs.push_back(epoch.entryReconfigurationOrdinal);
   epoch.terminalResetOrdinal = terminator->reset.getOrdinal();
+  epoch.resetCanonicalizedOpaqueProtocol =
+      lifetime.resetCanonicalizedOpaqueProtocol;
+  epoch.nonTransactionalOnly = lifetime.nonTransactionalOnly;
   epoch.terminalStateCanonical = true;
   epoch.quiescence = proof;
   lifetime.epochs.push_back(std::move(epoch));
@@ -4479,9 +4483,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
     epoch.readCursorRuns = epochLifetime.readCursorRuns;
     epoch.writePointerOwner = epochLifetime.writePointerOwner;
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
-    epoch.inspectionOnly = epochLifetime.inspectionOnly;
     epoch.resetCanonicalizedOpaqueProtocol =
         epochLifetime.resetCanonicalizedOpaqueProtocol;
+    epoch.nonTransactionalOnly = epochLifetime.nonTransactionalOnly;
     epoch.quiescence = proof;
     assert(firstBoundaryInterval &&
            "active lifecycle must have a first boundary interval");
@@ -4545,9 +4549,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
       lifetime.readCursorRuns = epochLifetime.readCursorRuns;
       lifetime.writePointerOwner = epochLifetime.writePointerOwner;
       lifetime.readPointerOwner = epochLifetime.readPointerOwner;
-      lifetime.inspectionOnly = epochLifetime.inspectionOnly;
       lifetime.resetCanonicalizedOpaqueProtocol =
           epochLifetime.resetCanonicalizedOpaqueProtocol;
+      lifetime.nonTransactionalOnly = epochLifetime.nonTransactionalOnly;
       hasActiveEpoch = true;
     }
     lifetime.conditionalExecutionProven |=
@@ -4563,10 +4567,10 @@ static DFBQuiescenceProof computePerNodeLifetime(
     lifetime.terminalWritePointerOwner =
         epochLifetime.terminalWritePointerOwner;
     lifetime.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
-    lifetime.inspectionOnly =
-        lifetime.inspectionOnly && epochLifetime.inspectionOnly;
     lifetime.resetCanonicalizedOpaqueProtocol |=
         epochLifetime.resetCanonicalizedOpaqueProtocol;
+    lifetime.nonTransactionalOnly =
+        lifetime.nonTransactionalOnly && epochLifetime.nonTransactionalOnly;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
     lifecycleAccesses.clear();
     firstBoundaryInterval.reset();

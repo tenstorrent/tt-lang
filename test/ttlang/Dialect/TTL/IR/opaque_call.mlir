@@ -94,6 +94,18 @@ func.func @dfb_inspect_access() attributes {ttl.kernel_thread = #ttkernel.thread
 
 // -----
 
+// A modify access permits content changes while retaining queue position.
+// CHECK-LABEL: func.func @dfb_modify_access
+// CHECK: %[[DESCRIPTOR:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.opaque_call "modify" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%[[DESCRIPTOR]] : !ttl.cb<{{.*}}>) dfb_accesses [#ttl.dfb_non_transactional_access<modify, 0>] () {header = "modify.hpp"}
+func.func @dfb_modify_access() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %descriptor = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  ttl.opaque_call "modify" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%descriptor : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_accesses [#ttl.dfb_non_transactional_access<modify, 0>] () {header = "modify.hpp"} : () -> ()
+  return
+}
+
+// -----
+
 // Dependency occurrence indices remain valid when operand adaptation maps a
 // dependency-only operand to the same DFB as a function argument.
 // CHECK-LABEL: func.func @adapted_dependency_occurrences

@@ -257,8 +257,8 @@ struct AllocationGroupNodeEpoch {
                  : lifetime->terminalStateCanonical;
   }
 
-  bool isInspectionOnly() const {
-    return epoch ? epoch->inspectionOnly : lifetime->inspectionOnly;
+  bool isNonTransactionalOnly() const {
+    return epoch ? epoch->nonTransactionalOnly : lifetime->nonTransactionalOnly;
   }
 };
 
@@ -633,7 +633,7 @@ private:
       bool pointerOwnersCompatible = false;
       if (lhsBeforeRhs || rhsBeforeLhs) {
         bool hasIdentityTransition =
-            before->inspectionOnly || after->inspectionOnly;
+            before->nonTransactionalOnly || after->nonTransactionalOnly;
         terminalStateCompatible =
             hasIdentityTransition || before->terminalStateCanonical ||
             !requireMatchingTransactions ||
@@ -645,8 +645,8 @@ private:
       } else {
         // Preserve the more specific state diagnosis when lifetimes are also
         // unordered; ordering alone must not obscure a protocol mismatch.
-        bool hasIdentityTransition =
-            lhsLifetime->inspectionOnly || rhsLifetime->inspectionOnly;
+        bool hasIdentityTransition = lhsLifetime->nonTransactionalOnly ||
+                                     rhsLifetime->nonTransactionalOnly;
         terminalStateCompatible =
             hasIdentityTransition || !requireMatchingTransactions ||
             (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
@@ -1040,7 +1040,7 @@ static LogicalResult validateAllocationGroupCursor(
     AllocationGroupCursorState cursorState;
     const AllocationGroupNodeEpoch *previousEpoch = nullptr;
     for (const AllocationGroupNodeEpoch &epoch : activeEpochs) {
-      if (epoch.isInspectionOnly()) {
+      if (epoch.isNonTransactionalOnly()) {
         if (epoch.hasCanonicalTerminalState()) {
           cursorState = {};
           previousEpoch = &epoch;

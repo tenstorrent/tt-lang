@@ -12,7 +12,7 @@
 // REPORT: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1]
 // REPORT: DFB logical_id=0 bounded=1
 // REPORT: access 0 effect=none non_transactional=inspect
-// REPORT: node (0,0) quiescence=none domain_assumption=exact conditional_execution=0 inspection_only=1
+// REPORT: node (0,0) quiescence=none domain_assumption=exact conditional_execution=0 non_transactional_only=1
 // REPORT-NOT: DFB conflict lhs=0 rhs=1
 
 module attributes {ttl.launch_grid = [1, 1]} {

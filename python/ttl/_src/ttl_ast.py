@@ -3074,12 +3074,12 @@ class TTLGenericCompiler(TTCompilerBase):
         return resolved_effects
 
     def _resolve_dfb_access(self, node):
-        """Resolve ``DFBAccess.inspect(dfb)`` to a typed fact."""
+        """Resolve one typed non-transactional DFB access."""
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             self._raise_error(
                 node,
                 "ttl.call_extern_func() dfb_accesses element must be "
-                "ttl.DFBAccess.inspect",
+                "ttl.DFBAccess.inspect or ttl.DFBAccess.modify",
             )
 
         access_owner = node.func.value
@@ -3092,19 +3092,25 @@ class TTLGenericCompiler(TTCompilerBase):
         is_direct_owner = (
             isinstance(access_owner, ast.Name) and access_owner.id == "DFBAccess"
         )
-        if not (is_qualified_owner or is_direct_owner) or (node.func.attr != "inspect"):
+        access_kinds = {
+            "inspect": ttl.ir.DFBNonTransactionalAccessKind.Inspect,
+            "modify": ttl.ir.DFBNonTransactionalAccessKind.Modify,
+        }
+        if not (is_qualified_owner or is_direct_owner) or (
+            node.func.attr not in access_kinds
+        ):
             self._raise_error(
                 node,
                 "ttl.call_extern_func() dfb_accesses element must be "
-                "ttl.DFBAccess.inspect",
+                "ttl.DFBAccess.inspect or ttl.DFBAccess.modify",
             )
         if len(node.args) != 1 or node.keywords:
             self._raise_error(
                 node,
-                "ttl.DFBAccess.inspect() requires exactly one DFB argument",
+                f"ttl.DFBAccess.{node.func.attr}() requires exactly one DFB argument",
             )
         dfb = self._resolve_dfb_value(node.args[0], "dfb_accesses")
-        return _ExternalDFBAccess(ttl.ir.DFBNonTransactionalAccessKind.Inspect, dfb)
+        return _ExternalDFBAccess(access_kinds[node.func.attr], dfb)
 
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
