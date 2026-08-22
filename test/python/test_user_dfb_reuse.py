@@ -337,20 +337,21 @@ def _make_repeated_transaction_kernel(data_format):
     return repeated_transaction_kernel
 
 
-def _make_conditional_lifecycle_kernel(data_format):
+def _make_conditional_lifecycle_kernel(data_format, predicate_value):
     @ttl.operation(grid=(1, 1))
     def conditional_lifecycle_kernel(input_tensor, output_tensor):
         input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         first_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         second_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        final_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
             runtime_predicate = ttl.call_extern_func(
                 SCALAR_RESULT_HEADER,
-                "scalar_result",
-                template_args=[32],
+                "scalar_predicate",
+                template_args=[predicate_value],
                 result_type=ttl.ScalarType.I32,
             )
             with input_dfb.wait() as input_block:
@@ -363,9 +364,14 @@ def _make_conditional_lifecycle_kernel(data_format):
                 if runtime_predicate:
                     with second_scratch_dfb.reserve() as second_scratch_block:
                         second_scratch_block.store(input_block)
-                    with second_scratch_dfb.wait() as second_scratch_block:
-                        with output_dfb.reserve() as output_block:
-                            output_block.store(second_scratch_block)
+                    with second_scratch_dfb.wait():
+                        pass
+
+                with final_scratch_dfb.reserve() as final_scratch_block:
+                    final_scratch_block.store(input_block)
+                with final_scratch_dfb.wait() as final_scratch_block:
+                    with output_dfb.reserve() as output_block:
+                        output_block.store(final_scratch_block)
 
         @ttl.datamovement()
         def read():
@@ -388,8 +394,18 @@ _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
 _capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
 _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
 _exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
-_conditional_bf16_lifecycle_kernel = _make_conditional_lifecycle_kernel("bf16")
-_conditional_f32_lifecycle_kernel = _make_conditional_lifecycle_kernel("float32")
+_conditional_bf16_true_lifecycle_kernel = _make_conditional_lifecycle_kernel(
+    "bf16", True
+)
+_conditional_bf16_false_lifecycle_kernel = _make_conditional_lifecycle_kernel(
+    "bf16", False
+)
+_conditional_f32_true_lifecycle_kernel = _make_conditional_lifecycle_kernel(
+    "float32", True
+)
+_conditional_f32_false_lifecycle_kernel = _make_conditional_lifecycle_kernel(
+    "float32", False
+)
 
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
@@ -658,10 +674,12 @@ def test_repeated_transaction_lifecycles_reuse_dfb(
 @pytest.mark.parametrize(
     ("operation", "dtype"),
     [
-        (_conditional_bf16_lifecycle_kernel, torch.bfloat16),
-        (_conditional_f32_lifecycle_kernel, torch.float32),
+        (_conditional_bf16_true_lifecycle_kernel, torch.bfloat16),
+        (_conditional_bf16_false_lifecycle_kernel, torch.bfloat16),
+        (_conditional_f32_true_lifecycle_kernel, torch.float32),
+        (_conditional_f32_false_lifecycle_kernel, torch.float32),
     ],
-    ids=["bf16", "f32"],
+    ids=["bf16-true", "bf16-false", "f32-true", "f32-false"],
 )
 @pytest.mark.parametrize(
     ("memory_config", "to_device"),
@@ -681,7 +699,7 @@ def test_same_runtime_condition_reuses_sequential_dfbs(
     operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
     # Input and output ownership prevent them from sharing with compute DFBs.
-    # Three allocations prove that the two guarded lifecycles share one index.
+    # Three allocations prove that all three scratch lifecycles share one index.
     assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     actual = ttnn.to_torch(output_tensor).float()
