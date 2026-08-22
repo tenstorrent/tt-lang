@@ -164,8 +164,9 @@ cb_pop                               // occupancy: 1 -> 0
 
 For a zero-copy tensor shape view, the producer-side reserve may use the
 producer rank with an explicit tile count while `attach_cb` exposes the same
-published DFB at the consumer-visible rank. This is valid only when the static
-element type, encoding, and total tile count are unchanged.
+published DFB at the consumer-visible rank. This is valid only when the view
+inserts or removes singleton dimensions while preserving the static element
+type and encoding.
 
 The producer side is ordered so the slot is reserved before the compute that
 writes it and published only after the compute has packed the materialized

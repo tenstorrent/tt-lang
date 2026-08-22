@@ -8,10 +8,19 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/IR/Dominance.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
 
 namespace mlir::tt::ttl {
+
+static bool isSingletonDimensionShapeView(RankedTensorType inputType,
+                                          RankedTensorType resultType) {
+  auto isNotSingleton = [](int64_t extent) { return extent != 1; };
+  return llvm::equal(
+      llvm::make_filter_range(inputType.getShape(), isNotSingleton),
+      llvm::make_filter_range(resultType.getShape(), isNotSingleton));
+}
 
 Value getDFBMaterializationStoreSource(Value intermediate) {
   Value source = intermediate;
@@ -27,7 +36,7 @@ Value getDFBMaterializationStoreSource(Value intermediate) {
         !resultType.hasStaticShape() ||
         inputType.getElementType() != resultType.getElementType() ||
         inputType.getEncoding() != resultType.getEncoding() ||
-        inputType.getNumElements() != resultType.getNumElements()) {
+        !isSingletonDimensionShapeView(inputType, resultType)) {
       break;
     }
     source = cast.getInputs()[0];

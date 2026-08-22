@@ -18,9 +18,10 @@
 namespace mlir::tt::ttl {
 
 /// Returns the value whose tiles must be published when `intermediate` is
-/// materialized. Equal-element-count unrealized tensor casts are zero-copy
-/// block-shape views, so their input can be stored through a reserve view with
-/// the input rank while consumers retain the original attached tensor type.
+/// materialized. Unrealized tensor casts that only insert or remove singleton
+/// dimensions are zero-copy block-shape views, so their input can be stored
+/// through a reserve view with the input rank while consumers retain the
+/// original attached tensor type.
 Value getDFBMaterializationStoreSource(Value intermediate);
 
 /// Allocates a fresh compiler-managed dataflow buffer and emits its `bind_cb`
