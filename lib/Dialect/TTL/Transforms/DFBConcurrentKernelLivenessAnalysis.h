@@ -162,8 +162,7 @@ struct DFBPerNodeLifetime {
 /// Allocation-report data omitted from normal liveness analysis.
 struct DFBLogicalLifecycleDiagnostics {
   SmallVector<DFBPerNodeLifetimeDiagnostics, 0> nodeLifetimeDiagnostics;
-  SmallVector<DFBPerNodeLifetimeDiagnostics, 0>
-      possibleNodeLifetimeDiagnostics;
+  SmallVector<DFBPerNodeLifetimeDiagnostics, 0> possibleNodeLifetimeDiagnostics;
 };
 
 /// Immutable protocol and per-node lifetime facts for one logical DFB.

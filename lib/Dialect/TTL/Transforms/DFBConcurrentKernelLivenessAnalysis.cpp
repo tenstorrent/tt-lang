@@ -1668,9 +1668,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           allocationDiagnostics
               ? &allocationDiagnostics->possibleNodeLifetimeDiagnostics
               : nullptr,
-          possibleGraph,
-          possibleOperationEvents, possibleAccessEvents, executionCounts,
-          possibleAccessRuns, domainState,
+          possibleGraph, possibleOperationEvents, possibleAccessEvents,
+          executionCounts, possibleAccessRuns, domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
     }

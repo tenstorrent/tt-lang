@@ -234,11 +234,11 @@ static void printTransactions(llvm::raw_ostream &output,
   output << ']';
 }
 
-static bool hasEqualPossibleFacts(
-    const DFBPerNodeLifetime &lhs,
-    const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
-    const DFBPerNodeLifetime &rhs,
-    const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
+static bool
+hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
+                      const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
+                      const DFBPerNodeLifetime &rhs,
+                      const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
   if (lhs.quiescence.failure != rhs.quiescence.failure ||
       lhs.quiescence.evidence != rhs.quiescence.evidence ||
       lhs.mayBeActive != rhs.mayBeActive ||
@@ -283,16 +283,15 @@ struct PossibleLifetimeGroup {
 };
 
 static void printPossibleLifetimes(
-    llvm::raw_ostream &output,
-    const DFBLogicalLifecycle &logicalDFB,
+    llvm::raw_ostream &output, const DFBLogicalLifecycle &logicalDFB,
     const DFBLogicalLifecycleDiagnostics &allocationDiagnostics) {
   assert(logicalDFB.possibleNodeLifetimes.size() ==
              allocationDiagnostics.possibleNodeLifetimeDiagnostics.size() &&
          "possible lifetimes must have allocation-report data");
   SmallVector<PossibleLifetimeGroup> groups;
-  for (auto lifetimeAndDiagnostics : llvm::zip_equal(
-           logicalDFB.possibleNodeLifetimes,
-           allocationDiagnostics.possibleNodeLifetimeDiagnostics)) {
+  for (auto lifetimeAndDiagnostics :
+       llvm::zip_equal(logicalDFB.possibleNodeLifetimes,
+                       allocationDiagnostics.possibleNodeLifetimeDiagnostics)) {
     const DFBPerNodeLifetime &lifetime = std::get<0>(lifetimeAndDiagnostics);
     const DFBPerNodeLifetimeDiagnostics &diagnostics =
         std::get<1>(lifetimeAndDiagnostics);
