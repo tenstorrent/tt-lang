@@ -1561,7 +1561,6 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           logicalDFB.launchDomain.unionWith(access.launchDomain);
     }
   }
-
   // Unknown external access may name any user-managed physical allocation,
   // including one also declared by the operation. Compiler-created DFBs cannot
   // be referenced by external code without an explicit dependency.
@@ -1578,6 +1577,10 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           logicalDFB.launchDomain.unionWith(accessDomain.domain);
     }
   }
+  bool hasUnknownDFBLaunchDomain =
+      llvm::any_of(logicalDFBs, [](const DFBLogicalLifecycle &logicalDFB) {
+        return !logicalDFB.launchDomain.known;
+      });
 
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
@@ -1642,6 +1645,13 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       }
     }
     orderedBeforeByNode.push_back(std::move(nodeOrdering));
+
+    // Possible-domain reachability cannot affect exact-domain reuse.
+    if (!hasUnknownDFBLaunchDomain) {
+      conditionallyOrderedBeforeByNode.emplace_back(
+          logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
+      continue;
+    }
 
     HappensBeforeGraph possibleGraph;
     DenseMap<Operation *, EventPair> possibleOperationEvents;
