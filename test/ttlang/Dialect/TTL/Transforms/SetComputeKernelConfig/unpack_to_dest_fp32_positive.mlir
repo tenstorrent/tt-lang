@@ -45,8 +45,8 @@ func.func @f32_sfpu_unary_sets_unpack(
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: An f32 passthrough store becomes a CB-to-DST copy during DST
-// assignment, so its source CB requires unpacking directly into FP32 DST.
+// Purpose: An f32 passthrough store becomes a DFB-to-DST copy during DST
+// assignment, so its source DFB requires unpacking directly into FP32 DST.
 // CHECK-LABEL: func.func @f32_passthrough_sets_unpack
 // CHECK-SAME: ttl.unpack_to_dest_fp32 = array<i32: 0>
 func.func @f32_passthrough_sets_unpack(

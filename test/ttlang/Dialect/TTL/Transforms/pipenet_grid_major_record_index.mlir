@@ -1,12 +1,12 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
 
 // Summary: Verify dense edge-major, grid-major device records select only the
-// current device's edge blocks and current core's record.
+// current device's edge blocks and current node's record.
 
 // Each device is the source of one edge. The lowering indexes a compact
 // device-to-edge range, then combines the selected edge block with the
-// row-major logical core index. It does not scan all eight records or compare
-// their endpoint device/core coordinates at runtime.
+// row-major logical node index. It does not scan all eight records or compare
+// their endpoint device/node coordinates at runtime.
 // CHECK-LABEL: func.func @sender()
 // CHECK: %[[NODE_X:.*]] = ttkernel.my_logical_x_
 // CHECK-NEXT: %[[NODE_Y:.*]] = ttkernel.my_logical_y_
