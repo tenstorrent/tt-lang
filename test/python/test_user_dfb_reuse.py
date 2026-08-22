@@ -700,7 +700,8 @@ def test_same_runtime_condition_reuses_sequential_dfbs(
 
     # Input and output ownership prevent them from sharing with compute DFBs.
     # Three allocations prove that all three scratch lifecycles share one index.
-    assert _count_final_dfb_allocations(final_mlir_path) == 3
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
