@@ -93,44 +93,41 @@ getOptionalUnpackConstraint(func::FuncOp function) {
   return std::optional<SmallVector<int32_t>>(std::move(dataflowBufferIndices));
 }
 
-/// Return the attached DFB after resolving a compute-region argument.
-Value resolveDataflowBuffer(Value value) {
+struct ResolvedDataflowBuffer {
+  Value dfb;
+  int64_t dfbIndex;
+};
+
+/// Return the attached DFB and index after resolving a compute-region argument.
+FailureOr<std::optional<ResolvedDataflowBuffer>>
+resolveDataflowBuffer(Value value, Operation *consumer) {
   if (auto blockArgument = dyn_cast<BlockArgument>(value)) {
     auto computeOp =
         dyn_cast_or_null<ComputeOp>(blockArgument.getOwner()->getParentOp());
     if (!computeOp) {
-      return {};
+      return std::optional<ResolvedDataflowBuffer>();
     }
     unsigned argumentNumber = blockArgument.getArgNumber();
     if (argumentNumber < computeOp.getNumInputs()) {
       value = computeOp.getInputs()[argumentNumber];
     } else {
       unsigned outputNumber = argumentNumber - computeOp.getNumInputs();
-      if (outputNumber >= computeOp.getNumOutputs()) {
-        return {};
-      }
+      assert(outputNumber < computeOp.getNumOutputs() &&
+             "compute region argument must map to an input or output");
       value = computeOp.getOutputs()[outputNumber];
     }
   }
 
-  return getAttachedCB(value);
-}
-
-/// Return the attached DFB index, or `std::nullopt` when no DFB is attached.
-FailureOr<std::optional<int64_t>>
-resolveDataflowBufferIndex(Value value, Operation *consumer) {
-  Value dfb = resolveDataflowBuffer(value);
-
-  if (dfb) {
-    std::optional<int64_t> dfbIndex = getCBIndex(dfb);
-    if (!dfbIndex) {
-      consumer->emitOpError("uses a dataflow buffer without a finalized index");
-      return failure();
-    }
-    return dfbIndex;
+  Value dfb = getAttachedCB(value);
+  if (!dfb) {
+    return std::optional<ResolvedDataflowBuffer>();
   }
-
-  return std::optional<int64_t>();
+  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
+  if (!dfbIndex) {
+    consumer->emitOpError("uses a dataflow buffer without a finalized index");
+    return failure();
+  }
+  return std::make_optional(ResolvedDataflowBuffer{dfb, *dfbIndex});
 }
 
 /// Return the scalar element type of a tile or tensor of tiles.
@@ -167,12 +164,12 @@ findUnavailableDataflowBufferOperand(Operation *operation,
         TileOperandRoute::DataflowBuffer) {
       continue;
     }
-    FailureOr<std::optional<int64_t>> dataflowBufferIndex =
-        resolveDataflowBufferIndex(operand.get(), operation);
-    if (failed(dataflowBufferIndex)) {
+    FailureOr<std::optional<ResolvedDataflowBuffer>> dataflowBuffer =
+        resolveDataflowBuffer(operand.get(), operation);
+    if (failed(dataflowBuffer)) {
       return failure();
     }
-    if (!*dataflowBufferIndex) {
+    if (!*dataflowBuffer) {
       return std::optional<unsigned>(operand.getOperandNumber());
     }
   }
@@ -194,22 +191,21 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (failed(elementType)) {
       return failure();
     }
-    FailureOr<std::optional<int64_t>> dataflowBufferIndex =
-        resolveDataflowBufferIndex(operand.get(), operation);
-    if (failed(dataflowBufferIndex)) {
+    FailureOr<std::optional<ResolvedDataflowBuffer>> dataflowBuffer =
+        resolveDataflowBuffer(operand.get(), operation);
+    if (failed(dataflowBuffer)) {
       return failure();
     }
-    if (route == TileOperandRoute::DataflowBuffer && !*dataflowBufferIndex) {
+    if (route == TileOperandRoute::DataflowBuffer && !*dataflowBuffer) {
       operation->emitOpError()
           << "operand " << operand.getOperandNumber()
           << " must resolve to a dataflow buffer for the selected strategy";
       return failure();
     }
-    if (*dataflowBufferIndex) {
-      dfbInputUses.push_back({**dataflowBufferIndex,
-                              resolveDataflowBuffer(operand.get()), operation,
-                              operand.getOperandNumber(), info.primitive, route,
-                              *elementType});
+    if (*dataflowBuffer) {
+      dfbInputUses.push_back(
+          {(*dataflowBuffer)->dfbIndex, (*dataflowBuffer)->dfb, operation,
+           operand.getOperandNumber(), info.primitive, route, *elementType});
     }
     if (route == TileOperandRoute::Dst) {
       destinationUses.push_back({operation, info.primitive, *elementType});
