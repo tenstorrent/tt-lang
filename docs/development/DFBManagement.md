@@ -1587,15 +1587,21 @@ and the order of statically expanded transactions. Effects are synchronous
 facts about actions completed inside the external call; they do not emit
 lifecycle operations.
 
-An occurrence with no effect remains a possible read or write from call entry
-through completion. If operand adaptation aliases several occurrences to one
-DFB, every occurrence requires effects to eliminate that opaque interval.
-Ordinary storage accesses between summarized acquisitions and releases remain
-inside the corresponding lifetime. A partial summary supplies its listed
-events but cannot establish the complete reserve/push/wait/pop lifecycle for
-that DFB. A bounded external lifecycle requires balanced, ordered transactions
-with equal tile counts, known pointer owners, supported execution counts, and
-no access after the terminal pop.
+An occurrence with neither a protocol effect nor a non-transactional access
+remains a possible read or write from call entry through completion. Its access
+contract is incomplete, so allocation cannot prove bounded reuse with another
+logical DFB on a shared launch node. Exact disjoint launch-node domains may
+still share because they never use the physical allocation on the same node. If
+operand adaptation aliases several occurrences to one DFB, every occurrence
+requires an explicit contract. A partial summary supplies its listed events but
+cannot establish the complete reserve/push/wait/pop lifecycle for that DFB. A
+bounded external lifecycle requires balanced, ordered transactions with equal
+tile counts, known pointer owners, supported execution counts, and no access
+after the terminal pop.
+
+Native `ttl.copy` is not an external access. Its surrounding acquire and release
+operations define slot ownership, so the ordinary lifecycle proof determines
+whether reuse is valid.
 
 `dfb_accesses` describes typed synchronous accesses without queue transactions.
 `ttl.DFBAccess.inspect(dfb)` states that the callee may read the selected DFB's

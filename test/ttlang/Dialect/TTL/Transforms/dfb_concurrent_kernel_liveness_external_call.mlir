@@ -18,7 +18,7 @@
 // CHECK-DAG: %[[A:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
-// CHECK: ttl.opaque_call "inspect_dfb" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%[[A]] : !ttl.cb<{{.*}}>) () {header = "inspect_dfb.hpp"}
+// CHECK: ttl.opaque_call "inspect_dfb" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%[[A]] : !ttl.cb<{{.*}}>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "inspect_dfb.hpp"}
 // CHECK: ttl.cb_pop %[[A]]
 // CHECK: ttl.get_dfb_id %[[A]]
 
@@ -45,7 +45,7 @@ func.func @external_use_before_release_compute()
   %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<1x16, bf16>, 2> -> tensor<1x1x!ttcore.tile<1x16, bf16>>
-  ttl.opaque_call "inspect_dfb" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%a : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) () {header = "inspect_dfb.hpp"} : () -> ()
+  ttl.opaque_call "inspect_dfb" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%a : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>] () {header = "inspect_dfb.hpp"} : () -> ()
   ttl.cb_pop %a : <[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %a_index = ttl.get_dfb_id %a : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %ack_view = ttl.cb_reserve %ack : <[1, 1], !ttcore.tile<1x16, bf16>, 2> -> tensor<1x1x!ttcore.tile<1x16, bf16>>

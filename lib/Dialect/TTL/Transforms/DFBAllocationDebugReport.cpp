@@ -519,7 +519,8 @@ void printDFBAllocationDebugReport(
            << " bounded=" << logicalDFB.bounded
            << " compiler_created=" << logicalDFB.compilerCreated
            << " conditionally_bounded=" << logicalDFB.conditionallyBounded
-           << " allocation_group=";
+           << " access_contracts_complete="
+           << logicalDFB.accessContractsComplete << " allocation_group=";
     if (logicalDFB.allocationGroup) {
       Attribute allocationGroup = logicalDFB.allocationGroup;
       allocationGroup.print(output);

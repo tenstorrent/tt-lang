@@ -334,10 +334,11 @@ unconditionally in external C++, or be omitted so the dependency remains
 opaque. Repeated transactions retain every action and its position. A bounded
 lifecycle requires ordered reserve/push and wait/pop transactions with matching
 tile counts. A partial summary is valid but does not prove a bounded lifecycle
-for that dependency. A dependency occurrence with no listed effect is an opaque
-storage access for the complete call duration, including when operand adaptation
-aliases multiple occurrences to the same SSA DFB. Every aliased occurrence
-requires its own effects to avoid an opaque call-duration access.
+for that dependency. A dependency occurrence with neither a listed effect nor a
+non-transactional access is an opaque storage access for the complete call
+duration, including when operand adaptation aliases multiple occurrences to the
+same SSA DFB. Every aliased occurrence requires its own explicit contract to
+avoid an opaque call-duration access.
 
 `dfb_accesses` is an ordered list of synchronous, non-transactional access
 summaries. `ttl.DFBAccess.inspect(dfb)` states that the external function may
@@ -362,7 +363,9 @@ transition explicit. It does not establish ordering with another logical DFB;
 allocation reuse still requires the complete access interval to precede or
 follow every access to the other DFB. One dependency occurrence cannot declare
 both a protocol effect and a non-transactional access. An omitted occurrence
-remains conservative.
+has an incomplete access contract. It prevents physical reuse with another
+logical DFB on a shared launch node, while exact disjoint launch-node domains
+remain eligible for sharing.
 
 `unknown_dfb_access=True` declares that external C++ may access user-managed
 DFBs not present in the declared dependencies. This is distinct from malformed
