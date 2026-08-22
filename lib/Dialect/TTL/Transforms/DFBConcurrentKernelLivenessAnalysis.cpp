@@ -1466,11 +1466,9 @@ collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
 struct ProgramOrderTopologyAccess {
   const DFBAccessOccurrence *access = nullptr;
   AccessRun run;
-  bool resetTarget = false;
 
   bool operator==(const ProgramOrderTopologyAccess &rhs) const {
-    return std::tie(access, run, resetTarget) ==
-           std::tie(rhs.access, rhs.run, rhs.resetTarget);
+    return std::tie(access, run) == std::tie(rhs.access, rhs.run);
   }
 };
 
@@ -1502,14 +1500,7 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
     const StructuralOperationOrder &structuralOrder,
     bool includeUnknownDomains) {
   ProgramOrderTopologyInputs inputs;
-  DenseSet<const DFBAccessOccurrence *> resetTargetAccesses;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
-    for (unsigned logicalIndex : reset.targetLogicalIndices) {
-      for (const DFBAccessOccurrence &access :
-           logicalDFBs[logicalIndex].accesses) {
-        resetTargetAccesses.insert(&access);
-      }
-    }
     for (Operation *operation : reset.participantOperations) {
       if (Operation *projected =
               structuralOrder.getTopLevelOperation(operation)) {
@@ -1533,15 +1524,15 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
       if (runIt == accessRuns.end()) {
         continue;
       }
-      bool resetTarget = resetTargetAccesses.contains(&access);
       bool directProtocolEvent = access.getProtocolEffect() &&
                                  projected == access.operation &&
                                  runIt->second.executionCount == 1;
       bool repeatedAccessEvents = runIt->second.executionCount > 1;
-      bool nestedResetEvent = resetTarget && projected != access.operation &&
-                              runIt->second.executionCount == 1;
-      if (directProtocolEvent || repeatedAccessEvents || nestedResetEvent) {
-        inputs.accesses.push_back({&access, runIt->second, resetTarget});
+      bool nestedSingleAccessEvent =
+          projected != access.operation && runIt->second.executionCount == 1;
+      if (directProtocolEvent || repeatedAccessEvents ||
+          nestedSingleAccessEvent) {
+        inputs.accesses.push_back({&access, runIt->second});
       }
     }
   }
@@ -1749,13 +1740,9 @@ static void buildProgramOrderTopology(
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
       projectedAccesses;
   DenseMap<const DFBAccessOccurrence *, const AccessRun *> accessRuns;
-  DenseSet<const DFBAccessOccurrence *> resetTargetAccesses;
   for (const ProgramOrderTopologyAccess &input : inputs.accesses) {
     const DFBAccessOccurrence *access = input.access;
     accessRuns.try_emplace(access, &input.run);
-    if (input.resetTarget) {
-      resetTargetAccesses.insert(access);
-    }
     if (Operation *projected =
             structuralOrder.getTopLevelOperation(access->operation)) {
       projectedAccesses[projected].push_back(access);
@@ -1843,8 +1830,7 @@ static void buildProgramOrderTopology(
     SmallVector<const DFBAccessOccurrence *> nestedSingleAccesses;
     for (const DFBAccessOccurrence *access : accesses) {
       auto runIt = accessRuns.find(access);
-      if (!resetTargetAccesses.contains(access) ||
-          access->operation == projected || runIt == accessRuns.end() ||
+      if (access->operation == projected || runIt == accessRuns.end() ||
           runIt->second->executionCount != 1) {
         continue;
       }
