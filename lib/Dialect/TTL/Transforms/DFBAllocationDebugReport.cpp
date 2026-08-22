@@ -14,6 +14,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <cassert>
+#include <cstdint>
 #include <tuple>
 
 namespace mlir::tt::ttl {
