@@ -32,10 +32,6 @@ SCALAR_RESULT_HEADER = os.path.join(
 )
 
 
-def _count_final_dfb_allocations(final_mlir_path):
-    return final_mlir_path.read_text().count("dfb_index =")
-
-
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
     @ttl.operation()
     def exp_via_scratch(source: ttl.DFB, destination: ttl.DFB):
@@ -421,7 +417,8 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
     # Input and output hardware owners keep them distinct from the compute
     # scratch DFBs. The scratch DFBs share because their exact node domains are
     # disjoint, without requiring a local lifetime-order proof.
-    assert _count_final_dfb_allocations(final_mlir_path) == 3
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
