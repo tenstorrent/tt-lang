@@ -157,6 +157,15 @@ static bool packsToAnyCB(Operation *operation,
   return false;
 }
 
+static void addScopeOutputCBs(Operation *operation,
+                              const llvm::SmallDenseSet<Value, 2> &packCBs,
+                              llvm::SmallDenseSet<Value, 2> &scopeOutputCBs) {
+  auto pushOp = dyn_cast<ttk::CBPushBackOp>(operation);
+  if (pushOp && packCBs.contains(pushOp.getCb())) {
+    scopeOutputCBs.insert(pushOp.getCb());
+  }
+}
+
 static bool containsAnyPack(Operation *operation) {
   bool found = false;
   operation->walk([&](Operation *nested) {
@@ -246,12 +255,71 @@ insertLocalL1AccEnableAfterReset(OpBuilder &builder, scf::ForOp loop,
   });
 }
 
-/// Verify that every pack in an L1 accumulation loop targets a supported output
-/// format. Packer L1 accumulation is an additive write to the destination data
-/// format, and unsupported formats have no valid L1-accumulation behavior.
-static LogicalResult verifyL1AccumulationPackFormats(scf::ForOp loop) {
+static void insertL1AccEnableAfterPack(OpBuilder &builder, scf::ForOp loop,
+                                       Operation *operation,
+                                       AccumulationInitialMode initialMode) {
+  Location loc = operation->getLoc();
+  builder.setInsertionPointAfter(operation);
+  if (initialMode == AccumulationInitialMode::AccumulateExisting) {
+    Value enableFlag = buildI32Const(builder, loc, 1);
+    ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
+    return;
+  }
+
+  if (!mayNeedOverwriteModeEnable(loop)) {
+    return;
+  }
+
+  Value laterIteration =
+      arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
+                            loop.getInductionVar(), loop.getLowerBound());
+  auto ifOp = scf::IfOp::create(builder, loc, laterIteration);
+  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+  Value enableFlag = buildI32Const(builder, loc, 1);
+  ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
+}
+
+static void insertNonScopePackL1AccGuards(
+    OpBuilder &builder, scf::ForOp loop,
+    const llvm::SmallDenseSet<Value, 2> &scopeOutputCBs,
+    AccumulationInitialMode initialMode) {
+  SmallVector<Operation *> nonScopePacks;
+  loop->walk([&](Operation *operation) {
+    if (findL1AccLoop(operation) != loop) {
+      return;
+    }
+    if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+      if (!scopeOutputCBs.contains(packOp.getOutCb())) {
+        nonScopePacks.push_back(operation);
+      }
+      return;
+    }
+    if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+      if (!scopeOutputCBs.contains(packOp.getOutCb())) {
+        nonScopePacks.push_back(operation);
+      }
+    }
+  });
+
+  for (Operation *operation : nonScopePacks) {
+    Location loc = operation->getLoc();
+    builder.setInsertionPoint(operation);
+    Value disableFlag = buildI32Const(builder, loc, 0);
+    ttk::PackReconfigL1AccOp::create(builder, loc, disableFlag);
+    insertL1AccEnableAfterPack(builder, loop, operation, initialMode);
+  }
+}
+
+/// Verify that every accumulating pack targets a supported output format.
+/// Packer L1 accumulation is an additive write to the destination data format.
+static LogicalResult verifyL1AccumulationPackFormats(
+    scf::ForOp loop, const llvm::SmallDenseSet<Value, 2> &scopeOutputCBs) {
   LogicalResult result = success();
   auto verifyPackOutput = [&](Operation *packOp, Value outCB) {
+    if (!scopeOutputCBs.contains(outCB)) {
+      return WalkResult::advance();
+    }
+
     auto cbType = dyn_cast<ttk::CBType>(outCB.getType());
     if (!cbType) {
       result = packOp->emitOpError(
@@ -296,6 +364,7 @@ struct L1AccumulationLoopGroup {
   scf::ForOp rootLoop;
   SmallVector<scf::ForOp> loops;
   llvm::SmallDenseSet<Value, 2> packCBs;
+  llvm::SmallDenseSet<Value, 2> scopeOutputCBs;
   Operation *scopeEnd = nullptr;
 };
 
@@ -424,7 +493,10 @@ collectL1AccumulationLoopGroups(
     for (Operation *operation = group.rootLoop->getNextNode(); operation;
          operation = operation->getNextNode()) {
       if (isa<ttk::CBPushBackOp>(operation)) {
-        group.scopeEnd = operation;
+        addScopeOutputCBs(operation, group.packCBs, group.scopeOutputCBs);
+        if (!group.scopeOutputCBs.empty()) {
+          group.scopeEnd = operation;
+        }
         continue;
       }
       if (isa<ttk::CBReserveBackOp>(operation)) {
@@ -454,6 +526,9 @@ collectL1AccumulationLoopGroups(
       }
     }
 
+    if (group.scopeOutputCBs.empty()) {
+      group.scopeOutputCBs.insert(group.packCBs.begin(), group.packCBs.end());
+    }
     groups.push_back(std::move(group));
   }
 
@@ -490,10 +565,6 @@ struct TTKernelInsertL1AccumulationPass
         }
       });
       if (!hasMaxReduce) {
-        if (failed(verifyL1AccumulationPackFormats(loop))) {
-          hadFailure = true;
-          return;
-        }
         l1AccLoops.push_back(loop);
       }
     });
@@ -524,6 +595,16 @@ struct TTKernelInsertL1AccumulationPass
     if (failed(groups)) {
       signalPassFailure();
       return;
+    }
+
+    for (const auto &group : *groups) {
+      for (scf::ForOp loop : group.loops) {
+        if (failed(
+                verifyL1AccumulationPackFormats(loop, group.scopeOutputCBs))) {
+          signalPassFailure();
+          return;
+        }
+      }
     }
 
     // Emit packer L1 accumulation reconfiguration for each semantic scope.
@@ -606,7 +687,9 @@ struct TTKernelInsertL1AccumulationPass
         FailureOr<AccumulationInitialMode> loopInitialMode =
             getL1AccInitialMode(loop);
         assert(succeeded(loopInitialMode) && "validated before grouping");
-        insertLocalL1AccEnableAfterReset(builder, loop, group.packCBs,
+        insertNonScopePackL1AccGuards(builder, loop, group.scopeOutputCBs,
+                                      *loopInitialMode);
+        insertLocalL1AccEnableAfterReset(builder, loop, group.scopeOutputCBs,
                                          *loopInitialMode);
       }
 

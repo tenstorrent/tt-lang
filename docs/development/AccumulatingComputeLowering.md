@@ -470,8 +470,9 @@ represent "the first dynamically executed update overwrites, later executed
 updates accumulate" when a pack may be skipped by an `scf.if`.
 
 The same pass rejects a loop that contains both a DFB `+=` and a plain store.
-Packer L1 accumulation state applies to every pack in the loop, including packs
-to other outputs, so the plain store could accumulate instead of overwriting.
+TTL source-level lowering does not yet encode which in-loop stores should run
+outside the accumulation lifecycle, so it cannot prove the required packer
+state transitions before TTKernel conversion.
 
 Future conditional support (#648) should add explicit update-site metadata
 or lowered state transitions before TTKernel L1 insertion. The required
@@ -510,9 +511,10 @@ scope consumption:
 
 `TTKernelInsertL1Accumulation` validates that annotated loops have both
 `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`. It groups adjacent loops by
-scope id, validates pack output formats, and inserts packer reconfiguration
-operations. It does not infer initial mode from neighboring DFB
-reserve/push/store operations or from TTKernel pack order.
+scope id, validates accumulated-output pack formats, brackets in-loop packs to
+non-scope DFBs, and inserts packer reconfiguration operations. It does not
+infer initial mode from neighboring DFB reserve/push/store operations or from
+TTKernel pack order.
 
 Nested annotated loops with different scope ids are rejected until #648 adds
 explicit packer state transitions.
@@ -791,6 +793,11 @@ If a later non-group pack targets one of the group's output dataflow buffers
 before the corresponding push, the disable is emitted before that pack. Packer
 L1 accumulation state is global, so the later pack must not observe the enabled
 state.
+
+If a pack inside an annotated loop targets a DFB that is not published as an
+accumulated scope output, the pass emits a temporary disable before that pack
+and restores the active scope state after it. Format validation applies only to
+packs that target the accumulated output DFBs.
 
 When `ttl.l1_acc_initial = accumulate_existing`, lowering has already
 proved that L1 holds the initial value for the scope. The reconfiguration
