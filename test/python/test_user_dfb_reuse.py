@@ -196,6 +196,43 @@ def _make_exact_execution_domain_kernel(data_format):
     return exact_execution_domain_kernel
 
 
+@ttl.operation(grid=(2, 1))
+def _incompatible_static_configuration_kernel(input_tensor, output_tensor):
+    first_input_dfb = ttl.make_dfb("float32", shape=(1, 1), block_count=2)
+    second_input_dfb = ttl.make_dfb("float32", shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dfb("float32", shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        node_x, _ = ttl.node(dims=2)
+        if node_x == 0:
+            with first_input_dfb.wait() as input_block:
+                with output_dfb.reserve() as output_block:
+                    output_block.store(ttl.exp(input_block))
+        if node_x == 1:
+            with second_input_dfb.wait() as input_block:
+                with output_dfb.reserve() as output_block:
+                    output_block.store(
+                        ttl.block.broadcast(input_block, dims=[0], shape=(1, 1))
+                    )
+
+    @ttl.datamovement()
+    def read():
+        node_x, _ = ttl.node(dims=2)
+        if node_x == 0:
+            with first_input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, 0], input_block).wait()
+        if node_x == 1:
+            with second_input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, 1], input_block).wait()
+
+    @ttl.datamovement()
+    def write():
+        node_x, _ = ttl.node(dims=2)
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, output_tensor[0, node_x]).wait()
+
+
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
@@ -426,6 +463,42 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_disjoint_incompatible_static_configurations_do_not_reuse_dfb(
+    device, memory_config, to_device, monkeypatch, tmp_path
+):
+    # Only FP32 requires distinct unpack modes for exponential and broadcast.
+    first_input = (
+        torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE) / 2048
+    )
+    second_input = torch.zeros((TILE, TILE), dtype=torch.float32)
+    second_input[0, :] = torch.arange(TILE, dtype=torch.float32) / 32
+    input_host = torch.cat((first_input, second_input), dim=1)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "incompatible_static_configurations.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    _incompatible_static_configuration_kernel(
+        input_tensor, output_tensor, options="--ttl-reuse-user-dfbs"
+    )
+
+    # The two input DFBs are active on disjoint nodes, but their unpack modes
+    # require distinct physical indices. The output DFB adds a third index.
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 3
+
+    first_expected = torch.exp(first_input)
+    second_expected = second_input[0:1, :].expand(TILE, TILE)
+    expected = torch.cat((first_expected, second_expected), dim=1)
+    actual = ttnn.to_torch(output_tensor).float()
+    assert_allclose(actual, expected.float(), rtol=2e-3, atol=5e-4)
 
 
 @pytest.mark.parametrize(
