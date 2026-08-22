@@ -1278,11 +1278,9 @@ def test_axis_neighbor_wrap(
 ):
     fabric_config = ttnn.FabricConfig.FABRIC_2D_TORUS_XY
     route_mesh_shape = _get_route_mesh_shape(fabric_config)
-    if len(route_mesh_shape) != 2:
-        pytest.skip("requires a 2D fabric mesh")
-    neighbor_axis = _select_longest_nontrivial_axis(route_mesh_shape)
-    if route_mesh_shape[neighbor_axis] < 3:
+    if len(route_mesh_shape) != 2 or max(route_mesh_shape) < 3:
         pytest.skip("requires a torus axis with at least three devices")
+    neighbor_axis = _select_longest_nontrivial_axis(route_mesh_shape)
 
     axis_neighbor_wrap = _make_fabric_operations(route_mesh_shape).axis_neighbor_wrap
     device_count = prod(route_mesh_shape)
