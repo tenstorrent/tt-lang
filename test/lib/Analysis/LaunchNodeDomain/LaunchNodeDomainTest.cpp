@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// This test driver prints the launch-node lattice immediately before every
-// operation with a test.label attribute.
+// This test driver prints launch-node lattices and conditional-execution
+// equivalence results requested by test attributes.
 
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"

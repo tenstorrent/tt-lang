@@ -1,7 +1,7 @@
 // RUN: ttlang-launch-node-domain-test %s | FileCheck %s
 
-// Summary: Prints exact launch-node lattice values for full, narrowed, empty,
-// joined, and unknown execution domains.
+// Summary: Prints launch-node lattice values and conditional-execution
+// equivalence results.
 
 // CHECK:      entry = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: x_zero = {(0,0), (0,1)}
