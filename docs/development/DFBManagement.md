@@ -1526,7 +1526,7 @@ pairs retain an `unknown-launch-node-domain` conflict. Nodes with identical
 facts are grouped for deterministic bounded output.
 
 If node-dependent IR has no launch grid, no base launch nodes are available
-for the counterfactual evaluation. The report retains logical DFB and access
+for the possible-domain evaluation. The report retains logical DFB and access
 facts but omits per-node rows.
 
 The allocation graph uses one vertex per logical DFB and one edge per pair
