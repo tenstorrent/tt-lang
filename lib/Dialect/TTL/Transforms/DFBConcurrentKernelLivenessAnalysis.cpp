@@ -4068,7 +4068,12 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     logicalDFB.accessContractsComplete = llvm::all_of(
         logicalDFB.accesses, [](const DFBAccessOccurrence &access) {
-          return access.protocolEffect || access.nonTransactionalAccess;
+          if (access.protocolEffect || access.nonTransactionalAccess) {
+            return true;
+          }
+          // ttl.copy transfers data within a slot whose queue ownership is
+          // already defined by the surrounding acquire and release operations.
+          return isa<CopyOp>(access.operation);
         });
   }
 
