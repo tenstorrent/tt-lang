@@ -310,8 +310,10 @@ an opaque call-duration access.
 
 `dfb_accesses` is an ordered list of synchronous, non-transactional access
 summaries. `ttl.DFBAccess.inspect(dfb)` states that the external function may
-read the selected DFB's descriptor or contents but does not publish, consume,
-or leave that DFB changed when it returns:
+read the selected dataflow buffer's descriptor or contents but leaves its
+contents and queue position unchanged. `ttl.DFBAccess.modify(dfb)` permits the
+function to read or write the contents and leave them changed, while still
+leaving the queue position unchanged:
 
 ```python
 ttl.call_extern_func(
@@ -332,6 +334,10 @@ allocation reuse still requires the complete access interval to precede or
 follow every access to the other DFB. One dependency occurrence cannot declare
 both a protocol effect and a non-transactional access. An omitted occurrence
 remains conservative.
+
+A repeated `modify` access remains live from its first invocation through its
+last invocation. The contract does not state that its contents are dead between
+invocations.
 
 `unknown_dfb_access=True` declares that external C++ may access user-managed
 DFBs not present in the dependency list. This is distinct from malformed

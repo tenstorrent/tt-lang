@@ -36,6 +36,8 @@ getNonTransactionalAccessName(DFBNonTransactionalAccessKind access) {
   switch (access) {
   case DFBNonTransactionalAccessKind::Inspect:
     return "inspect";
+  case DFBNonTransactionalAccessKind::Modify:
+    return "modify";
   }
   llvm_unreachable("unknown DFB non-transactional access");
 }
@@ -270,8 +272,11 @@ static void printResetEpochs(llvm::raw_ostream &output,
         } else {
           output << "none";
         }
-        if (epoch.inspectionOnly) {
-          output << ",inspection_only=1";
+        if (epoch.resetCanonicalizedOpaqueProtocol) {
+          output << ",opaque_protocol_reset=1";
+        }
+        if (epoch.nonTransactionalOnly) {
+          output << ",non_transactional_only=1";
         }
         output << ",terminal_state="
                << (epoch.terminalStateCanonical ? "canonical" : "protocol")
@@ -298,7 +303,9 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.terminalReadPointerOwner ==
                    rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
-               lhsEpoch.inspectionOnly == rhsEpoch.inspectionOnly &&
+               lhsEpoch.resetCanonicalizedOpaqueProtocol ==
+                   rhsEpoch.resetCanonicalizedOpaqueProtocol &&
+               lhsEpoch.nonTransactionalOnly == rhsEpoch.nonTransactionalOnly &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
@@ -327,7 +334,9 @@ static bool hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
-      lhs.inspectionOnly != rhs.inspectionOnly ||
+      lhs.resetCanonicalizedOpaqueProtocol !=
+          rhs.resetCanonicalizedOpaqueProtocol ||
+      lhs.nonTransactionalOnly != rhs.nonTransactionalOnly ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs)) {
     return false;
@@ -369,8 +378,11 @@ static void printPossibleLifetimes(
            << " domain_assumption=unknown-possible may_be_active="
            << lifetime.mayBeActive
            << " conditional_execution=" << lifetime.conditionalExecutionProven;
-    if (lifetime.inspectionOnly) {
-      output << " inspection_only=1";
+    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+      output << " opaque_protocol_reset=1";
+    }
+    if (lifetime.nonTransactionalOnly) {
+      output << " non_transactional_only=1";
     }
     output << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
@@ -414,8 +426,11 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
            << getQuiescenceFailureName(lifetime.quiescence.failure)
            << " domain_assumption=exact conditional_execution="
            << lifetime.conditionalExecutionProven;
-    if (lifetime.inspectionOnly) {
-      output << " inspection_only=1";
+    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+      output << " opaque_protocol_reset=1";
+    }
+    if (lifetime.nonTransactionalOnly) {
+      output << " non_transactional_only=1";
     }
     output << " evidence=";
     printOperation(output, lifetime.quiescence.evidence);

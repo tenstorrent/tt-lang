@@ -110,6 +110,11 @@ class DFBAccess:
         """Read a DFB without changing its contents or queue position."""
         raise RuntimeError("ttl.DFBAccess.inspect() is valid only in a compiled kernel")
 
+    @staticmethod
+    def modify(dfb):
+        """Read or write contents without changing the DFB queue position."""
+        raise RuntimeError("ttl.DFBAccess.modify() is valid only in a compiled kernel")
+
 
 def dfb_descriptor(dfb):
     """Use finalized DFB allocation metadata as a C++ template type."""

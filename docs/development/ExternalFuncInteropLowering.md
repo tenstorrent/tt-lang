@@ -281,6 +281,13 @@ Descriptor operands are direct DFB dependencies. They remain visible to DFB
 lifetime and conflict analysis even though they become C++ types rather than
 runtime function parameters.
 
+External functions may describe synchronous access that preserves queue
+position with `dfb_accesses`. `ttl.DFBAccess.inspect(dfb)` permits reading the
+descriptor or contents but requires unchanged contents on return.
+`ttl.DFBAccess.modify(dfb)` permits reading or changing contents. Both forms
+leave the queue position unchanged, complete before return, and remain storage
+accesses for lifetime ordering.
+
 ## Integer DFB compatibility
 
 `ttl.get_dfb_id` remains available for headers that accept integer template
