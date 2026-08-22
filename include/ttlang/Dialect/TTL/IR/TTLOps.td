@@ -2046,12 +2046,13 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     the DFB changed when it returns. One dependency occurrence cannot declare
     both a protocol effect and an inspection because their relative execution
     order would be unspecified. Effects and accesses omitted for a dependency
-    occurrence leave its access opaque for the call duration. If one DFB
-    occupies multiple dependency occurrences, every occurrence requires its
-    own summary to avoid an opaque call-duration access. The
-    `unknown_dfb_access` unit attribute declares that the callee may also access
-    unlisted user-managed DFBs and disables physical-index reuse in affected
-    allocation scopes.
+    occurrence leave its access opaque for the call duration and incomplete for
+    reuse with another logical DFB on a shared launch node. If one DFB occupies
+    multiple dependency occurrences, every occurrence requires its own summary
+    to avoid an opaque call-duration access. The `unknown_dfb_access` unit
+    attribute declares that the callee may also access unlisted user-managed
+    DFBs and adds an opaque occurrence to each affected DFB. Exact disjoint
+    launch-node domains remain eligible for physical-index sharing.
 
     Every asynchronous DFB access must also complete before the call returns.
     A callee with outstanding asynchronous work requires a separate explicit

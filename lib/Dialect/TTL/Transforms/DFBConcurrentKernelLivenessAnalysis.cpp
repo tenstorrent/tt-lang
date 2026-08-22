@@ -4033,7 +4033,21 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-    logicalDFB.bounded = logicalDFB.launchDomain.known &&
+    logicalDFB.accessContractsComplete = llvm::all_of(
+        logicalDFB.accesses, [](const DFBAccessOccurrence &access) {
+          if (access.getProtocolEffect() ||
+              access.getNonTransactionalAccess()) {
+            return true;
+          }
+          // Separate acquire and release operations establish queue ownership
+          // for the slot transferred by ttl.copy.
+          return isa<CopyOp>(access.operation);
+        });
+  }
+
+  for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    logicalDFB.bounded = logicalDFB.accessContractsComplete &&
+                         logicalDFB.launchDomain.known &&
                          !logicalDFB.nodeLifetimes.empty() &&
                          llvm::all_of(logicalDFB.nodeLifetimes,
                                       [](const DFBPerNodeLifetime &lifetime) {
@@ -4047,7 +4061,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                               lifetime.quiescence.proven();
                      });
     logicalDFB.conditionallyBounded =
-        !logicalDFB.launchDomain.known && hasProvenConditionalLifecycle &&
+        logicalDFB.accessContractsComplete && !logicalDFB.launchDomain.known &&
+        hasProvenConditionalLifecycle &&
         llvm::all_of(logicalDFB.possibleNodeLifetimes,
                      [](const DFBPerNodeLifetime &lifetime) {
                        return !lifetime.mayBeActive ||

@@ -9,10 +9,11 @@ body or validate the foreign function signature.
 
 External code must complete all synchronous and asynchronous resource accesses
 before returning. DFB behavior is declared rather than inferred:
-`ttl.opaque_call` exposes dependencies, ordered protocol effects, and unknown
-access through `DFBAccessOpInterface`. A dependency occurrence with no listed
-effect remains an opaque access for the call duration. A complete effect summary
-can establish the lifecycle facts required for physical-index reuse.
+`ttl.opaque_call` exposes dependencies, ordered protocol effects, typed
+non-transactional accesses, and unknown access through `DFBAccessOpInterface`.
+A dependency occurrence with neither a listed effect nor a non-transactional
+access remains opaque and incomplete for overlapping physical-index reuse. A
+complete access contract can establish the required lifecycle facts.
 
 The Python interface currently supports void calls.
 
@@ -229,10 +230,11 @@ selects allocation metadata or an integer index.
 
 The [external-functions reference](../sphinx/reference/external-functions.md)
 defines the Python API and static-expression rules. Every statically known DFB
-accessed by external code must be declared as a dependency. The `dfb_effects`
-summary is optional: without it, each dependency remains an opaque access for
-the call duration. A complete, accurate summary can prove a bounded lifecycle
-and permit physical-index reuse.
+accessed by external code must be declared as a dependency. Protocol and
+non-transactional summaries are optional. A dependency occurrence with neither
+remains an opaque access for the call duration and has an incomplete reuse
+contract. A complete, accurate contract can prove a bounded lifecycle and
+permit physical-index reuse.
 
 `OpaqueCallOp::getDFBDependencyOperands()` returns dependency occurrences in
 this order:
@@ -327,13 +329,14 @@ bounded static event enumerations in the compiler and limits both frontend
 materialization and downstream per-effect analysis. It is not a hardware
 limit. A repeat has no IR or runtime representation.
 
-`ttl.opaque_call` implements `DFBAccessOpInterface`, which supplies four facts
+`ttl.opaque_call` implements `DFBAccessOpInterface`, which supplies five facts
 without exposing the operation's operand-segment representation to analyses:
 
 | Interface fact | Meaning |
 | --- | --- |
 | DFB dependencies | Every statically declared storage-access occurrence. |
 | Protocol effects | Synchronous reserve, push, wait, and pop actions in call execution order. |
+| Non-transactional accesses | Synchronous inspections that preserve DFB queue state. |
 | DFB index operands | DFBs whose finalized physical indices reach external C++. |
 | Unknown access | The call may access unlisted user-managed DFBs. |
 
@@ -344,16 +347,21 @@ require corresponding TTL control flow around a call with an unconditional
 summary. Work that remains active after return requires a separate completion
 contract and cannot be represented by these effects.
 
-An occurrence with no effect is a possible read and write for the complete
-call. Ordinary storage accesses between summarized acquisitions and releases
-remain inside the corresponding lifetime. A partial effect sequence is valid
-metadata but cannot prove a bounded lifecycle for that DFB. When the same DFB
-has multiple dependency occurrences, every occurrence requires effects to
-eliminate the opaque call-duration access. For allocation,
+An occurrence with neither a protocol effect nor a non-transactional access is
+a possible read and write for the complete call. Its access contract is
+incomplete, so allocation does not reuse overlapping physical storage based on
+that lifecycle. Exact disjoint launch-node domains remain eligible for sharing.
+A partial effect sequence is valid metadata but cannot prove a bounded
+lifecycle for that DFB. When the same DFB has multiple dependency occurrences,
+every occurrence requires an explicit contract. For allocation,
 `unknown_dfb_access` conservatively adds the call as an opaque occurrence on
 every user-managed DFB, including listed DFBs, in each affected allocation
 scope. The compiler does not infer facts from the callee name, header, emitted
 C++, or integer DFB identity.
+
+Native `ttl.copy` operations use the acquire and release operations around the
+transferred slot as their ownership contract. They do not require external
+access metadata.
 
 DFB ownership, synchronization insertion, SPSC verification, and physical
 allocation consume this common interface. Their use of opaque and effectful
@@ -454,13 +462,13 @@ separate runtime-argument interface.
 
 The Python AST emits ordered typed attributes for static values and separate
 operand segments for template, dependency-only, and function-argument DFBs.
-Dependency occurrences, protocol effects, and unknown access remain in TTL for
-analysis and verification. TTL to TTKernel conversion resolves DFB indices and
-materializes descriptor metadata before the DFB type loses its block geometry;
-it discards dependency-only and effect metadata because those facts do not
-alter the C++ call. TTKernel to EmitC resolves constants and descriptor types,
-and C++ emission inserts the required prelude and header during its existing
-operation scan.
+Dependency occurrences, protocol effects, non-transactional accesses, and
+unknown access remain in TTL for analysis and verification. TTL to TTKernel
+conversion resolves DFB indices and materializes descriptor metadata before the
+DFB type loses its block geometry; it discards dependency-only operands and
+access-contract metadata because those facts do not alter the C++ call.
+TTKernel to EmitC resolves constants and descriptor types, and C++ emission
+inserts the required prelude and header during its existing operation scan.
 
 See `examples/external_dfb_reuse.py` for two external calls surrounded by
 visible TTL protocol operations. An acknowledgment proves that the result

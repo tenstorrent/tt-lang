@@ -1507,7 +1507,7 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
     # Input and output hardware owners keep them distinct from the compute
     # scratch DFBs. The scratch DFBs share because their exact node domains are
     # disjoint, without requiring a local lifetime-order proof.
-    assert _count_final_dfb_allocations(final_mlir_path) == 2
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
