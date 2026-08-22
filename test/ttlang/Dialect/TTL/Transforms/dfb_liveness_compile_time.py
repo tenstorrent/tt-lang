@@ -4,15 +4,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Bounds protocol-graph and structural-order construction time.
+# Bounds protocol-graph, cumulative-effect, and structural-order analysis time.
 
 import os
 import subprocess
 
-
 PROTOCOL_GRAPH_TIMEOUT_SECONDS = 10
+CUMULATIVE_PROTOCOL_TIMEOUT_SECONDS = 10
 STRUCTURAL_ORDER_TIMEOUT_SECONDS = 5
 TRANSACTION_COUNT = 500
+CUMULATIVE_TRANSACTION_COUNT = 600
 RESET_COUNT_PER_BRANCH = 128
 RESET_NESTING_DEPTH = 8
 DFB_TYPE = "!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>"
@@ -41,6 +42,50 @@ def build_stress_module() -> str:
             ]
         )
     lines.extend(["    return", "  }", "}"])
+    return "\n".join(lines)
+
+
+def build_cumulative_protocol_stress_module() -> str:
+    lines = [
+        "module attributes {ttl.launch_grid = [8, 8], "
+        "ttl.target_arch = #ttcore.arch<blackhole>} {"
+    ]
+    function_specs = (
+        ("cumulative_producer", 0, "reserve", "push"),
+        ("cumulative_consumer", 1, "wait", "pop"),
+    )
+    for function_name, noc_index, acquire_effect, release_effect in function_specs:
+        effects = []
+        for _ in range(CUMULATIVE_TRANSACTION_COUNT):
+            effects.extend(
+                [
+                    f"#ttl.dfb_protocol_effect<{acquire_effect}, 0, 1>",
+                    f"#ttl.dfb_protocol_effect<{release_effect}, 0, 1>",
+                ]
+            )
+        lines.extend(
+            [
+                f"  func.func @{function_name}()",
+                "      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,",
+                f"                  ttl.noc_index = {noc_index} : i32,",
+                "                  ttl.base_cta_index = 1 : i32, "
+                "ttl.crta_indices = []} {",
+            ]
+        )
+        lines.extend(
+            [
+                "    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} "
+                f"{{dfb_id = 0 : index}} : {DFB_TYPE}",
+                f'    ttl.opaque_call "{function_name}"',
+                f"        dfb_dependencies(%dfb : {DFB_TYPE})",
+                "        dfb_effects ["
+                + ",\n                     ".join(effects)
+                + "]",
+                '        () {header = "effects.hpp"} : () -> ()',
+            ]
+        )
+        lines.extend(["    return", "  }"])
+    lines.append("}")
     return "\n".join(lines)
 
 
@@ -101,6 +146,11 @@ def build_structural_order_stress_module() -> str:
 
 for workload_name, module, timeout_seconds in (
     ("protocol graph", build_stress_module(), PROTOCOL_GRAPH_TIMEOUT_SECONDS),
+    (
+        "cumulative protocol",
+        build_cumulative_protocol_stress_module(),
+        CUMULATIVE_PROTOCOL_TIMEOUT_SECONDS,
+    ),
     (
         "structural order",
         build_structural_order_stress_module(),

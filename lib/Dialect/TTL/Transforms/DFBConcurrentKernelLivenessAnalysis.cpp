@@ -1843,8 +1843,8 @@ static bool tryAddCumulativeQueueEdges(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
-     LaunchNodeCoord node, const LaunchNodeDomainState &domainState,
-     bool includeUnknownDomains);
+    LaunchNodeCoord node, const LaunchNodeDomainState &domainState,
+    bool includeUnknownDomains);
 
 static bool
 hasRepeatedOpaqueEffectOperation(ArrayRef<const AccessRun *> protocolRuns) {
@@ -1861,7 +1861,7 @@ supportsCumulativeQueueProof(ArrayRef<const AccessRun *> protocolRuns) {
          llvm::all_of(protocolRuns, [](const AccessRun *run) {
            return run->executionCount == 1 &&
                   isa<OpaqueCallOp>(run->access->operation);
-  });
+         });
 }
 
 // Adds exact and cumulative producer-to-consumer synchronization edges.
@@ -2106,6 +2106,21 @@ orderProtocolRuns(ArrayRef<const AccessRun *> runs,
                   const DenseMap<Operation *, EventPair> &operationEvents,
                   const DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
                       &accessEvents) {
+  Operation *firstOperation =
+      runs.empty() ? nullptr : runs.front()->access->operation;
+  bool effectsBelongToOneOperation =
+      llvm::all_of(runs, [&](const AccessRun *run) {
+        return run->access->operation == firstOperation;
+      });
+  // Effects from one operation are recorded in their execution order.
+  if (effectsBelongToOneOperation) {
+    SmallVector<const AccessRun *> ordered(runs.begin(), runs.end());
+    llvm::sort(ordered, [](const AccessRun *lhs, const AccessRun *rhs) {
+      return lhs->access->sequenceIndex < rhs->access->sequenceIndex;
+    });
+    return ordered;
+  }
+
   SmallVector<unsigned> predecessorCounts(runs.size());
   for (auto [lhsIndex, lhs] : llvm::enumerate(runs)) {
     for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < runs.size(); ++rhsIndex) {
