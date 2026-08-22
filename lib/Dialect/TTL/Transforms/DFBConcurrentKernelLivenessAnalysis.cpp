@@ -1023,21 +1023,33 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     return;
   }
 
+  DenseMap<Operation *, AccessDomain> refinedAccessDomains;
+  auto getRefinedAccessDomain =
+      [&](Operation *accessOperation) -> const AccessDomain & {
+    auto refinedDomainIt = refinedAccessDomains.find(accessOperation);
+    if (refinedDomainIt != refinedAccessDomains.end()) {
+      return refinedDomainIt->second;
+    }
+    auto domainIt = domainState.accessDomains.find(accessOperation);
+    AccessDomain accessDomain =
+        domainIt == domainState.accessDomains.end()
+            ? AccessDomain{LaunchNodeDomain::unknown(), accessOperation}
+            : domainIt->second;
+    return refinedAccessDomains
+        .try_emplace(accessOperation,
+                     refineUnknownAccessDomainFromExecutionCounts(
+                         accessOperation, accessDomain, domainState))
+        .first->second;
+  };
+
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     if (logicalDFB.accesses.empty()) {
       logicalDFB.launchDomain = LaunchNodeDomain::unknown();
       continue;
     }
     for (DFBAccessOccurrence &access : logicalDFB.accesses) {
-      auto domainIt = domainState.accessDomains.find(access.operation);
-      AccessDomain accessDomain;
-      if (domainIt == domainState.accessDomains.end()) {
-        accessDomain = {LaunchNodeDomain::unknown(), access.operation};
-      } else {
-        accessDomain = domainIt->second;
-      }
-      accessDomain = refineUnknownAccessDomainFromExecutionCounts(
-          access.operation, accessDomain, domainState);
+      const AccessDomain &accessDomain =
+          getRefinedAccessDomain(access.operation);
       access.launchDomain = accessDomain.domain;
       access.unanalyzableDomainOperation = accessDomain.unanalyzableOperation;
       logicalDFB.launchDomain =
@@ -1049,13 +1061,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   // including one also declared by the operation. Compiler-created DFBs cannot
   // be referenced by external code without an explicit dependency.
   for (Operation *unknownAccess : unknownAccessOperations) {
-    auto domainIt = domainState.accessDomains.find(unknownAccess);
-    AccessDomain accessDomain =
-        domainIt == domainState.accessDomains.end()
-            ? AccessDomain{LaunchNodeDomain::unknown(), unknownAccess}
-            : domainIt->second;
-    accessDomain = refineUnknownAccessDomainFromExecutionCounts(
-        unknownAccess, accessDomain, domainState);
+    const AccessDomain &accessDomain = getRefinedAccessDomain(unknownAccess);
     for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
       if (logicalDFB.compilerCreated) {
         continue;
