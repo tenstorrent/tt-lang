@@ -43,7 +43,7 @@ def _mesh_tensor(mesh, tensor, dtype):
 def participant_mesh_shape():
     if ttnn.get_num_devices() < NUM_DEVICES:
         pytest.skip(f"requires at least {NUM_DEVICES} devices")
-    parent_mesh_shape = get_fabric_mesh_shape()
+    parent_mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     if prod(parent_mesh_shape) < NUM_DEVICES:
         pytest.skip(f"requires at least {NUM_DEVICES} devices")
     return _select_participant_mesh_shape(parent_mesh_shape)
@@ -51,7 +51,7 @@ def participant_mesh_shape():
 
 @pytest.fixture(scope="module")
 def participant_mesh(participant_mesh_shape):
-    parent_mesh_shape = get_fabric_mesh_shape()
+    parent_mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     with open_fabric_mesh(
         requested_mesh_shape=parent_mesh_shape,
         fabric_config=ttnn.FabricConfig.FABRIC_2D,

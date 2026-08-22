@@ -167,15 +167,46 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
-def get_fabric_mesh_shape() -> tuple[int, ...]:
-    """Return the control-plane-discovered fabric mesh extent."""
-    ttnn_module = _get_ttnn()
-    if ttnn_module is None:
-        raise FabricMeshUnavailable("TTNN not available")
+def _get_current_fabric_mesh_shape(ttnn_module) -> tuple[int, ...]:
     return tuple(
         int(extent)
         for extent in ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
     )
+
+
+def _fabric_config_options(*, reliability_mode=None, router_config=None):
+    config_options = {}
+    if reliability_mode is not None:
+        config_options["reliability_mode"] = reliability_mode
+    if router_config is not None:
+        config_options["router_config"] = router_config
+    return config_options
+
+
+def get_fabric_mesh_shape(
+    *,
+    fabric_config: Any | None = None,
+    reliability_mode: Any | None = None,
+    router_config: Any | None = None,
+) -> tuple[int, ...]:
+    """Return the control-plane-discovered fabric mesh extent."""
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+    if fabric_config is None:
+        return _get_current_fabric_mesh_shape(ttnn_module)
+
+    try:
+        ttnn_module.set_fabric_config(
+            fabric_config,
+            **_fabric_config_options(
+                reliability_mode=reliability_mode,
+                router_config=router_config,
+            ),
+        )
+        return _get_current_fabric_mesh_shape(ttnn_module)
+    finally:
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
 
 @contextmanager
@@ -198,19 +229,20 @@ def open_fabric_mesh(
     if fabric_config is None:
         fabric_config = ttnn_module.FabricConfig.FABRIC_1D
 
-    if requested_mesh_shape is None:
-        requested_mesh_shape = get_fabric_mesh_shape()
-    else:
+    if requested_mesh_shape is not None:
         requested_mesh_shape = tuple(requested_mesh_shape)
 
     mesh_device = None
     try:
-        config_options = {}
-        if reliability_mode is not None:
-            config_options["reliability_mode"] = reliability_mode
-        if router_config is not None:
-            config_options["router_config"] = router_config
-        ttnn_module.set_fabric_config(fabric_config, **config_options)
+        ttnn_module.set_fabric_config(
+            fabric_config,
+            **_fabric_config_options(
+                reliability_mode=reliability_mode,
+                router_config=router_config,
+            ),
+        )
+        if requested_mesh_shape is None:
+            requested_mesh_shape = _get_current_fabric_mesh_shape(ttnn_module)
         mesh_device = ttnn_module.open_mesh_device(
             ttnn_module.MeshShape(requested_mesh_shape)
         )

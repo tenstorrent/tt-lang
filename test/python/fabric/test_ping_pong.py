@@ -88,7 +88,7 @@ def _make_ping_pong_operation(mesh_shape):
     ],
 )
 def test_ping_pong(torch_dtype, ttnn_dtype, rtol, atol):
-    mesh_shape = get_fabric_mesh_shape()
+    mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 2:
         pytest.skip("requires multiple devices")

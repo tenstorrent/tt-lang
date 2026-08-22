@@ -262,7 +262,7 @@ def main() -> None:
     if ttnn.GetNumAvailableDevices() < NUM_DEVICES:
         raise RuntimeError(f"This example requires at least {NUM_DEVICES} devices.")
 
-    parent_mesh_shape = get_fabric_mesh_shape()
+    parent_mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     participant_mesh_shape = _select_participant_mesh_shape(parent_mesh_shape)
     tree_all_reduce = make_tree_all_reduce_operation(participant_mesh_shape)
 

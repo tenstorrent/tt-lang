@@ -76,8 +76,13 @@ def _load_ttlang_test_utils(
     return module
 
 
-def _create_fake_fabric_ttnn(discovered_shape: tuple[int, ...]):
+def _create_fake_fabric_ttnn(
+    discovered_shape: tuple[int, ...],
+    configured_shapes: dict[object, tuple[int, ...]] | None = None,
+):
     events = []
+    configured_shapes = configured_shapes or {}
+    active_config = None
 
     class MeshShape:
         def __init__(self, shape):
@@ -85,12 +90,14 @@ def _create_fake_fabric_ttnn(discovered_shape: tuple[int, ...]):
 
     class SystemMeshDescriptor:
         def shape(self):
-            return discovered_shape
+            return configured_shapes.get(active_config, discovered_shape)
 
     fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
     mesh_device = object()
 
     def set_fabric_config(config, **kwargs):
+        nonlocal active_config
+        active_config = config
         event = ("configure", config)
         if kwargs:
             event += (kwargs,)
@@ -181,7 +188,9 @@ def test_forwarding_link_indices_compatibility_marker(
 
 def test_fabric_mesh_uses_discovered_shape(monkeypatch) -> None:
     module = _load_ttlang_test_utils(monkeypatch)
-    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn(
+        (2, 4), {"fabric-1d": (2, 2)}
+    )
     monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
 
     with module.open_fabric_mesh() as opened_mesh:
@@ -189,8 +198,26 @@ def test_fabric_mesh_uses_discovered_shape(monkeypatch) -> None:
 
     assert events == [
         ("configure", "fabric-1d"),
-        ("open", (2, 4)),
+        ("open", (2, 2)),
         ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_discovers_shape_for_requested_config(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn(
+        (2, 4), {"fabric-torus": (2, 2)}
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    mesh_shape = module.get_fabric_mesh_shape(
+        fabric_config="fabric-torus", reliability_mode="relaxed"
+    )
+
+    assert mesh_shape == (2, 2)
+    assert events == [
+        ("configure", "fabric-torus", {"reliability_mode": "relaxed"}),
         ("configure", "disabled"),
     ]
 

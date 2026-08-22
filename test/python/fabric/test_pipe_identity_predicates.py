@@ -84,7 +84,7 @@ def _make_identity_selected_exchange(participant_mesh_shape: tuple[int, ...]):
 def fabric_mesh_shape():
     if ttnn.get_num_devices() < 2:
         pytest.skip("requires at least two devices")
-    mesh_shape = get_fabric_mesh_shape()
+    mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     if prod(mesh_shape) < 2:
         pytest.skip("requires a multi-device fabric mesh")
     return mesh_shape

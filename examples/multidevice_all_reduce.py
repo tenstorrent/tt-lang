@@ -171,7 +171,7 @@ def _expected_reduced_tensor(device_tensors: list[torch.Tensor]) -> torch.Tensor
 
 
 def main() -> None:
-    mesh_shape = get_fabric_mesh_shape()
+    mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     num_devices = prod(mesh_shape)
     all_reduce = make_structured_all_reduce_operation(mesh_shape)
 

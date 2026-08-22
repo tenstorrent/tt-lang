@@ -804,14 +804,23 @@ def _open_collective_mesh(mesh_shape: tuple[int, ...]):
     )
 
 
-def _open_route_mesh(mesh_shape: tuple[int, ...], fabric_config):
-    config_options = {}
+def _route_mesh_options(fabric_config):
     if fabric_config != ttnn.FabricConfig.FABRIC_2D:
-        config_options["reliability_mode"] = RELAXED_FABRIC_INITIALIZATION
+        return {"reliability_mode": RELAXED_FABRIC_INITIALIZATION}
+    return {}
+
+
+def _get_route_mesh_shape(fabric_config):
+    return get_fabric_mesh_shape(
+        fabric_config=fabric_config, **_route_mesh_options(fabric_config)
+    )
+
+
+def _open_route_mesh(mesh_shape: tuple[int, ...], fabric_config):
     return open_fabric_mesh(
         requested_mesh_shape=mesh_shape,
         fabric_config=fabric_config,
-        **config_options,
+        **_route_mesh_options(fabric_config),
     )
 
 
@@ -819,7 +828,7 @@ def _open_route_mesh(mesh_shape: tuple[int, ...], fabric_config):
 def fabric_mesh_shape():
     if ttnn.get_num_devices() < 2:
         pytest.skip("requires at least two devices")
-    mesh_shape = get_fabric_mesh_shape()
+    mesh_shape = _get_route_mesh_shape(ttnn.FabricConfig.FABRIC_2D)
     if prod(mesh_shape) < 2:
         pytest.skip("requires a multi-device fabric mesh")
     return mesh_shape
@@ -1025,7 +1034,6 @@ def test_product_domain_point_to_point(
 )
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_two_dimensional_route(
-    fabric_mesh_shape,
     fabric_config,
     route_axes,
     minimum_extent,
@@ -1034,25 +1042,26 @@ def test_two_dimensional_route(
     rtol,
     atol,
 ):
-    if len(fabric_mesh_shape) != 2 or any(
-        fabric_mesh_shape[axis] < minimum_extent for axis in route_axes
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    if len(route_mesh_shape) != 2 or any(
+        route_mesh_shape[axis] < minimum_extent for axis in route_axes
     ):
         pytest.skip("requires a full 2D mesh with the requested routing topology")
 
     source_device = (0, 0)
     destination_device = tuple(
         extent - 1 if axis in route_axes else 0
-        for axis, extent in enumerate(fabric_mesh_shape)
+        for axis, extent in enumerate(route_mesh_shape)
     )
     point_to_point = _make_point_to_point_operation(
-        fabric_mesh_shape, source_device, destination_device
+        route_mesh_shape, source_device, destination_device
     )
-    device_count = prod(fabric_mesh_shape)
+    device_count = prod(route_mesh_shape)
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with _open_route_mesh(fabric_mesh_shape, fabric_config) as mesh:
+    with _open_route_mesh(route_mesh_shape, fabric_config) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -1060,8 +1069,8 @@ def test_two_dimensional_route(
 
         result = _compose(mesh, out)
 
-    source_index = _flatten_device_index(source_device, fabric_mesh_shape)
-    destination_index = _flatten_device_index(destination_device, fabric_mesh_shape)
+    source_index = _flatten_device_index(source_device, route_mesh_shape)
+    destination_index = _flatten_device_index(destination_device, route_mesh_shape)
     expected = torch.zeros_like(inp_torch)
     expected[destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE, :] = (
         inp_torch[source_index * TILE_SIZE : (source_index + 1) * TILE_SIZE, :]
@@ -1074,19 +1083,19 @@ def test_two_dimensional_route(
 @pytest.mark.parametrize("fabric_config", ONE_DIMENSIONAL_ROUTE_CONFIGS)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_one_dimensional_route(
-    fabric_mesh_shape,
     fabric_config,
     torch_dtype,
     ttnn_dtype,
     rtol,
     atol,
 ):
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
     line_axis = max(
-        range(len(fabric_mesh_shape)), key=lambda axis: fabric_mesh_shape[axis]
+        range(len(route_mesh_shape)), key=lambda axis: route_mesh_shape[axis]
     )
     line_shape = tuple(
         extent if axis == line_axis else 1
-        for axis, extent in enumerate(fabric_mesh_shape)
+        for axis, extent in enumerate(route_mesh_shape)
     )
     if prod(line_shape) < 2:
         pytest.skip("requires a multi-device fabric line")
@@ -1101,7 +1110,7 @@ def test_one_dimensional_route(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with _open_route_mesh(fabric_mesh_shape, fabric_config) as parent_mesh:
+    with _open_route_mesh(route_mesh_shape, fabric_config) as parent_mesh:
         mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
         try:
             inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
@@ -1122,17 +1131,21 @@ def test_one_dimensional_route(
 # depending on fabric-router forwarding.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_one_dimensional_neighbor_exchange(
-    fabric_mesh_shape,
     torch_dtype,
     ttnn_dtype,
     rtol,
     atol,
 ):
-    line_axis = next(
-        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
+    fabric_config = ttnn.FabricConfig.FABRIC_1D_NEIGHBOR_EXCHANGE
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    nontrivial_axes = tuple(
+        axis for axis, extent in enumerate(route_mesh_shape) if extent > 1
     )
+    if not nontrivial_axes:
+        pytest.skip("requires a multi-device fabric line")
+    line_axis = nontrivial_axes[0]
     line_shape = tuple(
-        2 if axis == line_axis else 1 for axis in range(len(fabric_mesh_shape))
+        2 if axis == line_axis else 1 for axis in range(len(route_mesh_shape))
     )
     source_device = tuple(0 for _extent in line_shape)
     destination_device = tuple(
@@ -1145,9 +1158,7 @@ def test_one_dimensional_neighbor_exchange(
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with _open_route_mesh(
-        fabric_mesh_shape, ttnn.FabricConfig.FABRIC_1D_NEIGHBOR_EXCHANGE
-    ) as parent_mesh:
+    with _open_route_mesh(route_mesh_shape, fabric_config) as parent_mesh:
         mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
         try:
             inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
@@ -1168,36 +1179,42 @@ def test_one_dimensional_neighbor_exchange(
 # the active mesh and fabric configuration rather than cached prior state.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_reopen_with_different_fabric_config(
-    fabric_mesh_shape,
     torch_dtype,
     ttnn_dtype,
     rtol,
     atol,
 ):
-    if len(fabric_mesh_shape) != 2 or max(fabric_mesh_shape) < 3:
+    fabric_configs = (
+        ttnn.FabricConfig.FABRIC_2D,
+        ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
+    )
+    route_mesh_shapes = tuple(
+        _get_route_mesh_shape(fabric_config) for fabric_config in fabric_configs
+    )
+    if len(set(route_mesh_shapes)) != 1:
+        pytest.skip("requires one mesh extent under both fabric configurations")
+    route_mesh_shape = route_mesh_shapes[0]
+    if len(route_mesh_shape) != 2 or max(route_mesh_shape) < 3:
         pytest.skip("requires a full 2D mesh with a torus boundary")
 
     route_axis = max(
-        range(len(fabric_mesh_shape)), key=lambda axis: fabric_mesh_shape[axis]
+        range(len(route_mesh_shape)), key=lambda axis: route_mesh_shape[axis]
     )
-    source_device = tuple(0 for _extent in fabric_mesh_shape)
+    source_device = tuple(0 for _extent in route_mesh_shape)
     destination_device = tuple(
         extent - 1 if axis == route_axis else 0
-        for axis, extent in enumerate(fabric_mesh_shape)
+        for axis, extent in enumerate(route_mesh_shape)
     )
     point_to_point = _make_point_to_point_operation(
-        fabric_mesh_shape, source_device, destination_device
+        route_mesh_shape, source_device, destination_device
     )
-    device_count = prod(fabric_mesh_shape)
+    device_count = prod(route_mesh_shape)
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    for fabric_config in (
-        ttnn.FabricConfig.FABRIC_2D,
-        ttnn.FabricConfig.FABRIC_2D_TORUS_XY,
-    ):
-        with _open_route_mesh(fabric_mesh_shape, fabric_config) as mesh:
+    for fabric_config in fabric_configs:
+        with _open_route_mesh(route_mesh_shape, fabric_config) as mesh:
             inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
             out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
@@ -1205,7 +1222,7 @@ def test_reopen_with_different_fabric_config(
 
             result = _compose(mesh, out)
 
-        destination_index = _flatten_device_index(destination_device, fabric_mesh_shape)
+        destination_index = _flatten_device_index(destination_device, route_mesh_shape)
         expected = torch.zeros_like(inp_torch)
         expected[
             destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE,
@@ -1254,35 +1271,34 @@ def test_axis_neighbor(
 # when the selected fabric configuration enables torus routing.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_axis_neighbor_wrap(
-    fabric_mesh_shape,
-    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
     atol,
 ):
-    if len(fabric_mesh_shape) != 2:
+    fabric_config = ttnn.FabricConfig.FABRIC_2D_TORUS_XY
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    if len(route_mesh_shape) != 2:
         pytest.skip("requires a 2D fabric mesh")
-    neighbor_axis = _select_longest_nontrivial_axis(fabric_mesh_shape)
-    if fabric_mesh_shape[neighbor_axis] < 3:
+    neighbor_axis = _select_longest_nontrivial_axis(route_mesh_shape)
+    if route_mesh_shape[neighbor_axis] < 3:
         pytest.skip("requires a torus axis with at least three devices")
 
-    device_count = prod(fabric_mesh_shape)
+    axis_neighbor_wrap = _make_fabric_operations(route_mesh_shape).axis_neighbor_wrap
+    device_count = prod(route_mesh_shape)
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
-    with _open_route_mesh(
-        fabric_mesh_shape, ttnn.FabricConfig.FABRIC_2D_TORUS_XY
-    ) as mesh:
+    with _open_route_mesh(route_mesh_shape, fabric_config) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        fabric_operations.axis_neighbor_wrap(inp, out)
+        axis_neighbor_wrap(inp, out)
 
         result = _compose(mesh, out)
 
-    shard_shape = (*fabric_mesh_shape, TILE_SIZE, TILE_SIZE)
+    shard_shape = (*route_mesh_shape, TILE_SIZE, TILE_SIZE)
     expected = torch.roll(
         inp_torch.reshape(shard_shape), shifts=1, dims=neighbor_axis
     ).reshape(logical_shape)
