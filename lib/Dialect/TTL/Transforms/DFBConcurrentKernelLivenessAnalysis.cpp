@@ -1363,9 +1363,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
             static_cast<unsigned>(activeAccess - logicalDFB.accesses.data()));
       }
     }
-    diagnostics->terminalAccessOccurrenceIndices = {
-        static_cast<unsigned>(pops.back()->access -
-                              logicalDFB.accesses.data())};
+    diagnostics->terminalAccessOccurrenceIndices = {static_cast<unsigned>(
+        pops.back()->access - logicalDFB.accesses.data())};
   }
   if (lifetime.earliestEntryEvents.empty()) {
     return {DFBQuiescenceFailureReason::IncompleteUseOrder,
