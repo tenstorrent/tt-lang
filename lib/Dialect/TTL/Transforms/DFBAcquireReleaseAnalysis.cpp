@@ -590,7 +590,7 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
           !isBefore(projected, interval.kindBoundary)) {
         continue;
       }
-      if (lastOwnedUse && !isAfterOrSame(projected, lastOwnedUse)) {
+      if (lastOwnedUse && !isBefore(lastOwnedUse, projected)) {
         continue;
       }
       result.sameLevelReleases.push_back(release);

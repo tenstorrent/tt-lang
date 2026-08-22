@@ -15,6 +15,7 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -201,16 +202,63 @@ static std::optional<EventPair> getAccessEvents(
   return getProjectedEvents(access.operation, operationEvents);
 }
 
+static scf::IfOp getDirectThenRegionIf(Operation *operation) {
+  auto ifOp = dyn_cast_or_null<scf::IfOp>(operation->getParentOp());
+  if (!ifOp || operation->getBlock()->getParent() != &ifOp.getThenRegion()) {
+    return {};
+  }
+  return ifOp;
+}
+
+static bool operationPrecedes(Operation *before, Operation *after) {
+  return before->getBlock() == after->getBlock() &&
+         before->isBeforeInBlock(after);
+}
+
+static bool guardedReleaseMatchesAcquire(Operation *acquire, Operation *release,
+                                         scf::IfOp &acquireIf,
+                                         scf::IfOp &releaseIf) {
+  if (!isGuardedDFBAcquire(acquire)) {
+    return false;
+  }
+  acquireIf = getDirectThenRegionIf(acquire);
+  releaseIf = getDirectThenRegionIf(release);
+  return acquireIf && releaseIf && acquireIf != releaseIf &&
+         acquireIf.getCondition() == releaseIf.getCondition() &&
+         acquireIf->getBlock() == releaseIf->getBlock();
+}
+
+static bool concreteReleaseFollowsAcquire(Operation *acquire,
+                                          Operation *release) {
+  if (operationPrecedes(acquire, release)) {
+    return true;
+  }
+
+  scf::IfOp acquireIf;
+  scf::IfOp releaseIf;
+  if (!guardedReleaseMatchesAcquire(acquire, release, acquireIf, releaseIf)) {
+    return false;
+  }
+  return operationPrecedes(acquireIf.getOperation(), releaseIf.getOperation());
+}
+
 // Requires a release to follow every use owned by its acquisition; textual
 // acquire/release order alone does not prove storage quiescence.
 static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
-  if (acquire->getBlock() != release->getBlock()) {
-    return false;
-  }
   SmallVector<Operation *> acquires = {acquire};
   DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
+  if (operationPrecedes(lastOwnedUse, release)) {
+    return true;
+  }
+
+  scf::IfOp acquireIf;
+  scf::IfOp releaseIf;
+  if (!guardedReleaseMatchesAcquire(acquire, release, acquireIf, releaseIf)) {
+    return false;
+  }
+  Operation *releaseScope = releaseIf.getOperation();
+  return operationPrecedes(lastOwnedUse, releaseScope);
 }
 
 // Finds every access without a proved predecessor so all possible lifetime
@@ -667,15 +715,13 @@ static DFBQuiescenceProof computePerNodeLifetime(
         getAccessEvents(*pop, operationEvents, accessEvents);
     bool reservePrecedesPush =
         isa<CBReserveOp>(reserve->operation) && isa<CBPushOp>(push->operation)
-            ? reserve->operation->getBlock() == push->operation->getBlock() &&
-                  reserve->operation->isBeforeInBlock(push->operation)
+            ? concreteReleaseFollowsAcquire(reserve->operation, push->operation)
             : reserveEvents && pushEvents &&
                   graph.strictlyPrecedes(reserveEvents->completion,
                                          pushEvents->entry);
     bool waitPrecedesPop =
         isa<CBWaitOp>(wait->operation) && isa<CBPopOp>(pop->operation)
-            ? wait->operation->getBlock() == pop->operation->getBlock() &&
-                  wait->operation->isBeforeInBlock(pop->operation)
+            ? concreteReleaseFollowsAcquire(wait->operation, pop->operation)
             : waitEvents && popEvents &&
                   graph.strictlyPrecedes(waitEvents->completion,
                                          popEvents->entry);

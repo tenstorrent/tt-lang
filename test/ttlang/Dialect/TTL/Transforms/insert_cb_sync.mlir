@@ -1074,3 +1074,96 @@ func.func @guarded_reserve_same_condition_push(
   }
   func.return
 }
+
+// -----
+
+// Test 32: A guarded reserve whose owned uses stay inside the acquiring
+// then-region gets an automatic push guarded by the same condition.
+
+// CHECK-LABEL: func.func @guarded_reserve_local_missing_push
+// CHECK: %[[CONDITION:.*]] = arith.constant true
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK: scf.if %[[CONDITION]]
+// CHECK: ttl.cb_reserve %[[DFB]]
+// CHECK: ttl.store
+// CHECK-NEXT: scf.yield
+// CHECK: scf.if %[[CONDITION]] {
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: }
+// CHECK: return
+func.func @guarded_reserve_local_missing_push(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %condition = arith.constant true
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %view = scf.if %condition -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %arg0, %reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %inactive = "builtin.unrealized_conversion_cast"() {ttl.inactive_guarded_dfb} : () -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %inactive : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  func.return
+}
+
+// -----
+
+// Test 33: A guarded wait whose owned uses stay inside the acquiring
+// then-region gets an automatic pop guarded by the same condition.
+
+// CHECK-LABEL: func.func @guarded_wait_local_missing_pop
+// CHECK: %[[CONDITION:.*]] = arith.constant true
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK: scf.if %[[CONDITION]]
+// CHECK: ttl.cb_wait %[[DFB]]
+// CHECK: ttl.attach_cb
+// CHECK: ttl.add
+// CHECK-NEXT: scf.yield
+// CHECK: scf.if %[[CONDITION]] {
+// CHECK-NEXT: ttl.cb_pop %[[DFB]]
+// CHECK-NEXT: }
+// CHECK: return
+func.func @guarded_wait_local_missing_pop(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %condition = arith.constant true
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %view = scf.if %condition -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %waited = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %attached = ttl.attach_cb %waited, %dfb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sum = ttl.add %attached, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %waited : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %inactive = "builtin.unrealized_conversion_cast"() {ttl.inactive_guarded_dfb} : () -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %inactive : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  func.return
+}
+
+// -----
+
+// Test 34: Inserted releases preserve explicit acquisition tile counts.
+
+// CHECK-LABEL: func.func @missing_releases_preserve_num_tiles
+// CHECK: %[[PRODUCER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[CONSUMER:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.cb_reserve %[[PRODUCER]] {num_tiles = 3 : i64}
+// CHECK-NEXT: ttl.store
+// CHECK-NEXT: ttl.cb_push %[[PRODUCER]] {num_tiles = 3 : i64}
+// CHECK-NEXT: ttl.cb_wait %[[CONSUMER]] {num_tiles = 3 : i64}
+// CHECK-NEXT: ttl.add
+// CHECK-NEXT: ttl.cb_pop %[[CONSUMER]] {num_tiles = 3 : i64}
+// CHECK-NEXT: return
+func.func @missing_releases_preserve_num_tiles(
+    %producer_value: tensor<1x3x!ttcore.tile<32x32, bf16>>,
+    %consumer_value: tensor<1x3x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %producer = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %consumer = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %reserved = ttl.cb_reserve %producer {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
+  ttl.store %producer_value, %reserved : tensor<1x3x!ttcore.tile<32x32, bf16>>, tensor<1x3x!ttcore.tile<32x32, bf16>>
+  %waited = ttl.cb_wait %consumer {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %waited, %consumer_value : tensor<1x3x!ttcore.tile<32x32, bf16>>, tensor<1x3x!ttcore.tile<32x32, bf16>> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
+  func.return
+}
