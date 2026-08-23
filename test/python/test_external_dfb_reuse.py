@@ -19,6 +19,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
+from ttl import ttl_api  # noqa: E402
 from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
@@ -77,6 +78,56 @@ def _make_external_multiply_kernel(data_format):
         result_source.pop()
 
     return external_multiply_kernel
+
+
+def _make_external_reset_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def external_reset_kernel(lhs, rhs, result):
+        lhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        rhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        stale_result = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+        )
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.call_extern_func(
+                EXTERNAL_MULTIPLY_HEADER,
+                "ttl_external_eltwise_mul",
+                template_args=[
+                    ttl.dfb_descriptor(lhs_dfb),
+                    ttl.dfb_descriptor(rhs_dfb),
+                    ttl.dfb_descriptor(stale_result),
+                ],
+            )
+            ttl.reset_dfbs(reset, dfbs=[stale_result])
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with lhs_dfb.reserve() as lhs_destination:
+                ttl.copy(lhs[0, 0], lhs_destination).wait()
+            with rhs_dfb.reserve() as rhs_destination:
+                ttl.copy(rhs[0, 0], rhs_destination).wait()
+            ttl.reset_dfbs(reset, dfbs=[stale_result])
+            with stale_result.reserve() as current_destination:
+                ttl.copy(rhs[0, 0], current_destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.reset_dfbs(reset, dfbs=[stale_result])
+            with stale_result.wait() as current_source:
+                ttl.copy(current_source, result[0, 0]).wait()
+
+    return external_reset_kernel
 
 
 def _make_nested_copy_atom(data_format, level_count):
@@ -183,6 +234,8 @@ def _make_external_composition_kernel(data_format, tensor_backed):
 
 _external_bf16_multiply = _make_external_multiply_kernel("bf16")
 _external_f32_multiply = _make_external_multiply_kernel("float32")
+_external_bf16_reset_same_dfb = _make_external_reset_kernel("bf16")
+_external_f32_reset_same_dfb = _make_external_reset_kernel("float32")
 _external_bf16_composition = _make_external_composition_kernel("bf16", False)
 _external_f32_composition = _make_external_composition_kernel("float32", False)
 _tensor_backed_bf16_composition = _make_external_composition_kernel("bf16", True)
@@ -194,6 +247,47 @@ assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 64
 def _count_final_dfb_allocations(final_mlir_path):
     final_mlir = final_mlir_path.read_text()
     return final_mlir.count("dfb_index =")
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_external_bf16_reset_same_dfb, torch.bfloat16),
+        (_external_f32_reset_same_dfb, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    "to_device",
+    [to_dram, to_l1],
+    ids=["dram", "l1"],
+)
+def test_external_protocol_state_reset_drains_compute_interfaces(
+    device, operation, dtype, to_device
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reset support")
+
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    lhs_host = ((element_indices.remainder(41) - 20) / 16).to(dtype)
+    rhs_host = (((3 * element_indices).remainder(37) - 18) / 16).to(dtype)
+    lhs = to_device(lhs_host, device)
+    rhs = to_device(rhs_host, device)
+    result = to_device(torch.zeros_like(rhs_host), device)
+
+    for _invocation_index in range(2):
+        operation(
+            lhs,
+            rhs,
+            result,
+            options="--ttl-reuse-user-dfbs --ttl-specialize-cores",
+        )
+
+    actual = ttnn.to_torch(result).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, rhs_host.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, rhs_host.float(), rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(
