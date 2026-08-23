@@ -70,12 +70,13 @@ struct DFBQuiescenceProof {
 /// A concrete lifecycle operation contributes one occurrence. An operation
 /// with a protocol summary contributes one occurrence per effect, preserving
 /// actions on different DFBs as distinct events. A dependency occurrence with
-/// no effect contributes an opaque call-duration access.
+/// no effect contributes an opaque access whose completion may require a
+/// synchronized reset.
 struct DFBAccessOccurrence {
   /// Operation that performs the access; several occurrences may share it.
   Operation *operation = nullptr;
 
-  /// Null for an opaque call-duration storage access.
+  /// Null for an access without an explicit protocol effect.
   std::optional<DFBProtocolEffectKind> protocolEffect;
 
   /// Positive for protocol effects and zero for opaque accesses.
@@ -90,7 +91,7 @@ struct DFBAccessOccurrence {
   /// Operation that prevented a precise launch domain, or null when precise.
   Operation *unanalyzableDomainOperation = nullptr;
 
-  /// Whether this call-duration access is a named opaque external dependency.
+  /// Whether this occurrence is a named opaque external DFB dependency.
   bool opaqueExternalAccess = false;
 };
 
