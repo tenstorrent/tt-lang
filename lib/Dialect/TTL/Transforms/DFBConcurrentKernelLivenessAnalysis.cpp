@@ -4434,6 +4434,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
     }
     if (terminalBoundary) {
       if (terminalBoundary->reset) {
+        if (terminalBoundary->reset->conditionalExecution) {
+          epochLifetime.conditionalExecutionProven = true;
+        }
         epoch.terminalResetOrdinal =
             terminalBoundary->reset->reset.getOrdinal();
       } else {
