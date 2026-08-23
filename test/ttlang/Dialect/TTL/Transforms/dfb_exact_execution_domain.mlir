@@ -11,7 +11,7 @@
 
 // REPORT: DFB logical_id=0 bounded=0 compiler_created=0
 // REPORT-SAME: domain={}
-// REPORT: access 0 effect=none tiles=0 sequence=0 domain={}
+// REPORT: access 0 effect=none tiles=0 sequence=0 opaque_external=1 domain={}
 // REPORT: DFB logical_id=1 bounded=0 compiler_created=0
 // REPORT-SAME: domain=unknown
 // REPORT-NOT: DFB conflict lhs=0 rhs=1
@@ -101,7 +101,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // REPORT: DFB logical_id=12 bounded=0 compiler_created=0
 // REPORT-SAME: domain={(0,0), (1,0)}
-// REPORT: access 0 effect=none tiles=0 sequence=0 domain={(0,0), (1,0)}
+// REPORT: access 0 effect=none tiles=0 sequence=0 opaque_external=1 domain={(0,0), (1,0)}
 // REPORT: DFB conflict lhs=12 rhs=13 reason=unknown-launch-node-domain
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
@@ -147,7 +147,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // REPORT: DFB logical_id=14 bounded=0 compiler_created=0
 // REPORT-SAME: access_contracts_complete=0
 // REPORT-SAME: domain={(0,0)}
-// REPORT: access 0 effect=none tiles=0 sequence=0 domain={(0,0)}
+// REPORT: access 0 effect=none tiles=0 sequence=0 opaque_external=1 domain={(0,0)}
 // REPORT: DFB logical_id=15 bounded=0 compiler_created=0
 // REPORT-SAME: access_contracts_complete=0
 // REPORT-SAME: domain={(1,0)}
@@ -243,7 +243,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // REPORT-SAME: access_contracts_complete=0
 // REPORT-SAME: domain=unknown
 // REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(0,0), (1,0)}
-// REPORT: access 4 effect=none tiles=0 sequence=0 domain=unknown
+// REPORT: access 4 effect=none tiles=0 sequence=0 opaque_external=1 domain=unknown
 // REPORT: DFB logical_id=17 bounded=1 compiler_created=0
 // REPORT-SAME: domain={(0,0), (1,0)}
 // REPORT: DFB conflict lhs=16 rhs=17 reason=unknown-launch-node-domain
@@ -364,7 +364,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // REPORT: DFB logical_id=24 bounded=0 compiler_created=0
 // REPORT-SAME: domain={(0,0)}
-// REPORT: access 0 effect=none tiles=0 sequence=0 domain={(0,0)}
+// REPORT: access 0 effect=none tiles=0 sequence=0 opaque_external=1 domain={(0,0)}
 // REPORT: access 1 effect=none tiles=0 sequence=0 domain={(0,0)}
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
