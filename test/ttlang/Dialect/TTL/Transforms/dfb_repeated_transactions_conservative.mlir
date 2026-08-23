@@ -9,7 +9,7 @@
 // REPORT: quiescence=unsupported-control-flow {{.*}} kernel=@dynamic_trip_count
 // REPORT: quiescence=incomplete-use-order {{.*}} kernel=@differing_iteration_domains
 // REPORT: quiescence=unsupported-control-flow {{.*}} kernel=@conditional_iteration
-// REPORT: quiescence=incomplete-use-order {{.*}} kernel=@access_outside_interval
+// REPORT: quiescence=missing-protocol-effect {{.*}} kernel=@access_outside_interval
 // REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch
 // REPORT: quiescence=incomplete-use-order {{.*}} kernel=@unrelated_opaque_access
 
