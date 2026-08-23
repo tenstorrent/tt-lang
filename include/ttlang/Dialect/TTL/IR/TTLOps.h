@@ -65,6 +65,11 @@ inline bool isConsumerDFBProtocolEffect(DFBProtocolEffectKind kind) {
          kind == DFBProtocolEffectKind::Pop;
 }
 
+inline bool isDFBPointerObservationEffect(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::ObserveWritePointer ||
+         kind == DFBProtocolEffectKind::ObserveReadPointer;
+}
+
 } // namespace mlir::tt::ttl
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"

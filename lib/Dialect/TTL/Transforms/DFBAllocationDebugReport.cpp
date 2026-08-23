@@ -31,6 +31,10 @@ static llvm::StringRef getProtocolEffectName(DFBProtocolEffectKind effect) {
     return "wait";
   case DFBProtocolEffectKind::Pop:
     return "pop";
+  case DFBProtocolEffectKind::ObserveWritePointer:
+    return "observe_write_pointer";
+  case DFBProtocolEffectKind::ObserveReadPointer:
+    return "observe_read_pointer";
   }
   llvm_unreachable("unknown DFB protocol effect");
 }

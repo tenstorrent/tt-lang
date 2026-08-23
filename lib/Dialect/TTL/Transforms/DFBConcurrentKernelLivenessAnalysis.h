@@ -81,7 +81,7 @@ struct DFBAccessOccurrence {
   using Kind = std::variant<std::monostate, DFBProtocolEffectKind,
                             DFBNonTransactionalAccessKind>;
 
-  /// Access semantics; `std::monostate` denotes an opaque access.
+  /// Access semantics; `std::monostate` denotes an opaque unsummarized access.
   Kind kind;
 
   const DFBProtocolEffectKind *getProtocolEffect() const {
@@ -103,7 +103,7 @@ struct DFBAccessOccurrence {
     return nonTransactionalAccess && *nonTransactionalAccess == access;
   }
 
-  /// Positive for protocol effects and zero otherwise.
+  /// Positive for transactions and zero for observations or opaque accesses.
   int64_t numTiles = 0;
 
   /// Position within the operation's protocol or non-transactional summary.

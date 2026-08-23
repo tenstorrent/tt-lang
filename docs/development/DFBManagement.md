@@ -1592,27 +1592,34 @@ otherwise. The compiler cannot inspect custom C++ for hidden constants or
 global state, so validity of the declared access contract remains an
 external-code requirement.
 
-Each effect identifies one dependency occurrence, one reserve, push, wait, or
-pop action, and a positive static tile count no greater than that DFB's physical
-capacity. The effect list is a single call-wide execution sequence, including
+Each effect identifies one dependency occurrence and one transaction or pointer
+observation. Reserve, push, wait, and pop carry a positive static tile count no
+greater than that DFB's physical capacity. Write-pointer and read-pointer
+observations carry zero tiles and do not access payload or change protocol
+state. The effect list is a single call-wide execution sequence, including
 actions on different DFBs. The event graph preserves these cross-DFB relations
 and the order of statically expanded transactions. Effects are synchronous
 facts about actions completed inside the external call; they do not emit
 lifecycle operations.
 
+A pointer observation remains a storage-liveness event because the selected
+physical DFB must exist while the callee reads its interface state. When a
+conditional observation is nested in a statically bounded loop, its lifetime
+covers every possible iteration position. Its condition need not match the
+transaction conditions because the observation does not change queue state.
+
 An occurrence with neither a protocol effect nor a non-transactional access
-remains a possible read or write from call entry through completion. Its access
-contract is incomplete unless a later synchronized reset proves completion and
-canonicalizes its protocol state. Without that reset, allocation cannot prove
-bounded reuse with another logical DFB on a shared launch node. Exact disjoint
-launch-node domains may still share because they never use the physical
-allocation on the same node. If operand adaptation aliases several occurrences
-to one DFB, every occurrence
-requires an explicit contract. A partial summary supplies its listed events but
-cannot establish the complete reserve/push/wait/pop lifecycle for that DFB. A
-bounded external lifecycle requires balanced, ordered transactions with equal
-tile counts, known pointer owners, supported execution counts, and no access
-after the terminal pop.
+remains a possible read or write beginning at call entry. Its access contract
+is incomplete until an explicit summary or synchronized reset terminates the
+named opaque access, so allocation cannot prove bounded reuse with another
+logical DFB on a shared launch node. Exact disjoint launch-node domains may
+still share because they never use the physical allocation on the same node.
+If operand adaptation aliases several occurrences to one DFB, every occurrence
+requires an explicit contract or reset termination. A partial summary supplies
+its listed events but cannot establish the complete reserve/push/wait/pop
+lifecycle for that DFB. A bounded external lifecycle requires balanced, ordered
+transactions with equal tile counts, known pointer owners, supported execution
+counts, and no access after the terminal pop.
 
 Native `ttl.copy` is not an external access. Its surrounding acquire and release
 operations define slot ownership, so the ordinary lifecycle proof determines

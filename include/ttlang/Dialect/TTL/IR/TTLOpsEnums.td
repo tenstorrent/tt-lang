@@ -117,11 +117,17 @@ def TTL_DFBProtocolEffectKind_Wait :
     I32EnumAttrCase<"Wait", 2, "wait">;
 def TTL_DFBProtocolEffectKind_Pop :
     I32EnumAttrCase<"Pop", 3, "pop">;
+def TTL_DFBProtocolEffectKind_ObserveWritePointer :
+    I32EnumAttrCase<"ObserveWritePointer", 4, "observe_write_pointer">;
+def TTL_DFBProtocolEffectKind_ObserveReadPointer :
+    I32EnumAttrCase<"ObserveReadPointer", 5, "observe_read_pointer">;
 
 def TTL_DFBProtocolEffectKind : I32EnumAttr<
     "DFBProtocolEffectKind", "Dataflow buffer protocol effect kind",
     [TTL_DFBProtocolEffectKind_Reserve, TTL_DFBProtocolEffectKind_Push,
-     TTL_DFBProtocolEffectKind_Wait, TTL_DFBProtocolEffectKind_Pop]> {
+     TTL_DFBProtocolEffectKind_Wait, TTL_DFBProtocolEffectKind_Pop,
+     TTL_DFBProtocolEffectKind_ObserveWritePointer,
+     TTL_DFBProtocolEffectKind_ObserveReadPointer]> {
   let cppNamespace = "::mlir::tt::ttl";
   let genSpecializedAttr = 0;
 }

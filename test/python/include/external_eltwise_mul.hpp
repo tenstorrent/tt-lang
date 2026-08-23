@@ -18,6 +18,16 @@ static inline void ttl_external_eltwise_mul() {
 
   static_assert(Lhs::pages_per_block == Rhs::pages_per_block);
   static_assert(Lhs::pages_per_block == Result::pages_per_block);
+#if COMPILE_FOR_TRISC == 0
+  volatile uint32_t observed_lhs_read_pointer =
+      get_local_cb_interface(Lhs::index).fifo_rd_ptr;
+  (void)observed_lhs_read_pointer;
+#endif
+#if COMPILE_FOR_TRISC == 2
+  volatile uint32_t observed_result_write_pointer =
+      get_local_cb_interface(Result::index).fifo_wr_ptr;
+  (void)observed_result_write_pointer;
+#endif
   cb_reserve_back(Result::index, Result::pages_per_block);
   cb_wait_front(Lhs::index, Lhs::pages_per_block);
   cb_wait_front(Rhs::index, Rhs::pages_per_block);
