@@ -278,6 +278,19 @@ the generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 `ttl.compute` with `tile_store`, then `cb_push`. Both passes use the shared,
 read-only compute-op-creation analysis described below before modifying IR.
 
+A wait-backed `ttl.store` represents replacement of consumer-owned pages. The
+initial contract accepts one complete block from a one-block DFB, with the wait
+as the compute kernel's first access to that DFB. Analysis requires the
+replacement computation to read the original generation, requires values
+derived from the original contents to remain within that computation, excludes
+overlapping DFB access, and requires every replacement-generation read to
+precede the matching pop.
+Lowering emits `ttkernel.pack_waited_tile`, then converts it to the same
+`pack_tile` runtime call used for producer stores. It emits no reserve or push;
+the operation changes neither occupancy nor either DFB pointer. Full-ring
+acquisition and the absence of earlier producer-pointer access prove that the
+consumer read window and pack destination identify the same pages.
+
 After `cb_pop`, the producer may overwrite the released slot because its prior
 contents are no longer live. The DFB's backing storage remains statically
 allocated. Index reuse uses this release to prove that non-overlapping logical
@@ -540,11 +553,12 @@ materializations remain compute roots but are excluded from lifetime roots
 because their replacement DFB supplies new storage. If another unmaterialized
 occurrence reads the same SSA value, it remains a lifetime root.
 
-Output-store planning groups stores by their `cb_reserve` operations and
-prevents one compute from combining several reserve transactions of the same
-DFB. This preserves producer-pointer order when a push moves after the created
-`ttl.compute`. Kernel-wide selection and application ordering are described in
-`ComputeOpCreation.md`.
+Output-store planning groups stores by their `cb_reserve` or `cb_wait`
+acquisitions and prevents one compute from combining several transactions of
+the same DFB. Reserve-backed transactions preserve producer-pointer order when
+a push moves after the created `ttl.compute`. Wait-backed transactions require
+the complete consumer-owned replacement proof described above. Kernel-wide
+selection and application ordering are described in `ComputeOpCreation.md`.
 
 The analysis is kernel-local because creation moves operations only within
 one kernel. Producer and consumer pointer states are separate, and the
@@ -633,8 +647,8 @@ cannot reorder but the created `ttl.compute` would follow it, the query records
 tensor SSA uses from producers before that operation to consumers after it.
 Materialization replaces those uses, and the next fixed-point iteration creates
 an independent `ttl.compute` on each side. Uninstrumented pure tensor recomputation remains
-legal. Output reserves are part of the recorded output transaction and
-are not ordering boundaries; the created `ttl.compute` necessarily executes after
+legal. Output acquisitions are part of the recorded output transaction and are
+not ordering boundaries; the created `ttl.compute` necessarily executes after
 them.
 
 `ttl.compute` results preserve SSA dependencies, but the compute body publishes
