@@ -484,9 +484,9 @@ access-contract metadata because those facts do not alter the C++ call.
 TTKernel to EmitC resolves constants and descriptor types, and C++ emission
 inserts the required prelude and header during its existing operation scan.
 
-See `examples/external_dfb_reuse.py` for two external calls surrounded by
-visible TTL protocol operations. An acknowledgment proves that the result
-lifetimes do not overlap, while typed descriptor operands keep each opaque call
-inside the corresponding lifetime. See
+See `examples/external_dfb_descriptors.py` for two external calls surrounded by
+visible TTL protocol operations. Descriptor operands preserve each DFB's
+compile-time metadata but do not summarize storage behavior, so the two opaque
+result DFBs remain distinct. See
 `test/python/call_extern_func_dfb_effects.py` for dependency-only operands,
 ordered effect expansion, unknown access, and generated-C++ invariance.
