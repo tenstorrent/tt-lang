@@ -386,7 +386,7 @@ def _make_conditional_lifecycle_kernel(data_format, predicate_value):
     return conditional_lifecycle_kernel
 
 
-def _make_dispatch_condition_lifecycle_kernel(data_format):
+def _make_dispatch_condition_lifecycle_kernel(data_format, predicate_value):
     active = ttl.DispatchCondition(ttl.ScalarType.I32)
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -403,8 +403,8 @@ def _make_dispatch_condition_lifecycle_kernel(data_format):
         def read():
             first_active = ttl.call_extern_func(
                 SCALAR_RESULT_HEADER,
-                "scalar_result",
-                template_args=[32],
+                "scalar_predicate",
+                template_args=[predicate_value],
                 condition_result=active,
             )
             if first_active:
@@ -416,8 +416,8 @@ def _make_dispatch_condition_lifecycle_kernel(data_format):
 
             second_active = ttl.call_extern_func(
                 SCALAR_RESULT_HEADER,
-                "scalar_result",
-                template_args=[32],
+                "scalar_predicate",
+                template_args=[predicate_value],
                 condition_result=active,
             )
             if second_active:
@@ -428,8 +428,8 @@ def _make_dispatch_condition_lifecycle_kernel(data_format):
         def compute():
             first_active = ttl.call_extern_func(
                 SCALAR_RESULT_HEADER,
-                "scalar_result",
-                template_args=[32],
+                "scalar_predicate",
+                template_args=[predicate_value],
                 condition_result=active,
             )
             if first_active:
@@ -447,8 +447,8 @@ def _make_dispatch_condition_lifecycle_kernel(data_format):
 
             second_active = ttl.call_extern_func(
                 SCALAR_RESULT_HEADER,
-                "scalar_result",
-                template_args=[32],
+                "scalar_predicate",
+                template_args=[predicate_value],
                 condition_result=active,
             )
             if second_active:
@@ -458,8 +458,15 @@ def _make_dispatch_condition_lifecycle_kernel(data_format):
 
         @ttl.datamovement(kernel=writer_kernel)
         def write():
-            with output.wait() as source:
-                ttl.copy(source, output_tensor[0, 0]).wait()
+            output_active = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_predicate",
+                template_args=[predicate_value],
+                condition_result=active,
+            )
+            if output_active:
+                with output.wait() as source:
+                    ttl.copy(source, output_tensor[0, 0]).wait()
 
     return dispatch_condition_lifecycle_kernel
 
@@ -484,11 +491,17 @@ _conditional_f32_true_lifecycle_kernel = _make_conditional_lifecycle_kernel(
 _conditional_f32_false_lifecycle_kernel = _make_conditional_lifecycle_kernel(
     "float32", False
 )
-_dispatch_condition_bf16_lifecycle_kernel = _make_dispatch_condition_lifecycle_kernel(
-    "bf16"
+_dispatch_condition_bf16_true_lifecycle_kernel = (
+    _make_dispatch_condition_lifecycle_kernel("bf16", True)
 )
-_dispatch_condition_f32_lifecycle_kernel = _make_dispatch_condition_lifecycle_kernel(
-    "float32"
+_dispatch_condition_bf16_false_lifecycle_kernel = (
+    _make_dispatch_condition_lifecycle_kernel("bf16", False)
+)
+_dispatch_condition_f32_true_lifecycle_kernel = (
+    _make_dispatch_condition_lifecycle_kernel("float32", True)
+)
+_dispatch_condition_f32_false_lifecycle_kernel = (
+    _make_dispatch_condition_lifecycle_kernel("float32", False)
 )
 
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
@@ -796,12 +809,14 @@ def test_same_runtime_condition_reuses_sequential_dfbs(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("operation", "dtype", "predicate_value"),
     [
-        (_dispatch_condition_bf16_lifecycle_kernel, torch.bfloat16),
-        (_dispatch_condition_f32_lifecycle_kernel, torch.float32),
+        (_dispatch_condition_bf16_true_lifecycle_kernel, torch.bfloat16, True),
+        (_dispatch_condition_bf16_false_lifecycle_kernel, torch.bfloat16, False),
+        (_dispatch_condition_f32_true_lifecycle_kernel, torch.float32, True),
+        (_dispatch_condition_f32_false_lifecycle_kernel, torch.float32, False),
     ],
-    ids=["bf16", "f32"],
+    ids=["bf16-true", "bf16-false", "f32-true", "f32-false"],
 )
 @pytest.mark.parametrize(
     ("memory_config", "to_device"),
@@ -809,7 +824,14 @@ def test_same_runtime_condition_reuses_sequential_dfbs(
     ids=["dram", "l1"],
 )
 def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
-    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+    device,
+    operation,
+    dtype,
+    predicate_value,
+    memory_config,
+    to_device,
+    monkeypatch,
+    tmp_path,
 ):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
@@ -825,7 +847,11 @@ def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
     assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     actual = ttnn.to_torch(output_tensor).float()
-    expected = input_host.float()
+    expected = (
+        input_host.float()
+        if predicate_value
+        else torch.zeros_like(input_host).float()
+    )
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
