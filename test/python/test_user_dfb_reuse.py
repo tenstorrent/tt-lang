@@ -141,17 +141,17 @@ def _iadd_waited_block(state_dfb: ttl.DFB, output_dfb: ttl.DFB):
             )
 
 
-def _make_waited_block_store_kernel(data_format):
+def _make_waited_block_store_kernel(data_format, tile_columns=1):
     @ttl.operation(grid=(1, 1))
     def waited_block_mutation_kernel(input_tensor, output_tensor):
-        state_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
-        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        state_dfb = ttl.make_dfb(data_format, shape=(1, tile_columns), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, tile_columns), block_count=2)
 
         with state_dfb.reserve() as state_destination:
-            ttl.copy(input_tensor[0, 0], state_destination).wait()
+            ttl.copy(input_tensor[0:1, 0:tile_columns], state_destination).wait()
         _store_waited_block(state_dfb, output_dfb)
         with output_dfb.wait() as output_block:
-            ttl.copy(output_block, output_tensor[0, 0]).wait()
+            ttl.copy(output_block, output_tensor[0:1, 0:tile_columns]).wait()
 
     return waited_block_mutation_kernel
 
@@ -876,6 +876,12 @@ _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
 _capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
 _waited_mutation_bf16_store_kernel = _make_waited_block_store_kernel("bf16")
 _waited_mutation_f32_store_kernel = _make_waited_block_store_kernel("float32")
+_waited_mutation_bf16_two_tile_store_kernel = _make_waited_block_store_kernel(
+    "bf16", tile_columns=2
+)
+_waited_mutation_f32_two_tile_store_kernel = _make_waited_block_store_kernel(
+    "float32", tile_columns=2
+)
 _waited_mutation_bf16_iadd_kernel = _make_waited_block_iadd_kernel("bf16")
 _waited_mutation_f32_iadd_kernel = _make_waited_block_iadd_kernel("float32")
 _exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
@@ -1450,14 +1456,23 @@ def test_selected_reset_preserves_non_target_live_aliases(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("operation", "dtype", "tile_columns"),
     [
-        (_waited_mutation_bf16_store_kernel, torch.bfloat16),
-        (_waited_mutation_f32_store_kernel, torch.float32),
-        (_waited_mutation_bf16_iadd_kernel, torch.bfloat16),
-        (_waited_mutation_f32_iadd_kernel, torch.float32),
+        (_waited_mutation_bf16_store_kernel, torch.bfloat16, 1),
+        (_waited_mutation_f32_store_kernel, torch.float32, 1),
+        (_waited_mutation_bf16_iadd_kernel, torch.bfloat16, 1),
+        (_waited_mutation_f32_iadd_kernel, torch.float32, 1),
+        (_waited_mutation_bf16_two_tile_store_kernel, torch.bfloat16, 2),
+        (_waited_mutation_f32_two_tile_store_kernel, torch.float32, 2),
     ],
-    ids=["store-bf16", "store-f32", "iadd-bf16", "iadd-f32"],
+    ids=[
+        "store-bf16",
+        "store-f32",
+        "iadd-bf16",
+        "iadd-f32",
+        "store-two-tiles-bf16",
+        "store-two-tiles-f32",
+    ],
 )
 @pytest.mark.parametrize(
     ("memory_config", "to_device"),
@@ -1465,9 +1480,11 @@ def test_selected_reset_preserves_non_target_live_aliases(
     ids=["dram", "l1"],
 )
 def test_waited_block_replacement_preserves_updated_value(
-    device, operation, dtype, memory_config, to_device
+    device, operation, dtype, tile_columns, memory_config, to_device
 ):
-    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    element_indices = torch.arange(
+        TILE * TILE * tile_columns, dtype=torch.float32
+    ).reshape(TILE, TILE * tile_columns)
     input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
     input_tensor = to_device(input_host, device)
     output_tensor = to_device(torch.zeros_like(input_host), device)
