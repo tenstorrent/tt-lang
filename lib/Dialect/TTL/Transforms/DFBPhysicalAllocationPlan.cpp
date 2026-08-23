@@ -257,8 +257,13 @@ public:
         DFBAllocationGroupAttr lhsGroup = logicalDFBs[lhsIndex].allocationGroup;
         DFBAllocationGroupAttr rhsGroup = logicalDFBs[rhsIndex].allocationGroup;
         bool sameAllocationGroup = lhsGroup && lhsGroup == rhsGroup;
+        bool opaqueAccessRequiresExactDescriptor =
+            logicalDFBs[lhsIndex].hasOpaqueExternalAccess ||
+            logicalDFBs[rhsIndex].hasOpaqueExternalAccess;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                         /*requireExactDescriptor=*/!sameAllocationGroup,
+                         /*requireExactDescriptor=*/
+                         !sameAllocationGroup ||
+                             opaqueAccessRequiresExactDescriptor,
                          /*requireMatchingTransactions=*/!sameAllocationGroup,
                          /*useAllocationGroupEpochs=*/sameAllocationGroup);
       }
@@ -304,7 +309,8 @@ public:
       return model;
     }
     addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                     /*requireExactDescriptor=*/false,
+                     /*requireExactDescriptor=*/lhs.hasOpaqueExternalAccess ||
+                         rhs.hasOpaqueExternalAccess,
                      /*requireMatchingTransactions=*/false,
                      /*useAllocationGroupEpochs=*/true);
     addResetAllocationConflicts(model, liveness,

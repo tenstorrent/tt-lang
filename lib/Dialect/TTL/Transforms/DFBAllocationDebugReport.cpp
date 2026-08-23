@@ -144,7 +144,11 @@ static void printAccesses(llvm::raw_ostream &output,
       output << "none";
     }
     output << " tiles=" << access.numTiles
-           << " sequence=" << access.sequenceIndex << " domain=";
+           << " sequence=" << access.sequenceIndex;
+    if (access.opaqueExternalAccess) {
+      output << " opaque_external=1";
+    }
+    output << " domain=";
     printDomain(output, access.launchDomain);
     output << " operation=";
     printOperation(output, access.operation);
@@ -253,6 +257,9 @@ static void printResetEpochs(llvm::raw_ostream &output,
         } else {
           output << "none";
         }
+        if (epoch.resetCanonicalizedOpaqueProtocol) {
+          output << ",opaque_protocol_reset=1";
+        }
         output << ",terminal_state="
                << (epoch.terminalStateCanonical ? "canonical" : "protocol")
                << '}';
@@ -277,6 +284,8 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.terminalReadPointerOwner ==
                    rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
+               lhsEpoch.resetCanonicalizedOpaqueProtocol ==
+                   rhsEpoch.resetCanonicalizedOpaqueProtocol &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
@@ -305,6 +314,8 @@ static bool hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
+      lhs.resetCanonicalizedOpaqueProtocol !=
+          rhs.resetCanonicalizedOpaqueProtocol ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs)) {
     return false;
@@ -345,8 +356,11 @@ static void printPossibleLifetimes(
            << getQuiescenceFailureName(lifetime.quiescence.failure)
            << " domain_assumption=unknown-possible may_be_active="
            << lifetime.mayBeActive
-           << " conditional_execution=" << lifetime.conditionalExecutionProven
-           << " node_count=" << group.nodes.size();
+           << " conditional_execution=" << lifetime.conditionalExecutionProven;
+    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+      output << " opaque_protocol_reset=1";
+    }
+    output << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
       llvm::interleaveComma(group.nodes, output, [&](LaunchNodeCoord node) {
@@ -387,7 +401,11 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     output << " quiescence="
            << getQuiescenceFailureName(lifetime.quiescence.failure)
            << " domain_assumption=exact conditional_execution="
-           << lifetime.conditionalExecutionProven << " evidence=";
+           << lifetime.conditionalExecutionProven;
+    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+      output << " opaque_protocol_reset=1";
+    }
+    output << " evidence=";
     printOperation(output, lifetime.quiescence.evidence);
     output << " occurrences=";
     printOccurrences(output, lifetime);
@@ -446,8 +464,11 @@ void printDFBAllocationDebugReport(
     output << "DFB logical_id=" << logicalDFB.logicalId
            << " bounded=" << logicalDFB.bounded
            << " compiler_created=" << logicalDFB.compilerCreated
-           << " conditionally_bounded=" << logicalDFB.conditionallyBounded
-           << " allocation_group=";
+           << " conditionally_bounded=" << logicalDFB.conditionallyBounded;
+    if (logicalDFB.hasOpaqueExternalAccess) {
+      output << " opaque_external_access=1";
+    }
+    output << " allocation_group=";
     if (logicalDFB.allocationGroup) {
       Attribute allocationGroup = logicalDFB.allocationGroup;
       allocationGroup.print(output);

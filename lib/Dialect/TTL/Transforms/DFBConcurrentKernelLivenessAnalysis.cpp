@@ -892,6 +892,34 @@ static SmallVector<const DFBAccessOccurrence *> findMinimalEntryAccesses(
   return minimal;
 }
 
+// Finds every access without a proved completion successor.
+static SmallVector<const DFBAccessOccurrence *> findMaximalCompletionAccesses(
+    ArrayRef<const DFBAccessOccurrence *> accesses,
+    const HappensBeforeGraph &graph,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
+        &accessEvents) {
+  SmallVector<const DFBAccessOccurrence *> maximal;
+  for (const DFBAccessOccurrence *candidate : accesses) {
+    std::optional<AccessEventSpan> candidateEvents =
+        getAccessEventSpan(*candidate, operationEvents, accessEvents);
+    if (!candidateEvents) {
+      continue;
+    }
+    bool hasSuccessor = llvm::any_of(accesses, [&](const auto *otherAccess) {
+      std::optional<AccessEventSpan> otherEvents =
+          getAccessEventSpan(*otherAccess, operationEvents, accessEvents);
+      return otherEvents &&
+             graph.strictlyPrecedes(candidateEvents->last.completion,
+                                    otherEvents->last.completion);
+    });
+    if (!hasSuccessor) {
+      maximal.push_back(candidate);
+    }
+  }
+  return maximal;
+}
+
 // Requires a custom function that consumes a physical index to name the same
 // logical DFB as a direct storage dependency.
 static LogicalResult verifyCustomFunctionIndexDependency(
@@ -1171,9 +1199,12 @@ static LogicalResult collectLogicalDFBs(
       std::optional<unsigned> logicalIndex =
           dependencyLogicalIndices[dependencyIndex];
       assert(logicalIndex && "DFB dependencies were validated above");
-      logicalDFBs[*logicalIndex].accesses.push_back(
-          {operation, std::nullopt, 0, 0, LaunchNodeDomain::unknown(),
-           nullptr});
+      DFBLogicalLifecycle &logicalDFB = logicalDFBs[*logicalIndex];
+      bool opaqueExternalAccess = isa<OpaqueCallOp>(operation);
+      logicalDFB.accesses.push_back({operation, std::nullopt, 0, 0,
+                                     LaunchNodeDomain::unknown(), nullptr,
+                                     opaqueExternalAccess});
+      logicalDFB.hasOpaqueExternalAccess |= opaqueExternalAccess;
     }
     return WalkResult::advance();
   });
@@ -2725,6 +2756,68 @@ static DFBQuiescenceProof computeProtocolLifetime(
     return {};
   }
 
+  auto opaqueExternalAccess =
+      llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
+        return access->opaqueExternalAccess;
+      });
+  if (opaqueExternalAccess != activeAccesses.end()) {
+    if (!hasCanonicalResetTerminator) {
+      return {DFBQuiescenceFailureReason::MissingProtocolEffect,
+              (*opaqueExternalAccess)->operation};
+    }
+    auto unscopedOpaqueAccess =
+        llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
+          return !access->protocolEffect &&
+                 isa<OpaqueCallOp>(access->operation) &&
+                 !access->opaqueExternalAccess;
+        });
+    if (unscopedOpaqueAccess != activeAccesses.end()) {
+      return {DFBQuiescenceFailureReason::MissingProtocolEffect,
+              (*unscopedOpaqueAccess)->operation};
+    }
+
+    SmallVector<const DFBAccessOccurrence *> earliestAccesses =
+        findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
+                                 accessEvents);
+    SmallVector<const DFBAccessOccurrence *> terminalAccesses =
+        findMaximalCompletionAccesses(activeAccesses, graph, operationEvents,
+                                      accessEvents);
+    if (earliestAccesses.empty() || terminalAccesses.empty()) {
+      return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
+              activeAccesses.front()->operation};
+    }
+    for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
+      std::optional<AccessEventSpan> events =
+          getAccessEventSpan(*earliestAccess, operationEvents, accessEvents);
+      if (!events) {
+        return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
+                earliestAccess->operation};
+      }
+      if (!llvm::is_contained(lifetime.earliestEntryEvents,
+                              events->first.entry)) {
+        lifetime.earliestEntryEvents.push_back(events->first.entry);
+      }
+      lifetime.earliestAccessOccurrenceIndices.push_back(
+          static_cast<unsigned>(earliestAccess - logicalDFB.accesses.data()));
+    }
+    for (const DFBAccessOccurrence *terminalAccess : terminalAccesses) {
+      std::optional<AccessEventSpan> events =
+          getAccessEventSpan(*terminalAccess, operationEvents, accessEvents);
+      if (!events) {
+        return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
+                terminalAccess->operation};
+      }
+      if (!llvm::is_contained(lifetime.terminalCompletionEvents,
+                              events->last.completion)) {
+        lifetime.terminalCompletionEvents.push_back(events->last.completion);
+      }
+      lifetime.terminalAccessOccurrenceIndices.push_back(
+          static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data()));
+    }
+    lifetime.resetCanonicalizedOpaqueProtocol = true;
+    return {};
+  }
+
   bool resetTerminatedProducer = hasCanonicalResetTerminator && hasReserve &&
                                  hasPush && !hasWait && !hasPop;
   if ((!hasReserve || !hasPush || !hasWait || !hasPop) &&
@@ -3245,6 +3338,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
     epoch.readCursorRuns = epochLifetime.readCursorRuns;
     epoch.writePointerOwner = epochLifetime.writePointerOwner;
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
+    epoch.resetCanonicalizedOpaqueProtocol =
+        epochLifetime.resetCanonicalizedOpaqueProtocol;
     epoch.quiescence = proof;
     if (resetTerminated) {
       const OrderedResetBoundary &boundary = boundaries[epochIndex];
@@ -3268,6 +3363,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
       lifetime.readCursorRuns = epochLifetime.readCursorRuns;
       lifetime.writePointerOwner = epochLifetime.writePointerOwner;
       lifetime.readPointerOwner = epochLifetime.readPointerOwner;
+      lifetime.resetCanonicalizedOpaqueProtocol =
+          epochLifetime.resetCanonicalizedOpaqueProtocol;
       hasActiveEpoch = true;
     }
     lifetime.conditionalExecutionProven |=
@@ -3281,6 +3378,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
     lifetime.terminalWritePointerOwner =
         epochLifetime.terminalWritePointerOwner;
     lifetime.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
+    lifetime.resetCanonicalizedOpaqueProtocol |=
+        epochLifetime.resetCanonicalizedOpaqueProtocol;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
   }
 

@@ -89,6 +89,9 @@ struct DFBAccessOccurrence {
 
   /// Operation that prevented a precise launch domain, or null when precise.
   Operation *unanalyzableDomainOperation = nullptr;
+
+  /// Whether this call-duration access is a named opaque external dependency.
+  bool opaqueExternalAccess = false;
 };
 
 /// Execution count retained for one access in the debug report.
@@ -131,6 +134,7 @@ struct DFBLifecycleEpoch {
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
+  bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
 };
@@ -181,6 +185,7 @@ struct DFBPerNodeLifetime {
   SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
   DFBQuiescenceProof quiescence;
@@ -195,6 +200,7 @@ struct DFBLogicalLifecycle {
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;
+  bool hasOpaqueExternalAccess = false;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;

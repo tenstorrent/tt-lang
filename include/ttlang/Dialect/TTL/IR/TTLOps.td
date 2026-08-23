@@ -2045,6 +2045,12 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     unlisted user-managed DFBs and disables physical-index reuse in affected
     allocation scopes.
 
+    A named DFB dependency occurrence without `dfb_effects` contributes a
+    call-duration storage access. A following synchronized DFB reset may
+    canonicalize its unknown protocol state, permitting storage reuse only
+    after the reset. This does not validate the callee's internal queue
+    protocol.
+
     Every asynchronous DFB access must also complete before the call returns.
     A callee with outstanding asynchronous work requires a separate explicit
     completion contract and cannot use this operation's synchronous summary.
