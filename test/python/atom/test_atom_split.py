@@ -959,6 +959,7 @@ def test_synchronized_dfb_reset_is_replicated_to_every_participant():
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 0).count("ttl.reset_dfbs(") == 1
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
 
+
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
     """Control selection includes logical-kernel anchors in the condition."""
     writer = Kernel(KernelKind.DATA_MOVEMENT)

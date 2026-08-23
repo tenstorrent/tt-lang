@@ -1923,8 +1923,8 @@ static DFBQuiescenceProof computeProtocolLifetime(
             static_cast<unsigned>(activeAccess - logicalDFB.accesses.data()));
       }
     }
-    diagnostics->terminalAccessOccurrenceIndices = {static_cast<unsigned>(
-        terminalAccess - logicalDFB.accesses.data())};
+    diagnostics->terminalAccessOccurrenceIndices = {
+        static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data())};
   }
   if (lifetime.earliestEntryEvents.empty()) {
     return {DFBQuiescenceFailureReason::IncompleteUseOrder,
@@ -1975,10 +1975,10 @@ static DFBQuiescenceProof computePerNodeLifetime(
     boundaries.push_back({&reset, eventsIt->second});
   }
   if (boundaries.empty()) {
-    return computeProtocolLifetime(
-        logicalDFB, node, lifetimes, lifetimeDiagnostics, graph, operationEvents,
-        accessEvents, executionCounts, accessRuns, domainState,
-        includeUnknownDomains);
+    return computeProtocolLifetime(logicalDFB, node, lifetimes,
+                                   lifetimeDiagnostics, graph, operationEvents,
+                                   accessEvents, executionCounts, accessRuns,
+                                   domainState, includeUnknownDomains);
   }
 
   for (auto [lhsIndex, lhs] : llvm::enumerate(boundaries)) {
