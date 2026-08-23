@@ -1378,9 +1378,12 @@ static LogicalResult collectLogicalDFBs(
       std::optional<unsigned> logicalIndex =
           dependencyLogicalIndices[dependencyIndex];
       assert(logicalIndex && "DFB dependencies were validated above");
-      logicalDFBs[*logicalIndex].accesses.push_back(
+      DFBLogicalLifecycle &logicalDFB = logicalDFBs[*logicalIndex];
+      bool opaqueExternalAccess = isa<OpaqueCallOp>(operation);
+      logicalDFB.accesses.push_back(
           {operation, std::monostate{}, 0, 0, LaunchNodeDomain::unknown(),
-           nullptr});
+           nullptr, opaqueExternalAccess});
+      logicalDFB.hasOpaqueExternalAccess |= opaqueExternalAccess;
     }
     return WalkResult::advance();
   });
@@ -3417,21 +3420,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     return {};
   }
 
-  bool hasProtocolAccess =
-      llvm::any_of(activeAccesses, [](const DFBAccessOccurrence *access) {
-        return access->getProtocolEffect();
-      });
-  if (!hasProtocolAccess) {
-    bool inspectionOnly = !activeAccesses.empty() &&
-                          llvm::all_of(activeAccesses, [](const auto *access) {
-                            return access->isNonTransactionalAccess(
-                                DFBNonTransactionalAccessKind::Inspect);
-                          });
-    if (!inspectionOnly) {
-      return {DFBQuiescenceFailureReason::MissingProtocolEffect,
-              activeAccesses.empty() ? logicalDFB.declarations.front()
-                                     : activeAccesses.front()->operation};
-    }
+  auto populateCallDurationLifetime = [&]() -> DFBQuiescenceProof {
     SmallVector<const DFBAccessOccurrence *> earliestAccesses =
         findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
                                  accessEvents);
@@ -3440,7 +3429,8 @@ static DFBQuiescenceProof computeProtocolLifetime(
                                       accessEvents);
     if (earliestAccesses.empty() || terminalAccesses.empty()) {
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-              activeAccesses.front()->operation};
+              activeAccesses.empty() ? logicalDFB.declarations.front()
+                                     : activeAccesses.front()->operation};
     }
     for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
       std::optional<AccessEventSpan> events =
@@ -3473,6 +3463,55 @@ static DFBQuiescenceProof computeProtocolLifetime(
         diagnostics->terminalAccessOccurrenceIndices.push_back(
             static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data()));
       }
+    }
+    return {};
+  };
+
+  auto opaqueExternalAccess =
+      llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
+        return access->opaqueExternalAccess;
+      });
+  if (opaqueExternalAccess != activeAccesses.end()) {
+    if (!hasCanonicalResetTerminator) {
+      return {DFBQuiescenceFailureReason::MissingProtocolEffect,
+              (*opaqueExternalAccess)->operation};
+    }
+    auto unscopedOpaqueAccess =
+        llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
+          return !access->getProtocolEffect() &&
+                 isa<OpaqueCallOp>(access->operation) &&
+                 !access->opaqueExternalAccess;
+        });
+    if (unscopedOpaqueAccess != activeAccesses.end()) {
+      return {DFBQuiescenceFailureReason::MissingProtocolEffect,
+              (*unscopedOpaqueAccess)->operation};
+    }
+    DFBQuiescenceProof proof = populateCallDurationLifetime();
+    if (!proof.proven()) {
+      return proof;
+    }
+    lifetime.resetCanonicalizedOpaqueProtocol = true;
+    return {};
+  }
+
+  bool hasProtocolAccess =
+      llvm::any_of(activeAccesses, [](const DFBAccessOccurrence *access) {
+        return access->getProtocolEffect();
+      });
+  if (!hasProtocolAccess) {
+    bool inspectionOnly = !activeAccesses.empty() &&
+                          llvm::all_of(activeAccesses, [](const auto *access) {
+                            return access->isNonTransactionalAccess(
+                                DFBNonTransactionalAccessKind::Inspect);
+                          });
+    if (!inspectionOnly) {
+      return {DFBQuiescenceFailureReason::MissingProtocolEffect,
+              activeAccesses.empty() ? logicalDFB.declarations.front()
+                                     : activeAccesses.front()->operation};
+    }
+    DFBQuiescenceProof proof = populateCallDurationLifetime();
+    if (!proof.proven()) {
+      return proof;
     }
     lifetime.conditionalExecutionProven = includeUnknownDomains;
     lifetime.inspectionOnly = true;
@@ -4362,6 +4401,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
     epoch.writePointerOwner = epochLifetime.writePointerOwner;
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
     epoch.inspectionOnly = epochLifetime.inspectionOnly;
+    epoch.resetCanonicalizedOpaqueProtocol =
+        epochLifetime.resetCanonicalizedOpaqueProtocol;
     epoch.quiescence = proof;
     assert(firstBoundaryInterval &&
            "active lifecycle must have a first boundary interval");
@@ -4424,6 +4465,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
       lifetime.writePointerOwner = epochLifetime.writePointerOwner;
       lifetime.readPointerOwner = epochLifetime.readPointerOwner;
       lifetime.inspectionOnly = epochLifetime.inspectionOnly;
+      lifetime.resetCanonicalizedOpaqueProtocol =
+          epochLifetime.resetCanonicalizedOpaqueProtocol;
       hasActiveEpoch = true;
     }
     lifetime.conditionalExecutionProven |=
@@ -4441,6 +4484,8 @@ static DFBQuiescenceProof computePerNodeLifetime(
     lifetime.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
     lifetime.inspectionOnly =
         lifetime.inspectionOnly && epochLifetime.inspectionOnly;
+    lifetime.resetCanonicalizedOpaqueProtocol |=
+        epochLifetime.resetCanonicalizedOpaqueProtocol;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
     lifecycleAccesses.clear();
     firstBoundaryInterval.reset();
@@ -5450,7 +5495,15 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-    logicalDFB.bounded = logicalDFB.accessContractsComplete &&
+    bool exactAccessContractsProven =
+        logicalDFB.accessContractsComplete ||
+        (!logicalDFB.nodeLifetimes.empty() &&
+         llvm::all_of(logicalDFB.nodeLifetimes,
+                      [](const DFBPerNodeLifetime &lifetime) {
+                        return !lifetime.mayBeActive ||
+                               lifetime.resetCanonicalizedOpaqueProtocol;
+                      }));
+    logicalDFB.bounded = exactAccessContractsProven &&
                          logicalDFB.launchDomain.known &&
                          !logicalDFB.nodeLifetimes.empty() &&
                          llvm::all_of(logicalDFB.nodeLifetimes,
@@ -5464,8 +5517,16 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                               lifetime.conditionalExecutionProven &&
                               lifetime.quiescence.proven();
                      });
+    bool possibleAccessContractsProven =
+        logicalDFB.accessContractsComplete ||
+        (!logicalDFB.possibleNodeLifetimes.empty() &&
+         llvm::all_of(logicalDFB.possibleNodeLifetimes,
+                      [](const DFBPerNodeLifetime &lifetime) {
+                        return !lifetime.mayBeActive ||
+                               lifetime.resetCanonicalizedOpaqueProtocol;
+                      }));
     logicalDFB.conditionallyBounded =
-        logicalDFB.accessContractsComplete && !logicalDFB.launchDomain.known &&
+        possibleAccessContractsProven && !logicalDFB.launchDomain.known &&
         hasProvenConditionalLifecycle &&
         llvm::all_of(logicalDFB.possibleNodeLifetimes,
                      [](const DFBPerNodeLifetime &lifetime) {

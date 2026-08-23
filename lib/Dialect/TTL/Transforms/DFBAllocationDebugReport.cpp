@@ -163,7 +163,11 @@ static void printAccesses(llvm::raw_ostream &output,
              << getNonTransactionalAccessName(*nonTransactionalAccess);
     }
     output << " tiles=" << access.numTiles
-           << " sequence=" << access.sequenceIndex << " domain=";
+           << " sequence=" << access.sequenceIndex;
+    if (access.opaqueExternalAccess) {
+      output << " opaque_external=1";
+    }
+    output << " domain=";
     printDomain(output, access.launchDomain);
     output << " operation=";
     printOperation(output, access.operation);
@@ -302,6 +306,9 @@ static void printLifecycleEpochs(llvm::raw_ostream &output,
         if (epoch.inspectionOnly) {
           output << ",inspection_only=1";
         }
+        if (epoch.resetCanonicalizedOpaqueProtocol) {
+          output << ",opaque_protocol_reset=1";
+        }
         output << ",terminal_state="
                << (epoch.terminalStateCanonical ? "canonical" : "protocol")
                << '}';
@@ -334,6 +341,8 @@ static bool hasEqualLifecycleEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.terminalReconfigurationOrdinal ==
                    rhsEpoch.terminalReconfigurationOrdinal &&
                lhsEpoch.inspectionOnly == rhsEpoch.inspectionOnly &&
+               lhsEpoch.resetCanonicalizedOpaqueProtocol ==
+                   rhsEpoch.resetCanonicalizedOpaqueProtocol &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
@@ -361,6 +370,8 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
       lhs.inspectionOnly != rhs.inspectionOnly ||
+      lhs.resetCanonicalizedOpaqueProtocol !=
+          rhs.resetCanonicalizedOpaqueProtocol ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualLifecycleEpochs(lhs.epochs, rhs.epochs) ||
       !(lhsDiagnostics == rhsDiagnostics)) {
@@ -440,6 +451,9 @@ static void printPossibleLifetimes(
     if (lifetime.inspectionOnly) {
       output << " inspection_only=1";
     }
+    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+      output << " opaque_protocol_reset=1";
+    }
     output << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
@@ -479,6 +493,9 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
            << lifetime.conditionalExecutionProven;
     if (lifetime.inspectionOnly) {
       output << " inspection_only=1";
+    }
+    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+      output << " opaque_protocol_reset=1";
     }
     printLifetimeFacts(output, lifetime, diagnostics);
     output << '\n';
@@ -520,7 +537,11 @@ void printDFBAllocationDebugReport(
            << " compiler_created=" << logicalDFB.compilerCreated
            << " conditionally_bounded=" << logicalDFB.conditionallyBounded
            << " access_contracts_complete="
-           << logicalDFB.accessContractsComplete << " allocation_group=";
+           << logicalDFB.accessContractsComplete;
+    if (logicalDFB.hasOpaqueExternalAccess) {
+      output << " opaque_external_access=1";
+    }
+    output << " allocation_group=";
     if (logicalDFB.allocationGroup) {
       Attribute allocationGroup = logicalDFB.allocationGroup;
       allocationGroup.print(output);

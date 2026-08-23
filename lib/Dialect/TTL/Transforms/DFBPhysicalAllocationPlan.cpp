@@ -322,8 +322,15 @@ public:
         DFBAllocationGroupAttr lhsGroup = logicalDFBs[lhsIndex].allocationGroup;
         DFBAllocationGroupAttr rhsGroup = logicalDFBs[rhsIndex].allocationGroup;
         bool sameAllocationGroup = lhsGroup && lhsGroup == rhsGroup;
+        bool opaqueAccessRequiresExactDescriptor =
+            logicalDFBs[lhsIndex].hasOpaqueExternalAccess ||
+            logicalDFBs[rhsIndex].hasOpaqueExternalAccess;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                         /*requireExactDescriptor=*/!sameAllocationGroup,
+                         /*requireExactDescriptor=*/
+                         !sameAllocationGroup ||
+                             opaqueAccessRequiresExactDescriptor,
+                         /*allowDisjointConfigurationDescriptors=*/
+                         !opaqueAccessRequiresExactDescriptor,
                          /*requireMatchingTransactions=*/!sameAllocationGroup,
                          /*useAllocationGroupEpochs=*/sameAllocationGroup);
       }
@@ -369,7 +376,10 @@ public:
       return model;
     }
     addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                     /*requireExactDescriptor=*/false,
+                     /*requireExactDescriptor=*/lhs.hasOpaqueExternalAccess ||
+                         rhs.hasOpaqueExternalAccess,
+                     /*allowDisjointConfigurationDescriptors=*/
+                     !lhs.hasOpaqueExternalAccess && !rhs.hasOpaqueExternalAccess,
                      /*requireMatchingTransactions=*/false,
                      /*useAllocationGroupEpochs=*/true);
     addResetAllocationConflicts(model, liveness,
@@ -428,6 +438,7 @@ private:
                    const DFBConcurrentKernelLivenessAnalysis &liveness,
                    unsigned lhsIndex, unsigned rhsIndex,
                    bool requireExactDescriptor = true,
+                   bool allowDisjointConfigurationDescriptors = true,
                    bool requireMatchingTransactions = true,
                    bool useAllocationGroupEpochs = false) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
@@ -438,7 +449,8 @@ private:
     auto rhsType = cast<CircularBufferType>(rhs.type);
     if (lhsType.getElementType() != rhsType.getElementType() ||
         (requireExactDescriptor && lhs.type != rhs.type &&
-         !haveDisjointConfigurationEpochs(lhs, rhs))) {
+         (!allowDisjointConfigurationDescriptors ||
+          !haveDisjointConfigurationEpochs(lhs, rhs)))) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::DescriptorMismatch, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
@@ -478,12 +490,6 @@ private:
     if (sharedNodes.empty()) {
       return;
     }
-    if (!lhs.accessContractsComplete || !rhs.accessContractsComplete) {
-      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                  DFBConflictReason::AccessCompletionNotProven, std::nullopt,
-                  lhs.declarations.front(), rhs.declarations.front());
-      return;
-    }
     for (LaunchNodeCoord node : sharedNodes) {
       const DFBPerNodeLifetime *lhsLifetime =
           useConditionalProof ? lhs.findPossibleNodeLifetime(node)
@@ -496,6 +502,19 @@ private:
         continue;
       }
       if (!lhsLifetime || !rhsLifetime) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::AccessCompletionNotProven, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      bool lhsAccessContractProven =
+          lhs.accessContractsComplete ||
+          lhsLifetime->resetCanonicalizedOpaqueProtocol;
+      bool rhsAccessContractProven =
+          rhs.accessContractsComplete ||
+          rhsLifetime->resetCanonicalizedOpaqueProtocol;
+      if (!lhsAccessContractProven || !rhsAccessContractProven) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
@@ -542,13 +561,17 @@ private:
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime)) {
-        continue;
-      }
-      if (requireExactDescriptor && lhs.type != rhs.type) {
+      bool disjointConfigurationEpochs =
+          haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime);
+      if (requireExactDescriptor && lhs.type != rhs.type &&
+          (!allowDisjointConfigurationDescriptors ||
+           !disjointConfigurationEpochs)) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::DescriptorMismatch, node,
                     lhs.declarations.front(), rhs.declarations.front());
+        continue;
+      }
+      if (disjointConfigurationEpochs) {
         continue;
       }
       if (lhs.tensorBacking != rhs.tensorBacking) {
