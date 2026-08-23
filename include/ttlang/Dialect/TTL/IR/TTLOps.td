@@ -2038,9 +2038,9 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     greater than the selected DFB's capacity. Every listed effect occurs on
     every execution of the call. Repeated effects retain list order. The summary
     does not emit protocol calls. Effects omitted for a dependency occurrence
-    leave its access opaque for the call duration. If one DFB occupies multiple
-    dependency occurrences, every occurrence requires its own effects to avoid
-    an opaque call-duration access. The
+    leave its access opaque. If one DFB occupies multiple dependency
+    occurrences, every occurrence requires its own effects to avoid an opaque
+    access. The
     `unknown_dfb_access` unit attribute declares that the callee may also access
     unlisted user-managed DFBs and disables physical-index reuse in affected
     allocation scopes.
