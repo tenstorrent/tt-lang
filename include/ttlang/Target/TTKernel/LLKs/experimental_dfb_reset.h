@@ -74,9 +74,12 @@ participantsHaveState(volatile uint32_t tt_l1_ptr *synchronizationState,
   return true;
 }
 
-// The blocking instruction-buffer synchronization makes the PACK or UNPACK
-// stall complete before the interface owner publishes its arrival.
-FORCE_INLINE void drainComputeEngine() {
+// Every interface owner must complete earlier asynchronous work before a
+// reset participant publishes its arrival.
+FORCE_INLINE void completeInterfaceWork() {
+#if defined(TTL_DFB_RESET_DM0) || defined(TTL_DFB_RESET_DM1)
+  noc_async_full_barrier();
+#endif
 #if defined(TTL_DFB_RESET_UNPACK)
   constexpr uint32_t waitResources = p_stall::UNPACK;
 #elif defined(TTL_DFB_RESET_PACK)
@@ -96,18 +99,13 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 #elif defined(TTL_DFB_RESET_PACK)
   constexpr uint32_t arrivalWord = packStateWord;
 #endif
-#if defined(TTL_DFB_RESET_DM0)
-  noc_async_full_barrier();
-#elif defined(TTL_DFB_RESET_UNPACK) || defined(TTL_DFB_RESET_PACK)
-  drainComputeEngine();
-#endif
+  completeInterfaceWork();
 #if defined(TTL_DFB_RESET_DM0) || defined(TTL_DFB_RESET_UNPACK) ||             \
     defined(TTL_DFB_RESET_PACK)
   storeStateWord(&synchronizationState[arrivalWord], entryComplete);
   while (loadStateWord(&synchronizationState[releaseWord]) != entryComplete) {
   }
 #elif defined(TTL_DFB_RESET_DM1)
-  noc_async_full_barrier();
   while (!participantsHaveState(synchronizationState, entryComplete)) {
   }
   storeStateWord(&synchronizationState[releaseWord], entryComplete);
@@ -178,6 +176,11 @@ FORCE_INLINE void applyMask(uint32_t activeMask, uint32_t firstDFBIndex) {
 }
 
 } // namespace dfb_reset_detail
+
+// Custom resets must complete interface work before publishing arrival.
+FORCE_INLINE void complete_dfb_interface_work() {
+  dfb_reset_detail::completeInterfaceWork();
+}
 
 FORCE_INLINE void reset_dfb_interfaces(uint32_t synchronizationAddress,
                                        uint32_t lowMask, uint32_t highMask) {

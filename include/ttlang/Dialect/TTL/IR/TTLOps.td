@@ -2077,16 +2077,21 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     unlisted user-managed DFBs and disables physical-index reuse in affected
     allocation scopes.
 
-    A named DFB dependency occurrence without `dfb_effects` contributes a
-    call-duration storage access. A synchronized DFB reset canonicalizes its
-    unknown protocol state only when the access completes before the reset
-    boundary through the same participating logical kernel. Storage reuse is
-    then permitted only after the reset. This does not validate the callee's
-    internal queue protocol.
+    A named DFB dependency occurrence without `dfb_effects` contributes an
+    opaque storage access that begins at call entry. Its protocol and
+    asynchronous interface work may remain live after the call. When the call
+    is ordered before a synchronized DFB reset through the same participating
+    logical kernel, reset completion terminates the access and canonicalizes
+    its unknown protocol state. The reset implementation must complete each
+    participant's earlier interface work before publishing arrival. Storage
+    reuse is permitted only after the reset. This does not validate the
+    callee's internal queue protocol.
 
-    Every asynchronous DFB access must also complete before the call returns.
-    A callee with outstanding asynchronous work requires a separate explicit
-    completion contract and cannot use this operation's synchronous summary.
+    Every action declared by `dfb_effects` must occur before the call returns.
+    Interface work still active after return must remain ordered by the
+    declared protocol and complete before its terminal consumer release or a
+    synchronized reset. Work that can outlive that terminal must leave the
+    affected DFB dependency opaque.
 
     `unsigned_arg_indices` identifies signless i32 operands that represent
     unsigned addresses at the C++ boundary. The lowering inserts explicit
