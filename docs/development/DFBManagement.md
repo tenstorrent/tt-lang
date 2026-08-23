@@ -127,24 +127,34 @@ kernel participants. The built-in operations select either explicit DFBs or
 every DFB allocated by the program:
 
 ```python
-compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
-reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-reset_boundary = ttl.DFBReset(
-    participants=(compute_kernel, reader_kernel, writer_kernel)
-)
+def make_reset_operation():
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset_boundary = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
 
-@ttl.compute(kernel=compute_kernel)
-def compute():
-    ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+    @ttl.operation(grid=(1, 1))
+    def reset_operation(input_tensor):
+        scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
 
-@ttl.datamovement(kernel=reader_kernel)
-def read():
-    ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
 
-@ttl.datamovement(kernel=writer_kernel)
-def write():
-    ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.reset_dfbs(reset_boundary, dfbs=[scratch])
+
+    return reset_operation
+
+
+reset_operation = make_reset_operation()
 ```
 
 The same `DFBReset` value identifies the three occurrences as one dynamic
