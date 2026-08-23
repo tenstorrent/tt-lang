@@ -844,13 +844,12 @@ def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
 
     # The first and second sources have equal types and pointer owners. Their
     # separately evaluated producer and consumer conditions share one identity.
-    assert _count_final_dfb_allocations(final_mlir_path) == 3
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = (
-        input_host.float()
-        if predicate_value
-        else torch.zeros_like(input_host).float()
+        input_host.float() if predicate_value else torch.zeros_like(input_host).float()
     )
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
