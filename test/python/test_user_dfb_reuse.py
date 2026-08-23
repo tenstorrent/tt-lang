@@ -103,7 +103,7 @@ def _make_repeated_dfb_atom_kernel(data_format):
     return repeated_dfb_atom_kernel
 
 
-def _make_composed_control_resource_kernel(data_format):
+def _make_composed_control_resource_kernel():
     @ttl.operation()
     def copy_through_dfb(input_tensor, output_tensor):
         transfer_dfb = ttl.make_dataflow_buffer_like(
@@ -890,8 +890,7 @@ def _make_selected_reset_alias_domain_kernel(data_format):
 
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
-_composed_control_bf16_kernel = _make_composed_control_resource_kernel("bf16")
-_composed_control_f32_kernel = _make_composed_control_resource_kernel("float32")
+_composed_control_resource_kernel = _make_composed_control_resource_kernel()
 _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
@@ -1609,16 +1608,11 @@ def test_repeated_dfb_declaring_atom_runtime(
     ids=["dram", "l1"],
 )
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
-    [
-        (_composed_control_bf16_kernel, torch.bfloat16),
-        (_composed_control_f32_kernel, torch.float32),
-    ],
+    "dtype",
+    [torch.bfloat16, torch.float32],
     ids=["bf16", "f32"],
 )
-def test_composed_control_resource_runtime(
-    device, memory_config, to_device, operation, dtype
-):
+def test_composed_control_resource_runtime(device, memory_config, to_device, dtype):
     input_host = torch.linspace(-1.0, 1.0, TILE * TILE, dtype=torch.float32).reshape(
         TILE, TILE
     )
@@ -1626,8 +1620,8 @@ def test_composed_control_resource_runtime(
     input_tensor = to_device(input_host, device)
     output_tensor = to_device(torch.zeros_like(input_host), device)
 
-    operation(input_tensor, output_tensor)
-    operation(input_tensor, output_tensor)
+    _composed_control_resource_kernel(input_tensor, output_tensor)
+    _composed_control_resource_kernel(input_tensor, output_tensor)
 
     actual = ttnn.to_torch(output_tensor).float()
     if dtype == torch.bfloat16:

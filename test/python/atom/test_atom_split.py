@@ -766,6 +766,8 @@ def test_global_dfb_reset_name_can_be_shadowed_by_parameter():
         pass
 
     assert shadowed_reset_operation._spec.params[0].name == "shadowed_dfb_reset"
+
+
 def test_composition_hoists_resources_from_control_flow():
     """Composed static resources remain operation-level declarations."""
 
@@ -781,12 +783,13 @@ def test_composition_hoists_resources_from_control_flow():
                 resource_helper()
 
     spec = composed_operation._spec
-    resource_statements = [
-        statement
+    resource_names = [
+        atom_rules.setup_assign_target(statement)
         for statement in spec.fn_ast.body
         if atom_rules.setup_assign_target(statement) is not None
     ]
-    assert len(resource_statements) == 2
+    assert resource_names[0].startswith("first_dfb__")
+    assert resource_names[1].startswith("second_dfb__")
 
     loop = next(
         statement for statement in spec.fn_ast.body if isinstance(statement, ast.For)
@@ -804,7 +807,7 @@ def test_composition_hoists_resources_from_control_flow():
         dict(spec.frozen_scope),
         spec.operation_identity,
     )
-    assert len(dfbs) == 2
+    assert tuple(dfbs) == tuple(resource_names)
 
 
 def test_composition_rejects_hoisted_resource_with_local_dependency():
