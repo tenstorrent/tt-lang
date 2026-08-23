@@ -182,6 +182,7 @@ private:
       std::optional<std::pair<unsigned, unsigned>> onlyPair = std::nullopt) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
+    DenseSet<std::pair<unsigned, unsigned>> recordedPairs;
     for (const DFBResetAllocationConflict &conflict :
          liveness.getResetAllocationConflicts()) {
       unsigned targetIndex = conflict.targetLogicalIndex;
@@ -192,8 +193,13 @@ private:
                          overlappingIndex == onlyPair->first))) {
         continue;
       }
-      if (targetIndex == overlappingIndex ||
-          model.adjacency[targetIndex].test(overlappingIndex)) {
+      if (targetIndex == overlappingIndex) {
+        continue;
+      }
+      std::pair<unsigned, unsigned> logicalPair = {
+          std::min(targetIndex, overlappingIndex),
+          std::max(targetIndex, overlappingIndex)};
+      if (!recordedPairs.insert(logicalPair).second) {
         continue;
       }
       addEvidence(model, logicalDFBs[targetIndex],
