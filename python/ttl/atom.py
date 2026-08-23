@@ -277,7 +277,6 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             loaded_names.add(node.id)
 
     captured_values = _captured_values(fn)
-    closure_values = inspect.getclosurevars(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
@@ -299,11 +298,6 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             if not any(value is kernel for kernel in logical_kernels.values()):
                 captured_logical_kernels[capture_name] = value
         elif isinstance(value, DispatchCondition):
-            if capture_name in closure_values.globals:
-                raise ValueError(
-                    f"@ttl.operation {name!r}: DispatchCondition "
-                    f"{capture_name!r} must be created by an enclosing factory"
-                )
             dispatch_conditions[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
@@ -737,19 +731,13 @@ def operation(
 
     def _decorator(fn):
         validate_operation_interface(fn)
-        function_definition = parse_function_definition(fn)
-        if function_definition is not None:
-            loaded_names = {
-                node.id
-                for node in ast.walk(function_definition)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
-            for name in sorted(loaded_names):
-                if isinstance(fn.__globals__.get(name), DispatchCondition):
-                    raise ValueError(
-                        f"@ttl.operation {fn.__name__!r}: DispatchCondition "
-                        f"{name!r} must be created by an enclosing factory"
-                    )
+        global_captures = inspect.getclosurevars(fn).globals
+        for name, value in sorted(global_captures.items()):
+            if isinstance(value, DispatchCondition):
+                raise ValueError(
+                    f"@ttl.operation {fn.__name__!r}: DispatchCondition "
+                    f"{name!r} must be created by an enclosing factory"
+                )
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
             prepare_call = functools.partial(_canonical_tensor_args, fn)

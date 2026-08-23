@@ -688,6 +688,63 @@ def test_dispatch_condition_alias_topology_changes_operation_identity():
     assert shared._spec.operation_identity != independent._spec.operation_identity
 
 
+def test_inlined_dispatch_condition_topology_changes_operation_identity():
+    """The parent identity includes aliasing across composed operations."""
+
+    def make_operation(shared_identity):
+        first_condition = ttl.DispatchCondition(ttl.ScalarType.I32)
+        second_condition = (
+            first_condition
+            if shared_identity
+            else ttl.DispatchCondition(ttl.ScalarType.I32)
+        )
+
+        def make_helper(condition):
+            @ttl.operation()
+            def conditional_helper():
+                ttl.call_extern_func(
+                    "condition.hpp",
+                    "active",
+                    condition_result=condition,
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+            return conditional_helper
+
+        first_helper = make_helper(first_condition)
+        second_helper = make_helper(second_condition)
+
+        @ttl.operation()
+        def composed_condition():
+            first_helper()
+            second_helper()
+
+        return composed_condition
+
+    shared = make_operation(shared_identity=True)
+    independent = make_operation(shared_identity=False)
+
+    assert _operation_identity(shared._spec.fn) == _operation_identity(
+        independent._spec.fn
+    )
+    assert shared._spec.operation_identity != independent._spec.operation_identity
+
+
+shadowed_dispatch_condition = ttl.DispatchCondition(ttl.ScalarType.I32)
+
+
+def test_global_dispatch_condition_name_can_be_shadowed_by_parameter():
+    """Global-capture validation respects Python lexical name resolution."""
+
+    @ttl.operation()
+    def shadowed_condition_operation(shadowed_dispatch_condition):
+        pass
+
+    assert shadowed_condition_operation._spec.params[0].name == (
+        "shadowed_dispatch_condition"
+    )
+
+
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
     """Control selection includes logical-kernel anchors in the condition."""
     writer = Kernel(KernelKind.DATA_MOVEMENT)
