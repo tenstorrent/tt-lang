@@ -1589,10 +1589,12 @@ lifecycle operations.
 
 An occurrence with neither a protocol effect nor a non-transactional access
 remains a possible read or write from call entry through completion. Its access
-contract is incomplete, so allocation cannot prove bounded reuse with another
-logical DFB on a shared launch node. Exact disjoint launch-node domains may
-still share because they never use the physical allocation on the same node. If
-operand adaptation aliases several occurrences to one DFB, every occurrence
+contract is incomplete unless a later synchronized reset proves completion and
+canonicalizes its protocol state. Without that reset, allocation cannot prove
+bounded reuse with another logical DFB on a shared launch node. Exact disjoint
+launch-node domains may still share because they never use the physical
+allocation on the same node. If operand adaptation aliases several occurrences
+to one DFB, every occurrence
 requires an explicit contract. A partial summary supplies its listed events but
 cannot establish the complete reserve/push/wait/pop lifecycle for that DFB. A
 bounded external lifecycle requires balanced, ordered transactions with equal
@@ -1618,9 +1620,15 @@ listed DFBs, over the call's launch-node domain. Listed effects remain available
 to other verification. Unknown access applies only to user-managed DFBs;
 compiler-created DFB accesses require listed operands.
 
-The callee must complete every synchronous and asynchronous DFB access before
-returning. Work that remains active after return requires a separate explicit
-completion contract. The frontend and IR representation are described in
+Every declared effect action must complete before the callee returns. Associated
+interface work may remain active while the declared protocol retains ownership;
+it must complete before the terminal consumer release or a synchronized reset.
+For a named dependency with no effect summary, a synchronized reset ordered
+after the call may terminate the opaque access and canonicalize protocol state.
+The reset must complete earlier interface work before publishing arrival. This
+does not validate the callee's internal protocol. Unlisted access declared by
+`unknown_dfb_access` remains unbounded. The frontend and IR representation are
+described in
 [External Function Interop Lowering](ExternalFuncInteropLowering.md).
 
 An exact static `dfb_effects` sequence may describe cumulative queue state
