@@ -110,7 +110,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // state.
 
 module {
-  func.func @unproven_quiescence()
+  func.func @access_completion_not_proven()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
     %first = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -123,7 +123,7 @@ module {
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %first : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<3> members=[5, 6] cannot alias logical DFBs 5 and 6: unproven-quiescence}}
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<3> members=[5, 6] cannot alias logical DFBs 5 and 6: access-completion-not-proven}}
     %second_producer = ttl.cb_reserve %second
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>

@@ -45,8 +45,8 @@ StringRef getDFBConflictReasonName(DFBConflictReason reason) {
     return "storage-mismatch";
   case DFBConflictReason::UnknownLaunchNodeDomain:
     return "unknown-launch-node-domain";
-  case DFBConflictReason::UnprovenQuiescence:
-    return "unproven-quiescence";
+  case DFBConflictReason::AccessCompletionNotProven:
+    return "access-completion-not-proven";
   case DFBConflictReason::TransactionMismatch:
     return "transaction-mismatch";
   case DFBConflictReason::PointerOwnerMismatch:
@@ -66,8 +66,8 @@ StringRef getDFBAllocationGroupAssumptionReasonName(
   switch (reason) {
   case DFBAllocationGroupAssumptionReason::UnknownLaunchNodeDomain:
     return "unknown-launch-node-domain";
-  case DFBAllocationGroupAssumptionReason::UnprovenQuiescence:
-    return "unproven-quiescence";
+  case DFBAllocationGroupAssumptionReason::AccessCompletionNotProven:
+    return "access-completion-not-proven";
   case DFBAllocationGroupAssumptionReason::PointerOwnerMismatch:
     return "pointer-owner-mismatch";
   case DFBAllocationGroupAssumptionReason::ConcurrentLifetime:
@@ -274,7 +274,7 @@ private:
       if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
           !rhsLifetime->quiescence.proven()) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                    DFBConflictReason::UnprovenQuiescence, node,
+                    DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
@@ -468,8 +468,8 @@ getAllocationGroupAssumptionReason(DFBConflictReason reason) {
   switch (reason) {
   case DFBConflictReason::UnknownLaunchNodeDomain:
     return DFBAllocationGroupAssumptionReason::UnknownLaunchNodeDomain;
-  case DFBConflictReason::UnprovenQuiescence:
-    return DFBAllocationGroupAssumptionReason::UnprovenQuiescence;
+  case DFBConflictReason::AccessCompletionNotProven:
+    return DFBAllocationGroupAssumptionReason::AccessCompletionNotProven;
   case DFBConflictReason::PointerOwnerMismatch:
     return DFBAllocationGroupAssumptionReason::PointerOwnerMismatch;
   case DFBConflictReason::ConcurrentLifetime:

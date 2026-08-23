@@ -17,7 +17,7 @@ module {
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %first : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] cannot alias logical DFBs 0 and 1: unproven-quiescence}}
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] cannot alias logical DFBs 0 and 1: access-completion-not-proven}}
     %second_producer = ttl.cb_reserve %second
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>

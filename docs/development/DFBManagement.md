@@ -1615,8 +1615,9 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
 typed conflict model before selecting any assignment. Every edge retains the
 logical DFB pair, optional launched node, source operations, and one of the
 following reasons: descriptor mismatch, storage mismatch, unknown launch-node
-domain, unproven quiescence, transaction mismatch, pointer-owner mismatch,
-static-configuration mismatch, or concurrent lifetime.
+domain, access-completion-not-proven, transaction mismatch, pointer-owner
+mismatch, reset-domain-write, static-configuration mismatch, or concurrent
+lifetime.
 
 Before coloring, each allocation group is checked pairwise with the normal
 conflict construction except for exact descriptor equality. The replacement
@@ -1627,14 +1628,16 @@ failed group request is a compilation error rather than permission to allocate
 its members separately.
 
 The optional unsafe allocation-group policy changes only explicit group
-validation. It accepts missing launch-domain, quiescence, pointer-handoff, and
-lifetime-order proofs as user-supplied runtime epoch contracts. Each accepted
-group emits a warning and a `ttl.assumed_dfb_allocation_groups` audit record.
-The allocator still rejects incompatible page formats, tensor storage,
-compute-kernel configuration, mutually reachable access events, and transaction
-sequences that cross the selected ring envelope when started at an assumed
-epoch boundary. Automatic reuse and every target-capacity and L1-budget check
-remain proof-based. Strict validation is the default.
+validation. It accepts missing launch-domain, access-completion,
+pointer-handoff, and lifetime-order proofs as user-supplied runtime epoch
+contracts. Each accepted group emits a warning and a
+`ttl.assumed_dfb_allocation_groups` audit record. The allocator still rejects
+incompatible page formats, tensor storage, compute-kernel configuration,
+mutually reachable access events, selected-reset interface writes that overlap
+another member, and transaction sequences that cross the selected ring envelope
+when started at an assumed epoch boundary. Automatic reuse and every
+target-capacity and L1-budget check remain proof-based. Strict validation is the
+default.
 
 #### Allocation diagnostics
 
@@ -1759,7 +1762,8 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
-      add unproven-quiescence conflict unless both node lifetimes are proven
+      add access-completion-not-proven conflict unless both node lifetimes are
+        proven
       add transaction conflict unless their transaction tile-count sequences match
       add pointer-owner conflict unless read and write owners match
       add concurrent-lifetime conflict unless A precedes B or B precedes A

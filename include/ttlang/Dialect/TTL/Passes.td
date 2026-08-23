@@ -1007,9 +1007,10 @@ def TTLFinalizeDFBIndices
     coloring.
 
     `unsafe-assume-allocation-groups` applies only to explicit allocation
-    groups. It permits missing launch-domain, quiescence, pointer-handoff, and
-    lifetime-order proofs while preserving page-format, storage, static
-    compute-configuration, ring-envelope, target-capacity, and L1-budget
+    groups. It permits missing launch-domain, access-completion,
+    pointer-handoff, and lifetime-order proofs while preserving page-format,
+    storage, static compute-configuration, ring-envelope, target-capacity, and
+    L1-budget
     validation. Each group accepted this way emits a warning and is recorded
     in `ttl.assumed_dfb_allocation_groups`. Automatic DFB reuse remains
     proof-based. The option is disabled by default.

@@ -72,7 +72,7 @@ enum class DFBConflictReason {
   DescriptorMismatch,
   StorageMismatch,
   UnknownLaunchNodeDomain,
-  UnprovenQuiescence,
+  AccessCompletionNotProven,
   TransactionMismatch,
   PointerOwnerMismatch,
   ConcurrentLifetime,
@@ -87,7 +87,7 @@ StringRef getDFBConflictReasonName(DFBConflictReason reason);
 /// allocation group.
 enum class DFBAllocationGroupAssumptionReason {
   UnknownLaunchNodeDomain,
-  UnprovenQuiescence,
+  AccessCompletionNotProven,
   PointerOwnerMismatch,
   ConcurrentLifetime,
   UnprovenCursorOrder,
