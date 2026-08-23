@@ -745,6 +745,28 @@ def test_global_dispatch_condition_name_can_be_shadowed_by_parameter():
     )
 
 
+shadowed_reset_compute = ttl.Kernel(ttl.KernelKind.COMPUTE)
+shadowed_reset_reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+shadowed_reset_writer = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+shadowed_dfb_reset = ttl.DFBReset(
+    participants=(
+        shadowed_reset_compute,
+        shadowed_reset_reader,
+        shadowed_reset_writer,
+    )
+)
+
+
+def test_global_dfb_reset_name_can_be_shadowed_by_parameter():
+    """Global-capture validation respects Python lexical name resolution."""
+
+    @ttl.operation()
+    def shadowed_reset_operation(shadowed_dfb_reset):
+        pass
+
+    assert shadowed_reset_operation._spec.params[0].name == "shadowed_dfb_reset"
+
+
 def test_composition_preserves_one_synchronized_dfb_reset_identity():
     """Inlining and splitting preserve one reset across all participants."""
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
