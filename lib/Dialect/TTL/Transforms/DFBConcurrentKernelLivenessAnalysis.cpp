@@ -3541,6 +3541,9 @@ static DFBQuiescenceProof computePerNodeLifetime(
     epoch.quiescence = proof;
     if (resetTerminated) {
       const OrderedResetBoundary &boundary = boundaries[epochIndex];
+      if (boundary.reset->conditionalExecution) {
+        epochLifetime.conditionalExecutionProven = true;
+      }
       epoch.terminalResetOrdinal = boundary.reset->reset.getOrdinal();
       epoch.terminalStateCanonical = true;
       epochLifetime.terminalCompletionEvents = {boundary.events.completion};
