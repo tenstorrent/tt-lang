@@ -1392,7 +1392,7 @@ rejectComputeOpCreation(
       rejected({source, kind, std::move(message), std::move(candidate)});
 }
 
-static bool isViewPreservingMutationUser(Operation *operation) {
+static bool propagatesWaitedMutationProvenance(Operation *operation) {
   return isa<AttachCBOp, tensor::ExtractSliceOp, tensor::ExtractOp,
              UnrealizedConversionCastOp>(operation);
 }
@@ -1402,28 +1402,52 @@ static LogicalResult collectWaitedMutationUsers(
     const FusionTraceResult &replacementTrace,
     SmallVectorImpl<Operation *> &replacementGenerationUsers,
     std::string &failureReason) {
-  DenseSet<Value> visited;
-  SmallVector<Value> pending = {acquiredView};
+  struct WaitedMutationValue {
+    Value value;
+    bool derivedFromOriginalGeneration = false;
+  };
+
+  DenseSet<Value> visitedViews;
+  DenseSet<Value> visitedOriginalValues;
+  SmallVector<WaitedMutationValue> pending = {{acquiredView, false}};
   while (!pending.empty()) {
-    Value value = pending.pop_back_val();
-    if (!visited.insert(value).second) {
+    WaitedMutationValue current = pending.pop_back_val();
+    DenseSet<Value> &visited = current.derivedFromOriginalGeneration
+                                   ? visitedOriginalValues
+                                   : visitedViews;
+    if (!visited.insert(current.value).second) {
       continue;
     }
-    for (Operation *user : value.getUsers()) {
-      if (isViewPreservingMutationUser(user)) {
-        llvm::append_range(pending, user->getResults());
+    for (Operation *user : current.value.getUsers()) {
+      if (propagatesWaitedMutationProvenance(user)) {
+        for (Value result : user->getResults()) {
+          pending.push_back({result, current.derivedFromOriginalGeneration});
+        }
         continue;
       }
       if (user == mutationStore) {
         continue;
       }
-      bool readsOriginalGeneration = user == replacementSource ||
-                                     replacementTrace.opsInOrder.contains(user);
-      if (readsOriginalGeneration) {
+      bool isReplacementSource = user == replacementSource;
+      bool isReplacementTraceOperation =
+          replacementTrace.opsInOrder.contains(user);
+      if (isReplacementSource || isReplacementTraceOperation) {
+        if (!isReplacementSource) {
+          for (Value result : user->getResults()) {
+            pending.push_back({result, true});
+          }
+        }
         continue;
       }
+      if (current.derivedFromOriginalGeneration) {
+        failureReason =
+            "wait-backed replacement requires values derived from the "
+            "original DFB contents to remain within the replacement "
+            "computation";
+        return failure();
+      }
       if (auto followingStore = dyn_cast<StoreOp>(user);
-          followingStore && followingStore.getTensor() == value &&
+          followingStore && followingStore.getTensor() == current.value &&
           followingStore->getBlock() == mutationStore->getBlock() &&
           mutationStore->isBeforeInBlock(followingStore)) {
         replacementGenerationUsers.push_back(user);

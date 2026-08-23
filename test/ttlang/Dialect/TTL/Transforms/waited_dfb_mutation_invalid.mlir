@@ -185,6 +185,44 @@ func.func @live_old_generation()
 
 // -----
 
+// A replacement-trace intermediate still denotes the original generation and
+// cannot be recomputed after the in-place write for an independent store.
+func.func @original_generation_intermediate_escape()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %wait = ttl.cb_wait %dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %block = ttl.attach_cb %wait, %dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %old_intermediate = ttl.exp %block
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %replacement = ttl.add %old_intermediate, %block
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{cannot lower tensor store to ttl.compute: wait-backed replacement requires values derived from the original DFB contents to remain within the replacement computation}}
+  ttl.store %replacement, %wait
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %old_intermediate, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  return
+}
+
+// -----
+
 func.func @overlapping_producer_acquisition()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
