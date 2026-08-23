@@ -1894,10 +1894,13 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  // The view must ultimately come from a `ttl.cb_reserve`, possibly
-  // through intervening `tensor.extract_slice` ops.
-  if (!findCBReserveForView(getView())) {
-    return emitOpError() << "view must come from ttl.cb_reserve";
+  Operation *acquire = findCBAcquireOp(getView());
+  if (!acquire) {
+    return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
+  }
+  if (getAccumulate() && isa<CBWaitOp>(acquire)) {
+    return emitOpError()
+           << "wait-backed replacement does not support packer accumulation";
   }
 
   return success();
@@ -1915,6 +1918,18 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
+  }
+
+  Operation *acquire = findCBAcquireOp(getView());
+  bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
+  if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
+      !isWaitBacked) {
+    return emitOpError(
+        "consumer_replacement store requires a ttl.cb_wait-backed view");
+  }
+  if (getStoreKind() == DFBTileStoreKind::Producer && isWaitBacked) {
+    return emitOpError(
+        "ttl.cb_wait-backed view requires consumer_replacement store kind");
   }
 
   // Inside a compute body, indices must match the view rank (populated by

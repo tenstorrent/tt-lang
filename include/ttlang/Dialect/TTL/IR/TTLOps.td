@@ -1816,16 +1816,27 @@ def TTL_CBPopOp
 
 def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     [MemoryEffects<[MemWrite]>]> {
-  let summary = "Store a tensor to a circular buffer reserve view";
+  let summary = "Store a tensor to an acquired dataflow buffer view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
-    an output circular buffer.
+    an acquired dataflow buffer view. A reserve-backed destination writes a
+    producer-owned slot. A wait-backed destination replaces a consumer-owned
+    slot after the original value has been consumed.
 
-    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
-    (accumulate). During `convert-ttl-to-compute`, this op is transformed
-    into a `ttl.tile_store` inside the compute body.
+    Python's `o.store(result)` emits an overwrite. `o += result` emits packer
+    accumulation for a reserve-backed destination or an explicit
+    read-add-replacement sequence for a wait-backed destination.
 
-    When `accumulate` is set, the enclosing loop is annotated for L1
+    Wait-backed replacement is valid only when compiler analysis proves that
+    the one-block DFB is acquired completely, so the read and write pointers
+    address the same pages. It does not advance either pointer and the existing
+    `ttl.cb_pop` remains the release operation. The replacement must execute
+    after a read of the acquired value, and its wait must be the first access
+    to that DFB in the compute kernel. Multi-block, partial-ring, conditional,
+    repeated, and otherwise unresolved mutations are rejected.
+
+    When `accumulate` is set, the destination must be reserve-backed. The
+    enclosing loop is annotated for L1
     packer accumulation so that each iteration adds to the existing L1
     value instead of overwriting.
 
@@ -2141,21 +2152,22 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
 def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
      TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface]> {
-  let summary = "Store a tile into a circular buffer view";
+  let summary = "Store a tile into an acquired dataflow buffer view";
   let description = [{
-    `ttl.tile_store` packs a single tile from the DST register into a circular
-    buffer view obtained from `ttl.cb_reserve`. This is the tile-level form of
-    `ttl.store`, created by `convert-ttl-to-compute` from the tensor-level store.
+    `ttl.tile_store` packs a single tile from the DST register into a dataflow
+    buffer view obtained from `ttl.cb_reserve` or `ttl.cb_wait`. This is the
+    tile-level form of `ttl.store`.
 
-    The tile value typically comes from compute operations (e.g., tile_add,
-    tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
-    same CB.
+    A `producer` store packs into producer-reserved pages. A
+    `consumer_replacement` store packs into waited pages without changing
+    occupancy or either dataflow buffer pointer. The latter is valid only when
+    the original generation has been read, the complete one-block DFB is
+    acquired, and all replacement reads precede the matching pop. `store_kind`
+    preserves this typed ownership decision when the view is replaced or
+    sliced.
 
-    The `indices` operands are multi-dimensional CB tile coordinates derived
-    from `ttl.iter_index` ops and the output indexing map. They are populated
-    by `ttl-assign-dst` inside the `ttl.compute` body and resolved to concrete
-    loop IVs by `ttl-lower-to-loops`. At `convert-ttl-to-ttkernel` time, the
-    indices are linearized to a flat CB tile index for `pack_tile`.
+    The `indices` operands are multi-dimensional DFB tile coordinates. The
+    `dst_index` operand identifies the source tile in the DST register.
 
     Example:
     ```mlir
@@ -2175,7 +2187,9 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     AnyType:$tile,
     AnyRankedTensor:$view,
     Variadic<Index>:$indices,
-    Index:$dst_index
+    Index:$dst_index,
+    DefaultValuedAttr<TTL_DFBTileStoreKindAttr,
+      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

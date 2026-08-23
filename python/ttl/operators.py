@@ -347,42 +347,47 @@ class TensorBlock:
         return _build_matmul(ast_self, rhs, transpose_rhs=False)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Store result tensor to the output CB reserve view (overwrite).
+        """Store a result into a reserved or previously read waited block.
 
-        Emits ttl.store with the result tensor and reserve view.
-        Always overwrites the CB slot. For accumulation, use ``+=``.
+        A waited destination represents ordered replacement of the acquired
+        pages. Compiler analysis accepts it only after proving the complete
+        consumer-owned mutation contract.
         """
         if not _is_block(ast_self):
             raise ValueError(
-                "store() must be called on a block acquired from reserve(), not a regular tensor"
+                "store() must be called on a block acquired from reserve() or wait()"
             )
-        reserve = _get_reserve_from_block(ast_self)
+        acquired_view = _get_acquired_view_from_block(ast_self)
         _require_matching_tile_shapes(
             rhs.type.element_type,
-            reserve.type.element_type,
+            acquired_view.type.element_type,
             "source",
-            "destination CB",
+            "destination DFB",
         )
-        ttl.store(rhs, reserve)
+        ttl.store(rhs, acquired_view)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Accumulate into a reserved block via L1 packer accumulation.
+        """Accumulate into a reserve or replace a previously read wait.
 
-        Emits ttl.store with the ``accumulate`` attribute. When used
-        inside a loop, the compiler inserts ``pack_reconfig_l1_acc``
-        guards so that each iteration adds to the existing L1 value
-        instead of overwriting.
+        A reserve-backed block uses L1 packer accumulation. A wait-backed block
+        reads the original value, adds ``rhs``, and stores the replacement
+        without changing dataflow buffer occupancy or pointers.
 
-        This is an interim mechanism; the spec's full pattern
-        (``fill`` + lazy ``BlockExpr`` ``+=`` + ``store``) is deferred
-        to the BlockExpr PR (#446).
+        The compiler accepts waited replacement only after proving the
+        complete consumer-owned mutation contract.
         """
         if not _is_block(ast_self):
             raise ValueError(
-                "+= must be called on a block acquired from reserve(), not a regular tensor"
+                "+= must be called on a block acquired from reserve() or wait()"
             )
-        reserve = _get_reserve_from_block(ast_self)
-        ttl.store(rhs, reserve, accumulate=True)
+        acquired_view = _get_acquired_view_from_block(ast_self)
+        acquisition = acquired_view.owner
+        if acquisition.name == "ttl.cb_wait":
+            ttl.store(ttl.add(ast_self, rhs), acquired_view)
+            return ast_self
+        if acquisition.name != "ttl.cb_reserve":
+            raise ValueError("block acquisition must be ttl.cb_reserve or ttl.cb_wait")
+        ttl.store(rhs, acquired_view, accumulate=True)
         return ast_self
 
     def push(
@@ -512,15 +517,20 @@ def _is_block(value) -> bool:
     return value.owner.name == "ttl.attach_cb"
 
 
-def _get_reserve_from_block(block):
-    """Extract the reserve view from a block (result of ttl.attach_cb).
+def _get_acquired_view_from_block(block):
+    """Extract the reserve or wait view from a block.
 
     The attach_cb op has signature: (tensor, cb) -> tensor
     So the reserve/wait tensor is operand[0].
     """
     if block.owner.name != "ttl.attach_cb":
         raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
-    return block.owner.operands[0]
+    acquired_view = block.owner.operands[0]
+    if acquired_view.owner.name not in ("ttl.cb_reserve", "ttl.cb_wait"):
+        raise ValueError(
+            "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
+        )
+    return acquired_view
 
 
 def _get_cb_from_block(block):
