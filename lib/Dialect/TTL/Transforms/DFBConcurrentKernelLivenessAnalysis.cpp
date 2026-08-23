@@ -979,8 +979,7 @@ static SmallVector<unsigned> findMinimalEntryEvents(
   return minimal;
 }
 
-// Finds every access without a proved successor so all possible lifetime ends
-// constrain reuse and remain traceable in the debug report.
+// Retains every possible lifetime end so each one constrains storage reuse.
 static SmallVector<const DFBAccessOccurrence *> findMaximalCompletionAccesses(
     ArrayRef<const DFBAccessOccurrence *> accesses,
     const HappensBeforeGraph &graph,

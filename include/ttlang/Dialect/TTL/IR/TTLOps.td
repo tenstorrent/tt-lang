@@ -2264,10 +2264,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     launch-node domains remain eligible for physical-index sharing.
 
     A named DFB dependency occurrence without `dfb_effects` contributes a
-    call-duration storage access. A following synchronized DFB reset may
-    canonicalize its unknown protocol state, permitting storage reuse only
-    after the reset. This does not validate the callee's internal queue
-    protocol.
+    call-duration storage access. A synchronized DFB reset canonicalizes its
+    unknown protocol state only when the access completes before the reset
+    boundary through the same participating logical kernel. Storage reuse is
+    then permitted only after the reset. This does not validate the callee's
+    internal queue protocol.
 
     Every asynchronous DFB access must also complete before the call returns.
     A callee with outstanding asynchronous work requires a separate explicit
