@@ -8,7 +8,7 @@
 // CHECK: static_assert(releaseWord + 1 == stateWordCount);
 // CHECK: FORCE_INLINE void drainComputeEngine()
 // CHECK: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
-// CHECK: sync_regfile_write(completionGpr);
+// CHECK-NEXT: tensix_sync();
 // CHECK: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState)
 // CHECK: noc_async_full_barrier();
 // CHECK: while (!participantsHaveState(synchronizationState, entryComplete))
