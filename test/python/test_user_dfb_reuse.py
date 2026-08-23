@@ -1410,7 +1410,8 @@ def test_cumulative_queue_state_lifecycles_reuse_dfb(
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
     operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
-    assert _count_final_dfb_allocations(final_mlir_path) == 2
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 2
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
     if dtype == torch.bfloat16:
