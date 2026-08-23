@@ -1931,7 +1931,7 @@ class TTLGenericCompiler(TTCompilerBase):
         return result_type
 
     def _resolve_dispatch_condition(self, node):
-        """Resolve an operation-local dispatch condition declaration."""
+        """Resolve a module-local dispatch condition declaration."""
         condition = self._resolve_static_reference(node)
         if isinstance(condition, DispatchCondition):
             self._raise_error(

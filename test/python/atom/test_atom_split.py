@@ -682,6 +682,9 @@ def test_dispatch_condition_alias_topology_changes_operation_identity():
     shared = make_operation(shared_identity=True)
     independent = make_operation(shared_identity=False)
 
+    assert _operation_identity(shared._spec.fn) != _operation_identity(
+        independent._spec.fn
+    )
     assert shared._spec.operation_identity != independent._spec.operation_identity
 
 
