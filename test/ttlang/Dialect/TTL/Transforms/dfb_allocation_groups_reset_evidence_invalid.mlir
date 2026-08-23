@@ -30,7 +30,6 @@ module attributes {
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
     scf.if %crossing_active {
-      // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] cannot alias logical DFBs 0 and 1: reset-domain-write}}
       %slot = ttl.cb_reserve %crossing
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -66,6 +65,7 @@ module attributes {
     }
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_evidence">, <kind = data_movement, identity = "reader", operation = "reset_evidence">, <kind = data_movement, identity = "writer", operation = "reset_evidence">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     scf.if %crossing_active {
+      // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] cannot alias logical DFBs 0 and 1: reset-domain-write}}
       %slot = ttl.cb_wait %crossing
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
