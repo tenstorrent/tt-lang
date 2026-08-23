@@ -3869,6 +3869,36 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                                           /*includeUnknownDomains=*/false);
     ProgramOrderGraphState graphState = buildProgramOrderTopologyState(
         module, graphTopologyInputs, structuralOrder);
+    std::optional<AccessRuns> possibleAccessRuns;
+    std::optional<ProgramOrderGraphState> possibleGraphState;
+    if (hasUnknownDFBLaunchDomain) {
+      possibleAccessRuns.emplace(
+          collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
+                            /*includeUnknownDomains=*/true));
+      ProgramOrderTopologyInputs possibleGraphTopologyInputs =
+          collectProgramOrderTopologyInputs(
+              logicalDFBs, validatedResets, node, executionCounts,
+              *possibleAccessRuns, structuralOrder,
+              /*includeUnknownDomains=*/true);
+      bool graphTopologiesMatch =
+          graphTopologyInputs == possibleGraphTopologyInputs;
+      possibleGraphState.emplace(
+          graphTopologiesMatch
+              ? graphState
+              : buildProgramOrderTopologyState(
+                    module, possibleGraphTopologyInputs, structuralOrder));
+#ifndef NDEBUG
+      // Small graphs retain an independent reconstruction oracle without
+      // repeating model-scale graph construction in assertion-enabled builds.
+      if (graphTopologiesMatch && graphState.graph.getEventCount() <= 128) {
+        ProgramOrderGraphState reconstructedPossibleGraphState =
+            buildProgramOrderTopologyState(module, possibleGraphTopologyInputs,
+                                           structuralOrder);
+        assert(reconstructedPossibleGraphState == *possibleGraphState &&
+               "equal program-order inputs must produce equal graph topology");
+      }
+#endif
+    }
     HappensBeforeGraph &graph = graphState.graph;
     DenseMap<Operation *, EventPair> &operationEvents =
         graphState.operationEvents;
@@ -3936,39 +3966,15 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       continue;
     }
 
-    AccessRuns possibleAccessRuns =
-        collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
-                          /*includeUnknownDomains=*/true);
-    ProgramOrderTopologyInputs possibleGraphTopologyInputs =
-        collectProgramOrderTopologyInputs(logicalDFBs, validatedResets, node,
-                                          executionCounts, possibleAccessRuns,
-                                          structuralOrder,
-                                          /*includeUnknownDomains=*/true);
-    bool graphTopologiesMatch =
-        graphTopologyInputs == possibleGraphTopologyInputs;
-    ProgramOrderGraphState possibleGraphState =
-        graphTopologiesMatch
-            ? graphState
-            : buildProgramOrderTopologyState(
-                  module, possibleGraphTopologyInputs, structuralOrder);
-#ifndef NDEBUG
-    // Small graphs retain an independent reconstruction oracle without
-    // repeating model-scale graph construction in assertion-enabled builds.
-    if (graphTopologiesMatch && graphState.graph.getEventCount() <= 128) {
-      ProgramOrderGraphState reconstructedPossibleGraphState =
-          buildProgramOrderTopologyState(module, possibleGraphTopologyInputs,
-                                         structuralOrder);
-      assert(reconstructedPossibleGraphState == possibleGraphState &&
-             "equal program-order inputs must produce equal graph topology");
-    }
-#endif
-    HappensBeforeGraph &possibleGraph = possibleGraphState.graph;
+    assert(possibleAccessRuns && possibleGraphState &&
+           "unknown domains must construct a possible graph");
+    HappensBeforeGraph &possibleGraph = possibleGraphState->graph;
     DenseMap<Operation *, EventPair> &possibleOperationEvents =
-        possibleGraphState.operationEvents;
+        possibleGraphState->operationEvents;
     DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
-        &possibleAccessEvents = possibleGraphState.accessEvents;
+        &possibleAccessEvents = possibleGraphState->accessEvents;
     ResetBoundaryEvents &possibleResetBoundaryEvents =
-        possibleGraphState.resetBoundaryEvents;
+        possibleGraphState->resetBoundaryEvents;
     addSynchronizedResetAccessEdges(
         logicalDFBs, validatedResets, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
@@ -3976,7 +3982,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
-        possibleAccessEvents, executionCounts, possibleAccessRuns, node,
+        possibleAccessEvents, executionCounts, *possibleAccessRuns, node,
         domainState, /*includeUnknownDomains=*/true);
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
       if (logicalDFB.launchDomain.known) {
@@ -3991,7 +3997,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
               : nullptr,
           validatedResets, possibleResetBoundaryEvents, possibleGraph,
           possibleOperationEvents, possibleAccessEvents, executionCounts,
-          possibleAccessRuns, domainState,
+          *possibleAccessRuns, domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
     }
@@ -3999,7 +4005,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     collectResetAllocationConflicts(
         logicalDFBs, validatedResets, possibleResetBoundaryEvents,
         possibleGraph, node, executionCounts, possibleOperationEvents,
-        possibleAccessEvents, possibleAccessRuns, domainState,
+        possibleAccessEvents, *possibleAccessRuns, domainState,
         /*usePossibleLifetimes=*/true, resetAllocationConflicts);
 
     SmallVector<llvm::BitVector> conditionalNodeOrdering(
