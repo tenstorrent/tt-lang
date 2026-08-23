@@ -421,7 +421,14 @@ def test_cached_resources_reuse_equivalent_device_wrapper(monkeypatch):
 
     def build_resources(**arguments):
         allocations.append(arguments["device"])
-        return kernel_runner.PipeRuntimeResources()
+        return kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[],
+            expected_extra_common_runtime_args=0,
+        )
 
     monkeypatch.setattr(kernel_runner, "build_pipe_runtime_resources", build_resources)
     cache = kernel_runner.KernelRuntimeResourceCache()

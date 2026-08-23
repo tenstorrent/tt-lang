@@ -1225,7 +1225,8 @@ def test_synchronized_reset_terminates_producer_epoch(
 
     # The producer-only DFB becomes canonical at the reset and shares with the
     # following source. The compute-produced output retains a distinct index.
-    assert _count_final_dfb_allocations(final_mlir_path) == 2
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 2
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host[:, TILE * grid_cols :].float()
@@ -1366,7 +1367,8 @@ def test_selected_reset_preserves_non_target_live_aliases(
     for _invocation_index in range(2):
         operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
-    assert _count_final_dfb_allocations(final_mlir_path) == 2
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 2
     assert_allclose(
         ttnn.to_torch(output_tensor).float(),
         input_host.float(),
