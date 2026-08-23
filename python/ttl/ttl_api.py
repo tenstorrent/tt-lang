@@ -114,6 +114,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    _same_device,
     attach_runtime_resource_finalizer,
     KernelRuntimeResourceCache,
     KernelSpec,
@@ -539,17 +540,6 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
         elif "DRAM" in buffer_type_str:
             return "DRAM"
     return default
-
-
-def _same_device(a, b) -> bool:
-    """Return True when *a* and *b* refer to the same TTNN device."""
-    if a is b:
-        return True
-    a_id = getattr(a, "id", None)
-    b_id = getattr(b, "id", None)
-    if callable(a_id) and callable(b_id):
-        return a_id() == b_id()
-    return False
 
 
 def _require_device(args):

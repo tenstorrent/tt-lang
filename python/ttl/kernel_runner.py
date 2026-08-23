@@ -1177,6 +1177,19 @@ def _first_device(tensors: List[Any]) -> Any:
     raise ValueError("pipe runtime resource allocation requires a device tensor")
 
 
+def _device_identity(device: Any) -> Any:
+    if device is None:
+        return None
+    device_id = getattr(device, "id", None)
+    if callable(device_id):
+        return ("device-id", device_id())
+    return ("object-id", id(device))
+
+
+def _same_device(lhs: Any, rhs: Any) -> bool:
+    return _device_identity(lhs) == _device_identity(rhs)
+
+
 def _allocate_l1_sharded_storage_tensor(
     core_ranges: Any, num_bytes: int, device: Any, *, zero_initialize: bool = False
 ):
@@ -1401,7 +1414,7 @@ def _runtime_resource_compatibility_key(
             for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
         )
     compatibility_key = (
-        resource_device,
+        _device_identity(resource_device),
         core_key,
         tuple(cb_configs),
         pipe_sram_scratch_bytes,
@@ -1471,7 +1484,9 @@ def get_min_remaining_l1_excluding_cached_resources(
     """Return the current L1 budget with this cache's buffers excluded."""
     with cache.lock:
         excluded_addresses = (
-            cache.owned_l1_buffer_addresses if cache.device is device else ()
+            cache.owned_l1_buffer_addresses
+            if _same_device(cache.device, device)
+            else ()
         )
         return get_min_remaining_l1_for_device(device, excluded_addresses)
 

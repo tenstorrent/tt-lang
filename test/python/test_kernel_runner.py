@@ -72,6 +72,14 @@ class _FakeTensorWithoutDevice:
     pass
 
 
+class _FakeDevice:
+    def __init__(self, device_id):
+        self._device_id = device_id
+
+    def id(self):
+        return self._device_id
+
+
 class _FakeGridSize:
     def __init__(self, x, y):
         self.x = x
@@ -348,8 +356,14 @@ class _LifetimeTrackingTTNN(_FakeTTNN):
         self.events.append(("synchronize", device))
 
 
-def test_cached_l1_budget_excludes_only_owned_buffer_pages(monkeypatch):
-    device = object()
+@pytest.mark.parametrize(
+    "replace_device_wrapper", [False, True], ids=["same-wrapper", "same-device-id"]
+)
+def test_cached_l1_budget_excludes_only_owned_buffer_pages(
+    monkeypatch, replace_device_wrapper
+):
+    cached_device = _FakeDevice(7)
+    query_device = _FakeDevice(7) if replace_device_wrapper else cached_device
     l1_buffer_type = object()
     pages = [
         SimpleNamespace(
@@ -385,15 +399,52 @@ def test_cached_l1_budget_excludes_only_owned_buffer_pages(monkeypatch):
     )
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     cache = kernel_runner.KernelRuntimeResourceCache(
-        device=device,
+        device=cached_device,
         owned_l1_buffer_addresses=frozenset((0x1000, 0x1100)),
     )
 
     remaining = kernel_runner.get_min_remaining_l1_excluding_cached_resources(
-        cache, device
+        cache, query_device
     )
 
     assert remaining == 976
+
+
+def test_cached_resources_reuse_equivalent_device_wrapper(monkeypatch):
+    first_device = _FakeDevice(7)
+    equivalent_device = _FakeDevice(7)
+    fake_ttnn = SimpleNamespace(
+        corerange_to_cores=lambda core_ranges, row_wise: [_FakeCoreCoord(0, 0)]
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    allocations = []
+
+    def build_resources(**arguments):
+        allocations.append(arguments["device"])
+        return kernel_runner.PipeRuntimeResources()
+
+    monkeypatch.setattr(kernel_runner, "build_pipe_runtime_resources", build_resources)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    arguments = {
+        "cache": cache,
+        "tensors": [],
+        "cb_configs": [],
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": 16,
+        "num_pipe_global_semaphores": 0,
+        "pipe_computed_address_dfb_indices": (),
+        "num_dfb_resets": 1,
+    }
+
+    first_resources = kernel_runner.get_cached_runtime_resources(
+        device=first_device, **arguments
+    )
+    repeated_resources = kernel_runner.get_cached_runtime_resources(
+        device=equivalent_device, **arguments
+    )
+
+    assert repeated_resources is first_resources
+    assert allocations == [first_device]
 
 
 @pytest.mark.parametrize("scratch_bytes", [16, 32])
