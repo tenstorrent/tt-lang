@@ -2140,12 +2140,15 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     operand. Occurrence positions remain stable when operand adaptation maps
     distinct operands to the same DFB.
 
-    The ordered `dfb_effects` list describes reserve, push, wait, and pop
-    actions completed synchronously before the external call returns. Each
-    effect indexes the ordered dependency list and carries a positive static
-    tile count. Every listed effect occurs on every execution of the call.
-    Repeated effects retain list order. The summary does not emit protocol
-    calls.
+    The ordered `dfb_effects` list describes reserve, push, wait, pop, and
+    queue-pointer observation actions completed synchronously before the
+    external call returns. Each effect's dependency index identifies an element
+    returned by `getDFBDependencyOperands()`. Transaction effects carry a
+    positive static tile count no greater than the selected DFB's capacity.
+    Pointer observations carry zero tiles and read only the selected queue
+    pointer; they do not access payload or change protocol state. Every listed
+    effect occurs on every execution of the call. Repeated effects retain list
+    order. The summary does not emit protocol calls.
 
     The ordered `dfb_accesses` list describes synchronous DFB accesses that do
     not perform queue transactions. `inspect` states that a callee may read the

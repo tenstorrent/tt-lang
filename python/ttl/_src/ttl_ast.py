@@ -2842,12 +2842,12 @@ class TTLGenericCompiler(TTCompilerBase):
         return value
 
     def _resolve_dfb_effect(self, node):
-        """Resolve ``DFBEffect.<kind>(dfb, tiles=N)`` to typed facts."""
+        """Resolve one ordered external DFB effect to typed facts."""
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             self._raise_error(
                 node,
                 "ttl.call_extern_func() dfb_effects element must be a "
-                "ttl.DFBEffect reserve, push, wait, or pop",
+                "ttl.DFBEffect protocol action",
             )
 
         effect_owner = node.func.value
@@ -2866,6 +2866,12 @@ class TTLGenericCompiler(TTCompilerBase):
             "push": ttl.ir.DFBProtocolEffectKind.Push,
             "wait": ttl.ir.DFBProtocolEffectKind.Wait,
             "pop": ttl.ir.DFBProtocolEffectKind.Pop,
+            "observe_write_pointer": (
+                ttl.ir.DFBProtocolEffectKind.ObserveWritePointer
+            ),
+            "observe_read_pointer": (
+                ttl.ir.DFBProtocolEffectKind.ObserveReadPointer
+            ),
         }
         if (
             not (is_qualified_owner or is_direct_owner)
@@ -2874,7 +2880,7 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(
                 node,
                 "ttl.call_extern_func() dfb_effects element must be a "
-                "ttl.DFBEffect reserve, push, wait, or pop",
+                "ttl.DFBEffect protocol action",
             )
         if len(node.args) != 1:
             self._raise_error(
@@ -2882,17 +2888,31 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"ttl.DFBEffect.{effect_name}() requires exactly one DFB argument",
             )
         keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
-        if set(keyword_values) != {"tiles"}:
+        pointer_observation = effect_name in {
+            "observe_write_pointer",
+            "observe_read_pointer",
+        }
+        expected_keywords = set() if pointer_observation else {"tiles"}
+        if set(keyword_values) != expected_keywords:
+            requirement = (
+                "no keyword arguments"
+                if pointer_observation
+                else "one tiles= keyword"
+            )
             self._raise_error(
                 node,
-                f"ttl.DFBEffect.{effect_name}() requires one tiles= keyword",
+                f"ttl.DFBEffect.{effect_name}() requires {requirement}",
             )
-        num_tiles = self._resolve_static_int(keyword_values["tiles"], "effect tiles")
-        if num_tiles <= 0:
-            self._raise_error(
-                keyword_values["tiles"],
-                "ttl.call_extern_func() effect tiles must be positive",
+        num_tiles = 0
+        if not pointer_observation:
+            num_tiles = self._resolve_static_int(
+                keyword_values["tiles"], "effect tiles"
             )
+            if num_tiles <= 0:
+                self._raise_error(
+                    keyword_values["tiles"],
+                    "ttl.call_extern_func() effect tiles must be positive",
+                )
         dfb = self._resolve_dfb_value(node.args[0], "dfb_effects")
         return _ExternalDFBEffect(effect_kinds[effect_name], dfb, num_tiles)
 

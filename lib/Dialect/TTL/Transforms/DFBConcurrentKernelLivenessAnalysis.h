@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 
 namespace mlir::tt::ttl {
 
@@ -68,12 +69,40 @@ struct DFBQuiescenceProof {
 /// Immutable occurrence of one logical DFB access.
 struct DFBAccessOccurrence {
   Operation *operation = nullptr;
-  std::optional<DFBProtocolEffectKind> protocolEffect;
-  std::optional<DFBNonTransactionalAccessKind> nonTransactionalAccess;
+
+  using Kind = std::variant<std::monostate, DFBProtocolEffectKind,
+                            DFBNonTransactionalAccessKind>;
+
+  /// Access semantics; `std::monostate` denotes an opaque unsummarized access.
+  Kind kind;
+
+  const DFBProtocolEffectKind *getProtocolEffect() const {
+    return std::get_if<DFBProtocolEffectKind>(&kind);
+  }
+
+  bool isProtocolEffect(DFBProtocolEffectKind effect) const {
+    const DFBProtocolEffectKind *protocolEffect = getProtocolEffect();
+    return protocolEffect && *protocolEffect == effect;
+  }
+
+  const DFBNonTransactionalAccessKind *getNonTransactionalAccess() const {
+    return std::get_if<DFBNonTransactionalAccessKind>(&kind);
+  }
+
+  bool isNonTransactionalAccess(DFBNonTransactionalAccessKind access) const {
+    const DFBNonTransactionalAccessKind *nonTransactionalAccess =
+        getNonTransactionalAccess();
+    return nonTransactionalAccess && *nonTransactionalAccess == access;
+  }
+
+  /// Positive for transactions and zero for observations or opaque accesses.
   int64_t numTiles = 0;
   unsigned sequenceIndex = 0;
   LaunchNodeDomain launchDomain;
   Operation *unanalyzableDomainOperation = nullptr;
+
+  /// Whether this occurrence is a named opaque external DFB dependency.
+  bool opaqueExternalAccess = false;
 };
 
 /// Execution count retained for one access in the debug report.

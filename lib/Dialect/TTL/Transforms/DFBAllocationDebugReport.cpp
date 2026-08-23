@@ -27,6 +27,10 @@ static llvm::StringRef getProtocolEffectName(DFBProtocolEffectKind effect) {
     return "wait";
   case DFBProtocolEffectKind::Pop:
     return "pop";
+  case DFBProtocolEffectKind::ObserveWritePointer:
+    return "observe_write_pointer";
+  case DFBProtocolEffectKind::ObserveReadPointer:
+    return "observe_read_pointer";
   }
   llvm_unreachable("unknown DFB protocol effect");
 }
@@ -149,14 +153,16 @@ static void printAccesses(llvm::raw_ostream &output,
   for (auto indexedAccess : llvm::enumerate(logicalDFB.accesses)) {
     const DFBAccessOccurrence &access = indexedAccess.value();
     output << "  access " << indexedAccess.index() << " effect=";
-    if (access.protocolEffect) {
-      output << getProtocolEffectName(*access.protocolEffect);
+    if (const DFBProtocolEffectKind *protocolEffect =
+            access.getProtocolEffect()) {
+      output << getProtocolEffectName(*protocolEffect);
     } else {
       output << "none";
     }
-    if (access.nonTransactionalAccess) {
+    if (const DFBNonTransactionalAccessKind *nonTransactionalAccess =
+            access.getNonTransactionalAccess()) {
       output << " non_transactional="
-             << getNonTransactionalAccessName(*access.nonTransactionalAccess);
+             << getNonTransactionalAccessName(*nonTransactionalAccess);
     }
     output << " tiles=" << access.numTiles
            << " sequence=" << access.sequenceIndex << " domain=";

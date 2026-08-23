@@ -348,9 +348,13 @@ def TTL_DFBProtocolEffectAttr
   let summary = "One synchronous dataflow buffer protocol effect";
   let description = [{
     Records one action completed by an opaque external call before it returns.
-    `dependency_index` selects the call's ordered DFB dependency list, and
-    `num_tiles` is the positive, statically known transaction size. Array order
-    is execution order, including repeated transactions.
+    `dependency_index` identifies an element of the value sequence returned by
+    the owning operation's `getDFBDependencyOperands()` interface method.
+    `num_tiles` is the positive, statically known transaction size for reserve,
+    push, wait, and pop and cannot exceed the selected dependency's capacity.
+    Write-pointer and read-pointer observations carry zero tiles; they read only
+    the selected queue pointer without accessing payload or changing protocol
+    state. Array order is execution order, including repeated actions.
   }];
   let parameters = (ins
     "DFBProtocolEffectKind":$kind,

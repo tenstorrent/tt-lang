@@ -101,6 +101,20 @@ class DFBEffect:
     def pop(dfb, *, tiles: int):
         raise RuntimeError("ttl.DFBEffect.pop() is valid only in a compiled kernel")
 
+    @staticmethod
+    def observe_write_pointer(dfb):
+        """Read the current DFB write pointer without accessing payload."""
+        raise RuntimeError(
+            "ttl.DFBEffect.observe_write_pointer() is valid only in a compiled kernel"
+        )
+
+    @staticmethod
+    def observe_read_pointer(dfb):
+        """Read the current DFB read pointer without accessing payload."""
+        raise RuntimeError(
+            "ttl.DFBEffect.observe_read_pointer() is valid only in a compiled kernel"
+        )
+
 
 class DFBAccess:
     """Typed synchronous DFB access by an external call."""

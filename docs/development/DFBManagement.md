@@ -1278,19 +1278,38 @@ mutation otherwise. The compiler cannot inspect custom C++ for hidden
 constants or global state, so validity of the remaining declared access set is
 an external-code assumption.
 
-Every direct DFB operand is a possible read or write from call entry through
-call completion. The liveness proof does not need a read/write distinction:
-either access requires the same physical allocation to remain available. The
-callee must complete every synchronous and asynchronous DFB access before
-returning. An external call before the terminal `cb_pop` can therefore remain
-within a bounded lifetime; the same call after the pop makes the DFB unbounded.
+Each effect identifies one dependency occurrence and one transaction or pointer
+observation. Reserve, push, wait, and pop carry a positive static tile count no
+greater than that DFB's physical capacity. Write-pointer and read-pointer
+observations carry zero tiles and do not access payload or change protocol
+state. The effect list is a single call-wide execution sequence, including
+actions on different DFBs. The event graph preserves these cross-DFB relations
+and the order of statically expanded transactions. Effects are synchronous
+facts about actions completed inside the external call; they do not emit
+lifecycle operations.
 
-Some external functions implement their reserve, push, wait, and pop operations
-inside C++. Direct operands make their DFB access sets explicit, but the hidden
-protocol cannot supply the exact visible lifecycle required by the reuse proof.
-Those DFBs remain unbounded and conflict with every other allocation candidate.
-The external call does not disable reuse among other DFBs whose visible
-lifecycles remain bounded.
+A pointer observation remains a storage-liveness event because the selected
+physical DFB must exist while the callee reads its interface state. When a
+conditional observation is nested in a statically bounded loop, its lifetime
+covers every possible iteration position. Its condition need not match the
+transaction conditions because the observation does not change queue state.
+
+An occurrence with neither a protocol effect nor a non-transactional access
+remains a possible read or write beginning at call entry. Its access contract
+is incomplete until an explicit summary or synchronized reset terminates the
+named opaque access, so allocation cannot prove bounded reuse with another
+logical DFB on a shared launch node. Exact disjoint launch-node domains may
+still share because they never use the physical allocation on the same node.
+If operand adaptation aliases several occurrences to one DFB, every occurrence
+requires an explicit contract or reset termination. A partial summary supplies
+its listed events but cannot establish the complete reserve/push/wait/pop
+lifecycle for that DFB. A bounded external lifecycle requires balanced, ordered
+transactions with equal tile counts, known pointer owners, supported execution
+counts, and no access after the terminal pop.
+
+Native `ttl.copy` is not an external access. Its surrounding acquire and release
+operations define slot ownership, so the ordinary lifecycle proof determines
+whether reuse is valid.
 
 `dfb_dependencies` declares dependency-only storage, ordered typed
 `dfb_effects` summarize synchronous reserve, push, wait, and pop actions, and

@@ -214,12 +214,16 @@ llvm::LogicalResult ExternalTemplateArgAttr::verify(
 
 llvm::LogicalResult DFBProtocolEffectAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    DFBProtocolEffectKind, int64_t dependencyIndex, int64_t numTiles) {
+    DFBProtocolEffectKind kind, int64_t dependencyIndex, int64_t numTiles) {
   if (dependencyIndex < 0) {
     return emitError() << "DFB dependency index must be nonnegative, got "
                        << dependencyIndex;
   }
-  if (numTiles <= 0) {
+  if (isDFBPointerObservationEffect(kind) && numTiles != 0) {
+    return emitError() << "DFB pointer observation tile count must be zero, got "
+                       << numTiles;
+  }
+  if (!isDFBPointerObservationEffect(kind) && numTiles <= 0) {
     return emitError() << "DFB protocol tile count must be positive, got "
                        << numTiles;
   }

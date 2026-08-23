@@ -587,6 +587,63 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
   return nestedOperation->getBlock() == &function.getBody().front();
 }
 
+struct ConditionalIterationCandidates {
+  std::uint64_t executionCount = 0;
+  StaticIterationDomain iterationDomain;
+};
+
+// A pointer observation does not change queue state, so its lifetime can cover
+// every finite iteration position without proving which conditions select it.
+static std::optional<ConditionalIterationCandidates>
+getConditionalIterationCandidates(Operation *operation) {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  if (!function || function.getBody().empty() ||
+      !function.getBody().hasOneBlock()) {
+    return std::nullopt;
+  }
+
+  ConditionalIterationCandidates candidates;
+  candidates.executionCount = 1;
+  Operation *nestedOperation = operation;
+  while (nestedOperation->getParentRegion() != &function.getBody()) {
+    Region *region = nestedOperation->getParentRegion();
+    Operation *parent = region ? region->getParentOp() : nullptr;
+    if (!parent || !region->hasOneBlock() ||
+        nestedOperation->getBlock() != &region->front()) {
+      return std::nullopt;
+    }
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(parent)) {
+      SmallVector<Region *> loopRegions = loop.getLoopRegions();
+      std::optional<std::uint64_t> tripCount = tt::getLoopTripCount(loop);
+      if (loopRegions.size() != 1 || loopRegions.front() != region ||
+          !tripCount || *tripCount == 0) {
+        return std::nullopt;
+      }
+      std::optional<std::uint64_t> updatedExecutionCount =
+          llvm::checkedMulUnsigned(candidates.executionCount, *tripCount);
+      if (!updatedExecutionCount) {
+        return std::nullopt;
+      }
+      candidates.executionCount = *updatedExecutionCount;
+      candidates.iterationDomain.loops.push_back(parent);
+      candidates.iterationDomain.tripCounts.push_back(*tripCount);
+    } else if (!isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
+                    scf::ExecuteRegionOp>(parent)) {
+      return std::nullopt;
+    }
+    nestedOperation = parent;
+  }
+  if (nestedOperation->getBlock() != &function.getBody().front() ||
+      candidates.iterationDomain.loops.empty()) {
+    return std::nullopt;
+  }
+  std::reverse(candidates.iterationDomain.loops.begin(),
+               candidates.iterationDomain.loops.end());
+  std::reverse(candidates.iterationDomain.tripCounts.begin(),
+               candidates.iterationDomain.tripCounts.end());
+  return candidates;
+}
+
 /// Possible-domain analysis includes unknown membership while exact-domain
 /// analysis continues to require proven launch-node membership.
 static bool mayContainLaunchNode(const LaunchNodeDomain &domain,
@@ -895,7 +952,8 @@ static bool runPrecedesWithinEachIteration(const AccessRun &before,
     return false;
   }
   if (before.access->operation == after.access->operation) {
-    return before.access->protocolEffect && after.access->protocolEffect &&
+    return before.access->getProtocolEffect() &&
+           after.access->getProtocolEffect() &&
            before.access->sequenceIndex < after.access->sequenceIndex;
   }
   if (before.conditionalExecution && after.conditionalExecution) {
@@ -1240,8 +1298,8 @@ static LogicalResult collectLogicalDFBs(
       }
       for (unsigned logicalIndex : uniqueLogicalIndices) {
         logicalDFBs[logicalIndex].accesses.push_back(
-            {operation, std::nullopt, std::nullopt, 0, 0,
-             LaunchNodeDomain::unknown(), nullptr});
+            {operation, std::monostate{}, 0, 0, LaunchNodeDomain::unknown(),
+             nullptr, false});
       }
       return WalkResult::advance();
     }
@@ -1257,8 +1315,8 @@ static LogicalResult collectLogicalDFBs(
       assert(effect.dfb == dfbOperands[effect.dependencyIndex] &&
              "protocol effect value must match its dependency occurrence");
       logicalDFBs[*logicalIndex].accesses.push_back(
-          {operation, effect.kind, std::nullopt, effect.numTiles,
-           effect.sequenceIndex, LaunchNodeDomain::unknown(), nullptr});
+          {operation, effect.kind, effect.numTiles, effect.sequenceIndex,
+           LaunchNodeDomain::unknown(), nullptr, false});
       describedDependencies.set(effect.dependencyIndex);
     }
     for (const DFBNonTransactionalAccess &nonTransactionalAccess :
@@ -1277,9 +1335,9 @@ static LogicalResult collectLogicalDFBs(
           !describedDependencies.test(nonTransactionalAccess.dependencyIndex) &&
           "verified dependency occurrence must have one access contract");
       logicalDFBs[*logicalIndex].accesses.push_back(
-          {operation, std::nullopt, nonTransactionalAccess.kind, 0,
+          {operation, nonTransactionalAccess.kind, 0,
            nonTransactionalAccess.sequenceIndex, LaunchNodeDomain::unknown(),
-           nullptr});
+           nullptr, false});
       describedDependencies.set(nonTransactionalAccess.dependencyIndex);
     }
     for (auto [dependencyIndex, operand] : llvm::enumerate(dfbOperands)) {
@@ -1290,9 +1348,10 @@ static LogicalResult collectLogicalDFBs(
       std::optional<unsigned> logicalIndex =
           dependencyLogicalIndices[dependencyIndex];
       assert(logicalIndex && "DFB dependencies were validated above");
+      bool opaqueExternalAccess = isa<OpaqueCallOp>(operation);
       logicalDFBs[*logicalIndex].accesses.push_back(
-          {operation, std::nullopt, std::nullopt, 0, 0,
-           LaunchNodeDomain::unknown(), nullptr});
+          {operation, std::monostate{}, 0, 0, LaunchNodeDomain::unknown(),
+           nullptr, opaqueExternalAccess});
     }
     return WalkResult::advance();
   });
@@ -1310,6 +1369,32 @@ static LogicalResult collectLogicalDFBs(
     }
   }
 
+  DenseMap<int64_t, SmallVector<unsigned>> membersByAllocationGroup;
+  for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
+    if (logicalDFB.allocationGroup) {
+      membersByAllocationGroup[logicalDFB.allocationGroup.getOrdinal()]
+          .push_back(logicalIndex);
+    }
+  }
+  for (SynchronizedResetOccurrence &reset : resetOccurrences) {
+    if (reset.reset.getAllLocal()) {
+      continue;
+    }
+    SmallVector<unsigned> physicalAliases = reset.targetLogicalIndices;
+    for (unsigned logicalIndex : reset.targetLogicalIndices) {
+      DFBAllocationGroupAttr allocationGroup =
+          logicalDFBs[logicalIndex].allocationGroup;
+      if (allocationGroup) {
+        llvm::append_range(
+            physicalAliases,
+            membersByAllocationGroup.at(allocationGroup.getOrdinal()));
+      }
+    }
+    llvm::sort(physicalAliases);
+    physicalAliases.erase(llvm::unique(physicalAliases),
+                          physicalAliases.end());
+    reset.targetLogicalIndices = std::move(physicalAliases);
+  }
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     if (!logicalDFB.compilerCreated || logicalDFB.accesses.empty()) {
       continue;
@@ -1317,7 +1402,7 @@ static LogicalResult collectLogicalDFBs(
     auto hasEffect = [&](DFBProtocolEffectKind effect) {
       return llvm::any_of(logicalDFB.accesses,
                           [&](const DFBAccessOccurrence &access) {
-                            return access.protocolEffect == effect;
+                            return access.isProtocolEffect(effect);
                           });
     };
     StringRef missingOperation;
@@ -1401,6 +1486,17 @@ collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
         if (structurallyExecutesAtMostOnce(access.operation)) {
           runs.try_emplace(
               &access, AccessRun{&access, 1, StaticIterationDomain{}, true});
+        } else if (access.getProtocolEffect() &&
+                   isDFBPointerObservationEffect(
+                       *access.getProtocolEffect())) {
+          std::optional<ConditionalIterationCandidates> candidates =
+              getConditionalIterationCandidates(access.operation);
+          if (candidates) {
+            runs.try_emplace(
+                &access,
+                AccessRun{&access, candidates->executionCount,
+                          std::move(candidates->iterationDomain), true});
+          }
         }
         continue;
       }
@@ -1488,7 +1584,7 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
         continue;
       }
       bool resetTarget = resetTargetAccesses.contains(&access);
-      bool directProtocolEvent = access.protocolEffect &&
+      bool directProtocolEvent = access.getProtocolEffect() &&
                                  projected == access.operation &&
                                  runIt->second.executionCount == 1;
       bool repeatedAccessEvents = runIt->second.executionCount > 1;
@@ -1737,7 +1833,7 @@ static void buildProgramOrderTopology(
     if (Operation *projected =
             structuralOrder.getTopLevelOperation(access->operation)) {
       projectedAccesses[projected].push_back(access);
-      if (access->protocolEffect && projected == access->operation &&
+      if (access->getProtocolEffect() && projected == access->operation &&
           input.run.executionCount == 1) {
         directProtocolAccesses[projected].push_back(access);
       }
@@ -1843,7 +1939,8 @@ static void buildProgramOrderTopology(
         }
         bool ordered =
             before->operation == after->operation
-                ? before->protocolEffect && after->protocolEffect &&
+                ? before->getProtocolEffect() &&
+                      after->getProtocolEffect() &&
                       before->sequenceIndex < after->sequenceIndex
                 : structuralOrder.precedes(before->operation, after->operation);
         if (ordered) {
@@ -2068,13 +2165,13 @@ static void addProtocolSynchronizationEdges(
       if (runIt == accessRuns.end()) {
         continue;
       }
-      if (access.protocolEffect == DFBProtocolEffectKind::Reserve) {
+      if (access.isProtocolEffect(DFBProtocolEffectKind::Reserve)) {
         reserves.push_back(&runIt->second);
-      } else if (access.protocolEffect == DFBProtocolEffectKind::Push) {
+      } else if (access.isProtocolEffect(DFBProtocolEffectKind::Push)) {
         pushes.push_back(&runIt->second);
-      } else if (access.protocolEffect == DFBProtocolEffectKind::Wait) {
+      } else if (access.isProtocolEffect(DFBProtocolEffectKind::Wait)) {
         waits.push_back(&runIt->second);
-      } else if (access.protocolEffect == DFBProtocolEffectKind::Pop) {
+      } else if (access.isProtocolEffect(DFBProtocolEffectKind::Pop)) {
         pops.push_back(&runIt->second);
       }
     }
@@ -2350,12 +2447,12 @@ static CumulativeQueueSideResult proveCumulativeQueueSide(
   for (const AccessRun *run : *orderedRuns) {
     if (run->executionCount != 1 || run->access->numTiles <= 0 ||
         run->access->numTiles > physicalTileCount ||
-        !run->access->protocolEffect) {
+        !run->access->getProtocolEffect()) {
       return {std::nullopt,
               {DFBQuiescenceFailureReason::MismatchedTransaction,
                run->access->operation}};
     }
-    DFBProtocolEffectKind effect = *run->access->protocolEffect;
+    DFBProtocolEffectKind effect = *run->access->getProtocolEffect();
     if (effect != acquireKind && effect != releaseKind) {
       return {std::nullopt,
               {DFBQuiescenceFailureReason::MismatchedTransaction,
@@ -2481,7 +2578,7 @@ collectCumulativeReleasePoints(ArrayRef<const AccessRun *> orderedRuns,
   SmallVector<CumulativeReleasePoint> releasePoints;
   std::uint64_t position = 0;
   for (const AccessRun *run : orderedRuns) {
-    if (run->access->protocolEffect != releaseKind) {
+    if (!run->access->isProtocolEffect(releaseKind)) {
       continue;
     }
     std::optional<std::uint64_t> next = llvm::checkedAddUnsigned(
@@ -2550,7 +2647,7 @@ collectCumulativeSynchronizationEdges(
   SmallVector<std::pair<unsigned, unsigned>> synchronizationEdges;
   std::uint64_t readPosition = 0;
   for (const AccessRun *run : consumer.orderedRuns) {
-    if (run->access->protocolEffect == DFBProtocolEffectKind::Pop) {
+    if (run->access->isProtocolEffect(DFBProtocolEffectKind::Pop)) {
       std::optional<std::uint64_t> next = llvm::checkedAddUnsigned(
           readPosition, static_cast<std::uint64_t>(run->access->numTiles));
       if (!next) {
@@ -2573,7 +2670,7 @@ collectCumulativeSynchronizationEdges(
   std::uint64_t writePosition = 0;
   std::uint64_t capacity = static_cast<std::uint64_t>(physicalTileCount);
   for (const AccessRun *run : producer.orderedRuns) {
-    if (run->access->protocolEffect == DFBProtocolEffectKind::Push) {
+    if (run->access->isProtocolEffect(DFBProtocolEffectKind::Push)) {
       std::optional<std::uint64_t> next = llvm::checkedAddUnsigned(
           writePosition, static_cast<std::uint64_t>(run->access->numTiles));
       if (!next) {
@@ -2616,7 +2713,7 @@ isCumulativeQueueScheduleFeasible(const CumulativeQueueSide &producer,
     }
     const DFBAccessOccurrence &access = *runs[runIndex]->access;
     std::uint64_t tiles = static_cast<std::uint64_t>(access.numTiles);
-    switch (*access.protocolEffect) {
+    switch (*access.getProtocolEffect()) {
     case DFBProtocolEffectKind::Reserve:
       if (tiles > capacity - occupiedTiles) {
         return false;
@@ -2638,6 +2735,9 @@ isCumulativeQueueScheduleFeasible(const CumulativeQueueSide &producer,
         return false;
       }
       occupiedTiles -= tiles;
+      break;
+    case DFBProtocolEffectKind::ObserveWritePointer:
+    case DFBProtocolEffectKind::ObserveReadPointer:
       break;
     }
     ++runIndex;
@@ -2665,17 +2765,18 @@ static bool tryAddCumulativeQueueEdges(
   SmallVector<const AccessRun *> producerRuns;
   SmallVector<const AccessRun *> consumerRuns;
   for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-    if (!access.protocolEffect ||
+    const DFBProtocolEffectKind *protocolEffect = access.getProtocolEffect();
+    if (!protocolEffect ||
         !mayAccessLaunchNode(access, node, executionCounts,
                              includeUnknownDomains)) {
       continue;
     }
     bool producerEffect =
-        *access.protocolEffect == DFBProtocolEffectKind::Reserve ||
-        *access.protocolEffect == DFBProtocolEffectKind::Push;
+        *protocolEffect == DFBProtocolEffectKind::Reserve ||
+        *protocolEffect == DFBProtocolEffectKind::Push;
     bool consumerEffect =
-        *access.protocolEffect == DFBProtocolEffectKind::Wait ||
-        *access.protocolEffect == DFBProtocolEffectKind::Pop;
+        *protocolEffect == DFBProtocolEffectKind::Wait ||
+        *protocolEffect == DFBProtocolEffectKind::Pop;
     if (!producerEffect && !consumerEffect) {
       continue;
     }
@@ -2730,7 +2831,9 @@ static bool tryAddCumulativeQueueEdges(
                             });
       llvm::dbgs() << "]\n";
       for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-        if (!access.protocolEffect ||
+        const DFBProtocolEffectKind *protocolEffect =
+            access.getProtocolEffect();
+        if (!protocolEffect ||
             !mayAccessLaunchNode(access, node, executionCounts,
                                  includeUnknownDomains)) {
           continue;
@@ -2739,7 +2842,7 @@ static bool tryAddCumulativeQueueEdges(
             getAccessEventSpan(access, operationEvents, accessEvents);
         llvm::dbgs() << "  access sequence=" << access.sequenceIndex
                      << " effect="
-                     << static_cast<unsigned>(*access.protocolEffect)
+                     << static_cast<unsigned>(*protocolEffect)
                      << " tiles=" << access.numTiles;
         if (span) {
           llvm::dbgs() << " events=" << span->first.entry << ':'
@@ -2828,6 +2931,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
   SmallVector<const AccessRun *> pushes;
   SmallVector<const AccessRun *> waits;
   SmallVector<const AccessRun *> pops;
+  SmallVector<const DFBAccessOccurrence *> pointerObservations;
   SmallVector<const DFBAccessOccurrence *> activeAccesses;
   const DFBAccessOccurrence *unsupportedAccess = nullptr;
   bool hasReserve = false;
@@ -2855,8 +2959,9 @@ static DFBQuiescenceProof computeProtocolLifetime(
       continue;
     }
     activeAccesses.push_back(&access);
-    if (access.protocolEffect) {
-      switch (*access.protocolEffect) {
+    if (const DFBProtocolEffectKind *protocolEffect =
+            access.getProtocolEffect()) {
+      switch (*protocolEffect) {
       case DFBProtocolEffectKind::Reserve:
         hasReserve = true;
         break;
@@ -2869,6 +2974,10 @@ static DFBQuiescenceProof computeProtocolLifetime(
       case DFBProtocolEffectKind::Pop:
         hasPop = true;
         break;
+      case DFBProtocolEffectKind::ObserveWritePointer:
+      case DFBProtocolEffectKind::ObserveReadPointer:
+        pointerObservations.push_back(&access);
+        break;
       }
     }
     auto runIt = accessRuns.find(&access);
@@ -2876,10 +2985,10 @@ static DFBQuiescenceProof computeProtocolLifetime(
       unsupportedAccess = &access;
       continue;
     }
-    if (!access.protocolEffect) {
+    if (!access.getProtocolEffect()) {
       continue;
     }
-    switch (*access.protocolEffect) {
+    switch (*access.getProtocolEffect()) {
     case DFBProtocolEffectKind::Reserve:
       reserves.push_back(&runIt->second);
       break;
@@ -2892,6 +3001,9 @@ static DFBQuiescenceProof computeProtocolLifetime(
     case DFBProtocolEffectKind::Pop:
       pops.push_back(&runIt->second);
       break;
+    case DFBProtocolEffectKind::ObserveWritePointer:
+    case DFBProtocolEffectKind::ObserveReadPointer:
+      break;
     }
   }
 
@@ -2902,7 +3014,11 @@ static DFBQuiescenceProof computeProtocolLifetime(
 
   bool hasProtocolAccess =
       llvm::any_of(activeAccesses, [](const DFBAccessOccurrence *access) {
-        return access->protocolEffect.has_value();
+        return access->getProtocolEffect() != nullptr;
+      });
+  auto opaqueExternalAccess =
+      llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
+        return access->opaqueExternalAccess;
       });
   bool resetTerminatedOpaqueProtocol =
       opaqueExternalAccess != activeAccesses.end();
@@ -2927,7 +3043,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
     nonTransactionalOnly =
         !activeAccesses.empty() &&
         llvm::all_of(activeAccesses, [](const auto *access) {
-          return access->getNonTransactionalAccess().has_value();
+          return access->getNonTransactionalAccess() != nullptr;
         });
     if (!nonTransactionalOnly) {
       return {DFBQuiescenceFailureReason::MissingProtocolEffect,
@@ -3000,7 +3116,13 @@ static DFBQuiescenceProof computeProtocolLifetime(
          "supported protocol effects must have access runs");
 
   SmallVector<const AccessRun *> conditionalRuns;
+  unsigned conditionRelevantAccessCount = 0;
   for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
+    if (activeAccess->getProtocolEffect() &&
+        isDFBPointerObservationEffect(*activeAccess->getProtocolEffect())) {
+      continue;
+    }
+    ++conditionRelevantAccessCount;
     const AccessRun &run = accessRuns.at(activeAccess);
     if (run.conditionalExecution) {
       conditionalRuns.push_back(&run);
@@ -3008,12 +3130,13 @@ static DFBQuiescenceProof computeProtocolLifetime(
   }
   if (!conditionalRuns.empty()) {
     const AccessRun &reference = *conditionalRuns.front();
-    bool sameCondition = conditionalRuns.size() == activeAccesses.size() &&
-                         llvm::all_of(llvm::drop_begin(conditionalRuns),
-                                      [&](const AccessRun *run) {
-                                        return proveEquivalentConditionalRuns(
-                                            reference, *run, node, domainState);
-                                      });
+    bool sameCondition =
+        conditionalRuns.size() == conditionRelevantAccessCount &&
+        llvm::all_of(llvm::drop_begin(conditionalRuns),
+                     [&](const AccessRun *run) {
+                       return proveEquivalentConditionalRuns(reference, *run,
+                                                             node, domainState);
+                     });
     if (!sameCondition) {
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
               reference.access->operation};
@@ -3151,10 +3274,10 @@ static DFBQuiescenceProof computeProtocolLifetime(
       if (executionCountIt->second && *executionCountIt->second == 0) {
         continue;
       }
-      if (access.protocolEffect == DFBProtocolEffectKind::Reserve &&
+      if (access.isProtocolEffect(DFBProtocolEffectKind::Reserve) &&
           isa<CBReserveOp>(access.operation)) {
         nativeReserves.push_back(access.operation);
-      } else if (access.protocolEffect == DFBProtocolEffectKind::Wait &&
+      } else if (access.isProtocolEffect(DFBProtocolEffectKind::Wait) &&
                  isa<CBWaitOp>(access.operation)) {
         nativeWaits.push_back(access.operation);
       }
@@ -3288,7 +3411,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
   }
 
   for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
-    if (activeAccess->protocolEffect) {
+    if (activeAccess->getProtocolEffect()) {
       continue;
     }
     const AccessRun &use = accessRuns.at(activeAccess);
@@ -3307,31 +3430,40 @@ static DFBQuiescenceProof computeProtocolLifetime(
     }
   }
 
-  const DFBAccessOccurrence *terminalAccess =
+  const DFBAccessOccurrence *protocolTerminalAccess =
       resetTerminatedProducer
           ? pushes.back()->access
           : (cumulativeTerminalAccess ? cumulativeTerminalAccess
                                       : pops.back()->access);
-  std::optional<AccessEventSpan> terminalEvents =
-      getAccessEventSpan(*terminalAccess, operationEvents, accessEvents);
-  if (!terminalEvents) {
+  std::optional<AccessEventSpan> protocolTerminalEvents = getAccessEventSpan(
+      *protocolTerminalAccess, operationEvents, accessEvents);
+  if (!protocolTerminalEvents) {
     return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-            terminalAccess->operation};
+            protocolTerminalAccess->operation};
   }
+  SmallVector<const DFBAccessOccurrence *> protocolLifetimeAccesses;
   for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
+    if (activeAccess->getProtocolEffect() &&
+        isDFBPointerObservationEffect(*activeAccess->getProtocolEffect())) {
+      continue;
+    }
+    protocolLifetimeAccesses.push_back(activeAccess);
     std::optional<AccessEventSpan> useEvents =
         getAccessEventSpan(*activeAccess, operationEvents, accessEvents);
-    if (!useEvents ||
-        (useEvents->last.completion != terminalEvents->last.completion &&
-         !graph.strictlyPrecedes(useEvents->last.completion,
-                                 terminalEvents->last.completion))) {
+    bool reachesTerminal =
+        useEvents &&
+        (useEvents->last.completion ==
+             protocolTerminalEvents->last.completion ||
+         graph.strictlyPrecedes(useEvents->last.completion,
+                                protocolTerminalEvents->last.completion));
+    if (!reachesTerminal) {
       return {DFBQuiescenceFailureReason::IncompleteUseOrder,
               activeAccess->operation};
     }
   }
   SmallVector<const DFBAccessOccurrence *> earliestAccesses =
-      findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
-                               accessEvents);
+      findMinimalEntryAccesses(protocolLifetimeAccesses, graph,
+                               operationEvents, accessEvents);
   for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
     std::optional<AccessEventSpan> earliestEvents =
         getAccessEventSpan(*earliestAccess, operationEvents, accessEvents);
@@ -3343,12 +3475,34 @@ static DFBQuiescenceProof computeProtocolLifetime(
     lifetime.earliestAccessOccurrenceIndices.push_back(
         static_cast<unsigned>(earliestAccess - logicalDFB.accesses.data()));
   }
-  lifetime.terminalCompletionEvents = {terminalEvents->last.completion};
-  lifetime.terminalAccessOccurrenceIndices = {
-      static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data())};
+  lifetime.terminalCompletionEvents.push_back(
+      protocolTerminalEvents->last.completion);
+  lifetime.terminalAccessOccurrenceIndices.push_back(static_cast<unsigned>(
+      protocolTerminalAccess - logicalDFB.accesses.data()));
+  for (const DFBAccessOccurrence *pointerObservation : pointerObservations) {
+    std::optional<AccessEventSpan> observationEvents = getAccessEventSpan(
+        *pointerObservation, operationEvents, accessEvents);
+    if (!observationEvents) {
+      return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
+              pointerObservation->operation};
+    }
+    if (!llvm::is_contained(lifetime.earliestEntryEvents,
+                            observationEvents->first.entry)) {
+      lifetime.earliestEntryEvents.push_back(observationEvents->first.entry);
+    }
+    lifetime.earliestAccessOccurrenceIndices.push_back(static_cast<unsigned>(
+        pointerObservation - logicalDFB.accesses.data()));
+    if (!llvm::is_contained(lifetime.terminalCompletionEvents,
+                            observationEvents->last.completion)) {
+      lifetime.terminalCompletionEvents.push_back(
+          observationEvents->last.completion);
+    }
+    lifetime.terminalAccessOccurrenceIndices.push_back(static_cast<unsigned>(
+        pointerObservation - logicalDFB.accesses.data()));
+  }
   if (lifetime.earliestEntryEvents.empty()) {
     return {DFBQuiescenceFailureReason::IncompleteUseOrder,
-            terminalAccess->operation};
+            protocolTerminalAccess->operation};
   }
   lifetime.terminalTransactionRuns.assign(lifetime.transactionRuns.begin(),
                                           lifetime.transactionRuns.end());
@@ -4059,9 +4213,16 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   DenseMap<Operation *, AccessDomain> refinedDomains =
       collectRefinedAccessDomains(domainOperations, domainState);
 
-  for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+  DenseSet<unsigned> resetTargetLogicalIndices;
+  for (const SynchronizedResetOccurrence &reset : resetOccurrences) {
+    resetTargetLogicalIndices.insert(reset.targetLogicalIndices.begin(),
+                                     reset.targetLogicalIndices.end());
+  }
+  for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
     if (logicalDFB.accesses.empty()) {
-      logicalDFB.launchDomain = LaunchNodeDomain::unknown();
+      if (!resetTargetLogicalIndices.contains(logicalIndex)) {
+        logicalDFB.launchDomain = LaunchNodeDomain::unknown();
+      }
       continue;
     }
     for (DFBAccessOccurrence &access : logicalDFB.accesses) {
@@ -4089,9 +4250,9 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       if (logicalDFB.compilerCreated) {
         continue;
       }
-      logicalDFB.accesses.push_back({unknownAccess, std::nullopt, std::nullopt,
-                                     0, 0, accessDomain.domain,
-                                     accessDomain.unanalyzableOperation});
+      logicalDFB.accesses.push_back(
+          {unknownAccess, std::monostate{}, 0, 0, accessDomain.domain,
+           accessDomain.unanalyzableOperation, false});
       logicalDFB.launchDomain =
           logicalDFB.launchDomain.unionWith(accessDomain.domain);
     }
@@ -4100,7 +4261,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     logicalDFB.accessContractsComplete = llvm::all_of(
         logicalDFB.accesses, [](const DFBAccessOccurrence &access) {
-          if (access.protocolEffect || access.nonTransactionalAccess) {
+          if (access.getProtocolEffect() ||
+              access.getNonTransactionalAccess()) {
             return true;
           }
           // ttl.copy transfers data within a slot whose queue ownership is

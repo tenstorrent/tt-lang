@@ -366,7 +366,10 @@ void populateTTLModule(nb::module_ &m) {
       .value("Reserve", DFBProtocolEffectKind::Reserve)
       .value("Push", DFBProtocolEffectKind::Push)
       .value("Wait", DFBProtocolEffectKind::Wait)
-      .value("Pop", DFBProtocolEffectKind::Pop);
+      .value("Pop", DFBProtocolEffectKind::Pop)
+      .value("ObserveWritePointer",
+             DFBProtocolEffectKind::ObserveWritePointer)
+      .value("ObserveReadPointer", DFBProtocolEffectKind::ObserveReadPointer);
 
   tt_attribute_class<DFBProtocolEffectAttr>(m, "DFBProtocolEffectAttr")
       .def_static(
