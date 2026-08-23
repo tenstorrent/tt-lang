@@ -10,6 +10,7 @@
 // TTKERNEL-NOT: ttkernel.cb_reserve_back(%[[STATE]],
 // TTKERNEL: ttkernel.pack_waited_tile({{.*}}, %[[STATE]], %[[ZERO]], true) {acquired_tiles = 2 : i64}
 // TTKERNEL-NEXT: ttkernel.pack_waited_tile({{.*}}, %[[STATE]], %[[ONE]], true) {acquired_tiles = 2 : i64}
+// TTKERNEL-NOT: ttkernel.pack_waited_tile
 // TTKERNEL-NOT: ttkernel.cb_push_back(%[[STATE]],
 // TTKERNEL: ttkernel.cb_reserve_back(%[[OUTPUT]],
 // TTKERNEL: ttkernel.pack_tile_block({{.*}}, %[[OUTPUT]],
@@ -20,6 +21,7 @@
 // absolute-index pack API and emits no reserve or push for the mutated DFB.
 // EMITC-LABEL: func.func @mutate
 // EMITC-COUNT-2: emitc.call_opaque "pack_tile"
+// EMITC-NOT: emitc.call_opaque "pack_tile"
 // EMITC-NOT: pack_waited_tile
 
 module attributes {
