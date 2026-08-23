@@ -2193,14 +2193,21 @@ static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
       });
 }
 
-static Operation *getResetOverlapEvidence(const DFBLogicalLifecycle &logicalDFB,
-                                          const DFBPerNodeLifetime &lifetime) {
+static Operation *getResetOverlapEvidence(
+    const DFBLogicalLifecycle &logicalDFB, const DFBPerNodeLifetime &lifetime,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
+        &accessEvents) {
   if (lifetime.quiescence.evidence) {
     return lifetime.quiescence.evidence;
   }
-  if (!lifetime.earliestAccessOccurrenceIndices.empty()) {
-    return logicalDFB.accesses[lifetime.earliestAccessOccurrenceIndices.front()]
-        .operation;
+  for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+    std::optional<AccessEventSpan> events =
+        getAccessEventSpan(access, operationEvents, accessEvents);
+    if (events &&
+        llvm::is_contained(lifetime.earliestEntryEvents, events->first.entry)) {
+      return access.operation;
+    }
   }
   return logicalDFB.declarations.front();
 }
@@ -2210,6 +2217,8 @@ static void collectResetAllocationConflicts(
     ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
     const ResetBoundaryEvents &resetBoundaryEvents,
     const HappensBeforeGraph &graph, LaunchNodeCoord node,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     bool usePossibleLifetimes,
     SmallVectorImpl<DFBResetAllocationConflict> &conflicts) {
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
@@ -2243,9 +2252,11 @@ static void collectResetAllocationConflicts(
         if (alreadyRecorded) {
           continue;
         }
-        conflicts.push_back({targetLogicalIndex, overlappingLogicalIndex, node,
-                             reset.reset, reset.participantOperations.front(),
-                             getResetOverlapEvidence(logicalDFB, *lifetime)});
+        conflicts.push_back(
+            {targetLogicalIndex, overlappingLogicalIndex, node, reset.reset,
+             reset.participantOperations.front(),
+             getResetOverlapEvidence(logicalDFB, *lifetime, operationEvents,
+                                     accessEvents)});
       }
     }
   }
@@ -2470,7 +2481,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
 
     collectResetAllocationConflicts(
         logicalDFBs, validatedResets, resetBoundaryEvents, graph, node,
-        /*usePossibleLifetimes=*/false, resetAllocationConflicts);
+        operationEvents, accessEvents, /*usePossibleLifetimes=*/false,
+        resetAllocationConflicts);
 
     SmallVector<llvm::BitVector> nodeOrdering(
         logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
@@ -2533,10 +2545,10 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
     }
 
-    collectResetAllocationConflicts(logicalDFBs, validatedResets,
-                                    possibleResetBoundaryEvents, possibleGraph,
-                                    node, /*usePossibleLifetimes=*/true,
-                                    resetAllocationConflicts);
+    collectResetAllocationConflicts(
+        logicalDFBs, validatedResets, possibleResetBoundaryEvents,
+        possibleGraph, node, possibleOperationEvents, possibleAccessEvents,
+        /*usePossibleLifetimes=*/true, resetAllocationConflicts);
 
     SmallVector<llvm::BitVector> conditionalNodeOrdering(
         logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));

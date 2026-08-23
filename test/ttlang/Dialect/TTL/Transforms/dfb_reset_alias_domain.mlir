@@ -5,6 +5,7 @@
 // DFB 1 is live across that boundary on node (1,0), so the two exact-domain
 // lifecycles require distinct physical indices.
 // CHECK: DFB conflict lhs=0 rhs=1 reason=reset-domain-write node=(1,0)
+// CHECK-SAME: lhs_operation=ttl.reset_dfbs rhs_operation=ttl.cb_reserve
 // CHECK: DFB assignment: logical DFB 0 -> physical index 0
 // CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1
 
