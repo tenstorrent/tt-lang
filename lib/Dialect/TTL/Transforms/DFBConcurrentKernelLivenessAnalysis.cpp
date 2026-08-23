@@ -2600,6 +2600,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     if (!hasUnknownDFBLaunchDomain) {
       conditionallyOrderedBeforeByNode.emplace_back(
           logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
+      conditionallyInconsistentOrderByNode.emplace_back(
+          logicalDFBs.size(), llvm::BitVector(logicalDFBs.size()));
       continue;
     }
 
@@ -2669,6 +2671,12 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                                        possibleAccessEvents, executionCounts,
                                        /*includeUnknownDomains=*/true));
   }
+
+  assert(orderedBeforeByNode.size() == launchNodes.size() &&
+         conditionallyOrderedBeforeByNode.size() == launchNodes.size() &&
+         inconsistentOrderByNode.size() == launchNodes.size() &&
+         conditionallyInconsistentOrderByNode.size() == launchNodes.size() &&
+         "per-node order relations must cover the launch grid");
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     logicalDFB.bounded = logicalDFB.launchDomain.known &&
