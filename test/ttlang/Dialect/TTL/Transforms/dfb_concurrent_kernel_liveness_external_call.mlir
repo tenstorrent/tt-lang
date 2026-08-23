@@ -2,22 +2,21 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
 
 // A descriptor reference keeps A live through the external call without a
-// runtime DFB argument. The call completes before A's pop, so the
-// acknowledgment still orders B after A and permits A and B to share physical
-// index 0. The index query after the pop does not access physical storage and
-// does not extend A's lifetime.
+// runtime DFB argument. The unsummarized call may change A's protocol state,
+// so A remains unbounded and cannot share with B. The index query after the pop
+// does not access physical storage and does not extend A's lifetime.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}]}
+// CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}]}
 // CHECK-LABEL: func.func @external_use_before_release_dm
-// CHECK-SAME: ttl.base_cta_index = 2 : i32
+// CHECK-SAME: ttl.base_cta_index = 3 : i32
 // CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-// CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
+// CHECK-DAG: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
 // CHECK-LABEL: func.func @external_use_before_release_compute
-// CHECK-SAME: ttl.base_cta_index = 2 : i32
+// CHECK-SAME: ttl.base_cta_index = 3 : i32
 // CHECK-DAG: %[[A:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-// CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
+// CHECK-DAG: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
 // CHECK: ttl.opaque_call "inspect_dfb" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%[[A]] : !ttl.cb<{{.*}}>) () {header = "inspect_dfb.hpp"}
 // CHECK: ttl.cb_pop %[[A]]
 // CHECK: ttl.get_dfb_id %[[A]]
