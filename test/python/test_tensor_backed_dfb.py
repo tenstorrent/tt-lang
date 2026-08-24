@@ -12,6 +12,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+import ttl  # noqa: E402
 from conftest import temp_kernel_files
 from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose, assert_pcc
@@ -160,6 +161,33 @@ def _to_height_sharded(torch_tensor, device, node_count):
     return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
 
 
+@ttl.operation(grid=(1, 1))
+def _replace_waited_tensor_backed_state(state, output):
+    state_dfb = ttl.make_tensor_backed_dfb(state, shape=(1, 1), block_count=1)
+    output_dfb = ttl.make_dataflow_buffer_like(output, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def replace_state():
+        with state_dfb.wait() as state_block:
+            increment = ttl.block.fill(
+                1,
+                shape=state_block.shape,
+                dtype=state_block.dtype,
+            )
+            state_block.store(state_block + increment)
+            with output_dfb.reserve() as output_block:
+                output_block.store(state_block)
+
+    @ttl.datamovement()
+    def publish_state():
+        state_dfb.publish()
+
+    @ttl.datamovement()
+    def write_output():
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, output[0, 0]).wait()
+
+
 @pytest.mark.requires_device
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
@@ -218,6 +246,31 @@ def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
 
         actual = ttnn.to_torch(out)
         assert_pcc(expected.float(), actual.float(), threshold=0.999)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
+)
+def test_tensor_backed_waited_block_replacement_persists(device, torch_dtype):
+    """Replacement updates tensor storage and remains reusable across dispatches."""
+    element_indices = torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
+    state_host = ((element_indices.remainder(257) - 128) / 64).to(torch_dtype)
+    state = _to_height_sharded(state_host, device, node_count=1)
+    output = to_dram(torch.zeros_like(state_host), device)
+
+    _replace_waited_tensor_backed_state(state, output)
+    _replace_waited_tensor_backed_state(state, output)
+
+    actual_state = ttnn.to_torch(state).float()
+    actual_output = ttnn.to_torch(output).float()
+    expected = state_host.float() + 2
+    if torch_dtype == torch.bfloat16:
+        assert_allclose(actual_state, expected, rtol=0.05, atol=1.0)
+        assert_allclose(actual_output, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual_state, expected, rtol=1e-5, atol=1e-6)
+        assert_allclose(actual_output, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.requires_device

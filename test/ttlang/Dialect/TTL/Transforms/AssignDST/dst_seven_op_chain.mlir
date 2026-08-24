@@ -1,7 +1,7 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=SEPARATE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder

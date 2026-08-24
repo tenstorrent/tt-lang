@@ -141,6 +141,11 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 /// Module attribute containing one runtime descriptor per physical DFB index.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
+/// Module attribute identifying allocation groups accepted by an unsafe
+/// user-supplied handoff assumption.
+constexpr llvm::StringLiteral
+    kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
@@ -148,6 +153,11 @@ constexpr llvm::StringLiteral
     kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
 constexpr llvm::StringLiteral
     kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
+constexpr llvm::StringLiteral
+    kPipeConservativeL1BytesAttrName("ttl.pipe_conservative_l1_bytes");
+
+/// Module attribute carrying the number of synchronized DFB resets.
+constexpr llvm::StringLiteral kDFBResetCountAttrName("ttl.dfb_reset_count");
 
 /// Function attribute listing receiver DFB indices whose L1 base addresses are
 /// passed after tensor buffer addresses as common runtime arguments.

@@ -20,9 +20,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       %output: tensor<1x8x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1],
                   ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
-    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
