@@ -397,6 +397,15 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         if (!inputCB) {
           inputCB = transpose.getIcb();
         }
+      } else if (auto normalization =
+                     dyn_cast<ttk::ExperimentalRowNormalizationBlockOp>(
+                         inner)) {
+        if (!inputCB) {
+          inputCB = normalization.getInputCb();
+        }
+        if (!outputCB) {
+          outputCB = normalization.getOutputCb();
+        }
       }
       // Collect output CB from pack ops (both single-tile and block variants).
       auto collectOutputCB = [&](Value packCB, Operation *packOp) {

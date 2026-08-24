@@ -33,6 +33,7 @@ Tile operations implement `TileExecutionOpInterface`. The interface reports:
 - the route for each operand: dataflow buffer, DST, or no tile-data route;
 - which DST operands the operation lowering initializes itself;
 - whether the result is resident in DST;
+- the maximum number of simultaneously resident DST slots;
 - the full-fp32 accumulation category, when configurable;
 - whether repeated operations accumulate into an existing DST slot.
 
@@ -120,6 +121,8 @@ Destination requirements use the result or resident operand type, not only DFB
 input storage width. The width query uses the TTCore tile element type, so a
 supported operation with 32-bit integer destination elements requires 32-bit
 destination registers without an integer-type exception in this analysis.
+Fixed-block operations also record their simultaneous DST residency. This
+requirement remains explicit when tensor operands are scalarized to tile values.
 
 ## Resolution
 
@@ -127,6 +130,7 @@ The resolver maintains a finite set of complete target configurations:
 
 ```text
 destination element width:     {Bits16, Bits32}
+destination synchronization:   {DoubleBuffered, Full}
 DFB N unpack mode:              {Default, UnpackToDestination}
 ```
 
@@ -134,10 +138,11 @@ Not every Cartesian-product combination is legal. Each target query returns
 the allowed width-and-mode relation for a primitive, element type, and operand
 route. `TileOperandRoute` separately records the primitive's physical operand
 route; the unpack mode does not describe that route for formats where the
-setting is inert. Hard policy constraints restrict the initial candidates.
-Fixed operation requirements are then intersected with the target-supported
-relations. Each strategy option is represented by the same requirement types
-as a fixed operation.
+setting is inert. Hard policy constraints restrict the initial candidates,
+including an explicit synchronization setting. Fixed operation requirements
+are then intersected with the target-supported relations and the DST capacity
+for each width-and-synchronization pair. Each strategy option is represented by
+the same requirement types as a fixed operation.
 
 Strategy selection and configuration selection are solved together. The
 search chooses the unresolved operation with the fewest compatible options,
@@ -156,13 +161,15 @@ After all hard constraints are satisfied, reduce and matmul preferences select
 32-bit destination elements when they remain supported. Preferences never make
 a valid domain empty.
 
-DST synchronization currently has no operation-specific compatibility
-constraints. `enabled` selects full synchronization; `auto` and `disabled`
-select double-buffered synchronization.
+DST synchronization affects the number of available DST slots. `enabled` and
+`disabled` select full and double-buffered synchronization, respectively.
+`auto` prefers double-buffered synchronization when it satisfies every fixed
+residency requirement and otherwise selects full synchronization.
 
-An empty domain produces a diagnostic identifying both incompatible
-requirements. The resolver retains typed conflict evidence rather than
-reconstructing a cause from mutated IR.
+An empty domain produces a diagnostic identifying incompatible requirements.
+A capacity conflict reports the required and maximum available slot counts.
+The resolver retains typed conflict evidence rather than reconstructing a cause
+from mutated IR.
 
 ## Application
 
@@ -189,6 +196,7 @@ additional policy.
   kernel.
 - One concrete destination width and synchronization mode apply to the complete
   kernel.
+- Every fixed-block residency fits the selected destination capacity.
 - Strategy selection is stable across later IR rewrites.
 - Failure before plan application leaves IR unchanged.
 - Unknown execution semantics and unresolved DFB identities are errors.
