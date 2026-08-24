@@ -850,6 +850,14 @@ static bool runPrecedesWithinEachIteration(
                                   after.access->operation);
 }
 
+static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
+                                     const AccessEventSpan &before,
+                                     const AccessEventSpan &after) {
+  graph.addEdge(before.first.completion, after.first.entry);
+  graph.addEdge(after.first.completion, before.last.entry);
+  graph.addEdge(before.last.completion, after.last.entry);
+}
+
 // Requires a release to follow every use owned by its acquisition; textual
 // acquire/release order alone does not prove storage quiescence.
 // `sameKindAcquires` contains every same-DFB acquisition of the same kind.
@@ -1723,12 +1731,8 @@ static void buildProgramOrderTopology(
                 *beforeRunIt->second, *afterRunIt->second, structuralOrder)) {
           continue;
         }
-        graph.addEdge(beforeEventsIt->second.first.completion,
-                      afterEventsIt->second.first.entry);
-        graph.addEdge(afterEventsIt->second.first.completion,
-                      beforeEventsIt->second.last.entry);
-        graph.addEdge(beforeEventsIt->second.last.completion,
-                      afterEventsIt->second.last.entry);
+        addPerIterationSpanOrder(graph, beforeEventsIt->second,
+                                 afterEventsIt->second);
       }
     }
   }
