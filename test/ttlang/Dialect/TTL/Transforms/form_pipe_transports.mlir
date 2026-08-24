@@ -5,8 +5,8 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57376' | FileCheck %s --check-prefix=EXACT-FIT
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57375' | FileCheck %s --check-prefix=BELOW-FIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57600' | FileCheck %s --check-prefix=EXACT-FIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57599' | FileCheck %s --check-prefix=BELOW-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4 l1-budget-override=98304' | FileCheck %s --check-prefix=ADDRESS-BUDGET
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP

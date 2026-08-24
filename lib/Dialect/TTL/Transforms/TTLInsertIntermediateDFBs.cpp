@@ -103,6 +103,7 @@ static void cloneComputeBodyWithMaterializedStores(
           output.reserve.getResult(), clonedStore.getIndices(),
           clonedStore.getDstIndex());
       materializedStore->setAttrs(clonedStore->getAttrs());
+      materializedStore.setStoreKind(DFBTileStoreKind::Producer);
       ++output.storeCount;
     }
   }

@@ -11,6 +11,7 @@
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
@@ -406,12 +407,184 @@ getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
   return totalBytes;
 }
 
+struct ConservativePipeResources {
+  uint64_t scratchBytes = 0;
+  int64_t globalSemaphoreCount = 0;
+};
+
+template <typename ForeachOp>
+static LogicalResult
+addCallbackResourceUpperBound(ForeachOp foreachOp,
+                              ConservativePipeResources &resources) {
+  uint64_t endpointCount = 0;
+  for (PipeRecordAttr record : foreachOp.getRecords().getPipes()) {
+    std::optional<int64_t> width = llvm::checkedAdd(
+        llvm::checkedSub(record.getDstEndX(), record.getDstStartX())
+            .value_or(-1),
+        int64_t{1});
+    std::optional<int64_t> height = llvm::checkedAdd(
+        llvm::checkedSub(record.getDstEndY(), record.getDstStartY())
+            .value_or(-1),
+        int64_t{1});
+    if (!width || !height || *width <= 0 || *height <= 0) {
+      return failure();
+    }
+    std::optional<uint64_t> recordEndpoints = llvm::checkedMulUnsigned(
+        static_cast<uint64_t>(*width), static_cast<uint64_t>(*height));
+    std::optional<uint64_t> updatedEndpoints =
+        recordEndpoints
+            ? llvm::checkedAddUnsigned(endpointCount, *recordEndpoints)
+            : std::nullopt;
+    if (!updatedEndpoints) {
+      return failure();
+    }
+    endpointCount = *updatedEndpoints;
+  }
+
+  uint64_t protocolOperationCount = 0;
+  WalkResult walkResult = foreachOp->walk([&](Operation *operation) {
+    if (!isa<CopyOp, PipeTransferSendOp, PipeTransferPostOp>(operation)) {
+      return WalkResult::advance();
+    }
+    if (protocolOperationCount == std::numeric_limits<uint64_t>::max()) {
+      return WalkResult::interrupt();
+    }
+    ++protocolOperationCount;
+    return WalkResult::advance();
+  });
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+  std::optional<uint64_t> resourceUnits =
+      llvm::checkedMulUnsigned(endpointCount, protocolOperationCount);
+  std::optional<uint64_t> scratchBytes =
+      resourceUnits ? llvm::checkedMulUnsigned(
+                          *resourceUnits,
+                          static_cast<uint64_t>(kPipeSramScratchAlignmentBytes))
+                    : std::nullopt;
+  std::optional<uint64_t> updatedScratch =
+      scratchBytes
+          ? llvm::checkedAddUnsigned(resources.scratchBytes, *scratchBytes)
+          : std::nullopt;
+  // Capacity, completion, and ready counters are independent upper bounds;
+  // the exact PipeNet plan may share them.
+  std::optional<uint64_t> semaphoreUnits =
+      resourceUnits ? llvm::checkedMulUnsigned(*resourceUnits, uint64_t{3})
+                    : std::nullopt;
+  std::optional<int64_t> semaphoreCount =
+      semaphoreUnits &&
+              *semaphoreUnits <=
+                  static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+          ? std::optional<int64_t>(static_cast<int64_t>(*semaphoreUnits))
+          : std::nullopt;
+  std::optional<int64_t> updatedSemaphores =
+      semaphoreCount
+          ? llvm::checkedAdd(resources.globalSemaphoreCount, *semaphoreCount)
+          : std::nullopt;
+  if (!updatedScratch || !updatedSemaphores) {
+    return failure();
+  }
+  resources.scratchBytes = *updatedScratch;
+  resources.globalSemaphoreCount = *updatedSemaphores;
+  return success();
+}
+
+static FailureOr<ConservativePipeResources>
+getConservativePipeResources(ModuleOp sourceModule) {
+  OwningOpRef<ModuleOp> planningModule(sourceModule.clone());
+  ModuleOp module = *planningModule;
+  ValueOriginAnalysis preExpansionAnalysis(module);
+  if (failed(verifyTransferProvenance(module, preExpansionAnalysis)) ||
+      failed(expandStaticPipeTransfers(module, preExpansionAnalysis))) {
+    return failure();
+  }
+
+  ValueOriginAnalysis analysis(module);
+  if (failed(verifyTransferProvenance(module, analysis))) {
+    return failure();
+  }
+  FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransferIndex =
+      PipeTransferIndex::create(module, analysis);
+  if (failed(maybeTransferIndex)) {
+    return failure();
+  }
+  const PipeTransferIndex &transferIndex = **maybeTransferIndex;
+  PipeForeachLoweringInfo foreachLoweringInfo;
+  FailureOr<PipeGraph> maybePipeGraph =
+      PipeGraph::build(module, transferIndex, foreachLoweringInfo);
+  if (failed(maybePipeGraph)) {
+    return failure();
+  }
+
+  PipeResourcePlan resourcePlan;
+  if (failed(buildPipeResourcePlan(module, transferIndex, *maybePipeGraph,
+                                   resourcePlan,
+                                   /*enableComputedAddresses=*/false,
+                                   PipeCounterAllocationPolicy::GlobalOnly,
+                                   /*synchronizationSelection=*/nullptr))) {
+    return failure();
+  }
+  assert(resourcePlan.sramScratch.bytes >= 0 &&
+         "pipe scratch allocation must be non-negative");
+  PipeResourceRequirements requirements =
+      getPipeResourceRequirements(resourcePlan);
+  if (maybePipeGraph->getPipeReceiverEndpoints().size() >
+      static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
+    return failure();
+  }
+  std::optional<int64_t> globalSemaphoreCount = llvm::checkedAdd(
+      requirements.globalSemaphoreCount,
+      static_cast<int64_t>(maybePipeGraph->getPipeReceiverEndpoints().size()));
+  if (!globalSemaphoreCount) {
+    return failure();
+  }
+  ConservativePipeResources resources{
+      static_cast<uint64_t>(resourcePlan.sramScratch.bytes),
+      *globalSemaphoreCount};
+  WalkResult callbackWalk =
+      module.walk([&](Operation *operation) -> WalkResult {
+        if (auto foreachSrc = dyn_cast<PipeNetForeachSrcOp>(operation)) {
+          return failed(addCallbackResourceUpperBound(foreachSrc, resources))
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        }
+        if (auto foreachDst = dyn_cast<PipeNetForeachDstOp>(operation)) {
+          return failed(addCallbackResourceUpperBound(foreachDst, resources))
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        }
+        return WalkResult::advance();
+      });
+  if (callbackWalk.wasInterrupted()) {
+    return failure();
+  }
+  return resources;
+}
+
+static FailureOr<uint64_t>
+getResidualGlobalSemaphoreBytes(ModuleOp module,
+                                const PipeTransportLoopCandidate &candidate,
+                                const PipeTransportGrouping &grouping) {
+  if (grouping.residualCount == 0) {
+    return 0;
+  }
+  if (candidate.transfers.size() >
+      static_cast<size_t>(std::numeric_limits<int64_t>::max() / 2)) {
+    return failure();
+  }
+  int64_t additionalSemaphoreCount =
+      static_cast<int64_t>(candidate.transfers.size()) * 2;
+  return getGlobalSemaphoreL1Bytes(module, additionalSemaphoreCount);
+}
+
 /// Compute storage and synchronization facts for one `(R, K)` choice.
 static std::optional<PipeTransportGrouping>
-evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
-                 int64_t destinationDepth,
+evaluateGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
+                 int64_t groupSize, int64_t destinationDepth,
                  const DFBAllocationFootprint &allocationFootprint,
-                 uint64_t existingScratchBytes, uint64_t budgetBytes) {
+                 const DFBLogicalIdentityAnalysis &identities,
+                 uint64_t existingScratchBytes, uint64_t globalSemaphoreBytes,
+                 uint64_t resetStateBytes, uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -427,7 +600,7 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
   grouping.residualCount = candidate.transferCount % groupSize;
   grouping.overlapsReceiver = fullGroupCount >= 2 && destinationDepth >= 2;
 
-  llvm::DenseMap<int64_t, uint64_t> allocationBytesByIndex;
+  llvm::DenseMap<int64_t, uint64_t> allocationBytesByLogicalId;
   for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
     if (!llvm::checkedMul(cast<CircularBufferType>(dfbUse.dfb.getType())
                               .getElementsPerBlock(),
@@ -457,63 +630,96 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
       return std::nullopt;
     }
     int64_t blockCount = *alignedBlockCount;
+    if (dfbUse.bind.getTensorBackingAttr() &&
+        blockCount != oldType.getBlockCount()) {
+      return std::nullopt;
+    }
     auto resizedType =
         CircularBufferType::get(oldType.getContext(), oldType.getShape(),
                                 oldType.getElementType(), blockCount);
     std::string failureReason;
     FailureOr<uint64_t> allocationBytes =
-        getDFBAllocationSizeBytes(resizedType, failureReason);
+        getDFBL1AllocationSizeBytes(module, resizedType, failureReason);
     if (failed(allocationBytes)) {
       return std::nullopt;
     }
-    int64_t dfbIndex = dfbUse.bind.getCbIndex().getSExtValue();
-    uint64_t &minimumBytes = allocationBytesByIndex[dfbIndex];
-    minimumBytes = std::max(minimumBytes, *allocationBytes);
+    if (!dfbUse.bind.getTensorBackingAttr()) {
+      int64_t logicalId = identities.getLogicalId(dfbUse.bind);
+      uint64_t &minimumBytes = allocationBytesByLogicalId[logicalId];
+      minimumBytes = std::max(minimumBytes, *allocationBytes);
+    }
     grouping.blockCounts[dfbUse.dfb] = blockCount;
   }
 
   FailureOr<uint64_t> totalBytes =
       allocationFootprint.getTotalBytesWithMinimumAllocations(
-          allocationBytesByIndex);
+          allocationBytesByLogicalId);
   std::optional<uint64_t> candidateScratchBytes =
       getTransportScratchBytes(candidate, groupSize, destinationDepth);
   std::optional<uint64_t> allScratchBytes =
       candidateScratchBytes ? llvm::checkedAddUnsigned(existingScratchBytes,
                                                        *candidateScratchBytes)
                             : std::nullopt;
+  if (allScratchBytes) {
+    allScratchBytes =
+        llvm::checkedAddUnsigned(*allScratchBytes, resetStateBytes);
+  }
+  FailureOr<uint64_t> scratchAllocationBytes = failure();
+  if (allScratchBytes) {
+    scratchAllocationBytes = getL1AllocationSizeBytes(module, *allScratchBytes);
+  }
   std::optional<uint64_t> allocationAndScratchBytes =
-      succeeded(totalBytes) && allScratchBytes
-          ? llvm::checkedAddUnsigned(*totalBytes, *allScratchBytes)
+      succeeded(totalBytes) && succeeded(scratchAllocationBytes)
+          ? llvm::checkedAddUnsigned(*totalBytes, *scratchAllocationBytes)
           : std::nullopt;
-  if (!allocationAndScratchBytes || *allocationAndScratchBytes > budgetBytes) {
+  FailureOr<uint64_t> residualSemaphoreBytes =
+      getResidualGlobalSemaphoreBytes(module, candidate, grouping);
+  std::optional<uint64_t> allSemaphoreBytes =
+      succeeded(residualSemaphoreBytes)
+          ? llvm::checkedAddUnsigned(globalSemaphoreBytes,
+                                     *residualSemaphoreBytes)
+          : std::nullopt;
+  std::optional<uint64_t> requiredBytes =
+      allocationAndScratchBytes && allSemaphoreBytes
+          ? llvm::checkedAddUnsigned(*allocationAndScratchBytes,
+                                     *allSemaphoreBytes)
+          : std::nullopt;
+  if (!requiredBytes || *requiredBytes > budgetBytes) {
     return std::nullopt;
   }
-  grouping.allocationBytes = *allocationAndScratchBytes;
+  grouping.allocationBytes = *requiredBytes;
   return grouping;
 }
 
 /// Bound exhaustive group-size checks by the storage required for one group.
-static std::optional<int64_t>
-getGroupSizeUpperBound(PipeTransportLoopCandidate &candidate,
-                       int64_t upperBound, uint64_t budgetBytes) {
-  llvm::DenseMap<int64_t, uint64_t> bytesPerBlockByIndex;
+static std::optional<int64_t> getGroupSizeUpperBound(
+    ModuleOp module, PipeTransportLoopCandidate &candidate, int64_t upperBound,
+    const DFBLogicalIdentityAnalysis &identities, uint64_t budgetBytes) {
+  llvm::DenseMap<int64_t, uint64_t> bytesPerBlockByLogicalId;
+  std::optional<int64_t> tensorBackedCapacityUpperBound;
   for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
     auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
     auto oneBlockType = CircularBufferType::get(
         oldType.getContext(), oldType.getShape(), oldType.getElementType(), 1);
     std::string failureReason;
     FailureOr<uint64_t> bytesPerBlock =
-        getDFBAllocationSizeBytes(oneBlockType, failureReason);
+        getDFBL1AllocationSizeBytes(module, oneBlockType, failureReason);
     if (failed(bytesPerBlock) || *bytesPerBlock == 0) {
       return std::nullopt;
     }
-    int64_t dfbIndex = dfbUse.bind.getCbIndex().getSExtValue();
-    uint64_t &minimumBytes = bytesPerBlockByIndex[dfbIndex];
+    if (dfbUse.bind.getTensorBackingAttr()) {
+      tensorBackedCapacityUpperBound = std::min(
+          tensorBackedCapacityUpperBound.value_or(oldType.getBlockCount()),
+          oldType.getBlockCount());
+      continue;
+    }
+    int64_t logicalId = identities.getLogicalId(dfbUse.bind);
+    uint64_t &minimumBytes = bytesPerBlockByLogicalId[logicalId];
     minimumBytes = std::max(minimumBytes, *bytesPerBlock);
   }
 
   uint64_t bytesPerGroup = 0;
-  for (const auto &entry : bytesPerBlockByIndex) {
+  for (const auto &entry : bytesPerBlockByLogicalId) {
     std::optional<uint64_t> total =
         llvm::checkedAddUnsigned(bytesPerGroup, entry.second);
     if (!total) {
@@ -521,13 +727,15 @@ getGroupSizeUpperBound(PipeTransportLoopCandidate &candidate,
     }
     bytesPerGroup = *total;
   }
-  if (bytesPerGroup == 0) {
-    return std::nullopt;
-  }
-
   uint64_t requestedUpperBound =
       static_cast<uint64_t>(std::min(upperBound, candidate.transferCount));
-  uint64_t budgetUpperBound = budgetBytes / bytesPerGroup;
+  if (tensorBackedCapacityUpperBound) {
+    requestedUpperBound =
+        std::min(requestedUpperBound,
+                 static_cast<uint64_t>(*tensorBackedCapacityUpperBound));
+  }
+  uint64_t budgetUpperBound =
+      bytesPerGroup == 0 ? requestedUpperBound : budgetBytes / bytesPerGroup;
   return static_cast<int64_t>(std::min(requestedUpperBound, budgetUpperBound));
 }
 
@@ -553,14 +761,16 @@ static bool isBetterGrouping(const PipeTransportGrouping &candidate,
 
 /// Select an explicit upper-bound or automatic group size.
 static std::optional<PipeTransportGrouping>
-selectGrouping(PipeTransportLoopCandidate &candidate,
+selectGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
                int64_t requestedGroupSize,
                const DFBAllocationFootprint &allocationFootprint,
-               uint64_t existingScratchBytes, uint64_t budgetBytes) {
+               const DFBLogicalIdentityAnalysis &identities,
+               uint64_t existingScratchBytes, uint64_t globalSemaphoreBytes,
+               uint64_t resetStateBytes, uint64_t budgetBytes) {
   int64_t upperBound =
       requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
-  std::optional<int64_t> maybeUpperBound =
-      getGroupSizeUpperBound(candidate, upperBound, budgetBytes);
+  std::optional<int64_t> maybeUpperBound = getGroupSizeUpperBound(
+      module, candidate, upperBound, identities, budgetBytes);
   if (!maybeUpperBound || *maybeUpperBound <= 1) {
     return std::nullopt;
   }
@@ -571,9 +781,10 @@ selectGrouping(PipeTransportLoopCandidate &candidate,
     bool requireOverlap = candidate.transferCount / groupSize >= 2;
     int64_t destinationDepth =
         getMinimumDestinationDepth(candidate, groupSize, requireOverlap);
-    std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
-        candidate, groupSize, destinationDepth, allocationFootprint,
-        existingScratchBytes, budgetBytes);
+    std::optional<PipeTransportGrouping> grouping =
+        evaluateGrouping(module, candidate, groupSize, destinationDepth,
+                         allocationFootprint, identities, existingScratchBytes,
+                         globalSemaphoreBytes, resetStateBytes, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }
@@ -735,7 +946,57 @@ struct TTLFormPipeTransportsPass
       signalPassFailure();
       return;
     }
+    FailureOr<uint64_t> resetStateBytes =
+        getSynchronizedDFBResetStateBytes(module);
+    if (failed(resetStateBytes)) {
+      module.emitOpError("DFB reset state size is not representable");
+      signalPassFailure();
+      return;
+    }
+    auto setConservativePipeBytes = [&](uint64_t scratchBytes,
+                                        uint64_t semaphoreBytes) {
+      FailureOr<uint64_t> scratchAllocationBytes =
+          getL1AllocationSizeBytes(module, scratchBytes);
+      if (failed(scratchAllocationBytes)) {
+        return failure();
+      }
+      std::optional<uint64_t> reservation =
+          llvm::checkedAddUnsigned(*scratchAllocationBytes, semaphoreBytes);
+      if (!reservation) {
+        return failure();
+      }
+      if (*reservation == 0) {
+        module->removeAttr(kPipeConservativeL1BytesAttrName);
+        return success();
+      }
+      module->setAttr(
+          kPipeConservativeL1BytesAttrName,
+          IntegerAttr::get(IntegerType::get(module.getContext(), 64),
+                           *reservation));
+      return success();
+    };
+    auto planConservativeResources =
+        [&]() -> FailureOr<std::pair<ConservativePipeResources, uint64_t>> {
+      FailureOr<ConservativePipeResources> resources =
+          getConservativePipeResources(module);
+      if (failed(resources)) {
+        return failure();
+      }
+      FailureOr<uint64_t> semaphoreBytes =
+          getGlobalSemaphoreL1Bytes(module, resources->globalSemaphoreCount);
+      if (failed(semaphoreBytes)) {
+        return failure();
+      }
+      return std::make_pair(*resources, *semaphoreBytes);
+    };
     if (groupSize == 1) {
+      FailureOr<std::pair<ConservativePipeResources, uint64_t>> plan =
+          planConservativeResources();
+      if (failed(plan) || failed(setConservativePipeBytes(
+                              plan->first.scratchBytes, plan->second))) {
+        module.emitOpError("conservative PipeNet L1 size is not representable");
+        signalPassFailure();
+      }
       return;
     }
 
@@ -770,19 +1031,30 @@ struct TTLFormPipeTransportsPass
     }
     PipeGraph &pipeGraph = *maybePipeGraph;
 
-    // All-published planning bounds address-table storage independently of the
-    // address and counter-storage options selected by the conversion pass.
-    PipeResourcePlan conservativeResourcePlan;
-    if (failed(buildPipeResourcePlan(
-            module, transferIndex, pipeGraph, conservativeResourcePlan,
-            /*enableComputedAddresses=*/false,
-            PipeCounterAllocationPolicy::LocalThenGlobal,
-            /*synchronizationSelection=*/nullptr))) {
+    FailureOr<std::pair<ConservativePipeResources, uint64_t>> conservativePlan =
+        planConservativeResources();
+    if (failed(conservativePlan) ||
+        failed(setConservativePipeBytes(conservativePlan->first.scratchBytes,
+                                        conservativePlan->second))) {
+      module.emitOpError("conservative PipeNet L1 size is not representable");
       signalPassFailure();
       return;
     }
-    assert(conservativeResourcePlan.sramScratch.bytes >= 0 &&
-           "pipe scratch allocation must be non-negative");
+    ConservativePipeResources conservativePipeResources =
+        conservativePlan->first;
+    uint64_t globalSemaphoreBytes = conservativePlan->second;
+    std::optional<uint64_t> overrideBytes =
+        l1BudgetOverride == 0 ? std::nullopt
+                              : std::optional<uint64_t>(l1BudgetOverride);
+    uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
+    DFBLogicalIdentityAnalysis identities(module);
+    if (!identities.succeeded()) {
+      Operation *errorOperation = identities.getErrorOperation();
+      (errorOperation ? errorOperation : module.getOperation())
+          ->emitOpError(identities.getErrorMessage());
+      signalPassFailure();
+      return;
+    }
 
     llvm::MapVector<Operation *, SmallVector<const PipeTransferNode *>>
         transfersByLoop;
@@ -808,26 +1080,23 @@ struct TTLFormPipeTransportsPass
     }
 
     IRRewriter rewriter(module.getContext());
-    uint64_t selectedScratchBytes =
-        static_cast<uint64_t>(conservativeResourcePlan.sramScratch.bytes);
+    uint64_t selectedScratchBytes = conservativePipeResources.scratchBytes;
+    uint64_t selectedGlobalSemaphoreBytes = globalSemaphoreBytes;
     for (PipeTransportLoopCandidate &candidate : candidates) {
       FailureOr<DFBAllocationFootprint> allocationFootprint =
-          getDFBAllocationFootprint(module);
+          getLogicalDFBAllocationFootprint(module, identities);
       if (failed(allocationFootprint)) {
         module.emitOpError("failed to compute DFB allocation sizes");
         signalPassFailure();
         return;
       }
-      std::optional<uint64_t> overrideBytes =
-          l1BudgetOverride == 0 ? std::nullopt
-                                : std::optional<uint64_t>(l1BudgetOverride);
-      uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
-      std::optional<PipeTransportGrouping> grouping =
-          selectGrouping(candidate, groupSize, *allocationFootprint,
-                         selectedScratchBytes, budgetBytes);
+      std::optional<PipeTransportGrouping> grouping = selectGrouping(
+          module, candidate, groupSize, *allocationFootprint, identities,
+          selectedScratchBytes, selectedGlobalSemaphoreBytes, *resetStateBytes,
+          budgetBytes);
       if (!grouping) {
         debugReject(candidate.loop,
-                    "no group with R > 1 fits the L1 DFB budget");
+                    "no group with R > 1 fits the combined L1 budget");
         continue;
       }
 
@@ -847,7 +1116,22 @@ struct TTLFormPipeTransportsPass
       assert(nextScratchBytes &&
              "selected scratch allocation exceeds uint64_t");
       selectedScratchBytes = *nextScratchBytes;
+      FailureOr<uint64_t> residualSemaphoreBytes =
+          getResidualGlobalSemaphoreBytes(module, candidate, *grouping);
+      assert(succeeded(residualSemaphoreBytes) &&
+             "selected residual allocation must be representable");
+      std::optional<uint64_t> nextGlobalSemaphoreBytes =
+          llvm::checkedAddUnsigned(selectedGlobalSemaphoreBytes,
+                                   *residualSemaphoreBytes);
+      assert(nextGlobalSemaphoreBytes &&
+             "selected semaphore allocation exceeds uint64_t");
+      selectedGlobalSemaphoreBytes = *nextGlobalSemaphoreBytes;
       applyGrouping(candidate, *grouping, rewriter);
+    }
+    if (failed(setConservativePipeBytes(selectedScratchBytes,
+                                        selectedGlobalSemaphoreBytes))) {
+      module.emitOpError("conservative PipeNet L1 size is not representable");
+      signalPassFailure();
     }
   }
 };

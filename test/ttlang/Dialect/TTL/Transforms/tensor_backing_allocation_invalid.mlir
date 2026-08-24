@@ -23,6 +23,33 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// Exact-empty tensor-backed domains retain the existing issue #813 rejection.
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @empty_tensor_backing(%runtime_offset: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    // expected-error @below {{tensor-backed physical DFB requires an exact non-empty launch-node domain}}
+    %tensor_backed_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 2 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %runtime_sum = arith.addi %core_x, %runtime_offset : index
+    %runtime_condition = arith.cmpi eq, %runtime_sum, %zero : index
+    %outside_grid = arith.cmpi eq, %core_x, %one : index
+    %inactive_condition = arith.andi %runtime_condition, %outside_grid : i1
+    scf.if %inactive_condition {
+      ttl.opaque_call "inactive_tensor_access" (%tensor_backed_dfb)
+          {header = "inactive_tensor_access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
 // Partially overlapping ranges cannot describe distinct physical DFBs on one
 // launch node.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {

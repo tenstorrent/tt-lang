@@ -11,7 +11,7 @@
 
 func.func private @foreach_src_send_direct_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -45,7 +45,7 @@ func.func private @foreach_src_send_direct_receiver()
 // CHECK: return
 func.func @foreach_src_send_direct()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -72,7 +72,7 @@ func.func @foreach_src_send_direct()
 
 func.func private @foreach_dst_receive_direct_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -110,7 +110,7 @@ func.func private @foreach_dst_receive_direct_sender()
 // CHECK: return
 func.func @foreach_dst_receive_direct()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -144,7 +144,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 2>} {
 
 func.func @foreach_dst_outer_reserve_direct_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %is_src = ttl.is_src {pipe_net_id = 0 : i64}
   scf.if %is_src {
@@ -173,7 +173,7 @@ func.func @foreach_dst_outer_reserve_direct_sender()
 // CHECK: return
 func.func @foreach_dst_outer_reserve_direct()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
   scf.if %is_dst {
@@ -207,7 +207,7 @@ func.func @foreach_dst_outer_reserve_direct()
 
 func.func private @foreach_src_send_table_driven_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 5}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 5} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 5>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -251,7 +251,7 @@ func.func private @foreach_src_send_table_driven_receiver()
 // CHECK: return
 func.func @foreach_src_send_table_driven()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -279,7 +279,7 @@ func.func @foreach_src_send_table_driven()
 
 func.func private @foreach_dst_receive_table_driven_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -310,7 +310,7 @@ func.func private @foreach_dst_receive_table_driven_sender()
 // CHECK: return
 func.func @foreach_dst_receive_table_driven()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
@@ -344,7 +344,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 5>} {
 
 func.func @foreach_dst_outer_reserve_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %is_src = ttl.is_src {pipe_net_id = 0 : i64}
   scf.if %is_src {
@@ -375,7 +375,7 @@ func.func @foreach_dst_outer_reserve_sender()
 // CHECK: return
 func.func @foreach_dst_outer_reserve()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
   scf.if %is_dst {
@@ -420,7 +420,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 // CHECK: return
 func.func @nested_foreach_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 1 name "outer" pipes [
@@ -456,7 +456,7 @@ func.func @nested_foreach_sender()
 // CHECK: return
 func.func @nested_foreach_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 1 name "outer" pipes [
@@ -499,7 +499,7 @@ module attributes {ttl.launch_grid = array<i64: 5, 1>} {
 
 func.func @loopback_collective_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "loopback" pipes [
@@ -526,7 +526,7 @@ func.func @loopback_collective_sender()
 // CHECK: return
 func.func @loopback_collective_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "loopback" pipes [
@@ -578,7 +578,7 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
 // CHECK: return
 func.func @mixed_static_and_selected_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %static_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -607,7 +607,7 @@ func.func @mixed_static_and_selected_sender()
 
 func.func @mixed_static_and_selected_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %static_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
