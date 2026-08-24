@@ -146,7 +146,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `specialize-cores` | bool | `false` | Run the `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
-The pipeline runs these passes in order:
+The pipeline runs these passes and subpasses in order:
 
 - `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user

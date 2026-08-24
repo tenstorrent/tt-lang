@@ -51,7 +51,7 @@ static void collectPrintUsers(Value value, SmallVectorImpl<Operation *> &users,
 
 // True when every use (through unrealized casts) is an emitc.verbatim dprint.
 // An i32 get used as a DFB id for wait/reserve/extern is not print-only.
-static bool isPrintOnlyGet(ttk::GetCompileArgValOp op) {
+static bool isPrintOnly(ttk::GetCompileArgValOp op) {
   SmallVector<Operation *> users;
   SmallPtrSet<Operation *, 8> visited;
   collectPrintUsers(op.getResult(), users, visited);
@@ -88,7 +88,7 @@ dropUnusedPrintOnlyDFBGets(ModuleOp module,
 
   for (ttk::GetCompileArgValOp op : gets) {
     auto func = op->getParentOfType<func::FuncOp>();
-    if (!func || !isPrintOnlyGet(op)) {
+    if (!func || !isPrintOnly(op)) {
       continue;
     }
     int64_t index = static_cast<int64_t>(op.getArgIndex());
@@ -134,7 +134,7 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
 static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
                                  DFBSet &used) {
   func.walk([&](ttk::GetCompileArgValOp op) {
-    if (isPrintOnlyGet(op)) {
+    if (isPrintOnly(op)) {
       return;
     }
     int64_t index = static_cast<int64_t>(op.getArgIndex());

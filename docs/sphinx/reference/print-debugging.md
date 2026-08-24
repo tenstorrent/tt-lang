@@ -94,10 +94,8 @@ When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MA
 `--ttl-specialize-cores` clones kernels per launch coordinate and folds
 branches that depend on the core coordinate. A DFB or tile print that
 survives only on a core with no remaining wait, reserve, or other
-non-print use of that DFB is dropped. The host does not allocate the DFB
-on that core solely to keep the print from faulting. Cores that still
-use the DFB keep both the descriptor and the print. Scalar and DST
-prints are unaffected.
+non-print use of that DFB is dropped. Cores that still use the DFB keep 
+both the descriptor and the print. Scalar and DST prints are unaffected.
 
 ## In depth + code gen
 
