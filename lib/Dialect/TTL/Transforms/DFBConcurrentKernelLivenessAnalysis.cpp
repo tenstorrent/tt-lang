@@ -1331,8 +1331,9 @@ static LogicalResult collectLogicalDFBs(
     }
 
     // Preserve dependency occurrences because aliased operands may have
-    // different summaries. An occurrence without an effect or non-transactional
-    // access remains opaque for the operation's complete duration.
+    // different summaries. An occurrence without a protocol effect or
+    // non-transactional access remains opaque until a synchronized reset proves
+    // that its lifetime terminates.
     llvm::BitVector describedDependencies(dfbOperands.size());
     for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
       assert(effect.dependencyIndex < dependencyLogicalIndices.size() &&
