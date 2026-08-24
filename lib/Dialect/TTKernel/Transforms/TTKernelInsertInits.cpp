@@ -419,6 +419,8 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       };
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
         collectOutputCB(pack.getOutCb(), pack);
+      } else if (auto pack = dyn_cast<ttk::PackWaitedTileOp>(inner)) {
+        collectOutputCB(pack.getOutCb(), pack);
       } else if (auto packBlock = dyn_cast<ttk::PackTileBlockOp>(inner)) {
         collectOutputCB(packBlock.getOutCb(), packBlock);
       }

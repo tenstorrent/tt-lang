@@ -965,12 +965,11 @@ public:
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), "true")); // default to DRAM
       return ArrayAttr::get(op.getContext(), template_args);
-    } else if constexpr (std::is_same_v<SourceOp, ttkernel::PackTileOp>) {
+    } else if constexpr (std::is_same_v<SourceOp, ttkernel::PackTileOp> ||
+                         std::is_same_v<SourceOp, ttkernel::PackWaitedTileOp>) {
       SmallVector<Attribute, 1> template_args;
 
-      auto packTileOp = mlir::cast<ttkernel::PackTileOp>(op);
-
-      template_args.push_back(packTileOp.getOutOfOrderAttr());
+      template_args.push_back(op.getOutOfOrderAttr());
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::AddIntTileOp> ||
                          std::is_same_v<SourceOp, ttkernel::SubIntTileOp> ||
@@ -3211,6 +3210,9 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetDataFormatOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>>(
         typeConverter, context);
+
+    patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
+        typeConverter, context, "pack_tile");
 
     patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(

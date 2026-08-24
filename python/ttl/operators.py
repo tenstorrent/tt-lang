@@ -24,9 +24,12 @@ from ttl.ir import (
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from .condition import DispatchCondition
 from .constants import DEFAULT_TILE_SIZE
 from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
+from .scalar import ScalarType
+from .dfb_reset import DFBReset
 
 
 def call_extern_func(
@@ -40,7 +43,9 @@ def call_extern_func(
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
-) -> None:
+    result_type: Optional[ScalarType] = None,
+    condition_result: Optional[DispatchCondition] = None,
+) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
     Args:
@@ -68,8 +73,35 @@ def call_extern_func(
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
     removes the selector before AST lowering.
+
+    ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
+    ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
+    function.
+
+    ``condition_result`` declares that the result evaluates one immutable
+    dispatch-stable condition. Its scalar type comes from the declaration. The
+    call must be repeat-safe and cannot access DFB state.
+
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
+    """Synchronize DFB interface owners and reset the listed interfaces.
+
+    The operation restores pointer, initialization, and occupancy state to an
+    empty queue. It preserves descriptor configuration and payload bytes. It
+    makes each participating data movement RISC drain its own outstanding NoC
+    commands before publishing boundary arrival. It cannot complete commands
+    issued by another core or a non-participating RISC, so every producer must
+    issue its required transfers before its local reset occurrence.
+    """
+    raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
+
+
+def reset_all_dfbs(reset: DFBReset, /) -> None:
+    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+    raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 
 class DFBEffect:
@@ -315,42 +347,47 @@ class TensorBlock:
         return _build_matmul(ast_self, rhs, transpose_rhs=False)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Store result tensor to the output CB reserve view (overwrite).
+        """Store a result into a reserved or previously read waited block.
 
-        Emits ttl.store with the result tensor and reserve view.
-        Always overwrites the CB slot. For accumulation, use ``+=``.
+        A waited destination represents ordered replacement of the acquired
+        pages. Compiler analysis accepts it only after proving the complete
+        consumer-owned mutation contract.
         """
         if not _is_block(ast_self):
             raise ValueError(
-                "store() must be called on a block acquired from reserve(), not a regular tensor"
+                "store() must be called on a block acquired from reserve() or wait()"
             )
-        reserve = _get_reserve_from_block(ast_self)
+        acquired_view = _get_acquired_view_from_block(ast_self)
         _require_matching_tile_shapes(
             rhs.type.element_type,
-            reserve.type.element_type,
+            acquired_view.type.element_type,
             "source",
-            "destination CB",
+            "destination DFB",
         )
-        ttl.store(rhs, reserve)
+        ttl.store(rhs, acquired_view)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Accumulate into a reserved block via L1 packer accumulation.
+        """Accumulate into a reserve or replace a previously read wait.
 
-        Emits ttl.store with the ``accumulate`` attribute. When used
-        inside a loop, the compiler inserts ``pack_reconfig_l1_acc``
-        guards so that each iteration adds to the existing L1 value
-        instead of overwriting.
+        A reserve-backed block uses L1 packer accumulation. A wait-backed block
+        reads the original value, adds ``rhs``, and stores the replacement
+        without changing dataflow buffer occupancy or pointers.
 
-        This is an interim mechanism; the spec's full pattern
-        (``fill`` + lazy ``BlockExpr`` ``+=`` + ``store``) is deferred
-        to the BlockExpr PR (#446).
+        The compiler accepts waited replacement only after proving the
+        complete consumer-owned mutation contract.
         """
         if not _is_block(ast_self):
             raise ValueError(
-                "+= must be called on a block acquired from reserve(), not a regular tensor"
+                "+= must be called on a block acquired from reserve() or wait()"
             )
-        reserve = _get_reserve_from_block(ast_self)
-        ttl.store(rhs, reserve, accumulate=True)
+        acquired_view = _get_acquired_view_from_block(ast_self)
+        acquisition = acquired_view.owner
+        if acquisition.name == "ttl.cb_wait":
+            ttl.store(ttl.add(ast_self, rhs), acquired_view)
+            return ast_self
+        if acquisition.name != "ttl.cb_reserve":
+            raise ValueError("block acquisition must be ttl.cb_reserve or ttl.cb_wait")
+        ttl.store(rhs, acquired_view, accumulate=True)
         return ast_self
 
     def push(
@@ -480,15 +517,20 @@ def _is_block(value) -> bool:
     return value.owner.name == "ttl.attach_cb"
 
 
-def _get_reserve_from_block(block):
-    """Extract the reserve view from a block (result of ttl.attach_cb).
+def _get_acquired_view_from_block(block):
+    """Extract the reserve or wait view from a block.
 
     The attach_cb op has signature: (tensor, cb) -> tensor
     So the reserve/wait tensor is operand[0].
     """
     if block.owner.name != "ttl.attach_cb":
         raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
-    return block.owner.operands[0]
+    acquired_view = block.owner.operands[0]
+    if acquired_view.owner.name not in ("ttl.cb_reserve", "ttl.cb_wait"):
+        raise ValueError(
+            "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
+        )
+    return acquired_view
 
 
 def _get_cb_from_block(block):

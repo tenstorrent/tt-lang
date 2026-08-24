@@ -30,6 +30,10 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .condition import DispatchCondition
+from .dfb_reset import DFBReset
+from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
+from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
     make_dfb,
@@ -45,6 +49,8 @@ from .operators import (
     matmul,
     node,
     raw_addr,
+    reset_all_dfbs,
+    reset_dfbs,
 )
 
 # Math operations namespace
@@ -59,11 +65,16 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "DispatchCondition",
+    "DFBReset",
+    "DFBAllocationGroup",
+    "ScalarType",
     "compute",
     "datamovement",
     "make_dataflow_buffer_like",
     "make_dfb",
     "make_tensor_backed_dfb",
+    "make_dfb_allocation_group",
     "copy",
     "node",
     "grid_size",
@@ -73,5 +84,7 @@ __all__ = [
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
+    "reset_dfbs",
+    "reset_all_dfbs",
     "math",
 ]

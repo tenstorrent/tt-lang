@@ -21,10 +21,11 @@ counts.
 import pytest
 import torch
 import ttl
+from ttl import ttl_api
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import to_dram, to_l1
 from utils.correctness import assert_pcc
 
 TILE = 32
@@ -86,6 +87,49 @@ def _make_point_to_point_ops(recv_block_count):
             recv_block_count, options="--ttl-pipe-global-semaphores-only"
         ),
     )
+
+
+def _make_point_to_point_with_reset():
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    source_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    receiver_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, source_kernel, receiver_kernel),
+    )
+
+    @ttl.operation(grid=(2, 1))
+    def point_to_point_with_reset(inp, out):
+        net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.reset_dfbs(reset, dfbs=[send_dfb])
+
+        @ttl.datamovement(kernel=source_kernel)
+        def send_data():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            net.if_src(send)
+            ttl.reset_dfbs(reset, dfbs=[send_dfb])
+
+        @ttl.datamovement(kernel=receiver_kernel)
+        def receive_data():
+            def receive(pipe):
+                with recv_dfb.reserve() as recv_block:
+                    ttl.copy(pipe, recv_block).wait()
+                with recv_dfb.wait() as recv_block:
+                    ttl.copy(recv_block, out[0, 0]).wait()
+
+            net.if_dst(receive)
+            ttl.reset_dfbs(reset, dfbs=[send_dfb])
+
+    return point_to_point_with_reset
 
 
 @ttl.operation(grid=(2, 1), options="--no-ttl-pipe-computed-addresses")
@@ -206,6 +250,71 @@ def test_pipe_protocols_match(device, dtype, recv_block_count):
         assert_pcc(configuration_result, inp_torch.float())
     for configuration_result in configuration_results[1:]:
         assert_pcc(configuration_results[0], configuration_result)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("pipe_options", "expected_scratch_bytes", "expected_reset_offset"),
+    [
+        ("--ttl-reuse-user-dfbs", 32, 0),
+        (
+            "--ttl-reuse-user-dfbs --no-ttl-pipe-computed-addresses",
+            64,
+            32,
+        ),
+    ],
+    ids=["computed-address", "published-address"],
+)
+def test_pipe_resources_coexist_with_reset(
+    device,
+    dtype,
+    memory_config,
+    to_device,
+    pipe_options,
+    expected_scratch_bytes,
+    expected_reset_offset,
+    monkeypatch,
+    tmp_path,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reset support")
+
+    operation = _make_point_to_point_with_reset()
+    final_mlir_path = tmp_path / "pipe_with_reset.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    for invocation_index in range(2):
+        input_host = (
+            torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+            + invocation_index * 17
+        ).to(dtype)
+        input_tensor = to_device(input_host, device)
+        output_tensor = to_device(torch.zeros_like(input_host), device)
+        operation(input_tensor, output_tensor, options=pipe_options)
+        assert_pcc(
+            input_host.float(),
+            ttnn.to_torch(output_tensor).float(),
+        )
+
+    final_mlir = final_mlir_path.read_text()
+    assert "ttl.dfb_reset_count = 1 : i64" in final_mlir
+    assert f"ttl.pipe_sram_scratch_bytes = {expected_scratch_bytes} : i64" in final_mlir
+    has_computed_address_backing = "ttl.pipe_computed_address_dfb_indices" in final_mlir
+    assert has_computed_address_backing == (expected_reset_offset == 0)
+
+    compute_mlir = final_mlir.split("func.func @compute", 1)[1].split(
+        "func.func @send_data", 1
+    )[0]
+    if expected_reset_offset == 0:
+        assert "emitc.add" not in compute_mlir
+    else:
+        assert f"value = {expected_reset_offset} : i32" in compute_mlir
+        assert "emitc.add" in compute_mlir
 
 
 # A collective source that is also a receiver must publish its address through
