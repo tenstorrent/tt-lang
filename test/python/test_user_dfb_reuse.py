@@ -440,6 +440,101 @@ def _make_repeated_transaction_kernel(data_format):
     return repeated_transaction_kernel
 
 
+def _make_cumulative_queue_state_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def cumulative_queue_state_kernel(input_tensor, output_tensor):
+        first_stream = ttl.make_dfb(data_format, shape=(1, 4), block_count=3)
+        completion = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_stream = ttl.make_dfb(data_format, shape=(1, 4), block_count=3)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            pass
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "read_high_water_dfb_logical_dm",
+                template_args=[ttl.dfb_descriptor(first_stream)],
+                func_args=[input_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(first_stream, tiles=8),
+                    ttl.DFBEffect.push(first_stream, tiles=4),
+                ],
+            )
+            with completion.wait():
+                pass
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "read_high_water_dfb_logical_dm",
+                template_args=[ttl.dfb_descriptor(second_stream)],
+                func_args=[input_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                    ttl.DFBEffect.reserve(second_stream, tiles=8),
+                    ttl.DFBEffect.push(second_stream, tiles=4),
+                ],
+            )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "write_high_water_dfb_and_signal_logical_dm",
+                template_args=[
+                    ttl.dfb_descriptor(first_stream),
+                    ttl.dfb_descriptor(completion),
+                ],
+                func_args=[output_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.wait(first_stream, tiles=4),
+                    ttl.DFBEffect.pop(first_stream, tiles=4),
+                    ttl.DFBEffect.reserve(completion, tiles=1),
+                    ttl.DFBEffect.push(completion, tiles=1),
+                ],
+            )
+            ttl.call_extern_func(
+                REPEATED_TRANSACTION_HEADER,
+                "write_high_water_dfb_logical_dm",
+                template_args=[ttl.dfb_descriptor(second_stream)],
+                func_args=[output_tensor],
+                dfb_effects=[
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                    ttl.DFBEffect.wait(second_stream, tiles=4),
+                    ttl.DFBEffect.pop(second_stream, tiles=4),
+                ],
+            )
+
+    return cumulative_queue_state_kernel
+
+
 def _make_conditional_lifecycle_kernel(data_format, predicate_value):
     @ttl.operation(grid=(1, 1))
     def conditional_lifecycle_kernel(input_tensor, output_tensor):
@@ -1279,6 +1374,44 @@ def test_repeated_transaction_lifecycles_reuse_dfb(
     physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
     assert physical_dfb_count == 3
 
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("data_format", "dtype"),
+    [
+        ("bf16", torch.bfloat16),
+        ("float32", torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_cumulative_queue_state_lifecycles_reuse_dfb(
+    device, data_format, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    operation = _make_cumulative_queue_state_kernel(data_format)
+    element_indices = torch.arange(TILE * 16 * TILE, dtype=torch.float32).reshape(
+        TILE, 16 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_path = tmp_path / "cumulative_queue_state.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
+    assert physical_dfb_count == 2
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
     if dtype == torch.bfloat16:

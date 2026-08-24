@@ -40,6 +40,8 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
+  m.attr("USED_DFB_INDICES_ATTR") =
+      nb::str(kUsedDFBIndicesAttrName.data(), kUsedDFBIndicesAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =
       nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
 

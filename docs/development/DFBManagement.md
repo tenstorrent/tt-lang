@@ -1267,11 +1267,13 @@ type, and block count). An explicit allocation group may combine scratch DFBs
 with different block shapes or block counts when their element types and page
 formats are identical. The physical descriptor then uses the largest total
 capacity. Both mechanisms require complete quiescent lifecycles. Ordinary reuse
-also requires matching transaction runs unless a synchronized reset establishes
-canonical state. Allocation groups instead advance one cumulative symbolic
-cursor through each ordered member's exact transaction runs and reject any
-acquire that would cross the shared physical envelope. These conditions retain
-one page format, sufficient storage, and legal ring-pointer progression.
+also requires matching write- and read-pointer runs unless a synchronized reset
+establishes canonical state. The matched sequences must remain boundary-safe
+when repeated from their terminal offsets. Allocation groups instead advance
+independent write and read cursors through each ordered member and require equal
+offsets at every handoff. Any pointer movement that crosses the shared physical
+envelope is rejected. These conditions retain one page format, sufficient
+storage, and legal ring-pointer progression.
 `CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
 is a pointer comparison.
 
@@ -1438,6 +1440,37 @@ returning. Work that remains active after return requires a separate explicit
 completion contract. The frontend and IR representation are described in
 [External Function Interop Lowering](ExternalFuncInteropLowering.md).
 
+An exact static `dfb_effects` sequence may describe cumulative queue state
+rather than one-to-one transactions. Reserve and wait effects establish
+readiness thresholds relative to the current write or read cursor. Push and pop
+effects advance those cursors. One readiness check may therefore authorize
+several smaller pointer movements, and one publication may satisfy several
+smaller waits. Repeated readiness checks retain the greatest still-valid
+threshold.
+
+The cumulative proof requires every protocol effect to execute exactly once in
+one ordered external-call sequence. Producer and consumer cursor movement must
+have equal positive totals, each side must have one constant pointer owner, and
+every non-protocol DFB access must remain inside an acquire/release interval.
+The analysis relates each wait completion to the first push that publishes its
+required cumulative position. When a reservation exceeds currently available
+capacity, it also relates that reserve completion to the first pop that returns
+the required credit. Repeated effects within one opaque call are not matched as
+independent operation-completion transactions. When one producer call and one
+consumer call contain the complete ordered protocol, the analysis simulates
+both effect sequences against the physical DFB capacity. A feasible cycle that
+exists only within the candidate edge batch remains unproved at operation
+granularity rather than becoming contradictory evidence. A protocol that
+cannot progress, or a relation that contradicts the existing happens-before
+graph, remains a hard contradiction. Unknown order, dynamic counts, mixed
+native and external cumulative sequences, condition mismatch, and incomplete
+terminal consumption remain conservative.
+
+Reports preserve the normalized transaction boundaries and the raw
+`write_cursor_runs` and `read_cursor_runs`. Allocation compatibility uses the
+raw cursor movements; the normalized sequence is diagnostic evidence and does
+not erase different pointer advancement.
+
 `num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
 tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
 consume the same bytes as one 32x32 bf16 tile. Tile dimensions remain part of
@@ -1447,10 +1480,10 @@ a physical index.
 TT-Metal advances each ring pointer by
 [`num_pages * fifo_page_size`](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L208-L214).
 The pointer wraps only when it reaches the end of the physical DFB. Logical
-DFBs sharing one physical index therefore use the same transaction tile-count
-sequence, and every count divides `block_count * elements_per_block`. This keeps
-every reserve, push, wait, and pop within the allocation and places each pointer
-on a legal wrap boundary.
+DFBs sharing one physical index therefore preserve their exact write and read
+cursor runs. Each run must remain within the physical capacity from its current
+offset; a movement that crosses the allocation end is rejected. Producer and
+consumer cursors must reach the same offset at a lifecycle handoff.
 
 For a bounded DFB, every storage-accessing operation with a direct DFB operand
 is projected to a top-level function operation. `attach_cb` and `get_dfb_id`
@@ -1634,10 +1667,11 @@ contracts. Each accepted group emits a warning and a
 `ttl.assumed_dfb_allocation_groups` audit record. The allocator still rejects
 incompatible page formats, tensor storage, compute-kernel configuration,
 mutually reachable access events, selected-reset interface writes that overlap
-another member, and transaction sequences that cross the selected ring envelope
-when started at an assumed epoch boundary. Automatic reuse and every
-target-capacity and L1-budget check remain proof-based. Strict validation is the
-default.
+another member, required cumulative synchronization that contradicts
+established order, and transaction sequences that cross the selected ring
+envelope when started at an assumed epoch boundary. Automatic reuse and every
+target-capacity and L1-budget check remain proof-based. Strict validation is
+the default.
 
 #### Allocation diagnostics
 
@@ -2055,20 +2089,16 @@ with releases before finalization.
   applies the same conservative restriction when repeated regions invalidate a
   dominance-based `happensBefore` result.
 
-- **Dynamically repeated protocols.** Multiple statically enumerated
-  reserve/push/wait/pop transactions are represented as distinct ordered
-  occurrences, including sequences expanded from `ttl.DFBEffect.repeat`. A
-  runtime loop still requires symbolic occurrence matching so a push, wait, and
-  pop from the same iteration are related without conflating different
-  iterations. PipeNet schedule verification pairs static protocol occurrences
-  and uses `ExecutionCountAnalysis` to prove equal dynamic counts. DFB reuse
-  requires the corresponding reserve/push/wait/pop occurrence matching.
+- **Unresolved repeated protocols.** Static loops with matched structured
+  iteration domains and exact external cumulative sequences are supported.
+  Dynamic trip counts, conditionally repeated iterations, unknown external
+  effect order, and mixed native/external cumulative sequences remain
+  conservative.
 
-- **Credit-return ordering.** Only push-to-wait completion is modeled across
-  kernels. Proving additional pop-to-reserve ordering could shorten later
-  producer frontiers, but requires exact protocol and occurrence matching.
-  PipeNet schedule verification proves receiver post/send/wait correspondence,
-  but does not establish a DFB pop-to-reserve credit-return edge.
+- **General credit-return ordering.** Exact cumulative external sequences add
+  pop-to-reserve completion relations when capacity requires returned credit.
+  Native and dynamically repeated protocols still require exact occurrence
+  matching before the compiler may infer the same relation.
 
 - **Assignment granularity.** Allocation currently selects one physical index
   per logical DFB over its complete launch-node domain. Per-node or hybrid

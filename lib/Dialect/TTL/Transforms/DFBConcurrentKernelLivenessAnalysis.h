@@ -150,6 +150,8 @@ struct DFBLifecycleEpoch {
   SmallVector<unsigned> earliestEntryEvents;
   SmallVector<unsigned> terminalCompletionEvents;
   SmallVector<DFBTransactionRun> transactionRuns;
+  SmallVector<DFBTransactionRun> writeCursorRuns;
+  SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
@@ -184,9 +186,13 @@ struct DFBPerNodeLifetime {
   SmallVector<unsigned> terminalCompletionEvents;
   /// Normalized transaction runs in occurrence order.
   SmallVector<DFBTransactionRun> transactionRuns;
+  SmallVector<DFBTransactionRun> writeCursorRuns;
+  SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   SmallVector<DFBTransactionRun, 0> terminalTransactionRuns;
+  SmallVector<DFBTransactionRun, 0> terminalWriteCursorRuns;
+  SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   bool terminalStateCanonical = false;

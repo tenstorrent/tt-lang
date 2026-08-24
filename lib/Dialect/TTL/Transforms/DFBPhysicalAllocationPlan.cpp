@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 
@@ -90,6 +91,58 @@ static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
     return lifetime->quiescence.evidence;
   }
   return logicalDFB.declarations.front();
+}
+
+static bool cursorRunsCanRepeat(ArrayRef<DFBTransactionRun> cursorRuns,
+                                std::uint64_t physicalTileCount) {
+  FailureOr<std::uint64_t> terminalOffset =
+      advanceDFBTransactionCursor(cursorRuns, physicalTileCount);
+  if (failed(terminalOffset)) {
+    return false;
+  }
+  if (cursorRuns.empty() || *terminalOffset == 0) {
+    return true;
+  }
+
+  std::uint64_t totalMovement = 0;
+  for (const DFBTransactionRun &run : cursorRuns) {
+    std::optional<std::uint64_t> runMovement = llvm::checkedMulUnsigned(
+        run.executionCount, static_cast<std::uint64_t>(run.tilesPerExecution));
+    if (!runMovement) {
+      return false;
+    }
+    std::optional<std::uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalMovement, *runMovement);
+    if (!updatedTotal) {
+      return false;
+    }
+    totalMovement = *updatedTotal;
+  }
+
+  // Every reachable start offset is a multiple of this value. Requiring each
+  // movement and its prefix to share that alignment prevents boundary crossing
+  // when the complete cursor sequence is repeated.
+  std::uint64_t repeatAlignment = std::gcd(totalMovement, physicalTileCount);
+  std::uint64_t prefixMovement = 0;
+  for (const DFBTransactionRun &run : cursorRuns) {
+    std::uint64_t tilesPerExecution = run.tilesPerExecution;
+    if (repeatAlignment % tilesPerExecution != 0 ||
+        prefixMovement % tilesPerExecution != 0) {
+      return false;
+    }
+    prefixMovement += run.executionCount * tilesPerExecution;
+  }
+  return true;
+}
+
+static bool haveCompatibleCursorRuns(const DFBPerNodeLifetime &before,
+                                     const DFBPerNodeLifetime &after,
+                                     std::uint64_t physicalTileCount) {
+  return before.terminalWriteCursorRuns == after.writeCursorRuns &&
+         before.terminalReadCursorRuns == after.readCursorRuns &&
+         cursorRunsCanRepeat(before.terminalWriteCursorRuns,
+                             physicalTileCount) &&
+         cursorRunsCanRepeat(before.terminalReadCursorRuns, physicalTileCount);
 }
 
 } // namespace
@@ -225,6 +278,8 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
+    std::uint64_t physicalTileCount =
+        cast<CircularBufferType>(lhs.type).getTotalElements();
     bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
     bool rhsInactive = rhs.launchDomain.known && rhs.launchDomain.nodes.empty();
     if (lhsInactive || rhsInactive) {
@@ -296,7 +351,7 @@ private:
       if (lhsBeforeRhs || rhsBeforeLhs) {
         terminalStateCompatible =
             before->terminalStateCanonical || !requireMatchingTransactions ||
-            before->terminalTransactionRuns == after->transactionRuns;
+            haveCompatibleCursorRuns(*before, *after, physicalTileCount);
         pointerOwnersCompatible =
             before->terminalStateCanonical ||
             (before->terminalWritePointerOwner == after->writePointerOwner &&
@@ -306,7 +361,10 @@ private:
         // unordered; ordering alone must not obscure a protocol mismatch.
         terminalStateCompatible =
             !requireMatchingTransactions ||
-            lhsLifetime->transactionRuns == rhsLifetime->transactionRuns;
+            (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
+                                      physicalTileCount) &&
+             haveCompatibleCursorRuns(*rhsLifetime, *lhsLifetime,
+                                      physicalTileCount));
         pointerOwnersCompatible =
             lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
             lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner;
@@ -418,12 +476,16 @@ static bool hasAllocationGroupMemberInconsistentOrder(
                                        node);
 }
 
-static FailureOr<std::uint64_t>
-advanceAllocationGroupMemberCursor(const DFBPerNodeLifetime &lifetime,
-                                   std::uint64_t physicalTileCount,
-                                   std::uint64_t initialOffset) {
-  std::uint64_t pointerOffset = initialOffset;
-  auto advanceRuns = [&](ArrayRef<DFBTransactionRun> transactionRuns) {
+struct AllocationGroupCursorState {
+  std::uint64_t writePointerOffset = 0;
+  std::uint64_t readPointerOffset = 0;
+};
+
+static FailureOr<AllocationGroupCursorState> advanceAllocationGroupMemberCursor(
+    const DFBPerNodeLifetime &lifetime, std::uint64_t physicalTileCount,
+    AllocationGroupCursorState cursorState = {}) {
+  auto advanceRuns = [&](ArrayRef<DFBTransactionRun> transactionRuns,
+                         std::uint64_t &pointerOffset) {
     FailureOr<std::uint64_t> nextOffset = advanceDFBTransactionCursor(
         transactionRuns, physicalTileCount, pointerOffset);
     if (succeeded(nextOffset)) {
@@ -432,20 +494,29 @@ advanceAllocationGroupMemberCursor(const DFBPerNodeLifetime &lifetime,
     return nextOffset;
   };
   if (lifetime.resetEpochs.empty()) {
-    if (failed(advanceRuns(lifetime.transactionRuns))) {
+    if (failed(advanceRuns(lifetime.writeCursorRuns,
+                           cursorState.writePointerOffset)) ||
+        failed(advanceRuns(lifetime.readCursorRuns,
+                           cursorState.readPointerOffset))) {
       return failure();
     }
-    return pointerOffset;
-  }
-  for (const DFBLifecycleEpoch &epoch : lifetime.resetEpochs) {
-    if (failed(advanceRuns(epoch.transactionRuns))) {
-      return failure();
+  } else {
+    for (const DFBLifecycleEpoch &epoch : lifetime.resetEpochs) {
+      if (failed(advanceRuns(epoch.writeCursorRuns,
+                             cursorState.writePointerOffset)) ||
+          failed(advanceRuns(epoch.readCursorRuns,
+                             cursorState.readPointerOffset))) {
+        return failure();
+      }
+      if (epoch.terminalStateCanonical) {
+        cursorState = {};
+      }
     }
-    if (epoch.terminalStateCanonical) {
-      pointerOffset = 0;
-    }
   }
-  return pointerOffset;
+  if (cursorState.writePointerOffset != cursorState.readPointerOffset) {
+    return failure();
+  }
+  return cursorState;
 }
 
 static void addAllocationGroupAssumption(
@@ -570,8 +641,8 @@ static LogicalResult validateAllocationGroupCursor(
 
     if (hasUnprovenOrder) {
       for (const AllocationGroupNodeMember &member : activeMembers) {
-        if (succeeded(advanceAllocationGroupMemberCursor(
-                *member.lifetime, physicalTileCount, 0))) {
+        if (succeeded(advanceAllocationGroupMemberCursor(*member.lifetime,
+                                                         physicalTileCount))) {
           continue;
         }
         const DFBLogicalLifecycle &logicalDFB =
@@ -614,28 +685,25 @@ static LogicalResult validateAllocationGroupCursor(
     }
     activeMembers = std::move(orderedMembers);
 
-    std::uint64_t pointerOffset = 0;
+    AllocationGroupCursorState cursorState;
     for (const AllocationGroupNodeMember &member : activeMembers) {
       const DFBPerNodeLifetime &lifetime = *member.lifetime;
-      FailureOr<std::uint64_t> nextOffset = advanceAllocationGroupMemberCursor(
-          lifetime, physicalTileCount, pointerOffset);
+      FailureOr<AllocationGroupCursorState> nextOffset =
+          advanceAllocationGroupMemberCursor(lifetime, physicalTileCount,
+                                             cursorState);
       if (succeeded(nextOffset)) {
-        pointerOffset = *nextOffset;
+        cursorState = *nextOffset;
         continue;
       }
 
       const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
-      if (unsafeAssumeAllocationGroups &&
-          succeeded(advanceAllocationGroupMemberCursor(lifetime,
-                                                       physicalTileCount, 0))) {
+      FailureOr<AllocationGroupCursorState> resetState =
+          advanceAllocationGroupMemberCursor(lifetime, physicalTileCount);
+      if (unsafeAssumeAllocationGroups && succeeded(resetState)) {
         addAllocationGroupAssumption(
             assumptions, DFBAllocationGroupAssumptionReason::EpochReset,
             logicalDFB.logicalId);
-        pointerOffset = 0;
-        FailureOr<std::uint64_t> resetOffset =
-            advanceAllocationGroupMemberCursor(lifetime, physicalTileCount, 0);
-        assert(succeeded(resetOffset) && "validated epoch reset must advance");
-        pointerOffset = *resetOffset;
+        cursorState = *resetState;
         continue;
       }
       std::string message;
