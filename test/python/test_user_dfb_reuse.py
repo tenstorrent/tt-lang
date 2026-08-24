@@ -353,44 +353,49 @@ def _make_repeated_transaction_kernel(data_format):
 
         @ttl.datamovement(kernel=reader_kernel)
         def read():
+            node_x, _ = ttl.node(dims=2)
             for transaction_pair in range(2):
-                with first_source.reserve() as destination:
-                    ttl.copy(
-                        input_tensor[
-                            0:1,
-                            transaction_pair * 8 : transaction_pair * 8 + 4,
-                        ],
-                        destination,
-                    ).wait()
-                with first_source.reserve() as destination:
-                    ttl.copy(
-                        input_tensor[
-                            0:1,
-                            transaction_pair * 8 + 4 : transaction_pair * 8 + 8,
-                        ],
-                        destination,
-                    ).wait()
+                if node_x == 0:
+                    with first_source.reserve() as destination:
+                        ttl.copy(
+                            input_tensor[
+                                0:1,
+                                transaction_pair * 8 : transaction_pair * 8 + 4,
+                            ],
+                            destination,
+                        ).wait()
+                if node_x == 0:
+                    with first_source.reserve() as destination:
+                        ttl.copy(
+                            input_tensor[
+                                0:1,
+                                transaction_pair * 8 + 4 : transaction_pair * 8 + 8,
+                            ],
+                            destination,
+                        ).wait()
 
             with completion.wait():
                 pass
 
             for transaction_pair in range(2):
-                with second_source.reserve() as destination:
-                    ttl.copy(
-                        input_tensor[
-                            0:1,
-                            transaction_pair * 8 : transaction_pair * 8 + 4,
-                        ],
-                        destination,
-                    ).wait()
-                with second_source.reserve() as destination:
-                    ttl.copy(
-                        input_tensor[
-                            0:1,
-                            transaction_pair * 8 + 4 : transaction_pair * 8 + 8,
-                        ],
-                        destination,
-                    ).wait()
+                if node_x == 0:
+                    with second_source.reserve() as destination:
+                        ttl.copy(
+                            input_tensor[
+                                0:1,
+                                transaction_pair * 8 : transaction_pair * 8 + 4,
+                            ],
+                            destination,
+                        ).wait()
+                if node_x == 0:
+                    with second_source.reserve() as destination:
+                        ttl.copy(
+                            input_tensor[
+                                0:1,
+                                transaction_pair * 8 + 4 : transaction_pair * 8 + 8,
+                            ],
+                            destination,
+                        ).wait()
 
         @ttl.compute(kernel=compute_kernel)
         def compute():

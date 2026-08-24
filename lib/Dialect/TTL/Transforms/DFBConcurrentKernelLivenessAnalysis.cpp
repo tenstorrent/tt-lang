@@ -416,6 +416,11 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
+static bool isAtMostOnceRegionParent(Operation *operation) {
+  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
+             scf::ExecuteRegionOp, IfSrcOp, IfDstOp>(operation);
+}
+
 static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
     Operation *operation, AccessDomain accessDomain,
     const LivenessDomainState &domainState) {
@@ -438,8 +443,8 @@ static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
 }
 
 // Proves that an access executes once in every iteration of one immutable
-// structured loop nest. Region selection between the loops and the access is
-// rejected because an aggregate count cannot prove per-iteration execution.
+// structured loop nest. At-most-once regions must be selected on every
+// enclosing-loop invocation.
 static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     Operation *operation, std::uint64_t executionCount, LaunchNodeCoord node,
     const LivenessDomainState &domainState) {
@@ -469,7 +474,14 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     if (!loop) {
       std::optional<std::uint64_t> parentExecutionCount =
           getExactExecutionCountAtLaunchNode(parent, node, domainState);
-      if (!parentExecutionCount || *parentExecutionCount != 1) {
+      // Equality proves that an at-most-once region was selected for every
+      // parent invocation, including each enclosing-loop iteration.
+      std::optional<std::uint64_t> selectedExecutionCount =
+          parentExecutionCount ? llvm::checkedMulUnsigned(*parentExecutionCount,
+                                                          domainExecutionCount)
+                               : std::nullopt;
+      if (!isAtMostOnceRegionParent(parent) || !selectedExecutionCount ||
+          *selectedExecutionCount != executionCount) {
         return std::nullopt;
       }
       nestedOperation = parent;
@@ -516,8 +528,7 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
     Operation *parent = region ? region->getParentOp() : nullptr;
     if (!parent || !region->hasOneBlock() ||
         nestedOperation->getBlock() != &region->front() ||
-        !isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
-             scf::ExecuteRegionOp>(parent)) {
+        !isAtMostOnceRegionParent(parent)) {
       return false;
     }
     nestedOperation = parent;
@@ -826,6 +837,17 @@ static SmallVector<llvm::BitVector> collectInconsistentAccessOrder(
   return inconsistent;
 }
 
+static bool
+accessOccurrencePrecedes(const DFBAccessOccurrence &before,
+                         const DFBAccessOccurrence &after,
+                         const StructuralOperationOrder &structuralOrder) {
+  if (before.operation == after.operation) {
+    return before.protocolEffect && after.protocolEffect &&
+           before.sequenceIndex < after.sequenceIndex;
+  }
+  return structuralOrder.precedes(before.operation, after.operation);
+}
+
 // Proves ordering between corresponding executions, not all-before-all
 // ordering across the complete runs.
 static bool runPrecedesWithinEachIteration(
@@ -836,18 +858,15 @@ static bool runPrecedesWithinEachIteration(
     return false;
   }
   if (before.access->operation == after.access->operation) {
-    return before.access->protocolEffect && after.access->protocolEffect &&
-           before.access->sequenceIndex < after.access->sequenceIndex;
+    return accessOccurrencePrecedes(*before.access, *after.access,
+                                    structuralOrder);
   }
-  if (before.conditionalExecution && after.conditionalExecution) {
-    return structuralOrder.precedes(before.access->operation,
-                                    after.access->operation);
-  }
-  if (before.executionCount <= 1) {
+  if (!(before.conditionalExecution && after.conditionalExecution) &&
+      before.executionCount <= 1) {
     return false;
   }
-  return structuralOrder.precedes(before.access->operation,
-                                  after.access->operation);
+  return accessOccurrencePrecedes(*before.access, *after.access,
+                                  structuralOrder);
 }
 
 // The middle edge preserves iteration-to-iteration order without one event per
@@ -863,15 +882,15 @@ static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
 // Requires a release to follow every use owned by its acquisition; textual
 // acquire/release order alone does not prove storage quiescence.
 // `sameKindAcquires` contains every same-DFB acquisition of the same kind.
-static bool
-releaseFollowsOwnedUses(Operation *acquire, Operation *release,
-                        ArrayRef<Operation *> sameKindAcquires,
-                        const StructuralOperationOrder &structuralOrder) {
+static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release,
+                                    ArrayRef<Operation *> sameKindAcquires) {
+  if (acquire->getBlock() != release->getBlock()) {
+    return false;
+  }
   DFBAcquireInterval interval =
       makeDFBAcquireInterval(acquire, sameKindAcquires);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  return lastOwnedUse == acquire ||
-         structuralOrder.precedes(lastOwnedUse, release);
+  return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
 
 // Finds every access without a proved predecessor so all possible lifetime
@@ -1760,12 +1779,7 @@ static void buildProgramOrderTopology(
         if (before == after) {
           continue;
         }
-        bool ordered =
-            before->operation == after->operation
-                ? before->protocolEffect && after->protocolEffect &&
-                      before->sequenceIndex < after->sequenceIndex
-                : structuralOrder.precedes(before->operation, after->operation);
-        if (ordered) {
+        if (accessOccurrencePrecedes(*before, *after, structuralOrder)) {
           graph.addEdge(accessEvents.at(before).last.completion,
                         accessEvents.at(after).first.entry);
         }
@@ -2166,8 +2180,9 @@ static bool acquireReleaseRunsAlign(
         isa<CBPushOp>(release.access->operation)) ||
        (isa<CBWaitOp>(acquire.access->operation) &&
         isa<CBPopOp>(release.access->operation))) &&
-      structuralOrder.precedes(acquire.access->operation,
-                               release.access->operation);
+      acquire.access->operation->getBlock() ==
+          release.access->operation->getBlock() &&
+      acquire.access->operation->isBeforeInBlock(release.access->operation);
   return acquire.executionCount == release.executionCount &&
          acquire.iterationDomain == release.iterationDomain &&
          (nativeAcquirePrecedesRelease ||
@@ -3037,8 +3052,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
       }
       if (isa<CBReserveOp>(reserve->access->operation) &&
           !releaseFollowsOwnedUses(reserve->access->operation,
-                                   push->access->operation, nativeReserves,
-                                   structuralOrder)) {
+                                   push->access->operation, nativeReserves)) {
         return {DFBQuiescenceFailureReason::IncompleteUseOrder,
                 push->access->operation};
       }
@@ -3060,8 +3074,7 @@ static DFBQuiescenceProof computeProtocolLifetime(
       }
       if (isa<CBWaitOp>(wait->access->operation) &&
           !releaseFollowsOwnedUses(wait->access->operation,
-                                   pop->access->operation, nativeWaits,
-                                   structuralOrder)) {
+                                   pop->access->operation, nativeWaits)) {
         return {DFBQuiescenceFailureReason::IncompleteUseOrder,
                 pop->access->operation};
       }

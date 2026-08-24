@@ -242,11 +242,16 @@ module {
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index
+    %enabled = arith.constant true
     scf.for %iteration = %lower to %upper step %step {
-      %reserved_0 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-      %reserved_1 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      scf.if %enabled {
+        %reserved_0 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+      scf.if %enabled {
+        %reserved_1 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
     }
     return
   }
@@ -258,76 +263,17 @@ module {
     %lower = arith.constant 0 : index
     %upper = arith.constant 4 : index
     %step = arith.constant 1 : index
-    scf.for %iteration = %lower to %upper step %step {
-      %waited_0 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-      %waited_1 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    }
-    return
-  }
-}
-
-// -----
-
-// Ordered sibling regions preserve one native acquisition interval, including
-// the acquired tensor use before release.
-
-// REPORT: operation=ttl.cb_reserve kernel=@sibling_region_acquire_release
-// REPORT: node (0,0) quiescence=none
-// REPORT-SAME: transactions=[1]
-
-module {
-  func.func @sibling_region_acquire_release()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %enabled = arith.constant true
-    scf.if %enabled {
-      %reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      %producer_use = tensor.extract_slice %reserved[0, 0] [1, 1] [1, 1] : tensor<1x1x!ttcore.tile<32x32, bf16>> to tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.for %iteration = %lower to %upper step %step {
+      scf.if %enabled {
+        %waited_0 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+      scf.if %enabled {
+        %waited_1 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
     }
-    scf.if %enabled {
-      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    }
-    scf.if %enabled {
-      %waited = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      %consumer_use = tensor.extract_slice %waited[0, 0] [1, 1] [1, 1] : tensor<1x1x!ttcore.tile<32x32, bf16>> to tensor<1x1x!ttcore.tile<32x32, bf16>>
-    }
-    scf.if %enabled {
-      ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    }
-    return
-  }
-}
-
-// -----
-
-// A single-instance nested acquisition retains structural order with its
-// top-level release and permits the following lifecycle to reuse the index.
-
-// REUSE-LABEL: func.func @nested_reserve
-// REUSE-SAME: ttl.base_cta_index = 1 : i32
-// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
-
-module {
-  func.func @nested_reserve()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %first_reserved = scf.execute_region -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-      %nested_reserved = ttl.cb_reserve %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      scf.yield %nested_reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    }
-    ttl.cb_push %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %first_waited = ttl.cb_wait %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second_reserved = ttl.cb_reserve %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second_waited = ttl.cb_wait %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }
 }

@@ -1385,8 +1385,9 @@ described under [External calls](#external-calls).
 
 Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region, or inside an exact static loop, may satisfy
-these conditions. Dynamic trip counts and conditionally repeated loop bodies
-remain unproven.
+these conditions. An at-most-once region inside a static loop also qualifies
+when exact counts prove that the region executes in every loop iteration.
+Dynamic trip counts and runtime-selected repeated regions remain unproven.
 
 An access with an unknown launch-node domain is refined to an exact domain when
 execution-count analysis proves a count on every base launch node. Nodes with
@@ -2092,11 +2093,13 @@ with releases before finalization.
   `scf.if`, `affine.if`, `ttl.if_src`, and `ttl.if_dst` can be bounded when
   launch-node and execution-count analysis prove one execution on the
   applicable node. Exact static loops can be bounded when matched runs share
-  one iteration domain and their operations have structural order. Nested
-  operations project to the enclosing kernel-body operation for inter-kernel
-  ordering. Dynamic or conditionally repeated regions and multi-block functions
-  remain conservative. More precise region-local ordering for those forms
-  requires occurrence-level entry and completion events.
+  one iteration domain and their operations have structural order. This
+  includes at-most-once regions proven to execute in every static iteration.
+  Nested operations project to the enclosing kernel-body operation for
+  inter-kernel ordering. Dynamic or runtime-selected repeated regions and
+  multi-block functions remain conservative. More precise region-local
+  ordering for those forms requires occurrence-level entry and completion
+  events.
   MLIR's
   [One-Shot Bufferize](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Bufferization/Transforms/OneShotAnalysis.cpp)
   applies the same conservative restriction when repeated regions invalidate a
@@ -2104,7 +2107,7 @@ with releases before finalization.
 
 - **Unresolved repeated protocols.** Static loops with matched structured
   iteration domains and exact external cumulative sequences are supported.
-  Dynamic trip counts, conditionally repeated iterations, unknown external
+  Dynamic trip counts, runtime-selected iterations, unknown external
   effect order, and mixed native/external cumulative sequences remain
   conservative.
 
