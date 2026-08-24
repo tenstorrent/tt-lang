@@ -42,8 +42,12 @@ DFB_FACTORY_NAMES: Set[str] = {
 }
 PIPE_FACTORY_NAMES: Set[str] = {"Pipe", "PipeNet"}
 KERNEL_FACTORY_NAMES: Set[str] = {"Kernel"}
+ALLOCATION_GROUP_FACTORY_NAMES: Set[str] = {"make_dfb_allocation_group"}
 SETUP_FACTORY_NAMES: Set[str] = (
-    DFB_FACTORY_NAMES | PIPE_FACTORY_NAMES | KERNEL_FACTORY_NAMES
+    DFB_FACTORY_NAMES
+    | PIPE_FACTORY_NAMES
+    | KERNEL_FACTORY_NAMES
+    | ALLOCATION_GROUP_FACTORY_NAMES
 )
 
 # Decorators that mark a hand-written kernel of a multi-kernel operation.

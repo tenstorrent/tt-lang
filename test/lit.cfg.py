@@ -46,6 +46,26 @@ config.ttlang_source_dir = getattr(
 )
 config.python_executable = getattr(config, "python_executable", sys.executable)
 
+build_type = getattr(config, "ttlang_build_type", None)
+if build_type is None:
+    build_type_prefix = "CMAKE_BUILD_TYPE:STRING="
+    try:
+        with open(
+            os.path.join(config.ttlang_obj_root, "CMakeCache.txt"), encoding="utf-8"
+        ) as cache_file:
+            build_type = next(
+                (
+                    line.removeprefix(build_type_prefix).strip()
+                    for line in cache_file
+                    if line.startswith(build_type_prefix)
+                ),
+                "",
+            )
+    except OSError:
+        build_type = ""
+if build_type in {"MinSizeRel", "Release", "RelWithDebInfo"}:
+    config.available_features.add("optimized")
+
 # Concurrent hardware shards require separate timing and temporary files.
 config.test_exec_root = os.environ.get(
     "TTLANG_LIT_TEST_EXEC_ROOT", os.path.join(config.ttlang_obj_root, "test")

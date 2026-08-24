@@ -1,6 +1,6 @@
 // Verify configuration analysis accepts tensor-of-tile operands produced by
 // ttl-lower-to-loops when a pipeline re-runs configuration analysis.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0},ttl-assign-dst,ttl-lower-to-loops,ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0}))' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-lower-to-loops),ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0})' | FileCheck %s
 
 #identity = affine_map<(tileRow, tileColumn) -> (tileRow, tileColumn)>
 

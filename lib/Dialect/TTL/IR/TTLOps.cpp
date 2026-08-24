@@ -21,13 +21,16 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <tuple>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
@@ -67,6 +70,89 @@ llvm::LogicalResult LogicalKernelAttr::verify(
                           "operation or compiler-owned role";
   }
   return llvm::success();
+}
+
+llvm::LogicalResult DispatchConditionAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    Type scalarType) {
+  if (ordinal < 0) {
+    return emitError() << "dispatch condition ordinal must be nonnegative";
+  }
+  auto integerType = dyn_cast<IntegerType>(scalarType);
+  if (!integerType || !integerType.isSignless() ||
+      (integerType.getWidth() != 32 && integerType.getWidth() != 64)) {
+    return emitError()
+           << "dispatch condition scalar type must be signless i32 or i64";
+  }
+  return success();
+}
+
+llvm::LogicalResult DFBAllocationGroupAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal) {
+  if (ordinal < 0) {
+    return emitError() << "DFB allocation group ordinal must be nonnegative";
+  }
+  return success();
+}
+
+llvm::LogicalResult SynchronizedDFBResetAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  if (ordinal < 0) {
+    return emitError() << "synchronized DFB reset ordinal must be nonnegative";
+  }
+  if (participants.empty()) {
+    return emitError()
+           << "synchronized DFB reset requires at least one participant";
+  }
+  llvm::DenseSet<Attribute> uniqueParticipants;
+  unsigned computeCount = 0;
+  unsigned dataMovementCount = 0;
+  for (LogicalKernelAttr participant : participants) {
+    if (!uniqueParticipants.insert(participant).second) {
+      return emitError()
+             << "synchronized DFB reset participants must be distinct";
+    }
+    if (participant.getKind() == LogicalKernelKind::Compute) {
+      ++computeCount;
+    } else if (participant.getKind() == LogicalKernelKind::DataMovement) {
+      ++dataMovementCount;
+    }
+  }
+  if (computeCount != 1 || dataMovementCount != 2) {
+    return emitError() << "synchronized DFB reset participants must contain "
+                          "one compute kernel and two data movement kernels";
+  }
+  auto participantKey = [](LogicalKernelAttr participant) {
+    int identityKind = 0;
+    if (participant.getIdentity()) {
+      identityKind = participant.getRole() ? 1 : 2;
+    }
+    auto valueOrEmpty = [](StringAttr value) {
+      return value ? value.getValue() : StringRef();
+    };
+    return std::make_tuple(static_cast<unsigned>(participant.getKind()),
+                           identityKind,
+                           valueOrEmpty(participant.getIdentity()),
+                           valueOrEmpty(participant.getOperation()),
+                           valueOrEmpty(participant.getRole()));
+  };
+  if (!std::is_sorted(participants.begin(), participants.end(),
+                      [&](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
+                        return participantKey(lhs) < participantKey(rhs);
+                      })) {
+    return emitError()
+           << "synchronized DFB reset participants must use canonical order";
+  }
+  return success();
+}
+
+SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
+    Location location, MLIRContext *context, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  return SynchronizedDFBResetAttr::getChecked(
+      [location]() { return emitError(location); }, context, ordinal,
+      participants);
 }
 
 void TTLDialect::registerAttributes() {
@@ -1135,6 +1221,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       isReductionDim[idx] = true;
     }
   }
+  if (!llvm::is_contained(isReductionDim, true) &&
+      containsOp<TileAccumulateOp>()) {
+    return emitOpError(
+        "ttl.tile_accumulate requires at least one reduction iterator");
+  }
 
   if (!bodyBlock.mightHaveTerminator()) {
     return emitOpError("body block must have a terminator");
@@ -1359,6 +1450,73 @@ mlir::LogicalResult mlir::tt::ttl::YieldOp::verify() {
     return emitOpError("operands are only supported in ttl.accumulation_scope");
   }
   return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// TileAccumulateOp
+//===----------------------------------------------------------------------===//
+
+// Parse the compact form `%acc, %contribution add into dst[%idx]`. The
+// combiner remains an enum attribute, but the assembly syntax spells it as the
+// arithmetic operation instead of as an attribute dictionary entry.
+mlir::ParseResult
+mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
+                                       mlir::OperationState &result) {
+  mlir::OpAsmParser::UnresolvedOperand accumulator;
+  mlir::OpAsmParser::UnresolvedOperand contribution;
+  mlir::OpAsmParser::UnresolvedOperand dstIndex;
+  mlir::Type accumulatorType;
+  mlir::Type contributionType;
+  mlir::Type resultType;
+  llvm::StringRef combinerKeyword;
+  llvm::SMLoc combinerLoc;
+
+  if (parser.parseOperand(accumulator) || parser.parseComma() ||
+      parser.parseOperand(contribution)) {
+    return mlir::failure();
+  }
+
+  combinerLoc = parser.getCurrentLocation();
+  if (parser.parseKeyword(&combinerKeyword)) {
+    return mlir::failure();
+  }
+  std::optional<mlir::tt::ttl::AccumulationCombiner> combiner =
+      mlir::tt::ttl::symbolizeAccumulationCombiner(combinerKeyword);
+  if (!combiner) {
+    return parser.emitError(combinerLoc)
+           << "expected accumulation combiner `add`";
+  }
+  result.addAttribute("combiner", mlir::tt::ttl::AccumulationCombinerAttr::get(
+                                      parser.getContext(), *combiner));
+
+  if (parser.parseKeyword("into") || parser.parseKeyword("dst") ||
+      parser.parseLSquare() || parser.parseOperand(dstIndex) ||
+      parser.parseRSquare() ||
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
+      parser.parseType(accumulatorType) || parser.parseComma() ||
+      parser.parseType(contributionType) || parser.parseArrow() ||
+      parser.parseType(resultType)) {
+    return mlir::failure();
+  }
+
+  if (parser.resolveOperand(accumulator, accumulatorType, result.operands) ||
+      parser.resolveOperand(contribution, contributionType, result.operands) ||
+      parser.resolveOperand(dstIndex, parser.getBuilder().getIndexType(),
+                            result.operands)) {
+    return mlir::failure();
+  }
+  result.addTypes(resultType);
+  return mlir::success();
+}
+
+void mlir::tt::ttl::TileAccumulateOp::print(mlir::OpAsmPrinter &p) {
+  p << ' ' << getAccumulator() << ", " << getContribution() << ' '
+    << mlir::tt::ttl::stringifyAccumulationCombiner(getCombiner())
+    << " into dst[" << getDstIndex() << "]";
+  llvm::SmallVector<llvm::StringRef> elidedAttrs = {"combiner"};
+  p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
+  p << " : " << getAccumulator().getType() << ", "
+    << getContribution().getType() << " -> " << getResult().getType();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1744,10 +1902,13 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  // The view must ultimately come from a `ttl.cb_reserve`, possibly
-  // through intervening `tensor.extract_slice` ops.
-  if (!findCBReserveForView(getView())) {
-    return emitOpError() << "view must come from ttl.cb_reserve";
+  Operation *acquire = findCBAcquireOp(getView());
+  if (!acquire) {
+    return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
+  }
+  if (getAccumulate() && isa<CBWaitOp>(acquire)) {
+    return emitOpError()
+           << "wait-backed replacement does not support packer accumulation";
   }
 
   return success();
@@ -1765,6 +1926,18 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
+  }
+
+  Operation *acquire = findCBAcquireOp(getView());
+  bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
+  if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
+      !isWaitBacked) {
+    return emitOpError(
+        "consumer_replacement store requires a ttl.cb_wait-backed view");
+  }
+  if (getStoreKind() == DFBTileStoreKind::Producer && isWaitBacked) {
+    return emitOpError(
+        "ttl.cb_wait-backed view requires consumer_replacement store kind");
   }
 
   // Inside a compute body, indices must match the view rank (populated by
@@ -2543,6 +2716,33 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                << " exceeds dependency " << effect.getDependencyIndex()
                << " capacity " << dfbType.getTotalElements();
       }
+    }
+  }
+  if (DispatchConditionAttr condition = getConditionResultAttr()) {
+    if (!getResult()) {
+      return emitOpError("condition result requires one scalar result");
+    }
+    if (getResult().getType() != condition.getScalarType()) {
+      return emitOpError("condition result type ")
+             << getResult().getType() << " does not match declared scalar type "
+             << condition.getScalarType();
+    }
+    if (!getTemplateDfbOperands().empty() || !dependencies.empty() ||
+        getDfbEffects() || getUnknownDfbAccess()) {
+      return emitOpError("condition result call cannot access DFB state");
+    }
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ResetDFBsOp::verify() {
+  if (getDfbs().empty()) {
+    return emitOpError("requires at least one DFB");
+  }
+  llvm::DenseSet<Value> uniqueDFBs;
+  for (Value dfb : getDfbs()) {
+    if (!uniqueDFBs.insert(dfb).second) {
+      return emitOpError("DFBs must be distinct");
     }
   }
   return success();

@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_DFBALLOCATIONLIMITS_H
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -20,18 +21,45 @@
 
 namespace mlir::tt::ttl {
 
+class DFBLogicalIdentityAnalysis;
+
+constexpr int64_t kDFBResetStateWordCount = 4;
+constexpr int64_t kDFBResetStateBytes =
+    kDFBResetStateWordCount * static_cast<int64_t>(sizeof(uint32_t));
+
+/// Collects one reset declaration per ordinal in deterministic order.
+LogicalResult
+collectSynchronizedDFBResets(ModuleOp module,
+                             SmallVectorImpl<SynchronizedDFBResetAttr> &resets);
+
+/// Returns the payload bytes required by all reset synchronization records.
+FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module);
+
+/// Returns the runtime scratch allocation for all reset synchronization state.
+FailureOr<uint64_t>
+getSynchronizedDFBResetStateAllocationBytes(ModuleOp module);
+
 /// Returns the per-node L1 bytes occupied by one physical DFB descriptor.
 /// On failure, `failureReason` describes the invalid allocation type.
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                                               std::string &failureReason);
+
+/// Rounds one runtime allocation to the target's maximum L1 quantum.
+FailureOr<uint64_t> getL1AllocationSizeBytes(ModuleOp module,
+                                             uint64_t payloadBytes);
+
+/// Returns the target-aligned L1 allocation for one physical DFB descriptor.
+FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
+                                                CircularBufferType type,
+                                                std::string &failureReason);
 
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:
   /// Adds one assignment and returns true when it increases the index size.
   /// On failure, `failureReason` describes the invalid allocation type.
-  FailureOr<bool> add(int64_t physicalIndex, CircularBufferType type,
-                      std::string &failureReason);
+  FailureOr<bool> add(ModuleOp module, int64_t physicalIndex,
+                      CircularBufferType type, std::string &failureReason);
 
   bool empty() const { return maxBytesByIndex.empty(); }
   /// Returns the total allocation size, or failure when the sum overflows.
@@ -48,6 +76,25 @@ private:
 
 /// Returns the per-node DFB footprint of all declarations in `module`.
 FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
+
+/// Returns a conservative footprint that assigns each logical DFB separate
+/// storage. Tensor-backed declarations do not allocate additional L1.
+FailureOr<DFBAllocationFootprint>
+getLogicalDFBAllocationFootprint(ModuleOp module,
+                                 const DFBLogicalIdentityAnalysis &identities);
+
+/// Returns the per-core L1 allocation reserved for GlobalSemaphore objects.
+FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(ModuleOp module,
+                                              int64_t semaphoreCount);
+
+/// Validates finalized DFB storage plus hidden runtime allocations.
+LogicalResult validateCombinedDFBResourceL1Bytes(
+    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
+    uint64_t scratchBytes, int64_t globalSemaphoreCount,
+    std::optional<uint64_t> overrideBytes = std::nullopt);
+
+/// Verifies that the selected target implements synchronized DFB reset.
+LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module);
 
 /// Returns the target's usable per-node L1 bytes or the supported fallback.
 uint64_t

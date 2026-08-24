@@ -1,7 +1,7 @@
 // Verifies a supported full-fp32 preference emits a warning when another
 // kernel requirement forces 16-bit destination elements.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --verify-diagnostics
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' --verify-diagnostics
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config)' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
