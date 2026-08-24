@@ -34,6 +34,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "ttl-validate-cb-budget"
@@ -93,7 +94,7 @@ struct TTLValidateCBBudgetPass
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
       std::string failureReason;
       FailureOr<bool> increased =
-          footprint.add(physicalIndex, cbType, failureReason);
+          footprint.add(moduleOp, physicalIndex, cbType, failureReason);
       if (failed(increased)) {
         bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();
@@ -109,7 +110,13 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    if (footprint.empty()) {
+    FailureOr<uint64_t> resetScratchBytes =
+        getSynchronizedDFBResetStateAllocationBytes(moduleOp);
+    if (failed(resetScratchBytes)) {
+      signalPassFailure();
+      return;
+    }
+    if (footprint.empty() && *resetScratchBytes == 0) {
       return;
     }
 
@@ -120,7 +127,16 @@ struct TTLValidateCBBudgetPass
       signalPassFailure();
       return;
     }
-    uint64_t totalBytes = *maybeTotalBytes;
+    std::optional<uint64_t> maybeCombinedBytes =
+        llvm::checkedAddUnsigned(*maybeTotalBytes, *resetScratchBytes);
+    if (!maybeCombinedBytes) {
+      moduleOp.emitOpError()
+          << "total DFB and synchronized-reset allocation size is not "
+             "representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    uint64_t totalBytes = *maybeCombinedBytes;
     SmallVector<int64_t> sortedIndices = footprint.getSortedPhysicalIndices();
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
@@ -135,6 +151,10 @@ struct TTLValidateCBBudgetPass
         if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
           diag << " (compiler-allocated)";
         }
+      }
+      if (*resetScratchBytes > 0) {
+        diag << "\n  synchronized-reset scratch: " << *resetScratchBytes
+             << " bytes";
       }
       std::string percentage =
           formatDFBUsagePercentage(totalBytes, budgetBytes);
@@ -161,10 +181,14 @@ struct TTLValidateCBBudgetPass
     };
 
     if (totalBytes > budgetBytes) {
-      BindCBOp reportAt = bindForLargestAllocation();
-      auto diag = reportAt.emitOpError()
-                  << "total circular buffer allocation (" << totalBytes
-                  << " bytes) exceeds L1 budget (" << budgetBytes << " bytes)";
+      InFlightDiagnostic diag = sortedIndices.empty()
+                                    ? moduleOp.emitOpError()
+                                    : bindForLargestAllocation().emitOpError();
+      diag << (*resetScratchBytes > 0
+                   ? "total DFB and synchronized-reset allocation ("
+                   : "total DFB allocation (")
+           << totalBytes << " bytes) exceeds L1 budget (" << budgetBytes
+           << " bytes)";
       emitBreakdown(diag);
       signalPassFailure();
       return;

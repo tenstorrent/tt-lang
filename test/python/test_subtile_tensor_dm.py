@@ -236,7 +236,7 @@ def test_copy_rejects_mismatched_tile_shape(device):
 
 
 def test_store_rejects_mismatched_tile_shape(device):
-    """CB->CB store must reject source/destination tile HxW mismatch."""
+    """DFB-to-DFB store must reject source/destination tile HxW mismatch."""
     out = _to_device(
         torch.zeros((32, 32), dtype=torch.bfloat16),
         device,
@@ -246,7 +246,7 @@ def test_store_rejects_mismatched_tile_shape(device):
     )
     with pytest.raises(
         TTLangCompileError,
-        match=r"source tile shape 16x16 must match destination CB tile shape 32x32",
+        match=r"source tile shape 16x16 must match destination DFB tile shape 32x32",
     ):
         _store_cb_16_into_cb_32(out)
     ttnn.deallocate(out)

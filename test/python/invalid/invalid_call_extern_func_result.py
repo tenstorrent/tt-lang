@@ -5,7 +5,7 @@
 # REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
-"""Verify that the Python external-call interface remains void-only."""
+"""Verify that external calls reject an untyped results operand list."""
 
 import os
 

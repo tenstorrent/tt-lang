@@ -37,17 +37,17 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
       attributes {ttl.base_cta_index = 4 : i32,
                   ttl.crta_indices = [0, 1, 2, 3],
                   ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_a = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src_a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_a = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst_a = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %src_b = ttl.bind_cb {cb_index = 2, block_count = 2}
+    %src_b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_b = ttl.bind_cb {cb_index = 3, block_count = 1}
+    %dst_b = ttl.bind_cb {cb_index = 3, block_count = 1} {dfb_id = 3 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %src_scalar = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %src_scalar = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_scalar = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %dst_scalar = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index

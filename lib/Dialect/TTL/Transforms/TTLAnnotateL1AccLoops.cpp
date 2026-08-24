@@ -22,6 +22,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -35,17 +36,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-/// Returns true if the loop carries any ttl.* annotation, indicating it
-/// was generated or already processed by a compiler pass.
-static bool hasCompilerAnnotation(scf::ForOp loop) {
-  for (auto attr : loop->getAttrs()) {
-    if (attr.getName().getValue().starts_with("ttl.")) {
-      return true;
-    }
-  }
-  return false;
-}
 
 struct TTLAnnotateL1AccLoopsPass
     : public impl::TTLAnnotateL1AccLoopsBase<TTLAnnotateL1AccLoopsPass> {
@@ -63,7 +53,7 @@ struct TTLAnnotateL1AccLoopsPass
       if (!enclosingLoop) {
         return;
       }
-      if (hasCompilerAnnotation(enclosingLoop)) {
+      if (hasTTLDialectAttribute(enclosingLoop)) {
         return;
       }
 

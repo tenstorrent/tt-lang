@@ -7,14 +7,15 @@
 supported tensor expression into one `ttl.compute` so intermediate values can
 remain in DST instead of being stored to dataflow buffers (DFBs).
 
-Creating a `ComputeOp` may change both evaluation position and output
-publication. A tensor operation may be defined before a DFB release, used in
-another region, stored through several reserves, or shared by several
+Creating a `ComputeOp` may change both evaluation position and output DFB
+transactions. A tensor operation may be defined before a DFB release, used in
+another region, stored through several acquisitions, or shared by several
 consumers. Correctness therefore requires more than following SSA definitions.
 The compiler must prove:
 
 - every input DFB remains available where the `ttl.compute` executes;
-- the compute preserves each output reserve, store, and push transaction;
+- the compute preserves each output acquisition, store, and release
+  transaction;
 - the replacement result dominates every surviving use;
 - overlapping fusion candidates are applied in an order that preserves their
   recorded source operations;
@@ -28,7 +29,7 @@ are defined in [DFBManagement.md](DFBManagement.md).
 ## Design Motivation
 
 `ComputeOp` creation is a nonlocal transformation. Candidate legality depends
-on operations, uses, publication transactions, and DFB lifetimes throughout a
+on operations, uses, output DFB transactions, and DFB lifetimes throughout a
 kernel. Rewriting one candidate changes use lists, operation positions, and
 transactions that another candidate might inspect. Greedy rewrite order
 therefore cannot define semantic decisions without making legality depend on
@@ -67,7 +68,7 @@ The current conversion separates those responsibilities:
 analyze one immutable kernel:
   compute DFB value availability at every relevant program point
   construct complete typed direct, fused, and elision candidates
-  record reserve/store/push output transactions
+  record output DFB transactions and waited-block replacement proofs
   validate input lifetimes, result dominance, and instrumentation placement
   select non-conflicting candidates and order overlapping candidates
   assign every store or report why it remains unassigned
@@ -103,9 +104,12 @@ A **lifetime root input** is a root whose current storage remains an input
 after all planned materializations. Only lifetime roots constrain the
 `ComputeOp` insertion point through the DFB availability analysis.
 
-An **output publication transaction** contains one `cb_reserve`, every
-`ttl.store` using a view derived from that reserve, and the matching `cb_push`
-when one is present.
+An **output DFB transaction** contains one `cb_reserve` or `cb_wait` and every
+`ttl.store` using a view derived from that acquisition. A reserve-backed
+transaction records its matching `cb_push` when present. A wait-backed
+transaction retains its matching `cb_pop` and requires a separate proof that
+the store replaces the complete consumer-owned block without changing DFB
+occupancy or pointers.
 
 An **elision** replaces an operation without creating a `ttl.compute` or
 changing its evaluation position. Identity `ttl.typecast` is the current
@@ -124,7 +128,7 @@ ttl-create-producer-compute
 
 `ttl-create-producer-compute` applies creation plans that are legal in the
 original kernel. Rejected candidates remain unchanged so intermediate DFB insertion can
-repair storage or publication constraints. `ttl-insert-intermediate-dfbs`
+repair storage or output-transaction constraints. `ttl-insert-intermediate-dfbs`
 computes its own immutable plan, inserts the required storage, and rewrites the
 selected consumer operands. `convert-ttl-to-compute` then rebuilds creation
 and lifetime plans from the modified kernel and requires every output store to
@@ -203,10 +207,10 @@ planCandidate(source):
     kind = fused creation
 
   derive typed affine maps and iterator kinds
-  plan output publication transactions
+  plan output DFB transactions
   validate instrumentation placement
   find SSA boundaries needed to preserve instrumentation order
-  validate DFB input availability at the publication anchor
+  validate DFB input availability at the insertion anchor
   validate dominance of every surviving result use
 
   return the complete plan and its typed legality result
@@ -307,42 +311,48 @@ every region boundary as a storage requirement. Fusion is rejected when
 instrumentation around a cross-block producer cannot be placed relative to the
 consumer without changing observations.
 
-## Output Publication Planning
+## Output DFB Transaction Planning
 
-Creation replaces tensor stores with tile stores inside `ttl.compute` and may
-move an existing push after the new compute. Publication planning therefore
-records reserve-delimited transactions before mutation:
+Creation replaces tensor stores with tile stores inside `ttl.compute`.
+Reserve-backed stores may require an existing push to move after the new
+compute. Wait-backed stores require a complete consumer-owned replacement
+proof. Transaction planning records both forms before mutation:
 
 ```text
-planPublications(source):
+planOutputTransactions(source):
   collect every ttl.store of the source result
   require all stores to be in one block
 
   for each store:
-    trace the destination view to one cb_reserve
-    group stores by reserve identity
-    find the first matching cb_push after the stores and before another
-      reserve of the same DFB
+    trace the destination view to one cb_reserve or cb_wait
+    group stores by acquisition identity
+    for cb_reserve, find the first matching cb_push after the stores and
+      before another reserve of the same DFB
+    for cb_wait, prove complete one-block replacement and find the matching
+      cb_pop after all replacement-generation reads
 
-  require all stores in one transaction to precede the same push
+  require all reserve-backed stores in one transaction to precede the same push
   insertion anchor = final source-result store
-  record whether one DFB has more than one reserve transaction
+  record whether one DFB has more than one acquisition transaction
 ```
 
 Several reserves of different DFBs may become outputs of one compute. Several
 reserves of the same DFB cannot be combined because moving one publication to
 the final store would cross a later reserve of the same producer pointer. That
 case requires intermediate materialization so each original transaction can
-remain independent.
+remain independent. Several acquisitions of the same DFB are rejected for the
+same transformation because combining them would lose their transaction
+boundary.
 
-The final store is the insertion anchor. Every output reserve dominates its
-store, so all output views are available at that position. The planner rejects
-creation unless each lifetime root is definitely available there and the
-anchor dominates every result use not removed by the creation.
+The final store is the insertion anchor. Every output acquisition dominates
+its store, so all output views are available at that position. The planner
+rejects creation unless each lifetime root is definitely available there and
+the anchor dominates every result use not removed by the creation.
 
 Existing pushes are resolved again during application because an earlier
-creation may relocate a shared push. The reserve and store identities remain
-the analyzed ones; this limited resolution does not repeat semantic analysis.
+creation may relocate a shared push. The acquisition and store identities
+remain the analyzed ones; this limited resolution does not repeat semantic
+analysis.
 
 ## Instrumentation
 
@@ -367,8 +377,8 @@ the same boundary. Intermediate DFB planning materializes those uses, so each
 side receives an independent `ttl.compute`, and the instrumentation retains its
 original order.
 Pure tensor recomputation without movable instrumentation requires no split.
-Output reserves are excluded because they supply the formal output views and
-the compute must execute after them. `ttl.dprint` declares memory effects;
+Output acquisitions are excluded because they supply the formal output views
+and the compute must execute after them. `ttl.dprint` declares memory effects;
 scalar, DFB, and tensor prints stay outside the compute, while tile and DST
 prints use the explicit relocatable instrumentation plan.
 
@@ -396,9 +406,10 @@ ttl.store %second, %second_output : ...
 ```
 
 Both `ttl.exp` creation plans may absorb `ttl.add`, but `%sum` also requires an
-independent creation plan for its publication. The absorbing creations execute
-before the independent `%sum` creation. Each earlier creation removes only its
-own consumer; another use keeps `ttl.add` present until all absorbers have run.
+independent creation plan for its output transaction. The absorbing creations
+execute before the independent `%sum` creation. Each earlier creation removes
+only its own consumer; another use keeps `ttl.add` present until all absorbers
+have run.
 
 The selection algorithm is:
 
@@ -515,9 +526,11 @@ The design preserves these properties:
    operations whose SSA operands dominate the consumer. DFB availability is
    evaluated at the consumer position through MLIR control-flow dataflow.
 
-4. **Publication order.** Each tile store retains its reserve transaction.
-   Moving a push cannot cross another reserve of the same DFB because repeated
-   transactions of one DFB reject combined creation.
+4. **DFB transaction order.** Each tile store retains its acquisition
+   transaction. Moving a push cannot cross another reserve of the same DFB
+   because repeated transactions of one DFB reject combined creation. A
+   wait-backed store is selected only after proving one complete consumer-owned
+   replacement ending at the matching pop.
 
 5. **SSA uses.** The insertion anchor dominates every surviving result use.
    Uses that a preceding creation must erase are recorded and verified.
@@ -525,8 +538,8 @@ The design preserves these properties:
 6. **Instrumentation order.** Instrumentation does not move across an
    operation unless MLIR proves that operation pure. Intermediate DFB
    materialization splits the tensor SSA frontier when required. Output
-   reserves are recorded dependencies of the created `ttl.compute` and therefore
-   remain ordered before it.
+   acquisitions are recorded dependencies of the created `ttl.compute` and
+   therefore remain ordered before it.
 
 7. **Overlapping candidates.** An absorbed source is either erased by one
    selected creation or retained until every preceding absorber executes. A
@@ -575,7 +588,7 @@ Upstream does not model the TTL-specific relations required here. TT-Lang adds:
 
 - DFB FIFO acquisition identity and conservative release ownership;
 - DFB value availability at a creation position;
-- reserve/store/push publication transactions;
+- reserve/store/push transactions and waited-block replacement proofs;
 - direct and fused TTL tile recipes with hardware-specific affine roles;
 - overlapping-candidate selection and preservation records;
 - three-state planned, rejected, and invalid-IR results; and
@@ -626,7 +639,8 @@ operations and user DFB publications.
 ## Implementation Files
 
 - `lib/Dialect/TTL/Transforms/ComputeOpCreationPlanning.{h,cpp}` defines typed
-  recipes, publication plans, legality, overlap handling, and kernel order.
+  recipes, output transaction plans, legality, overlap handling, and kernel
+  order.
 - `lib/Dialect/TTL/IR/TTLOpsUtils.cpp` implements fusion tracing.
 - `lib/Dialect/TTL/Transforms/DFBValueLifetimeAnalysis.{h,cpp}` provides
   program-point storage availability.

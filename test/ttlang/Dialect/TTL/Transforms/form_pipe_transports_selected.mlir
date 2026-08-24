@@ -45,9 +45,9 @@
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @mixed_static_and_selected_transfer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %receive_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %receive_dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
@@ -77,9 +77,9 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
   func.func @mixed_static_send_and_selected_receive()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %send_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+    %send_dfb = ttl.bind_cb {cb_index = 2, block_count = 1} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %receive_dfb = ttl.bind_cb {cb_index = 3, block_count = 1}
+    %receive_dfb = ttl.bind_cb {cb_index = 3, block_count = 1} {dfb_id = 3 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>

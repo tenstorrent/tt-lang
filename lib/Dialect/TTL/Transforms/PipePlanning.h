@@ -49,6 +49,12 @@ struct PipePlanningOptions {
   /// Select storage for compiler-managed synchronization counters.
   PipeCounterAllocationPolicy counterAllocationPolicy =
       PipeCounterAllocationPolicy::LocalThenGlobal;
+
+  /// Additional compiler state appended after PipeNet scratch storage.
+  int64_t trailingSramScratchBytes = 0;
+
+  /// Alignment required by the appended compiler state.
+  int64_t trailingSramScratchAlignment = 1;
 };
 
 /// Protocol selection used while allocating readiness resources.
@@ -267,6 +273,11 @@ public:
     return resourceRequirements;
   }
 
+  /// Return the byte offset assigned to appended compiler state.
+  int64_t getTrailingSramScratchOffset() const {
+    return trailingSramScratchOffset;
+  }
+
   /// Return transfer topology grouped by PipeNet id.
   const PipeNetIndex &getPipeNetIndex() const { return pipeNetIndex; }
 
@@ -290,6 +301,7 @@ private:
   PipeResourcePlan resourcePlan;
   PipeCapacityPlan capacityPlan;
   PipeResourceRequirements resourceRequirements;
+  int64_t trailingSramScratchOffset = 0;
   PipeNetIndex pipeNetIndex;
   PipeTransportPlan transportPlan;
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;

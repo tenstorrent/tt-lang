@@ -129,12 +129,16 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     atom.py
     dataflow_buffer.py
     compiler_options.py
+    condition.py
     constants.py
+    dfb_allocation_group.py
+    dfb_reset.py
     diagnostics.py
     kernel.py
     kernel_runner.py
     pipe.py
     runtime_resources.py
+    scalar.py
     ttl.py
     ttl_api.py
     ttl_block.py
