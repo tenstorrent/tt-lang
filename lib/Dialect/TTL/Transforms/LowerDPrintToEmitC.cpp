@@ -37,6 +37,10 @@ static void emitVerbatim(Location loc, StringRef value, BuilderT &builder,
 /// Compile-time CB id as i32 so emitc.verbatim can take it as a format
 /// operand. The integer form is distinct from the !ttkernel.cb handle used
 /// by wait/reserve, so CSE will not merge a print-only get into a real use.
+///
+/// emitc.verbatim with operands treats `{}` as the next operand and `{{` as a
+/// literal `{`. A lone `}` is already a literal `}`; writing `}}` emits two
+/// closing braces. A DEVICE_PRINT `{}` placeholder is therefore written `{{}`.
 static Value createCBPrintOperand(int64_t cbIndex, Location loc,
                                   ConversionPatternRewriter &rewriter) {
   return ttk::GetCompileArgValOp::create(rewriter, loc, rewriter.getI32Type(),
@@ -367,20 +371,20 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       }
       Value cbOperand = createCBPrintOperand(*cbIdx, loc, rewriter);
       // One verbatim so every CB mention is an SSA operand. `{}` is the
-      // emitc placeholder; `{{` / `}}` emit literal braces in the C++.
+      // emitc operand; `{{` is a literal `{`. A lone `}` is a literal `}`.
       recordLine("{{\n"
                  "DPRINT(\"======\\n\");\n"
                  "for (uint16_t r = 0; r < " +
                      std::to_string(tileType.getHeight()) +
                      "; ++r) {{\n"
-                     "DPRINT(\"{{}} : {{}}\\n\", (uint)r, TSLICE({}, 0, "
+                     "DPRINT(\"{{} : {{}\\n\", (uint)r, TSLICE({}, 0, "
                      "SliceRange{{.h0=(uint8_t)r, .h1=(uint8_t)(r+1), "
                      ".hs=1, .w0=0, .w1=" +
                      std::to_string(tileType.getWidth()) +
-                     ", .ws=1}}, true, false));\n"
-                     "}}\n"
+                     ", .ws=1}, true, false));\n"
+                     "}\n"
                      "DPRINT(\"++++++\\n\");\n"
-                     "}}",
+                     "}",
                  cbOperand);
 
     } else if (mode == "tensor") {
@@ -417,17 +421,17 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
                        "for (uint32_t page = 0; page < " +
                        std::to_string(numPages) +
                        "; ++page) {{\n"
-                       "DPRINT(\"{{}}: \", page);\n"
+                       "DPRINT(\"{{}: \", page);\n"
                        "for (uint32_t j = 0; j < " +
                        std::to_string(info->eltsPerPage) +
                        "; ++j, ++ptr) {{\n"
-                       "DPRINT(\"{{}} \", " +
+                       "DPRINT(\"{{} \", " +
                        makeTensorPrintArg(*info, "*ptr") +
                        ");\n"
-                       "}}\n"
+                       "}\n"
                        "DPRINT(\"\\n\");\n"
-                       "}}\n"
-                       "}}",
+                       "}\n"
+                       "}",
                    cbOperand);
       } else {
         // Tensor accessor: buffer_address() is a bank-relative address,
