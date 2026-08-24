@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith, ttl
+from ttl.dialects import tensor as tensor_dialect
 from ttl.ir import (
     Context,
     F32Type,
