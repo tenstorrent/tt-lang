@@ -301,6 +301,9 @@ class _FakeTTNN:
         def num_cores(self):
             return sum(core_range.num_cores() for core_range in self._ranges)
 
+        def bounding_box(self):
+            return _FakeBoundingBox(self._ranges)
+
     @staticmethod
     def corerange_to_cores(core_range_set, max_cores=None, row_wise=False):
         cores = []
@@ -319,9 +322,6 @@ class _FakeTTNN:
                 return cores[:max_cores]
         return cores
 
-        def bounding_box(self):
-            return _FakeBoundingBox(self.ranges)
-
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
         cb_index, tensor, total_size, core_ranges, address_offset=0
@@ -337,11 +337,6 @@ class _FakeTTNN:
     @staticmethod
     def get_optimal_worker_cores_for_sharded_tensor(_tensor):
         return [_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(1, 0)]
-
-    @staticmethod
-    def corerange_to_cores(_core_ranges, row_wise=True):
-        assert row_wise
-        return [_FakeTTNN.CoreCoord(0, 0)]
 
     @staticmethod
     def generic_op(tensors, program):
