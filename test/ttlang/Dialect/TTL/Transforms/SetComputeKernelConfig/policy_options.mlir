@@ -1,6 +1,6 @@
 // Verify explicit pass policy selects one complete kernel configuration.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled dst-full-sync-en=enabled}))' | FileCheck %s --check-prefix=ENABLED
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=disabled dst-full-sync-en=disabled}))' | FileCheck %s --check-prefix=DISABLED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled dst-full-sync-en=enabled})' | FileCheck %s --check-prefix=ENABLED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{fp32-dest-acc-en=disabled dst-full-sync-en=disabled})' | FileCheck %s --check-prefix=DISABLED
 
 // ENABLED-LABEL: func.func @policy_options
 // ENABLED-SAME: dst_full_sync_en = true

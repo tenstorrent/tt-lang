@@ -1,6 +1,6 @@
 // Verify direct tile operations in nested regions use the same strategy and
 // dataflow-buffer resolution as operations in ttl.compute.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0}))' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0})' | FileCheck %s
 
 // CHECK-LABEL: func.func @nested_direct_tile_ops
 // CHECK-SAME: fp32_dest_acc_en = true
