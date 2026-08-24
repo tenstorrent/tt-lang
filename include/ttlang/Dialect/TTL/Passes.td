@@ -133,6 +133,9 @@ def TTLFormPipeTransports
     `group-size = 1` disables grouping. A larger value is an upper bound; the
     pass selects a smaller group when required by the loop trip count or L1
     capacity. Ineligible loops retain scalar transfer IR.
+
+    A module containing PipeNet protocol operations must assign `dfb_id` to
+    every user-declared DFB before physical allocation.
   }];
 
   let options = [
@@ -329,8 +332,9 @@ def TTLConvertTTLToTTKernel
   let description = [{
     Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
     and semaphore operations. PipeNet lowering selects receiver-published or
-    computed destination addresses and receiver-post or capacity-counter
-    synchronization according to the pass options and transfer eligibility.
+    computed destination addresses and receiver-post, capacity-counter, or
+    fabric synchronization according to the pass options, transfer eligibility,
+    and logical-device transfer.
     PipeNet counters use local semaphore ids before GlobalSemaphore storage by
     default; the global-only option preserves all local semaphore ids for
     application use.
@@ -341,8 +345,10 @@ def TTLConvertTTLToTTKernel
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
-    exact launch-node domains, and single-block event regions required by
-    protocol planning.
+    conservative endpoint-contained launch-node domains and single-block event
+    regions required by protocol planning.
+    A module containing PipeNet protocol operations must assign `dfb_id` to
+    every user-declared DFB before physical allocation.
   }];
 
   let options = [
@@ -917,11 +923,14 @@ def TTLVerifyPipeNetSchedule
     pipe events must be kernel-thread entry points or be reachable from one
     through direct calls. Definitions of one event kind for a pipe endpoint
     must belong to one kernel-thread function because independent kernel
-    threads have no program order. Each event must have an exact launch-node
-    domain. Multi-block regions that contribute pipe events, unknown event
-    domains, recursive calls containing pipe events, and schedules with more
-    than 4096 expanded event occurrences at one launch node are rejected
-    because the verifier cannot construct a correct bounded event graph.
+    threads have no program order. Events with statically analyzable predicates
+    use their exact launch-node domain. Otherwise, the static PipeNet endpoint
+    role provides a conservative domain that includes every possible event;
+    execution-count analysis still removes coordinates proven not to execute.
+    Multi-block regions that contribute pipe events, recursive calls containing
+    pipe events, and schedules with more than 4096 expanded event occurrences
+    at one launch node are rejected because the verifier cannot construct a
+    correct bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges

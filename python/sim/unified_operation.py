@@ -705,7 +705,7 @@ def build_multikernel_function(
     kernel_kind = atom_split.KernelKind
     compute = kernel_kind.COMPUTE
     data_movement = kernel_kind.DATA_MOVEMENT
-    pipe_source = atom_split._PIPE_SOURCE_KERNEL
+    pipe_source = atom_split.PIPE_SOURCE_KERNEL
 
     # The simulator runs the fixed three-kernel core, so a body that selects a
     # user-declared logical kernel has no thread to run it on.

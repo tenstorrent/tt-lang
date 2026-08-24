@@ -18,6 +18,7 @@ set(LLK_HEADERS
   experimental_fabric_1d_routing
   experimental_fabric_2d_routing
   experimental_fabric_api
+  experimental_routing_plane
   experimental_reg_api
   experimental_semaphore
 )

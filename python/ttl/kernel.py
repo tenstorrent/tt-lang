@@ -204,6 +204,14 @@ class Kernel:
         return f"Kernel({self.kind!r}, identity={self.identity!r})"
 
 
+# PipeNet source callbacks and external transport code must share the target's
+# source-side data-movement processor and its invocation-specific resources.
+PIPE_SOURCE_KERNEL: Final[Kernel] = Kernel._implicit(
+    KernelKind.DATA_MOVEMENT,
+    _PIPE_SOURCE_KERNEL_ROLE,
+)
+
+
 KernelSelector = Union[KernelKind, Kernel]
 ExternalKernelSelection = Union[KernelSelector, Tuple[KernelSelector, ...]]
 ReleaseKernelSelection = KernelSelector
@@ -271,6 +279,29 @@ def _encode_identity_capture(
     )
 
 
+def _referenced_operation_values(function: Callable) -> dict[str, object]:
+    """Return outer-scope values referenced by an operation or nested code."""
+
+    referenced_names = set()
+    code_objects = [function.__code__]
+    while code_objects:
+        code = code_objects.pop()
+        referenced_names.update(code.co_names)
+        referenced_names.update(code.co_freevars)
+        code_objects.extend(
+            constant for constant in code.co_consts if inspect.iscode(constant)
+        )
+
+    scope = dict(function.__globals__)
+    if function.__closure__ is not None:
+        for name, cell in zip(function.__code__.co_freevars, function.__closure__):
+            try:
+                scope[name] = cell.cell_contents
+            except ValueError:
+                continue
+    return {name: scope[name] for name in sorted(referenced_names) if name in scope}
+
+
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
     # Local import avoids the dfb_reset -> kernel import cycle during module
     # initialization while retaining a typed resource check.
@@ -287,33 +318,41 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
     base_identity = f"{function.__module__}.{function.__qualname__}"
     try:
         nonlocal_captures = inspect.getclosurevars(function).nonlocals
+        referenced_values = _referenced_operation_values(function)
     except (TypeError, ValueError):
         active_functions.remove(function_id)
         return base_identity
 
     try:
         encoded_captures = []
+        identity_captures = dict(nonlocal_captures)
+        identity_captures.update(
+            (name, value)
+            for name, value in referenced_values.items()
+            if isinstance(value, Kernel)
+            or callable(getattr(value, "_operation_identity_capture", None))
+        )
         bound_conditions = _bind_dispatch_conditions(
             {
                 name: value
-                for name, value in sorted(nonlocal_captures.items())
+                for name, value in sorted(identity_captures.items())
                 if isinstance(value, DispatchCondition)
             }
         )
         bound_allocation_groups = _bind_dfb_allocation_groups(
             {
                 name: value
-                for name, value in sorted(nonlocal_captures.items())
+                for name, value in sorted(identity_captures.items())
                 if isinstance(value, DFBAllocationGroup)
             }
         )
         reset_ordinals = {}
         kernel_capture_names = {
             id(value): name
-            for name, value in nonlocal_captures.items()
+            for name, value in identity_captures.items()
             if isinstance(value, Kernel)
         }
-        for name, value in sorted(nonlocal_captures.items()):
+        for name, value in sorted(identity_captures.items()):
             if isinstance(value, DispatchCondition):
                 binding = bound_conditions[name]
                 encoded = (

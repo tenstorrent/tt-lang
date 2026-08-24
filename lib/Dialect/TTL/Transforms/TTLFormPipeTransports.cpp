@@ -1024,7 +1024,9 @@ struct TTLFormPipeTransportsPass
     // the graph therefore contains only the static transfers expanded above.
     PipeForeachLoweringInfo foreachLoweringInfo;
     FailureOr<PipeGraph> maybePipeGraph =
-        PipeGraph::build(module, transferIndex, foreachLoweringInfo);
+        PipeGraph::build(module, transferIndex, foreachLoweringInfo,
+                         PipeDFBIndexMode::Provisional,
+                         PipeGraphLaunchDomainMode::WhenPipesPresent);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;

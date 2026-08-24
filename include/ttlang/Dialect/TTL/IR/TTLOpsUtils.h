@@ -19,8 +19,10 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/FunctionExtras.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
@@ -52,6 +54,60 @@ struct SelectedPipeRecords {
 /// `ttl.select_pipe_dst`, and the pipe block argument of
 /// `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst`.
 FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
+
+/// Return the row-major index of `device` in `domain`.
+inline int64_t getLogicalDeviceIndex(DeviceDomainAttr domain,
+                                     DeviceRefAttr device) {
+  int64_t index = 0;
+  for (auto [component, coordinates] :
+       llvm::zip_equal(domain.getComponents(), device.getCoordinates())) {
+    for (auto [coordinate, extent] : llvm::zip_equal(
+             coordinates.asArrayRef(), component.getExtent().asArrayRef())) {
+      index = index * extent + coordinate;
+    }
+  }
+  return index;
+}
+
+/// One coordinate range and optional logical-device endpoint selected by a
+/// PipeNet record role.
+struct PipeRecordRoleFacts {
+  int64_t minX = 0;
+  int64_t minY = 0;
+  int64_t maxX = 0;
+  int64_t maxY = 0;
+  DeviceDomainAttr deviceDomain;
+  DeviceRefAttr device;
+};
+
+inline SmallVector<PipeRecordRoleFacts, 2>
+getPipeRecordRoleFacts(PipeRecordAttr record, PipeRole role) {
+  SmallVector<PipeRecordRoleFacts, 2> facts;
+  DeviceTransferAttr transfer = record.getDeviceTransfer();
+  DeviceDomainAttr deviceDomain =
+      transfer ? transfer.getDomain() : DeviceDomainAttr();
+  if (role == PipeRole::Source || role == PipeRole::Active) {
+    facts.push_back(PipeRecordRoleFacts{
+        record.getSrcX(), record.getSrcY(), record.getSrcX(), record.getSrcY(),
+        deviceDomain,
+        transfer ? transfer.getEdge().getSource() : DeviceRefAttr()});
+  }
+  if (role == PipeRole::Destination || role == PipeRole::Active) {
+    facts.push_back(PipeRecordRoleFacts{
+        record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
+        record.getDstEndY(), deviceDomain,
+        transfer ? transfer.getEdge().getDestination() : DeviceRefAttr()});
+  }
+  return facts;
+}
+
+inline PipeType getPipeTypeFromRecord(MLIRContext *context,
+                                      PipeRecordAttr record,
+                                      int64_t pipeNetId) {
+  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
+                       record.getDstStartX(), record.getDstStartY(),
+                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+}
 
 /// Returns a tile type directly or from a ranked tensor element type.
 FailureOr<ttcore::TileType> getTileType(Type type);
@@ -108,6 +164,23 @@ getKernelThreadType(mlir::func::FuncOp func) {
 inline bool isNocKernelThread(mlir::Operation *op) {
   return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==
          mlir::tt::ttkernel::ThreadType::Noc;
+}
+
+/// Return whether `device` is inside the half-open device coordinate range.
+/// The attributes must have matching component counts and ranks.
+inline bool deviceRangeContains(DeviceRangeAttr range, DeviceRefAttr device) {
+  for (auto [loCoordinate, coordinate, hiCoordinate] :
+       llvm::zip_equal(range.getLo().getCoordinates(), device.getCoordinates(),
+                       range.getHi().getCoordinates())) {
+    for (auto [lo, value, hi] :
+         llvm::zip_equal(loCoordinate.asArrayRef(), coordinate.asArrayRef(),
+                         hiCoordinate.asArrayRef())) {
+      if (value < lo || value >= hi) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /// Trace through unrealized conversion casts to the original value

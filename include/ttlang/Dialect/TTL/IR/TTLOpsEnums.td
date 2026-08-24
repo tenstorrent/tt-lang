@@ -71,6 +71,44 @@ def TTL_ExternalTemplateArgKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_FabricManagerEffectKind_Acquire :
+    I32EnumAttrCase<"Acquire", 0, "acquire">;
+def TTL_FabricManagerEffectKind_Use :
+    I32EnumAttrCase<"Use", 1, "use">;
+def TTL_FabricManagerEffectKind_Release :
+    I32EnumAttrCase<"Release", 2, "release">;
+def TTL_FabricManagerEffectKind_Scoped :
+    I32EnumAttrCase<"Scoped", 3, "scoped">;
+
+def TTL_FabricManagerEffectKind : I32EnumAttr<
+    "FabricManagerEffectKind", "External fabric manager lifetime effect",
+    [TTL_FabricManagerEffectKind_Acquire,
+     TTL_FabricManagerEffectKind_Use,
+     TTL_FabricManagerEffectKind_Release,
+     TTL_FabricManagerEffectKind_Scoped]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_FabricManagerIntervalKind_GeneratedReceiver :
+    I32EnumAttrCase<"GeneratedReceiver", 0, "generated_receiver">;
+def TTL_FabricManagerIntervalKind_GeneratedSender :
+    I32EnumAttrCase<"GeneratedSender", 1, "generated_sender">;
+def TTL_FabricManagerIntervalKind_GeneratedMixed :
+    I32EnumAttrCase<"GeneratedMixed", 2, "generated_mixed">;
+def TTL_FabricManagerIntervalKind_External :
+    I32EnumAttrCase<"External", 3, "external">;
+
+def TTL_FabricManagerIntervalKind : I32EnumAttr<
+    "FabricManagerIntervalKind", "Fabric manager interval owner",
+    [TTL_FabricManagerIntervalKind_GeneratedReceiver,
+     TTL_FabricManagerIntervalKind_GeneratedSender,
+     TTL_FabricManagerIntervalKind_GeneratedMixed,
+     TTL_FabricManagerIntervalKind_External]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_DFBProtocolEffectKind_Reserve :
     I32EnumAttrCase<"Reserve", 0, "reserve">;
 def TTL_DFBProtocolEffectKind_Push :

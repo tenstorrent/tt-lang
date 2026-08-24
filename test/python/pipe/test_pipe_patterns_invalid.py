@@ -181,12 +181,12 @@ def test_loopback_send_before_receive_post_rejected(device):
 
 
 def test_receive_wait_unanalyzable_guard_rejected(device):
-    """Pipe receive waits under unknown domains must not be omitted."""
+    """A conditional receive wait cannot precede an unconditional DFB push."""
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)
 
     with pytest.raises(
         Exception,
-        match="could not statically analyze the PipeNet guard",
+        match="publishes a pipe receiver DFB reservation without a preceding receive wait",
     ):
         receive_wait_unanalyzable_guard_kernel(inp_tt)

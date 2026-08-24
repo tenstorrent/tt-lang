@@ -63,16 +63,19 @@ class _FakeTensor:
 
 
 class _RecordingCompiledKernel:
-    def __init__(self, program_hash):
+    def __init__(self, program_hash, num_pipe_global_semaphores):
         self.program_hash = program_hash
+        self.num_pipe_global_semaphores = num_pipe_global_semaphores
         self.runtime_args = []
+        self.pipe_global_semaphore_caches = []
 
-    def __call__(self, *runtime_args):
+    def __call__(self, *runtime_args, _pipe_global_semaphore_cache=None):
         self.runtime_args.append(runtime_args)
+        self.pipe_global_semaphore_caches.append(_pipe_global_semaphore_cache)
         return self.program_hash
 
 
-def _install_recording_compile(monkeypatch):
+def _install_recording_compile(monkeypatch, num_pipe_global_semaphores=0):
     compile_calls = []
     kernel_id_counter = itertools.count(1)
     hash_values = {}
@@ -100,7 +103,9 @@ def _install_recording_compile(monkeypatch):
         program_hash,
         **compile_options,
     ):
-        compiled_kernel = _RecordingCompiledKernel(program_hash)
+        compiled_kernel = _RecordingCompiledKernel(
+            program_hash, num_pipe_global_semaphores
+        )
         compile_calls.append(
             {
                 "kernel_function": kernel_function,
@@ -614,6 +619,38 @@ def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
     assert len(compile_calls) == 2
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
     assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+    assert (
+        compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches[0]
+        is compile_calls[1]["compiled_kernel"].pipe_global_semaphore_caches[0]
+    )
+    assert (
+        compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches[0]
+        is compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches[1]
+    )
+
+
+def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 73760))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 1
+    assert first_result == second_result
 
 
 def _make_scaled_kernel(scale):

@@ -46,6 +46,7 @@ def call_extern_func(
     kernel: Optional[ExternalKernelSelection] = None,
     result_type: Optional[ScalarType] = None,
     condition_result: Optional[DispatchCondition] = None,
+    fabric_manager_effects=(),
 ) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
@@ -68,6 +69,8 @@ def call_extern_func(
             lookup.
         kernel: Logical kernel selector or nonempty tuple of distinct
             selectors.
+        fabric_manager_effects: External fabric-manager ownership transitions
+            at call entry and completion.
 
     ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``.
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
@@ -82,7 +85,6 @@ def call_extern_func(
     ``condition_result`` declares that the result evaluates one immutable
     dispatch-stable condition. Its scalar type comes from the declaration. The
     call must be repeat-safe and cannot access DFB state.
-
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 
