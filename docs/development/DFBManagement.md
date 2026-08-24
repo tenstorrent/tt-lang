@@ -1359,7 +1359,8 @@ order can pass through any number of intermediate kernels.
 
 #### Lifetimes with statically known transactions
 
-A logical DFB is bounded only when all of these conditions hold:
+For one-to-one transaction matching, a logical DFB is bounded only when all of
+these conditions hold:
 
 - a positive, equal number of reserve, push, wait, and pop executions reference
   it;
@@ -1378,6 +1379,9 @@ A logical DFB is bounded only when all of these conditions hold:
 - all reserve and push occurrences have one known write-pointer owner, and all
   wait and pop occurrences have one known read-pointer owner;
 - the final pop follows every active access occurrence on the DFB.
+
+Exact cumulative external effect sequences use the separate queue-state proof
+described under [External calls](#external-calls).
 
 Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
 `ttl.if_src`, or `ttl.if_dst` region, or inside an exact static loop, may satisfy
