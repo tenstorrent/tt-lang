@@ -1291,8 +1291,6 @@ _waited_mutation_f32_two_tile_store_kernel = _make_waited_block_store_kernel(
 )
 _waited_mutation_bf16_iadd_kernel = _make_waited_block_iadd_kernel("bf16")
 _waited_mutation_f32_iadd_kernel = _make_waited_block_iadd_kernel("float32")
-_exact_bf16_execution_domain_kernel = _make_exact_execution_domain_kernel("bf16")
-_exact_f32_execution_domain_kernel = _make_exact_execution_domain_kernel("float32")
 _conditional_bf16_true_lifecycle_kernel = _make_conditional_lifecycle_kernel(
     "bf16", True
 )
@@ -1503,10 +1501,10 @@ def test_ordered_dfbs_with_distinct_noc_owners(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("data_format", "dtype"),
     [
-        (_exact_bf16_execution_domain_kernel, torch.bfloat16),
-        (_exact_f32_execution_domain_kernel, torch.float32),
+        ("bf16", torch.bfloat16),
+        ("float32", torch.float32),
     ],
     ids=["bf16", "f32"],
 )
@@ -1516,8 +1514,9 @@ def test_ordered_dfbs_with_distinct_noc_owners(
     ids=["dram", "l1"],
 )
 def test_exact_disjoint_execution_domains_reuse_dfb(
-    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+    device, data_format, dtype, memory_config, to_device, monkeypatch, tmp_path
 ):
+    operation = _make_exact_execution_domain_kernel(data_format)
     element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
         TILE, 2 * TILE
     )
