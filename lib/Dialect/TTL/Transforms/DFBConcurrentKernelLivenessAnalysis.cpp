@@ -850,6 +850,8 @@ static bool runPrecedesWithinEachIteration(
                                   after.access->operation);
 }
 
+// The middle edge preserves iteration-to-iteration order without one event per
+// execution.
 static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
                                      const AccessEventSpan &before,
                                      const AccessEventSpan &after) {
