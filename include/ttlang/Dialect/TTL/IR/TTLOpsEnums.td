@@ -88,6 +88,18 @@ def TTL_DFBProtocolEffectKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_DFBTileStoreKind_Producer :
+    I32EnumAttrCase<"Producer", 0, "producer">;
+def TTL_DFBTileStoreKind_ConsumerReplacement :
+    I32EnumAttrCase<"ConsumerReplacement", 1, "consumer_replacement">;
+
+def TTL_DFBTileStoreKind : I32EnumAttr<
+    "DFBTileStoreKind", "Dataflow buffer tile-store ownership",
+    [TTL_DFBTileStoreKind_Producer,
+     TTL_DFBTileStoreKind_ConsumerReplacement]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
 def TTL_BcastType_Row    : I32EnumAttrCase<"Row",    2, "row">;
 def TTL_BcastType_Scalar : I32EnumAttrCase<"Scalar", 3, "scalar">;
@@ -138,6 +150,15 @@ def TTL_InputClamping_ClampToNegative : I32EnumAttrCase<"ClampToNegative", 1, "c
 
 def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mode",
     [TTL_InputClamping_None, TTL_InputClamping_ClampToNegative]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
+// TODO(#646): Add non-additive combiners once their DST-resident legality and
+// lowering behavior are specified.
+
+def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
+    "TTL accumulation combiner", [TTL_AccumulationCombiner_Add]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 

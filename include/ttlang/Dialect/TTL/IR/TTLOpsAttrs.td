@@ -31,6 +31,76 @@ def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_DispatchConditionAttr
+    : TTL_Attr<"DispatchCondition", "dispatch_condition"> {
+  let summary = "Module-local dispatch-stable condition identity";
+  let description = [{
+    Identifies one immutable condition declaration within a module. Equal
+    attributes reference the same condition and evaluate to the same truth
+    value for one dispatch and launch coordinate. Distinct conditions within a
+    module require distinct ordinals. Zero is false and nonzero is true. The
+    value may differ between launch coordinates or dispatches.
+
+    The ordinal is module-local and has no runtime meaning. The scalar type
+    is the external result carrier and must be signless i32 or i64.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    "Type":$scalarType
+  );
+  let assemblyFormat = "`<` $ordinal `,` $scalarType `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DFBAllocationGroupAttr
+    : TTL_Attr<"DFBAllocationGroup", "dfb_allocation_group"> {
+  let summary = "Module-local verified dataflow buffer allocation identity";
+  let description = [{
+    Identifies logical dataflow buffers that must receive one physical DFB
+    index after the compiler proves compatible static configuration, storage,
+    non-overlapping lifecycles, and reusable protocol state. Equal attributes
+    identify one group. Distinct attributes impose no allocation relationship.
+
+    `$ordinal` is module-local and has no runtime meaning. The attribute does
+    not synchronize execution, reset DFB state, or by itself permit an
+    interference edge to be removed.
+  }];
+  let parameters = (ins "int64_t":$ordinal);
+  let assemblyFormat = "`<` $ordinal `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_SynchronizedDFBResetAttr
+    : TTL_Attr<"SynchronizedDFBReset", "synchronized_dfb_reset"> {
+  let summary = "Worker-local synchronized dataflow buffer reset identity";
+  let description = [{
+    Identifies one dynamic reset instance and the complete set of logical
+    kernels that participate on each active worker. Every participant reaches
+    the same instance before any participant returns. The reset establishes
+    canonical read-pointer, write-pointer, occupancy, and initialization state
+    for each target declared by the operation.
+
+    The ordinal is module-local and has no runtime meaning. Equal attributes
+    reference the same reset instance. Distinct ordinals identify independent
+    reset instances. Participant order is canonical and otherwise semantically
+    insignificant. The participant set contains one compute kernel and both
+    data movement kernels that own DFB interface state. Each participant
+    executes the declaration at most once per dispatch and launch node.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
+  );
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
+  let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    static SynchronizedDFBResetAttr getCheckedInstance(
+        ::mlir::Location location, ::mlir::MLIRContext *context,
+        int64_t ordinal,
+        ::llvm::ArrayRef<LogicalKernelAttr> participants);
+  }];
+}
+
 def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   let summary = "Slice specification for core range";
   let parameters = (ins

@@ -189,6 +189,10 @@ std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
                                    const LaunchNodeDomainState &state);
 
+/// Return true when `op` executes zero times on every launch node.
+bool hasExactEmptyLaunchDomain(Operation *op,
+                               const LaunchNodeDomainState &state);
+
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch nodes.
 ///
@@ -203,6 +207,16 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
+
+/// Prove that two operations have the same unresolved conditional execution
+/// at their launch nodes. Same-function conditions may share SSA values;
+/// cross-function conditions require equivalent typed dispatch-condition
+/// expressions at the same launch coordinate. The proof accepts only
+/// structured conditions whose bodies execute at most once; unresolved loops
+/// are rejected.
+bool proveEquivalentConditionalExecutionAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state);
 
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share

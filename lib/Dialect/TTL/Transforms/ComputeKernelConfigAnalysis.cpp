@@ -9,11 +9,13 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallSet.h"
 
 #include <algorithm>
@@ -91,46 +93,41 @@ getOptionalUnpackConstraint(func::FuncOp function) {
   return std::optional<SmallVector<int32_t>>(std::move(dataflowBufferIndices));
 }
 
-/// Return the attached DFB index, or `std::nullopt` when no DFB is attached.
-FailureOr<std::optional<int64_t>>
-resolveDataflowBufferIndex(Value value, Operation *consumer) {
+struct ResolvedDataflowBuffer {
+  Value dfb;
+  int64_t dfbIndex;
+};
+
+/// Return the attached DFB and index after resolving a compute-region argument.
+FailureOr<std::optional<ResolvedDataflowBuffer>>
+resolveDataflowBuffer(Value value, Operation *consumer) {
   if (auto blockArgument = dyn_cast<BlockArgument>(value)) {
     auto computeOp =
         dyn_cast_or_null<ComputeOp>(blockArgument.getOwner()->getParentOp());
     if (!computeOp) {
-      return std::optional<int64_t>();
+      return std::optional<ResolvedDataflowBuffer>();
     }
     unsigned argumentNumber = blockArgument.getArgNumber();
     if (argumentNumber < computeOp.getNumInputs()) {
       value = computeOp.getInputs()[argumentNumber];
     } else {
       unsigned outputNumber = argumentNumber - computeOp.getNumInputs();
-      if (outputNumber >= computeOp.getNumOutputs()) {
-        return std::optional<int64_t>();
-      }
+      assert(outputNumber < computeOp.getNumOutputs() &&
+             "compute region argument must map to an input or output");
       value = computeOp.getOutputs()[outputNumber];
     }
   }
 
   Value dfb = getAttachedCB(value);
-  if (dfb) {
-    std::optional<int64_t> dfbIndex = getCBIndex(dfb);
-    if (!dfbIndex) {
-      consumer->emitOpError("uses a dataflow buffer without a finalized index");
-      return failure();
-    }
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(consumer);
-    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-      consumer->emitOpError()
-          << "uses dataflow buffer index " << *dfbIndex
-          << " outside the supported range [0, " << targetMaxDFBIndices - 1
-          << "] for " << getTargetDFBIndexCapacityDescription(consumer);
-      return failure();
-    }
-    return dfbIndex;
+  if (!dfb) {
+    return std::optional<ResolvedDataflowBuffer>();
   }
-
-  return std::optional<int64_t>();
+  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
+  if (!dfbIndex) {
+    consumer->emitOpError("uses a dataflow buffer without a finalized index");
+    return failure();
+  }
+  return std::make_optional(ResolvedDataflowBuffer{dfb, *dfbIndex});
 }
 
 /// Return the scalar element type of a tile or tensor of tiles.
@@ -167,12 +164,12 @@ findUnavailableDataflowBufferOperand(Operation *operation,
         TileOperandRoute::DataflowBuffer) {
       continue;
     }
-    FailureOr<std::optional<int64_t>> dataflowBufferIndex =
-        resolveDataflowBufferIndex(operand.get(), operation);
-    if (failed(dataflowBufferIndex)) {
+    FailureOr<std::optional<ResolvedDataflowBuffer>> dataflowBuffer =
+        resolveDataflowBuffer(operand.get(), operation);
+    if (failed(dataflowBuffer)) {
       return failure();
     }
-    if (!*dataflowBufferIndex) {
+    if (!*dataflowBuffer) {
       return std::optional<unsigned>(operand.getOperandNumber());
     }
   }
@@ -194,21 +191,21 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (failed(elementType)) {
       return failure();
     }
-    FailureOr<std::optional<int64_t>> dataflowBufferIndex =
-        resolveDataflowBufferIndex(operand.get(), operation);
-    if (failed(dataflowBufferIndex)) {
+    FailureOr<std::optional<ResolvedDataflowBuffer>> dataflowBuffer =
+        resolveDataflowBuffer(operand.get(), operation);
+    if (failed(dataflowBuffer)) {
       return failure();
     }
-    if (route == TileOperandRoute::DataflowBuffer && !*dataflowBufferIndex) {
+    if (route == TileOperandRoute::DataflowBuffer && !*dataflowBuffer) {
       operation->emitOpError()
           << "operand " << operand.getOperandNumber()
           << " must resolve to a dataflow buffer for the selected strategy";
       return failure();
     }
-    if (*dataflowBufferIndex) {
-      dfbInputUses.push_back({**dataflowBufferIndex, operation,
-                              operand.getOperandNumber(), info.primitive, route,
-                              *elementType});
+    if (*dataflowBuffer) {
+      dfbInputUses.push_back(
+          {(*dataflowBuffer)->dfbIndex, (*dataflowBuffer)->dfb, operation,
+           operand.getOperandNumber(), info.primitive, route, *elementType});
     }
     if (route == TileOperandRoute::Dst) {
       destinationUses.push_back({operation, info.primitive, *elementType});
@@ -840,7 +837,9 @@ KernelConfigPolicy::get(func::FuncOp function, StringRef fp32Selection,
   return policy;
 }
 
-FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
+static FailureOr<KernelRequirements> collectKernelRequirementsImpl(
+    func::FuncOp function,
+    llvm::function_ref<bool(Operation *)> includeOperation) {
   KernelRequirements requirements;
   WalkResult result = function.walk([&](Operation *operation) {
     auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
@@ -851,11 +850,18 @@ FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
       }
       return WalkResult::advance();
     }
+    bool contributesConfiguration = includeOperation(operation);
     if (!executionOp.getLegalExecutionStrategies().empty()) {
       FailureOr<TileExecutionChoice> choice =
           getTileExecutionChoice(executionOp);
       if (failed(choice)) {
         return WalkResult::interrupt();
+      }
+      if (!contributesConfiguration) {
+        for (TileExecutionOption &option : choice->options) {
+          option.dfbInputUses.clear();
+          option.destinationUses.clear();
+        }
       }
       requirements.tileStrategyChoices.push_back(std::move(*choice));
       return WalkResult::advance();
@@ -870,8 +876,13 @@ FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
       operation->emitOpError("has no tile execution semantics");
       return WalkResult::interrupt();
     }
-    if (failed(verifyTileExecutionInfo(operation, *info)) ||
-        failed(appendExecutionRequirements(operation, *info,
+    if (failed(verifyTileExecutionInfo(operation, *info))) {
+      return WalkResult::interrupt();
+    }
+    if (!contributesConfiguration) {
+      return WalkResult::advance();
+    }
+    if (failed(appendExecutionRequirements(operation, *info,
                                            requirements.dfbInputUses,
                                            requirements.destinationUses))) {
       return WalkResult::interrupt();
@@ -888,9 +899,187 @@ FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
   return requirements;
 }
 
+FailureOr<KernelRequirements>
+collectKernelRequirements(func::FuncOp function,
+                          const LaunchNodeDomainState &launchDomains) {
+  return collectKernelRequirementsImpl(function, [&](Operation *operation) {
+    return !hasExactEmptyLaunchDomain(operation, launchDomains);
+  });
+}
+
+namespace {
+
+using DFBConfigurationMask = std::uint8_t;
+constexpr DFBConfigurationMask kAllDFBConfigurations = 0xF;
+
+DFBConfigurationMask
+getDFBConfigurationMask(const KernelTargetEnvironment &target,
+                        const DFBInputUse &use) {
+  DFBConfigurationMask mask = 0;
+  for (const DFBHardwareConfiguration &configuration :
+       target.getSupportedDFBConfigurations(use.primitive, use.route,
+                                            use.elementType)) {
+    unsigned widthOffset =
+        configuration.destinationElementWidth == DestinationElementWidth::Bits32
+            ? 2
+            : 0;
+    unsigned modeOffset =
+        configuration.unpackMode == DFBUnpackMode::UnpackToDestination ? 1 : 0;
+    mask |= DFBConfigurationMask{1} << (widthOffset + modeOffset);
+  }
+  return mask;
+}
+
+void appendUniqueMask(SmallVectorImpl<DFBConfigurationMask> &masks,
+                      DFBConfigurationMask mask) {
+  if (mask != 0 && !llvm::is_contained(masks, mask)) {
+    masks.push_back(mask);
+  }
+}
+
+struct DFBConfigurationProfile {
+  Value dfb;
+  Operation *evidence = nullptr;
+  SmallVector<DFBConfigurationMask, 4> alternatives;
+};
+
+DFBConfigurationProfile
+buildDFBConfigurationProfile(Value dfb, Operation *evidence,
+                             const KernelTargetEnvironment &target,
+                             const KernelRequirements &requirements) {
+  DFBConfigurationMask fixedMask = kAllDFBConfigurations;
+  for (const DFBInputUse &use : requirements.dfbInputUses) {
+    if (use.dfb == dfb) {
+      fixedMask &= getDFBConfigurationMask(target, use);
+    }
+  }
+
+  SmallVector<DFBConfigurationMask, 4> alternatives;
+  appendUniqueMask(alternatives, fixedMask);
+  for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
+    SmallVector<DFBConfigurationMask, 2> choiceMasks;
+    for (const TileExecutionOption &option : choice.options) {
+      DFBConfigurationMask optionMask = kAllDFBConfigurations;
+      for (const DFBInputUse &use : option.dfbInputUses) {
+        if (use.dfb == dfb) {
+          optionMask &= getDFBConfigurationMask(target, use);
+        }
+      }
+      appendUniqueMask(choiceMasks, optionMask);
+    }
+
+    SmallVector<DFBConfigurationMask, 4> nextAlternatives;
+    for (DFBConfigurationMask priorMask : alternatives) {
+      for (DFBConfigurationMask choiceMask : choiceMasks) {
+        appendUniqueMask(nextAlternatives, priorMask & choiceMask);
+      }
+    }
+    alternatives = std::move(nextAlternatives);
+  }
+  return {dfb, evidence, std::move(alternatives)};
+}
+
+bool canAlwaysShareDFBConfiguration(const DFBConfigurationProfile &lhs,
+                                    const DFBConfigurationProfile &rhs) {
+  constexpr DFBConfigurationMask kBits16Configurations = 0x3;
+  constexpr DFBConfigurationMask kBits32Configurations = 0xC;
+  for (DFBConfigurationMask lhsMask : lhs.alternatives) {
+    for (DFBConfigurationMask rhsMask : rhs.alternatives) {
+      for (DFBConfigurationMask widthMask :
+           {kBits16Configurations, kBits32Configurations}) {
+        DFBConfigurationMask lhsWidthMask = lhsMask & widthMask;
+        DFBConfigurationMask rhsWidthMask = rhsMask & widthMask;
+        if (lhsWidthMask != 0 && rhsWidthMask != 0 &&
+            (lhsWidthMask & rhsWidthMask) == 0) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+SmallVector<DFBConfigurationAliasConflict>
+collectDFBConfigurationAliasConflicts(const KernelTargetEnvironment &target,
+                                      const KernelRequirements &requirements) {
+  llvm::MapVector<Value, Operation *> evidenceByDFB;
+  auto collectUses = [&](ArrayRef<DFBInputUse> uses) {
+    for (const DFBInputUse &use : uses) {
+      evidenceByDFB.try_emplace(use.dfb, use.consumer);
+    }
+  };
+  collectUses(requirements.dfbInputUses);
+  for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
+    for (const TileExecutionOption &option : choice.options) {
+      collectUses(option.dfbInputUses);
+    }
+  }
+
+  SmallVector<DFBConfigurationProfile> profiles;
+  profiles.reserve(evidenceByDFB.size());
+  for (const auto &[dfb, evidence] : evidenceByDFB) {
+    DFBConfigurationProfile profile =
+        buildDFBConfigurationProfile(dfb, evidence, target, requirements);
+    if (!profile.alternatives.empty()) {
+      profiles.push_back(std::move(profile));
+    }
+  }
+
+  SmallVector<DFBConfigurationAliasConflict> conflicts;
+  for (unsigned lhsIndex = 0; lhsIndex < profiles.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < profiles.size();
+         ++rhsIndex) {
+      const DFBConfigurationProfile &lhs = profiles[lhsIndex];
+      const DFBConfigurationProfile &rhs = profiles[rhsIndex];
+      if (!canAlwaysShareDFBConfiguration(lhs, rhs)) {
+        conflicts.push_back({lhs.dfb, rhs.dfb, lhs.evidence, rhs.evidence});
+      }
+    }
+  }
+  return conflicts;
+}
+
+namespace {
+
+LogicalResult
+validateFinalizedDFBIndices(const KernelRequirements &requirements) {
+  auto validateUses = [](ArrayRef<DFBInputUse> uses) {
+    for (const DFBInputUse &use : uses) {
+      int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(use.consumer);
+      if (use.dfbIndex < 0 || use.dfbIndex >= targetMaxDFBIndices) {
+        use.consumer->emitOpError()
+            << "uses dataflow buffer index " << use.dfbIndex
+            << " outside the supported range [0, " << targetMaxDFBIndices - 1
+            << "] for " << getTargetDFBIndexCapacityDescription(use.consumer);
+        return failure();
+      }
+    }
+    return success();
+  };
+
+  if (failed(validateUses(requirements.dfbInputUses))) {
+    return failure();
+  }
+  for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
+    for (const TileExecutionOption &option : choice.options) {
+      if (failed(validateUses(option.dfbInputUses))) {
+        return failure();
+      }
+    }
+  }
+  return success();
+}
+
+} // namespace
+
 FailureOr<KernelConfigPlan> resolveKernelConfig(
     func::FuncOp function, const KernelTargetEnvironment &target,
     const KernelConfigPolicy &policy, const KernelRequirements &requirements) {
+  if (failed(validateFinalizedDFBIndices(requirements))) {
+    return failure();
+  }
   ConfigConstraintState initialState;
   if (policy.fp32DestAccumulation == ConfigSelection::Enabled) {
     llvm::erase_if(initialState.candidates,
