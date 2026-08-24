@@ -178,7 +178,7 @@ static void insertAtCreationAnchor(PatternRewriter &rewriter,
 /// Creates one tile store using the output transaction selected by planning.
 static void emitTileStore(PatternRewriter &rewriter, Location loc,
                           Value tileResult, ComputeOp computeOp, StoreOp store,
-                          const OutputPublicationPlan &outputs) {
+                          const ComputeOpCreationPlan &creation) {
   SmallVector<Value> iterIndices = getOrCreateIterIndices(rewriter, computeOp);
   auto indexingMaps = computeOp.getIndexingMapsArray();
   size_t numInputs = computeOp.getNumInputs();
@@ -191,8 +191,35 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
   SmallVector<Value> indices =
       applyIndexingMap(rewriter, loc, outputMap, iterIndices);
 
-  createTileOpWithPlaceholderDstIndex<TileStoreOp>(rewriter, loc, tileResult,
-                                                   store.getView(), indices);
+  TileStoreOp tileStore = createTileOpWithPlaceholderDstIndex<TileStoreOp>(
+      rewriter, loc, tileResult, store.getView(), indices);
+  const WaitedDFBMutationPlan *waitedMutation = nullptr;
+  for (const WaitedDFBMutationPlan &mutation : creation.waitedMutations) {
+    if (mutation.store != store) {
+      continue;
+    }
+    assert(!waitedMutation && "one store cannot replace two waited DFBs");
+    waitedMutation = &mutation;
+  }
+  bool isWaitedMutation = waitedMutation != nullptr;
+  assert(isWaitedMutation == isa<CBWaitOp>(findCBAcquireOp(store.getView())) &&
+         "wait-backed tile store must consume a proved mutation plan");
+  if (isWaitedMutation) {
+    CBWaitOp waitedAcquire = waitedMutation->wait;
+    CBPopOp waitedRelease = waitedMutation->release;
+    assert(waitedAcquire == findCBAcquireOp(store.getView()) &&
+           waitedAcquire.getCb() == waitedMutation->dfb &&
+           waitedRelease.getCb() == waitedMutation->dfb &&
+           waitedMutation->transactionTiles ==
+               getDFBLifecycleTileCount(waitedAcquire) &&
+           waitedMutation->transactionTiles ==
+               getDFBLifecycleTileCount(waitedRelease) &&
+           waitedMutation->capacityTiles ==
+               cast<CircularBufferType>(waitedMutation->dfb.getType())
+                   .getTotalElements() &&
+           "waited DFB mutation changed after planning");
+    tileStore.setStoreKind(DFBTileStoreKind::ConsumerReplacement);
+  }
 }
 
 static void
@@ -541,7 +568,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Output stores and their instrumentation retain their complete source
   // order, including distinct signpost scopes around multiple stores.
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, finalResult, computeOp, store, outputs);
+    emitTileStore(rewriter, loc, finalResult, computeOp, store, creation);
     instrumentationEmitter.emitAfter(store);
   }
   assert(instrumentationEmitter.emittedAll() &&
@@ -655,7 +682,7 @@ static LogicalResult buildComputeFromInputs(
       emitTileOp(rewriter, loc, creation->resultTileType, body, *creation);
   instrumentationEmitter.emitAfter(op);
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+    emitTileStore(rewriter, loc, result, computeOp, store, *creation);
     instrumentationEmitter.emitAfter(store);
   }
   assert(instrumentationEmitter.emittedAll() &&
@@ -1011,7 +1038,7 @@ struct LowerMatmulToCompute : PlannedComputeRewritePattern<MatmulOp> {
 
 /// Lowers passthrough ttl.store (CB-attached input) by creating a compute
 /// with tile_store. Stores whose input comes from an elementwise op are
-/// already erased by the elementwise builders (emitTileStores).
+/// already erased when their producers are incorporated into a ComputeOp.
 struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   LowerStoreToCompute(MLIRContext *context,
                       const KernelComputeOpCreationPlan &kernelPlan)
