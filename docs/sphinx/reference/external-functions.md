@@ -407,7 +407,9 @@ contract and are not used.
 ## Include directories
 
 `include_paths` contains compile-time directory strings added to external
-header lookup. The compiler emits the requested header before the call.
+header lookup. The compiler emits the requested header before the call. The
+first occurrence of each directory determines search order; later duplicates
+are ignored across all external calls in the operation.
 
 ```python
 ttl.call_extern_func(
