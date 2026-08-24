@@ -42,7 +42,7 @@ module {
 // size in the allocation report.
 
 // REPORT: operation=ttl.cb_reserve kernel=@large_static_run
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[run(count=1000,tiles=1)]
 
 module {
@@ -74,15 +74,15 @@ module {
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
 // REPORT: operation=ttl.cb_reserve kernel=@nested_explicit_consumer
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: occurrences=[0:4, 1:4, 2:1, 3:1, 4:1, 5:1, 6:1, 7:1, 8:1, 9:1]
 // REPORT-SAME: transactions=[4, 4, 4, 4]
-// REPORT: node (1,0) quiescence=none
+// REPORT: node (1,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[4, 4, 4, 4]
 // REPORT: operation=ttl.cb_reserve kernel=@nested_explicit_consumer
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[4, 4, 4, 4]
-// REPORT: node (1,0) quiescence=none
+// REPORT: node (1,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[4, 4, 4, 4]
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
@@ -161,10 +161,10 @@ module {
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
 // REPORT: operation=ttl.cb_reserve kernel=@loop_to_loop
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[4, 4, 4, 4]
 // REPORT: operation=ttl.cb_reserve kernel=@loop_to_loop
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[4, 4, 4, 4]
 
 module {
@@ -208,7 +208,7 @@ module {
 // REUSE-SAME: ttl.base_cta_index = 1 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // REPORT: DFB logical_id=0 bounded=0
-// REPORT: node (0,0) quiescence=missing-protocol-effect
+// REPORT: node (0,0) lifecycle_completion=missing-protocol-effect
 // REPORT-SAME: evidence=ttl.opaque_call kernel=@straight_line_producer
 // REPORT-SAME: transactions=[]
 
@@ -246,7 +246,7 @@ module {
 // Two transactions in each loop iteration form one complete protocol run.
 
 // REPORT: operation=ttl.cb_reserve kernel=@two_transactions_per_iteration_producer
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: transactions=[1, 1, 1, 1, 1, 1, 1, 1]
 
 module {

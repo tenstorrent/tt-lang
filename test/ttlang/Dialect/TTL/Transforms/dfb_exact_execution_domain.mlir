@@ -250,7 +250,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // REPORT: DFB logical_id=18 bounded=1 compiler_created=0
 // REPORT-SAME: domain={(0,0), (1,0)}
-// REPORT: node (0,0) quiescence=none
+// REPORT: node (0,0) lifecycle_completion=complete
 // REPORT-SAME: occurrences=[0:2, 1:2, 2:2, 3:2]
 // REPORT-SAME: transactions=[1, 1]
 // REPORT: DFB conflict lhs=18 rhs=19 reason=transaction-mismatch node=(0,0)

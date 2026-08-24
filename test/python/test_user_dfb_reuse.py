@@ -1403,8 +1403,8 @@ def _distinct_noc_owner_kernel(first, second, out):
         with first_dfb.wait():
             pass
 
-        # The acknowledgment proves that the first DFB is quiescent before
-        # NOC1 produces the second DFB.
+        # The acknowledgment proves that every first-DFB access completes
+        # before NOC1 produces the second DFB.
         with acknowledgment_dfb.reserve() as acknowledgment:
             acknowledgment.store(
                 ttl.block.fill(

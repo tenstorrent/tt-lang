@@ -86,8 +86,8 @@ namespace {
 // Preserves failed-proof evidence before using the caller-selected fallback.
 static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
                                       Operation *fallbackEvidence) {
-  if (lifetime && lifetime->quiescence.evidence) {
-    return lifetime->quiescence.evidence;
+  if (lifetime && lifetime->completionProof.evidence) {
+    return lifetime->completionProof.evidence;
   }
   return fallbackEvidence;
 }
@@ -156,8 +156,8 @@ struct AllocationGroupNodeEpoch {
   const DFBLifecycleEpoch *epoch = nullptr;
   bool possibleDomain = false;
 
-  const DFBQuiescenceProof &getQuiescence() const {
-    return epoch ? epoch->quiescence : lifetime->quiescence;
+  const DFBLifecycleCompletionProof &getCompletionProof() const {
+    return epoch ? epoch->completionProof : lifetime->completionProof;
   }
 
   ArrayRef<DFBTransactionRun> getWriteCursorRuns() const {
@@ -235,8 +235,8 @@ getAllocationGroupEpochEvidence(const AllocationGroupNodeEpoch &epoch,
                                       : logicalDFB.declarations.front();
     return getLifetimeEvidence(epoch.lifetime, fallbackEvidence);
   }
-  if (epoch.getQuiescence().evidence) {
-    return epoch.getQuiescence().evidence;
+  if (epoch.getCompletionProof().evidence) {
+    return epoch.getCompletionProof().evidence;
   }
   assert(!epoch.epoch->accessOccurrenceIndices.empty() &&
          "active lifecycle epoch must contain an access");
@@ -451,11 +451,11 @@ private:
                                         useConditionalProof);
         auto unprovenLhsEpoch =
             llvm::find_if(lhsEpochs, [](const AllocationGroupNodeEpoch &epoch) {
-              return !epoch.getQuiescence().proven();
+              return !epoch.getCompletionProof().proven();
             });
         auto unprovenRhsEpoch =
             llvm::find_if(rhsEpochs, [](const AllocationGroupNodeEpoch &epoch) {
-              return !epoch.getQuiescence().proven();
+              return !epoch.getCompletionProof().proven();
             });
         if (unprovenLhsEpoch != lhsEpochs.end() ||
             unprovenRhsEpoch != rhsEpochs.end()) {
@@ -488,8 +488,8 @@ private:
         }
         continue;
       }
-      if (!lhsLifetime->quiescence.proven() ||
-          !rhsLifetime->quiescence.proven()) {
+      if (!lhsLifetime->completionProof.proven() ||
+          !rhsLifetime->completionProof.proven()) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
@@ -788,7 +788,7 @@ static LogicalResult validateAllocationGroupCursor(
                             messageStream.str());
         return failure();
       }
-      if (epoch.getQuiescence().proven() || unsafeAssumeAllocationGroups) {
+      if (epoch.getCompletionProof().proven() || unsafeAssumeAllocationGroups) {
         continue;
       }
       std::string message;
@@ -796,7 +796,7 @@ static LogicalResult validateAllocationGroupCursor(
       messageStream << "DFB allocation group ";
       printAllocationGroup(messageStream, allocationGroup, members,
                            logicalDFBs);
-      messageStream << " has unproved protocol quiescence for ";
+      messageStream << " does not have proven lifecycle completion for ";
       printAllocationGroupNodeEpoch(messageStream, epoch, logicalDFBs);
       messageStream << " on launch node (" << node.x << ',' << node.y << ')';
       analysisFailure.set(getAllocationGroupEpochEvidence(

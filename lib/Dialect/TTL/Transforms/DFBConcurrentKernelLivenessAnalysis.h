@@ -48,8 +48,8 @@ struct DFBPointerOwner {
   bool operator!=(const DFBPointerOwner &rhs) const { return !(*this == rhs); }
 };
 
-/// Reason that a per-node lifetime did not prove a quiescent handoff.
-enum class DFBQuiescenceFailureReason {
+/// Reason DFB lifecycle completion was not proven for one launch node.
+enum class DFBLifecycleCompletionFailureReason {
   None,
   MissingProtocolEffect,
   UnsupportedControlFlow,
@@ -58,12 +58,15 @@ enum class DFBQuiescenceFailureReason {
   UnknownPointerOwner,
 };
 
-/// Typed quiescence result retained for conflict evidence.
-struct DFBQuiescenceProof {
-  DFBQuiescenceFailureReason failure = DFBQuiescenceFailureReason::None;
+/// Result of proving lifecycle completion, with evidence for a failed proof.
+struct DFBLifecycleCompletionProof {
+  DFBLifecycleCompletionFailureReason failure =
+      DFBLifecycleCompletionFailureReason::None;
   Operation *evidence = nullptr;
 
-  bool proven() const { return failure == DFBQuiescenceFailureReason::None; }
+  bool proven() const {
+    return failure == DFBLifecycleCompletionFailureReason::None;
+  }
 };
 
 /// One access event consumed by concurrent-liveness analysis.
@@ -163,7 +166,7 @@ struct DFBLifecycleEpoch {
   std::optional<int64_t> terminalResetOrdinal;
   bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
-  DFBQuiescenceProof quiescence;
+  DFBLifecycleCompletionProof completionProof;
 };
 
 /// A selected reset write that overlaps a non-target logical DFB lifecycle.
@@ -192,7 +195,7 @@ struct DFBPerNodeLifetime {
   /// First active access on the minimal entry frontier, retained as evidence.
   Operation *entryEvidence = nullptr;
 
-  /// Completion event IDs after which the DFB is quiescent.
+  /// Event IDs after which every access in the DFB lifecycle has completed.
   SmallVector<unsigned> terminalCompletionEvents;
   /// Normalized transaction runs in occurrence order.
   SmallVector<DFBTransactionRun> transactionRuns;
@@ -208,7 +211,7 @@ struct DFBPerNodeLifetime {
   bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
-  DFBQuiescenceProof quiescence;
+  DFBLifecycleCompletionProof completionProof;
 };
 
 /// Allocation-report data omitted from normal liveness analysis.
@@ -242,7 +245,7 @@ struct DFBLogicalLifecycle {
   findPossibleNodeLifetime(LaunchNodeCoord node) const;
 };
 
-/// Builds per-node cross-kernel happens-before and DFB quiescence facts.
+/// Builds per-node cross-kernel happens-before and lifecycle completion facts.
 class DFBConcurrentKernelLivenessAnalysis {
 public:
   DFBConcurrentKernelLivenessAnalysis(Operation *operation,

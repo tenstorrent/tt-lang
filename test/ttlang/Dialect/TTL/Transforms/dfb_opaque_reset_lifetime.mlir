@@ -77,8 +77,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=6144 handoff=proven
 // CHECK: DFB logical_id=0 bounded=1 compiler_created=0 conditionally_bounded=0 opaque_external_access=1
-// CHECK: node (0,0) quiescence=none domain_assumption=exact conditional_execution=1 opaque_protocol_reset=1
-// CHECK: node (1,0) quiescence=none domain_assumption=exact conditional_execution=1 opaque_protocol_reset=1
+// CHECK: node (0,0) lifecycle_completion=complete domain_assumption=exact conditional_execution=1 opaque_protocol_reset=1
+// CHECK: node (1,0) lifecycle_completion=complete domain_assumption=exact conditional_execution=1 opaque_protocol_reset=1
 // CHECK: DFB logical_id=1 bounded=1 compiler_created=0 conditionally_bounded=0
 // CHECK: Total DFB count: 1
 

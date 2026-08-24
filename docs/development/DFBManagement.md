@@ -1266,7 +1266,7 @@ Ordinary reuse requires identical `CircularBufferType` values (shape, element
 type, and block count). An explicit allocation group may combine scratch DFBs
 with different block shapes or block counts when their element types and page
 formats are identical. The physical descriptor then uses the largest total
-capacity. Both mechanisms require complete quiescent lifecycles. Ordinary reuse
+capacity. Both mechanisms require each lifecycle to complete. Ordinary reuse
 also requires matching write- and read-pointer runs unless a synchronized reset
 establishes canonical state. The matched sequences must remain boundary-safe
 when repeated from their terminal offsets. Allocation groups instead advance
@@ -1557,8 +1557,8 @@ unrelated third kernel adds no cross-kernel edge. A `B.wait` entered before
 The write- and read-pointer owners are also part of the allocation state. The
 owner is the launched node plus NOC0, NOC1, Pack, or Unpack and the pointer
 direction. Distinct kernel function symbols may share when they execute on the
-same hardware pointer processors. A quiescent handoff does not transfer pointer
-state between different processors.
+same hardware pointer processors. A completed lifecycle does not transfer
+pointer state between different processors.
 
 #### Relation to prior allocation models
 
@@ -1649,7 +1649,7 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
       if every use completion precedes the final pop completion:
         DFB.nodeLifetime.earliestEvents = minimal entry events in uses
         DFB.nodeLifetime.terminalEvents = {final pop completion}
-        DFB.nodeLifetime.quiescence = proven
+        DFB.nodeLifetime.completionProof = proven
 
     build a second graph with every unknown access domain treated as possible
     prove conditionally bounded lifetimes only for one complete conditional
@@ -1658,7 +1658,7 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
       identities at one launch coordinate
     retain possible-domain order separately from exact-domain order
 
-  return logical DFB lifecycles, per-node quiescence, pointer owners,
+  return logical DFB lifecycles, per-node lifecycle completion, pointer owners,
          conditional boundedness, source evidence, and pairwise per-node
          exact and possible-domain lifetime order
 ```

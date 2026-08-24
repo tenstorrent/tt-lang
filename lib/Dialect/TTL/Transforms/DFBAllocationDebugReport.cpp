@@ -36,22 +36,22 @@ static llvm::StringRef getProtocolEffectName(DFBProtocolEffectKind effect) {
 }
 
 static llvm::StringRef
-getQuiescenceFailureName(DFBQuiescenceFailureReason failure) {
+getLifecycleCompletionName(DFBLifecycleCompletionFailureReason failure) {
   switch (failure) {
-  case DFBQuiescenceFailureReason::None:
-    return "none";
-  case DFBQuiescenceFailureReason::MissingProtocolEffect:
+  case DFBLifecycleCompletionFailureReason::None:
+    return "complete";
+  case DFBLifecycleCompletionFailureReason::MissingProtocolEffect:
     return "missing-protocol-effect";
-  case DFBQuiescenceFailureReason::UnsupportedControlFlow:
+  case DFBLifecycleCompletionFailureReason::UnsupportedControlFlow:
     return "unsupported-control-flow";
-  case DFBQuiescenceFailureReason::MismatchedTransaction:
+  case DFBLifecycleCompletionFailureReason::MismatchedTransaction:
     return "mismatched-transaction";
-  case DFBQuiescenceFailureReason::IncompleteUseOrder:
+  case DFBLifecycleCompletionFailureReason::IncompleteUseOrder:
     return "incomplete-use-order";
-  case DFBQuiescenceFailureReason::UnknownPointerOwner:
+  case DFBLifecycleCompletionFailureReason::UnknownPointerOwner:
     return "unknown-pointer-owner";
   }
-  llvm_unreachable("unknown DFB quiescence failure");
+  llvm_unreachable("unknown DFB lifecycle-completion failure");
 }
 
 static llvm::StringRef getPointerProcessorName(DFBPointerProcessor processor) {
@@ -292,8 +292,10 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                    rhsEpoch.resetCanonicalizedOpaqueProtocol &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
-               lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
-               lhsEpoch.quiescence.evidence == rhsEpoch.quiescence.evidence;
+               lhsEpoch.completionProof.failure ==
+                   rhsEpoch.completionProof.failure &&
+               lhsEpoch.completionProof.evidence ==
+                   rhsEpoch.completionProof.evidence;
       });
 }
 
@@ -302,8 +304,8 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
                       const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
                       const DFBPerNodeLifetime &rhs,
                       const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
-  if (lhs.quiescence.failure != rhs.quiescence.failure ||
-      lhs.quiescence.evidence != rhs.quiescence.evidence ||
+  if (lhs.completionProof.failure != rhs.completionProof.failure ||
+      lhs.completionProof.evidence != rhs.completionProof.evidence ||
       lhs.mayBeActive != rhs.mayBeActive ||
       lhs.conditionalExecutionProven != rhs.conditionalExecutionProven ||
       lhs.transactionRuns != rhs.transactionRuns ||
@@ -331,7 +333,7 @@ printLifetimeFacts(llvm::raw_ostream &output,
                    const DFBPerNodeLifetime &lifetime,
                    const DFBPerNodeLifetimeDiagnostics &diagnostics) {
   output << " evidence=";
-  printOperation(output, lifetime.quiescence.evidence);
+  printOperation(output, lifetime.completionProof.evidence);
   output << " occurrences=";
   printOccurrences(output, diagnostics);
   output << " transactions=";
@@ -389,8 +391,8 @@ static void printPossibleLifetimes(
     const DFBPerNodeLifetime &lifetime = *group.representative.lifetime;
     const DFBPerNodeLifetimeDiagnostics &diagnostics =
         *group.representative.diagnostics;
-    output << "  possible_nodes quiescence="
-           << getQuiescenceFailureName(lifetime.quiescence.failure)
+    output << "  possible_nodes lifecycle_completion="
+           << getLifecycleCompletionName(lifetime.completionProof.failure)
            << " domain_assumption=unknown-possible may_be_active="
            << lifetime.mayBeActive
            << " conditional_execution=" << lifetime.conditionalExecutionProven;
@@ -430,8 +432,8 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
                        allocationDiagnostics.nodeLifetimeDiagnostics)) {
     output << "  node ";
     printNode(output, lifetime.node);
-    output << " quiescence="
-           << getQuiescenceFailureName(lifetime.quiescence.failure)
+    output << " lifecycle_completion="
+           << getLifecycleCompletionName(lifetime.completionProof.failure)
            << " domain_assumption=exact conditional_execution="
            << lifetime.conditionalExecutionProven;
     if (lifetime.resetCanonicalizedOpaqueProtocol) {

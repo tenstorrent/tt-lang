@@ -3,16 +3,16 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
 
 // ALLOC-COUNT-10: ttl.base_cta_index = 2 : i32
-// REPORT: quiescence=mismatched-transaction {{.*}} kernel=@mismatched_count
-// REPORT: quiescence=mismatched-transaction {{.*}} kernel=@overlapping_consumer_acquires
-// REPORT: quiescence=mismatched-transaction {{.*}} kernel=@mismatched_tiles
-// REPORT: quiescence=unsupported-control-flow {{.*}} kernel=@dynamic_trip_count
-// REPORT: quiescence=incomplete-use-order {{.*}} kernel=@differing_iteration_domains
-// REPORT: quiescence=unsupported-control-flow {{.*}} kernel=@conditional_iteration
-// REPORT: quiescence=unsupported-control-flow {{.*}} kernel=@nonuniform_exact_selection
-// REPORT: quiescence=missing-protocol-effect {{.*}} kernel=@access_outside_interval
+// REPORT: lifecycle_completion=mismatched-transaction {{.*}} kernel=@mismatched_count
+// REPORT: lifecycle_completion=mismatched-transaction {{.*}} kernel=@overlapping_consumer_acquires
+// REPORT: lifecycle_completion=mismatched-transaction {{.*}} kernel=@mismatched_tiles
+// REPORT: lifecycle_completion=unsupported-control-flow {{.*}} kernel=@dynamic_trip_count
+// REPORT: lifecycle_completion=incomplete-use-order {{.*}} kernel=@differing_iteration_domains
+// REPORT: lifecycle_completion=unsupported-control-flow {{.*}} kernel=@conditional_iteration
+// REPORT: lifecycle_completion=unsupported-control-flow {{.*}} kernel=@nonuniform_exact_selection
+// REPORT: lifecycle_completion=missing-protocol-effect {{.*}} kernel=@access_outside_interval
 // REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch
-// REPORT: quiescence=incomplete-use-order {{.*}} kernel=@unrelated_opaque_access
+// REPORT: lifecycle_completion=incomplete-use-order {{.*}} kernel=@unrelated_opaque_access
 
 // Producer and consumer transaction counts must match.
 
