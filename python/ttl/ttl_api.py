@@ -2519,6 +2519,19 @@ def _compile_kernel(
     )
 
 
+def _collect_opaque_include_paths(compiled_threads):
+    """Collect unique external-header search directories in source order."""
+    include_paths = []
+    seen_include_paths = set()
+    for compiled_thread in compiled_threads:
+        for include_path in getattr(compiled_thread, "_opaque_include_paths", ()):
+            if include_path in seen_include_paths:
+                continue
+            seen_include_paths.add(include_path)
+            include_paths.append(include_path)
+    return include_paths
+
+
 def _lower_program_to_kernel(
     *,
     program,
@@ -2654,10 +2667,7 @@ def _lower_program_to_kernel(
             if hasattr(ct, "line_offset"):
                 kernel_line_offsets[ct.name] = ct.line_offset
 
-        # Collect include paths from call_extern_func across all threads.
-        opaque_include_paths = []
-        for ct in compiled_threads:
-            opaque_include_paths.extend(getattr(ct, "_opaque_include_paths", []))
+        opaque_include_paths = _collect_opaque_include_paths(compiled_threads)
 
         module = Module.create(loc)
         module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
