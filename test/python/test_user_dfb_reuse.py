@@ -353,12 +353,20 @@ def _make_repeated_transaction_kernel(data_format):
 
         @ttl.datamovement(kernel=reader_kernel)
         def read():
-            for transaction in range(4):
+            for transaction_pair in range(2):
                 with first_source.reserve() as destination:
                     ttl.copy(
                         input_tensor[
                             0:1,
-                            transaction * 4 : transaction * 4 + 4,
+                            transaction_pair * 8 : transaction_pair * 8 + 4,
+                        ],
+                        destination,
+                    ).wait()
+                with first_source.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            0:1,
+                            transaction_pair * 8 + 4 : transaction_pair * 8 + 8,
                         ],
                         destination,
                     ).wait()
@@ -366,12 +374,20 @@ def _make_repeated_transaction_kernel(data_format):
             with completion.wait():
                 pass
 
-            for transaction in range(4):
+            for transaction_pair in range(2):
                 with second_source.reserve() as destination:
                     ttl.copy(
                         input_tensor[
                             0:1,
-                            transaction * 4 : transaction * 4 + 4,
+                            transaction_pair * 8 : transaction_pair * 8 + 4,
+                        ],
+                        destination,
+                    ).wait()
+                with second_source.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            0:1,
+                            transaction_pair * 8 + 4 : transaction_pair * 8 + 8,
                         ],
                         destination,
                     ).wait()
