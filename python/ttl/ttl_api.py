@@ -88,7 +88,7 @@ from .dataflow_buffer import (
     PhysicalDFBConfig,
     get_cb_count,
 )
-from .pipe import Pipe, PipeNet
+from .pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
 from .scalar import ScalarType
 from .condition import (
     _BoundDispatchCondition,
@@ -1511,12 +1511,14 @@ def _build_operation_pipenets(f: Callable, threads):
                 value = cell.cell_contents
             except ValueError:
                 continue
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+            for net in _iter_pipe_nets_in_value(value, set()):
+                if id(net) not in seen:
+                    seen[id(net)] = net
         fn_globals = getattr(func, "__globals__", None) or {}
         for value in fn_globals.values():
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+            for net in _iter_pipe_nets_in_value(value, set()):
+                if id(net) not in seen:
+                    seen[id(net)] = net
 
     visit(f)
     for thread in threads:
@@ -1558,7 +1560,9 @@ def _collect_captures(
         f: Function with closure to inspect
 
     Returns:
-        Dictionary mapping variable names to converted values
+        Dictionary mapping variable names to accepted capture values. Captures
+        may be scalars, tensors, DFBs, Pipes, PipeNets, or Python containers
+        that contain at least one PipeNet.
 
     Raises:
         TypeError: If closure contains unsupported variable types
@@ -1599,6 +1603,8 @@ def _collect_captures(
             if bound_reset is not None and bound_reset.declaration is val:
                 return bound_reset
             return _bind_current_dfb_reset(val)
+        elif any(_iter_pipe_nets_in_value(val, set())):
+            return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 
