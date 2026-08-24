@@ -437,6 +437,53 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
+/// Lower in-place tile accumulation to the TTKernel operation that reuses the
+/// destination register as one binary operand. The contribution is read
+/// directly from its dataflow buffer.
+struct TTLTileAccumulateToTTKernel : OpConversionPattern<TileAccumulateOp> {
+  TTLTileAccumulateToTTKernel(const TypeConverter &typeConverter,
+                              MLIRContext *ctx)
+      : OpConversionPattern<TileAccumulateOp>(typeConverter, ctx) {}
+
+  LogicalResult
+  matchAndRewrite(TileAccumulateOp op, TileAccumulateOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getCombiner() != AccumulationCombiner::Add) {
+      return rewriter.notifyMatchFailure(op, "unsupported combiner");
+    }
+
+    Location loc = op.getLoc();
+    FailureOr<Value> accumulatorDst =
+        getSrcDstIndex(op.getAccumulator(), loc, rewriter);
+    if (failed(accumulatorDst)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_index from accumulator");
+    }
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    Value contributionSource = op.getContribution();
+    FailureOr<Value> contributionCB = lookupAndConvertCB(
+        contributionSource, funcOp, this->getTypeConverter(), rewriter, loc);
+    FailureOr<Value> contributionTileIndex =
+        computeCBTileIndex(contributionSource, rewriter, loc);
+    if (failed(contributionCB) || failed(contributionTileIndex)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to resolve DFB-backed contribution");
+    }
+
+    ttk::BinaryDestReuseTilesOp::create(
+        rewriter, loc, *contributionCB, *contributionTileIndex, *accumulatorDst,
+        ttk::EltwiseBinaryType::Add, ttk::BinaryDestReuseType::DestToSrcA);
+
+    rewriter.replaceOp(op, adaptor.getAccumulator());
+    return success();
+  }
+};
+
 /// Special pattern for MaxTileOp which uses 2-arg in-place form:
 /// DST[dst0] = max(DST[dst0], DST[dst1])
 /// TODO: Remove this special pattern once TTKernel adds a 3-arg max_binary_tile
@@ -1138,11 +1185,12 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // DST-based ops (no type converter needed).
+  // DST-based ops.
   patterns.add<TTLTileFillToTTKernel>(ctx);
   patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
   patterns.add<TTLTileExpToTTKernel>(ctx);
+  patterns.add<TTLTileAccumulateToTTKernel>(*typeConverter, ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

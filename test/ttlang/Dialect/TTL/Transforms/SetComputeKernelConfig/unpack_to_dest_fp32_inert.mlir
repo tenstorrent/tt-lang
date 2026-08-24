@@ -1,7 +1,7 @@
 // Verify explicit unpack-to-DST-f32 entries for non-f32 dataflow buffers do not
 // require 32-bit destination elements.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0}))' | FileCheck %s --check-prefix=AUTO
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=disabled matmul-full-fp32=0 reduce-full-fp32=0}))' | FileCheck %s --check-prefix=DISABLED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{matmul-full-fp32=0 reduce-full-fp32=0})' | FileCheck %s --check-prefix=AUTO
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{fp32-dest-acc-en=disabled matmul-full-fp32=0 reduce-full-fp32=0})' | FileCheck %s --check-prefix=DISABLED
 
 // A fixed SFPU consumer ignores the f32 route entry for bf16.
 // AUTO-LABEL: func.func @bf16_sfpu_unary

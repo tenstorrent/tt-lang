@@ -9,6 +9,7 @@
 #include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reset_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_api_generated.h"
@@ -138,6 +139,10 @@ public:
       if (callee == "experimental::constant_table_lookup") {
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
+      }
+      if (callee == "experimental::reset_dfb_interfaces") {
+        emitLlk(experimental_dfb_reset_generated,
+                experimental_dfb_reset_generated_len);
       }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||

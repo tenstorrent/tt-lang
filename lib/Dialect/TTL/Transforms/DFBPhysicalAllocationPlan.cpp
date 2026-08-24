@@ -4,6 +4,7 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 
+#include "DFBAllocationDebugReport.h"
 #include "DFBAllocationLimits.h"
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
@@ -22,15 +23,63 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 
+#define DEBUG_TYPE "ttl-finalize-dfb-indices"
+
 namespace mlir::tt::ttl {
+
+StringRef getDFBConflictReasonName(DFBConflictReason reason) {
+  switch (reason) {
+  case DFBConflictReason::DescriptorMismatch:
+    return "descriptor-mismatch";
+  case DFBConflictReason::StorageMismatch:
+    return "storage-mismatch";
+  case DFBConflictReason::UnknownLaunchNodeDomain:
+    return "unknown-launch-node-domain";
+  case DFBConflictReason::AccessCompletionNotProven:
+    return "access-completion-not-proven";
+  case DFBConflictReason::TransactionMismatch:
+    return "transaction-mismatch";
+  case DFBConflictReason::PointerOwnerMismatch:
+    return "pointer-owner-mismatch";
+  case DFBConflictReason::ConcurrentLifetime:
+    return "concurrent-lifetime";
+  case DFBConflictReason::ResetDomainWrite:
+    return "reset-domain-write";
+  case DFBConflictReason::StaticConfigurationMismatch:
+    return "static-configuration-mismatch";
+  }
+  llvm_unreachable("unknown DFB conflict reason");
+}
+
+StringRef getDFBAllocationGroupAssumptionReasonName(
+    DFBAllocationGroupAssumptionReason reason) {
+  switch (reason) {
+  case DFBAllocationGroupAssumptionReason::UnknownLaunchNodeDomain:
+    return "unknown-launch-node-domain";
+  case DFBAllocationGroupAssumptionReason::AccessCompletionNotProven:
+    return "access-completion-not-proven";
+  case DFBAllocationGroupAssumptionReason::PointerOwnerMismatch:
+    return "pointer-owner-mismatch";
+  case DFBAllocationGroupAssumptionReason::ConcurrentLifetime:
+    return "concurrent-lifetime";
+  case DFBAllocationGroupAssumptionReason::UnprovenCursorOrder:
+    return "unproven-cursor-order";
+  case DFBAllocationGroupAssumptionReason::EpochReset:
+    return "epoch-reset";
+  }
+  llvm_unreachable("unknown DFB allocation-group assumption reason");
+}
 
 namespace {
 
@@ -44,12 +93,65 @@ static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
   return logicalDFB.declarations.front();
 }
 
+static bool cursorRunsCanRepeat(ArrayRef<DFBTransactionRun> cursorRuns,
+                                std::uint64_t physicalTileCount) {
+  FailureOr<std::uint64_t> terminalOffset =
+      advanceDFBTransactionCursor(cursorRuns, physicalTileCount);
+  if (failed(terminalOffset)) {
+    return false;
+  }
+  if (cursorRuns.empty() || *terminalOffset == 0) {
+    return true;
+  }
+
+  std::uint64_t totalMovement = 0;
+  for (const DFBTransactionRun &run : cursorRuns) {
+    std::optional<std::uint64_t> runMovement = llvm::checkedMulUnsigned(
+        run.executionCount, static_cast<std::uint64_t>(run.tilesPerExecution));
+    if (!runMovement) {
+      return false;
+    }
+    std::optional<std::uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalMovement, *runMovement);
+    if (!updatedTotal) {
+      return false;
+    }
+    totalMovement = *updatedTotal;
+  }
+
+  // Every reachable start offset is a multiple of this value. Requiring each
+  // movement and its prefix to share that alignment prevents boundary crossing
+  // when the complete cursor sequence is repeated.
+  std::uint64_t repeatAlignment = std::gcd(totalMovement, physicalTileCount);
+  std::uint64_t prefixMovement = 0;
+  for (const DFBTransactionRun &run : cursorRuns) {
+    std::uint64_t tilesPerExecution = run.tilesPerExecution;
+    if (repeatAlignment % tilesPerExecution != 0 ||
+        prefixMovement % tilesPerExecution != 0) {
+      return false;
+    }
+    prefixMovement += run.executionCount * tilesPerExecution;
+  }
+  return true;
+}
+
+static bool haveCompatibleCursorRuns(const DFBPerNodeLifetime &before,
+                                     const DFBPerNodeLifetime &after,
+                                     std::uint64_t physicalTileCount) {
+  return before.terminalWriteCursorRuns == after.writeCursorRuns &&
+         before.terminalReadCursorRuns == after.readCursorRuns &&
+         cursorRunsCanRepeat(before.terminalWriteCursorRuns,
+                             physicalTileCount) &&
+         cursorRunsCanRepeat(before.terminalReadCursorRuns, physicalTileCount);
+}
+
 } // namespace
 
 class DFBPhysicalConflictModelBuilder {
 public:
   static DFBPhysicalConflictModel
-  build(const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  build(const DFBConcurrentKernelLivenessAnalysis &liveness,
+        ArrayRef<DFBStaticConfigurationConflict> staticConflicts) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     DFBPhysicalConflictModel model;
@@ -58,9 +160,59 @@ public:
     for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
       for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
            ++rhsIndex) {
-        addPairConflicts(model, liveness, lhsIndex, rhsIndex);
+        DFBAllocationGroupAttr lhsGroup = logicalDFBs[lhsIndex].allocationGroup;
+        DFBAllocationGroupAttr rhsGroup = logicalDFBs[rhsIndex].allocationGroup;
+        bool sameAllocationGroup = lhsGroup && lhsGroup == rhsGroup;
+        addPairConflicts(model, liveness, lhsIndex, rhsIndex,
+                         /*requireExactDescriptor=*/!sameAllocationGroup,
+                         /*requireMatchingTransactions=*/!sameAllocationGroup);
       }
     }
+    addResetAllocationConflicts(model, liveness);
+    DenseMap<int64_t, unsigned> logicalIndexById;
+    for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
+      logicalIndexById.try_emplace(logicalDFB.logicalId, logicalIndex);
+    }
+    for (const DFBStaticConfigurationConflict &conflict : staticConflicts) {
+      auto lhsIt = logicalIndexById.find(conflict.lhsLogicalId);
+      auto rhsIt = logicalIndexById.find(conflict.rhsLogicalId);
+      assert(lhsIt != logicalIndexById.end() &&
+             rhsIt != logicalIndexById.end() &&
+             "configuration conflicts must reference analyzed logical DFBs");
+      unsigned lhsIndex = lhsIt->second;
+      unsigned rhsIndex = rhsIt->second;
+      if (lhsIndex == rhsIndex || model.adjacency[lhsIndex].test(rhsIndex)) {
+        continue;
+      }
+      addEvidence(model, logicalDFBs[lhsIndex], logicalDFBs[rhsIndex], lhsIndex,
+                  rhsIndex, DFBConflictReason::StaticConfigurationMismatch,
+                  std::nullopt, conflict.lhsOperation, conflict.rhsOperation);
+    }
+    return model;
+  }
+
+  static DFBPhysicalConflictModel
+  buildAllocationGroupPair(const DFBConcurrentKernelLivenessAnalysis &liveness,
+                           unsigned lhsIndex, unsigned rhsIndex) {
+    DFBPhysicalConflictModel model;
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+        liveness.getLogicalDFBLifecycles();
+    size_t logicalDFBCount = logicalDFBs.size();
+    model.adjacency.assign(logicalDFBCount, llvm::BitVector(logicalDFBCount));
+    const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
+    const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
+    if ((!lhs.launchDomain.known || !rhs.launchDomain.known) &&
+        lhs.tensorBacking != rhs.tensorBacking) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::StorageMismatch, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return model;
+    }
+    addPairConflicts(model, liveness, lhsIndex, rhsIndex,
+                     /*requireExactDescriptor=*/false,
+                     /*requireMatchingTransactions=*/false);
+    addResetAllocationConflicts(model, liveness,
+                                std::make_pair(lhsIndex, rhsIndex));
     return model;
   }
 
@@ -77,64 +229,161 @@ private:
                               reason, node, lhsOperation, rhsOperation});
   }
 
+  static void addResetAllocationConflicts(
+      DFBPhysicalConflictModel &model,
+      const DFBConcurrentKernelLivenessAnalysis &liveness,
+      std::optional<std::pair<unsigned, unsigned>> onlyPair = std::nullopt) {
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+        liveness.getLogicalDFBLifecycles();
+    DenseSet<std::pair<unsigned, unsigned>> recordedPairs;
+    for (const DFBResetAllocationConflict &conflict :
+         liveness.getResetAllocationConflicts()) {
+      unsigned targetIndex = conflict.targetLogicalIndex;
+      unsigned overlappingIndex = conflict.overlappingLogicalIndex;
+      if (onlyPair && !((targetIndex == onlyPair->first &&
+                         overlappingIndex == onlyPair->second) ||
+                        (targetIndex == onlyPair->second &&
+                         overlappingIndex == onlyPair->first))) {
+        continue;
+      }
+      if (targetIndex == overlappingIndex) {
+        continue;
+      }
+      std::pair<unsigned, unsigned> logicalPair = {
+          std::min(targetIndex, overlappingIndex),
+          std::max(targetIndex, overlappingIndex)};
+      if (!recordedPairs.insert(logicalPair).second) {
+        continue;
+      }
+      addEvidence(model, logicalDFBs[targetIndex],
+                  logicalDFBs[overlappingIndex], targetIndex, overlappingIndex,
+                  DFBConflictReason::ResetDomainWrite, conflict.node,
+                  conflict.resetOperation, conflict.overlappingOperation);
+    }
+  }
+
   static void
   addPairConflicts(DFBPhysicalConflictModel &model,
                    const DFBConcurrentKernelLivenessAnalysis &liveness,
-                   unsigned lhsIndex, unsigned rhsIndex) {
+                   unsigned lhsIndex, unsigned rhsIndex,
+                   bool requireExactDescriptor = true,
+                   bool requireMatchingTransactions = true) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
     const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
-    if (lhs.type != rhs.type) {
+    if (requireExactDescriptor && lhs.type != rhs.type) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::DescriptorMismatch, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
-    if (!lhs.launchDomain.known || !rhs.launchDomain.known) {
+    std::uint64_t physicalTileCount =
+        cast<CircularBufferType>(lhs.type).getTotalElements();
+    bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
+    bool rhsInactive = rhs.launchDomain.known && rhs.launchDomain.nodes.empty();
+    if (lhsInactive || rhsInactive) {
+      if (lhs.tensorBacking || rhs.tensorBacking) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::StorageMismatch, std::nullopt,
+                    lhs.declarations.front(), rhs.declarations.front());
+      }
+      return;
+    }
+    bool useConditionalProof =
+        !lhs.launchDomain.known && !rhs.launchDomain.known &&
+        lhs.conditionallyBounded && rhs.conditionallyBounded;
+    if ((!lhs.launchDomain.known || !rhs.launchDomain.known) &&
+        !useConditionalProof) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::UnknownLaunchNodeDomain, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
 
-    LaunchNodeDomain sharedNodes =
-        lhs.launchDomain.intersectWith(rhs.launchDomain);
-    for (LaunchNodeCoord node : sharedNodes.nodes) {
+    SmallVector<LaunchNodeCoord> sharedNodes;
+    if (useConditionalProof) {
+      llvm::append_range(sharedNodes, liveness.getLaunchNodes());
+    } else {
+      LaunchNodeDomain exactSharedNodes =
+          lhs.launchDomain.intersectWith(rhs.launchDomain);
+      llvm::append_range(sharedNodes, exactSharedNodes.nodes);
+    }
+    for (LaunchNodeCoord node : sharedNodes) {
+      const DFBPerNodeLifetime *lhsLifetime =
+          useConditionalProof ? lhs.findPossibleNodeLifetime(node)
+                              : lhs.findNodeLifetime(node);
+      const DFBPerNodeLifetime *rhsLifetime =
+          useConditionalProof ? rhs.findPossibleNodeLifetime(node)
+                              : rhs.findNodeLifetime(node);
+      if (lhsLifetime && rhsLifetime &&
+          (!lhsLifetime->mayBeActive || !rhsLifetime->mayBeActive)) {
+        continue;
+      }
       if (lhs.tensorBacking != rhs.tensorBacking) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::StorageMismatch, node,
                     lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
-      const DFBPerNodeLifetime *lhsLifetime = lhs.findNodeLifetime(node);
-      const DFBPerNodeLifetime *rhsLifetime = rhs.findNodeLifetime(node);
       if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
           !rhsLifetime->quiescence.proven()) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                    DFBConflictReason::UnprovenQuiescence, node,
+                    DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (lhsLifetime->transactionTileCounts !=
-          rhsLifetime->transactionTileCounts) {
+      bool lhsBeforeRhs =
+          useConditionalProof
+              ? liveness.isConditionallyOrderedBefore(lhsIndex, rhsIndex, node)
+              : liveness.isOrderedBefore(lhsIndex, rhsIndex, node);
+      bool rhsBeforeLhs =
+          useConditionalProof
+              ? liveness.isConditionallyOrderedBefore(rhsIndex, lhsIndex, node)
+              : liveness.isOrderedBefore(rhsIndex, lhsIndex, node);
+      const DFBPerNodeLifetime *before =
+          lhsBeforeRhs ? lhsLifetime : rhsLifetime;
+      const DFBPerNodeLifetime *after =
+          lhsBeforeRhs ? rhsLifetime : lhsLifetime;
+      bool terminalStateCompatible = false;
+      bool pointerOwnersCompatible = false;
+      if (lhsBeforeRhs || rhsBeforeLhs) {
+        terminalStateCompatible =
+            before->terminalStateCanonical || !requireMatchingTransactions ||
+            haveCompatibleCursorRuns(*before, *after, physicalTileCount);
+        pointerOwnersCompatible =
+            before->terminalStateCanonical ||
+            (before->terminalWritePointerOwner == after->writePointerOwner &&
+             before->terminalReadPointerOwner == after->readPointerOwner);
+      } else {
+        // Preserve the more specific state diagnosis when lifetimes are also
+        // unordered; ordering alone must not obscure a protocol mismatch.
+        terminalStateCompatible =
+            !requireMatchingTransactions ||
+            (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
+                                      physicalTileCount) &&
+             haveCompatibleCursorRuns(*rhsLifetime, *lhsLifetime,
+                                      physicalTileCount));
+        pointerOwnersCompatible =
+            lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
+            lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner;
+      }
+      if (!terminalStateCompatible) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::TransactionMismatch, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (lhsLifetime->writePointerOwner != rhsLifetime->writePointerOwner ||
-          lhsLifetime->readPointerOwner != rhsLifetime->readPointerOwner) {
+      if (!pointerOwnersCompatible) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::PointerOwnerMismatch, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (!liveness.isOrderedBefore(lhsIndex, rhsIndex, node) &&
-          !liveness.isOrderedBefore(rhsIndex, lhsIndex, node)) {
+      if (!lhsBeforeRhs && !rhsBeforeLhs) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::ConcurrentLifetime, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
@@ -145,6 +394,500 @@ private:
 };
 
 namespace {
+
+static bool hasAllocationGroups(ArrayRef<DFBLogicalLifecycle> logicalDFBs) {
+  return llvm::any_of(logicalDFBs, [](const DFBLogicalLifecycle &logicalDFB) {
+    return static_cast<bool>(logicalDFB.allocationGroup);
+  });
+}
+
+static void printAllocationGroup(raw_ostream &os,
+                                 DFBAllocationGroupAttr allocationGroup,
+                                 ArrayRef<unsigned> members,
+                                 ArrayRef<DFBLogicalLifecycle> logicalDFBs) {
+  os << allocationGroup << " members=[";
+  llvm::interleaveComma(members, os, [&](unsigned member) {
+    os << logicalDFBs[member].logicalId;
+  });
+  os << ']';
+}
+
+static LogicalResult validateAllocationGroupTypes(
+    const DFBLogicalLifecycle &lhs, const DFBLogicalLifecycle &rhs,
+    ArrayRef<unsigned> members, ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    DFBAnalysisFailure &analysisFailure) {
+  auto lhsType = cast<CircularBufferType>(lhs.type);
+  auto rhsType = cast<CircularBufferType>(rhs.type);
+  if (lhsType.getElementType() != rhsType.getElementType()) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "DFB allocation group ";
+    printAllocationGroup(messageStream, lhs.allocationGroup, members,
+                         logicalDFBs);
+    messageStream << " has incompatible element types for logical DFBs "
+                  << lhs.logicalId << " and " << rhs.logicalId << ": "
+                  << lhsType.getElementType() << " versus "
+                  << rhsType.getElementType();
+    analysisFailure.set(rhs.declarations.front(), messageStream.str());
+    return failure();
+  }
+  if (lhs.type != rhs.type && (lhs.tensorBacking || rhs.tensorBacking)) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "DFB allocation group ";
+    printAllocationGroup(messageStream, lhs.allocationGroup, members,
+                         logicalDFBs);
+    messageStream << " cannot use a static capacity envelope for tensor-backed "
+                     "logical DFBs "
+                  << lhs.logicalId << " and " << rhs.logicalId;
+    analysisFailure.set(rhs.declarations.front(), messageStream.str());
+    return failure();
+  }
+  return success();
+}
+
+struct AllocationGroupNodeMember {
+  unsigned logicalIndex = 0;
+  const DFBPerNodeLifetime *lifetime = nullptr;
+  bool possibleDomain = false;
+};
+
+static bool isAllocationGroupMemberOrderedBefore(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const AllocationGroupNodeMember &lhs, const AllocationGroupNodeMember &rhs,
+    LaunchNodeCoord node) {
+  if (lhs.possibleDomain || rhs.possibleDomain) {
+    return lhs.possibleDomain && rhs.possibleDomain &&
+           liveness.isConditionallyOrderedBefore(lhs.logicalIndex,
+                                                 rhs.logicalIndex, node);
+  }
+  return liveness.isOrderedBefore(lhs.logicalIndex, rhs.logicalIndex, node);
+}
+
+static bool hasAllocationGroupMemberInconsistentOrder(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const AllocationGroupNodeMember &lhs, const AllocationGroupNodeMember &rhs,
+    LaunchNodeCoord node) {
+  if (lhs.possibleDomain || rhs.possibleDomain) {
+    return liveness.hasConditionallyInconsistentOrder(lhs.logicalIndex,
+                                                      rhs.logicalIndex, node);
+  }
+  return liveness.hasInconsistentOrder(lhs.logicalIndex, rhs.logicalIndex,
+                                       node);
+}
+
+struct AllocationGroupCursorState {
+  std::uint64_t writePointerOffset = 0;
+  std::uint64_t readPointerOffset = 0;
+};
+
+static FailureOr<AllocationGroupCursorState> advanceAllocationGroupMemberCursor(
+    const DFBPerNodeLifetime &lifetime, std::uint64_t physicalTileCount,
+    AllocationGroupCursorState cursorState = {}) {
+  auto advanceRuns = [&](ArrayRef<DFBTransactionRun> transactionRuns,
+                         std::uint64_t &pointerOffset) {
+    FailureOr<std::uint64_t> nextOffset = advanceDFBTransactionCursor(
+        transactionRuns, physicalTileCount, pointerOffset);
+    if (succeeded(nextOffset)) {
+      pointerOffset = *nextOffset;
+    }
+    return nextOffset;
+  };
+  if (lifetime.resetEpochs.empty()) {
+    if (failed(advanceRuns(lifetime.writeCursorRuns,
+                           cursorState.writePointerOffset)) ||
+        failed(advanceRuns(lifetime.readCursorRuns,
+                           cursorState.readPointerOffset))) {
+      return failure();
+    }
+  } else {
+    for (const DFBLifecycleEpoch &epoch : lifetime.resetEpochs) {
+      if (failed(advanceRuns(epoch.writeCursorRuns,
+                             cursorState.writePointerOffset)) ||
+          failed(advanceRuns(epoch.readCursorRuns,
+                             cursorState.readPointerOffset))) {
+        return failure();
+      }
+      if (epoch.terminalStateCanonical) {
+        cursorState = {};
+      }
+    }
+  }
+  if (cursorState.writePointerOffset != cursorState.readPointerOffset) {
+    return failure();
+  }
+  return cursorState;
+}
+
+static void addAllocationGroupAssumption(
+    SmallVectorImpl<DFBAllocationGroupAssumption> &assumptions,
+    DFBAllocationGroupAssumptionReason reason, int64_t lhsLogicalId,
+    std::optional<int64_t> rhsLogicalId = std::nullopt) {
+  bool exists = llvm::any_of(
+      assumptions, [&](const DFBAllocationGroupAssumption &assumption) {
+        return assumption.reason == reason &&
+               assumption.lhsLogicalId == lhsLogicalId &&
+               assumption.rhsLogicalId == rhsLogicalId;
+      });
+  if (!exists) {
+    assumptions.push_back({reason, lhsLogicalId, rhsLogicalId});
+  }
+}
+
+static std::optional<DFBAllocationGroupAssumptionReason>
+getAllocationGroupAssumptionReason(DFBConflictReason reason) {
+  switch (reason) {
+  case DFBConflictReason::UnknownLaunchNodeDomain:
+    return DFBAllocationGroupAssumptionReason::UnknownLaunchNodeDomain;
+  case DFBConflictReason::AccessCompletionNotProven:
+    return DFBAllocationGroupAssumptionReason::AccessCompletionNotProven;
+  case DFBConflictReason::PointerOwnerMismatch:
+    return DFBAllocationGroupAssumptionReason::PointerOwnerMismatch;
+  case DFBConflictReason::ConcurrentLifetime:
+    return DFBAllocationGroupAssumptionReason::ConcurrentLifetime;
+  case DFBConflictReason::DescriptorMismatch:
+  case DFBConflictReason::StorageMismatch:
+  case DFBConflictReason::ResetDomainWrite:
+  case DFBConflictReason::StaticConfigurationMismatch:
+  case DFBConflictReason::TransactionMismatch:
+    return std::nullopt;
+  }
+  llvm_unreachable("unknown DFB conflict reason");
+}
+
+static LogicalResult validateAllocationGroupCursor(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    ArrayRef<unsigned> members, DFBAllocationGroupAttr allocationGroup,
+    std::uint64_t physicalTileCount, bool unsafeAssumeAllocationGroups,
+    SmallVectorImpl<DFBAllocationGroupAssumption> &assumptions,
+    DFBAnalysisFailure &analysisFailure) {
+  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+      liveness.getLogicalDFBLifecycles();
+  for (LaunchNodeCoord node : liveness.getLaunchNodes()) {
+    SmallVector<AllocationGroupNodeMember> activeMembers;
+    for (unsigned logicalIndex : members) {
+      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[logicalIndex];
+      bool possibleDomain = !logicalDFB.launchDomain.known;
+      const DFBPerNodeLifetime *lifetime =
+          possibleDomain ? logicalDFB.findPossibleNodeLifetime(node)
+                         : logicalDFB.findNodeLifetime(node);
+      if (!lifetime || !lifetime->mayBeActive) {
+        continue;
+      }
+      activeMembers.push_back({logicalIndex, lifetime, possibleDomain});
+    }
+
+    for (const AllocationGroupNodeMember &member : activeMembers) {
+      if (!hasAllocationGroupMemberInconsistentOrder(liveness, member, member,
+                                                     node)) {
+        continue;
+      }
+      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "DFB allocation group ";
+      printAllocationGroup(messageStream, allocationGroup, members,
+                           logicalDFBs);
+      messageStream << " has contradictory cursor order involving logical DFB "
+                    << logicalDFB.logicalId << " on launch node (" << node.x
+                    << ',' << node.y << ')';
+      analysisFailure.set(logicalDFB.declarations.front(), messageStream.str());
+      return failure();
+    }
+
+    bool hasUnprovenOrder = false;
+    SmallVector<unsigned> predecessorCounts(activeMembers.size());
+    for (auto [lhsPosition, lhs] : llvm::enumerate(activeMembers)) {
+      for (unsigned rhsPosition = lhsPosition + 1;
+           rhsPosition < activeMembers.size(); ++rhsPosition) {
+        const AllocationGroupNodeMember &rhs = activeMembers[rhsPosition];
+        bool lhsBeforeRhs =
+            isAllocationGroupMemberOrderedBefore(liveness, lhs, rhs, node);
+        bool rhsBeforeLhs =
+            isAllocationGroupMemberOrderedBefore(liveness, rhs, lhs, node);
+        if (lhsBeforeRhs != rhsBeforeLhs) {
+          unsigned afterPosition = lhsBeforeRhs ? rhsPosition : lhsPosition;
+          ++predecessorCounts[afterPosition];
+          continue;
+        }
+        bool inconsistentOrder =
+            hasAllocationGroupMemberInconsistentOrder(liveness, lhs, rhs, node);
+        if (!inconsistentOrder && unsafeAssumeAllocationGroups) {
+          addAllocationGroupAssumption(
+              assumptions,
+              DFBAllocationGroupAssumptionReason::UnprovenCursorOrder,
+              logicalDFBs[lhs.logicalIndex].logicalId,
+              logicalDFBs[rhs.logicalIndex].logicalId);
+          hasUnprovenOrder = true;
+          continue;
+        }
+        std::string message;
+        llvm::raw_string_ostream messageStream(message);
+        messageStream << "DFB allocation group ";
+        printAllocationGroup(messageStream, allocationGroup, members,
+                             logicalDFBs);
+        messageStream << (inconsistentOrder
+                              ? " has inconsistent cursor order for "
+                              : " has no proven cursor order for ")
+                      << "logical DFBs "
+                      << logicalDFBs[lhs.logicalIndex].logicalId << " and "
+                      << logicalDFBs[rhs.logicalIndex].logicalId
+                      << " on launch node (" << node.x << ',' << node.y << ')';
+        analysisFailure.set(logicalDFBs[rhs.logicalIndex].declarations.front(),
+                            messageStream.str());
+        return failure();
+      }
+    }
+
+    if (hasUnprovenOrder) {
+      for (const AllocationGroupNodeMember &member : activeMembers) {
+        if (succeeded(advanceAllocationGroupMemberCursor(*member.lifetime,
+                                                         physicalTileCount))) {
+          continue;
+        }
+        const DFBLogicalLifecycle &logicalDFB =
+            logicalDFBs[member.logicalIndex];
+        std::string message;
+        llvm::raw_string_ostream messageStream(message);
+        messageStream << "DFB allocation group ";
+        printAllocationGroup(messageStream, allocationGroup, members,
+                             logicalDFBs);
+        messageStream << " physical envelope of " << physicalTileCount
+                      << " tiles makes logical DFB " << logicalDFB.logicalId
+                      << " cross the ring boundary on launch node (" << node.x
+                      << ',' << node.y << ')';
+        analysisFailure.set(logicalDFB.declarations.front(),
+                            messageStream.str());
+        return failure();
+      }
+      continue;
+    }
+    SmallVector<AllocationGroupNodeMember> orderedMembers(activeMembers.size());
+    llvm::BitVector occupiedRanks(activeMembers.size());
+    for (auto [memberPosition, member] : llvm::enumerate(activeMembers)) {
+      unsigned rank = predecessorCounts[memberPosition];
+      if (rank < orderedMembers.size() && !occupiedRanks.test(rank)) {
+        orderedMembers[rank] = member;
+        occupiedRanks.set(rank);
+        continue;
+      }
+      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "DFB allocation group ";
+      printAllocationGroup(messageStream, allocationGroup, members,
+                           logicalDFBs);
+      messageStream << " has inconsistent cursor order for logical DFB "
+                    << logicalDFB.logicalId << " on launch node (" << node.x
+                    << ',' << node.y << ')';
+      analysisFailure.set(logicalDFB.declarations.front(), messageStream.str());
+      return failure();
+    }
+    activeMembers = std::move(orderedMembers);
+
+    AllocationGroupCursorState cursorState;
+    for (const AllocationGroupNodeMember &member : activeMembers) {
+      const DFBPerNodeLifetime &lifetime = *member.lifetime;
+      FailureOr<AllocationGroupCursorState> nextOffset =
+          advanceAllocationGroupMemberCursor(lifetime, physicalTileCount,
+                                             cursorState);
+      if (succeeded(nextOffset)) {
+        cursorState = *nextOffset;
+        continue;
+      }
+
+      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
+      FailureOr<AllocationGroupCursorState> resetState =
+          advanceAllocationGroupMemberCursor(lifetime, physicalTileCount);
+      if (unsafeAssumeAllocationGroups && succeeded(resetState)) {
+        addAllocationGroupAssumption(
+            assumptions, DFBAllocationGroupAssumptionReason::EpochReset,
+            logicalDFB.logicalId);
+        cursorState = *resetState;
+        continue;
+      }
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "DFB allocation group ";
+      printAllocationGroup(messageStream, allocationGroup, members,
+                           logicalDFBs);
+      messageStream << " physical envelope of " << physicalTileCount
+                    << " tiles makes logical DFB " << logicalDFB.logicalId
+                    << " cross the ring boundary on launch node (" << node.x
+                    << ',' << node.y << ')';
+      analysisFailure.set(logicalDFB.declarations.front(), messageStream.str());
+      return failure();
+    }
+  }
+  return success();
+}
+
+static LogicalResult validateAllocationGroups(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    ArrayRef<DFBStaticConfigurationConflict> staticConflicts,
+    bool unsafeAssumeAllocationGroups,
+    SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups,
+    DFBAnalysisFailure &analysisFailure) {
+  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+      liveness.getLogicalDFBLifecycles();
+  DenseMap<int64_t, unsigned> groupIndexByOrdinal;
+  SmallVector<std::pair<int64_t, SmallVector<unsigned>>> groups;
+  for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
+    if (!logicalDFB.allocationGroup) {
+      continue;
+    }
+    int64_t ordinal = logicalDFB.allocationGroup.getOrdinal();
+    auto [groupIt, inserted] =
+        groupIndexByOrdinal.try_emplace(ordinal, groups.size());
+    if (inserted) {
+      groups.push_back({ordinal, {}});
+    }
+    groups[groupIt->second].second.push_back(logicalIndex);
+  }
+
+  for (const auto &[ordinal, members] : groups) {
+    SmallVector<DFBAllocationGroupAssumption> assumptions;
+    uint64_t envelopeBytes = 0;
+    std::uint64_t envelopeTiles = 0;
+    bool collectAllocationDiagnostics = false;
+    LLVM_DEBUG(collectAllocationDiagnostics = true);
+    SmallVector<std::pair<int64_t, int64_t>> removedDescriptorConflicts;
+    for (unsigned logicalIndex : members) {
+      auto memberType =
+          cast<CircularBufferType>(logicalDFBs[logicalIndex].type);
+      std::string failureReason;
+      FailureOr<uint64_t> memberBytes =
+          getDFBAllocationSizeBytes(memberType, failureReason);
+      if (failed(memberBytes)) {
+        analysisFailure.set(logicalDFBs[logicalIndex].declarations.front(),
+                            failureReason);
+        return failure();
+      }
+      if (*memberBytes > envelopeBytes) {
+        envelopeBytes = *memberBytes;
+        envelopeTiles = memberType.getTotalElements();
+      }
+    }
+
+    for (unsigned lhsPosition = 0; lhsPosition < members.size();
+         ++lhsPosition) {
+      unsigned lhsIndex = members[lhsPosition];
+      const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
+      for (unsigned rhsPosition = lhsPosition + 1; rhsPosition < members.size();
+           ++rhsPosition) {
+        unsigned rhsIndex = members[rhsPosition];
+        const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
+        if (failed(validateAllocationGroupTypes(lhs, rhs, members, logicalDFBs,
+                                                analysisFailure))) {
+          return failure();
+        }
+        if (collectAllocationDiagnostics && lhs.type != rhs.type) {
+          removedDescriptorConflicts.push_back({lhs.logicalId, rhs.logicalId});
+        }
+
+        auto staticConflictIt =
+            llvm::find_if(staticConflicts,
+                          [&](const DFBStaticConfigurationConflict &conflict) {
+                            return (conflict.lhsLogicalId == lhs.logicalId &&
+                                    conflict.rhsLogicalId == rhs.logicalId) ||
+                                   (conflict.lhsLogicalId == rhs.logicalId &&
+                                    conflict.rhsLogicalId == lhs.logicalId);
+                          });
+        if (staticConflictIt != staticConflicts.end()) {
+          std::string message;
+          llvm::raw_string_ostream messageStream(message);
+          messageStream << "DFB allocation group ";
+          printAllocationGroup(messageStream, lhs.allocationGroup, members,
+                               logicalDFBs);
+          messageStream << " cannot alias logical DFBs " << lhs.logicalId
+                        << " and " << rhs.logicalId << ": "
+                        << getDFBConflictReasonName(
+                               DFBConflictReason::StaticConfigurationMismatch);
+          analysisFailure.set(staticConflictIt->rhsOperation,
+                              messageStream.str());
+          return failure();
+        }
+
+        DFBPhysicalConflictModel groupPair =
+            DFBPhysicalConflictModelBuilder::buildAllocationGroupPair(
+                liveness, lhsIndex, rhsIndex);
+        if (groupPair.conflicts(lhsIndex, rhsIndex)) {
+          const DFBConflictEvidence *failureEvidence = nullptr;
+          if (unsafeAssumeAllocationGroups) {
+            for (const DFBConflictEvidence &evidence :
+                 groupPair.getEvidence()) {
+              std::optional<DFBAllocationGroupAssumptionReason> reason =
+                  getAllocationGroupAssumptionReason(evidence.reason);
+              if (!reason) {
+                failureEvidence = &evidence;
+                break;
+              }
+              addAllocationGroupAssumption(assumptions, *reason,
+                                           evidence.lhsLogicalId,
+                                           evidence.rhsLogicalId);
+            }
+          } else {
+            failureEvidence = &groupPair.getEvidence().front();
+          }
+          if (!failureEvidence) {
+            continue;
+          }
+          std::string message;
+          llvm::raw_string_ostream messageStream(message);
+          messageStream << "DFB allocation group ";
+          printAllocationGroup(messageStream, lhs.allocationGroup, members,
+                               logicalDFBs);
+          messageStream << " cannot alias logical DFBs " << lhs.logicalId
+                        << " and " << rhs.logicalId << ": "
+                        << getDFBConflictReasonName(failureEvidence->reason);
+          analysisFailure.set(failureEvidence->rhsOperation,
+                              messageStream.str());
+          return failure();
+        }
+      }
+    }
+
+    DFBAllocationGroupAttr allocationGroup =
+        logicalDFBs[members.front()].allocationGroup;
+    if (failed(validateAllocationGroupCursor(
+            liveness, members, allocationGroup, envelopeTiles,
+            unsafeAssumeAllocationGroups, assumptions, analysisFailure))) {
+      return failure();
+    }
+
+    bool handoffAssumed = !assumptions.empty();
+    if (handoffAssumed) {
+      DFBAssumedAllocationGroup assumedGroup;
+      assumedGroup.allocationGroup = allocationGroup;
+      assumedGroup.operation =
+          logicalDFBs[members.front()].declarations.front();
+      for (unsigned member : members) {
+        assumedGroup.logicalIds.push_back(logicalDFBs[member].logicalId);
+      }
+      assumedGroup.assumptions = std::move(assumptions);
+      assumedAllocationGroups.push_back(std::move(assumedGroup));
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "DFB allocation group #ttl.dfb_allocation_group<"
+                   << ordinal << "> members=[";
+      llvm::interleaveComma(members, llvm::dbgs(), [&](unsigned member) {
+        llvm::dbgs() << logicalDFBs[member].logicalId;
+      });
+      llvm::dbgs() << "] envelope_bytes=" << envelopeBytes
+                   << " handoff=" << (handoffAssumed ? "assumed" : "proven")
+                   << " removed_conflicts=[";
+      llvm::interleaveComma(removedDescriptorConflicts, llvm::dbgs(),
+                            [](const std::pair<int64_t, int64_t> &conflict) {
+                              llvm::dbgs()
+                                  << "descriptor-mismatch(" << conflict.first
+                                  << ',' << conflict.second << ')';
+                            });
+      llvm::dbgs() << "]\n";
+    });
+  }
+  return success();
+}
 
 /// Physical-index assignment and its proven bounds for selected logical DFBs.
 struct ConcurrentAssignmentResult {
@@ -168,19 +911,43 @@ struct ConcurrentAssignmentResult {
 static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
     ModuleOp moduleOp, ArrayRef<unsigned> candidateIndices,
     int32_t firstPhysicalIndex, const DFBPhysicalConflictModel &conflictModel,
-    unsigned availableIndices, std::uint64_t exactColoringSearchStateLimit,
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs, unsigned availableIndices,
+    std::uint64_t exactColoringSearchStateLimit,
     DFBAnalysisFailure &analysisFailure, bool requireMinimum = false) {
   SmallVector<unsigned> logicalIndices(candidateIndices.begin(),
                                        candidateIndices.end());
 
-  InterferenceGraph interferenceGraph(logicalIndices.size());
+  SmallVector<unsigned> allocationVertexByCandidate;
+  DenseMap<int64_t, unsigned> vertexByAllocationGroup;
+  unsigned allocationVertexCount = 0;
+  allocationVertexByCandidate.reserve(logicalIndices.size());
+  for (unsigned logicalIndex : logicalIndices) {
+    DFBAllocationGroupAttr allocationGroup =
+        logicalDFBs[logicalIndex].allocationGroup;
+    if (!allocationGroup) {
+      allocationVertexByCandidate.push_back(allocationVertexCount++);
+      continue;
+    }
+    auto [groupIt, inserted] = vertexByAllocationGroup.try_emplace(
+        allocationGroup.getOrdinal(), allocationVertexCount);
+    if (inserted) {
+      ++allocationVertexCount;
+    }
+    allocationVertexByCandidate.push_back(groupIt->second);
+  }
+
+  InterferenceGraph interferenceGraph(allocationVertexCount);
   for (unsigned lhsVertex = 0; lhsVertex < logicalIndices.size(); ++lhsVertex) {
     for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < logicalIndices.size();
          ++rhsVertex) {
       unsigned lhsIndex = logicalIndices[lhsVertex];
       unsigned rhsIndex = logicalIndices[rhsVertex];
-      if (conflictModel.conflicts(lhsIndex, rhsIndex)) {
-        interferenceGraph.addInterference(lhsVertex, rhsVertex);
+      unsigned lhsAllocationVertex = allocationVertexByCandidate[lhsVertex];
+      unsigned rhsAllocationVertex = allocationVertexByCandidate[rhsVertex];
+      if (lhsAllocationVertex != rhsAllocationVertex &&
+          conflictModel.conflicts(lhsIndex, rhsIndex)) {
+        interferenceGraph.addInterference(lhsAllocationVertex,
+                                          rhsAllocationVertex);
       }
     }
   }
@@ -224,21 +991,26 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
     }
   }
   ArrayRef<unsigned> colors = selectedColors;
-  assert(colors.size() == logicalIndices.size());
+  assert(colors.size() == allocationVertexCount);
 
   DenseMap<unsigned, int32_t> assignmentByLogicalIndex;
-  for (auto [vertex, color] : llvm::enumerate(colors)) {
-    assignmentByLogicalIndex[logicalIndices[vertex]] =
-        firstPhysicalIndex + static_cast<int32_t>(color);
+  for (auto [candidateIndex, logicalIndex] : llvm::enumerate(logicalIndices)) {
+    unsigned allocationVertex = allocationVertexByCandidate[candidateIndex];
+    assignmentByLogicalIndex[logicalIndex] =
+        firstPhysicalIndex + static_cast<int32_t>(colors[allocationVertex]);
   }
 
   for (unsigned lhsVertex = 0; lhsVertex < logicalIndices.size(); ++lhsVertex) {
     for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < logicalIndices.size();
          ++rhsVertex) {
-      if (colors[lhsVertex] != colors[rhsVertex]) {
+      unsigned lhsAllocationVertex = allocationVertexByCandidate[lhsVertex];
+      unsigned rhsAllocationVertex = allocationVertexByCandidate[rhsVertex];
+      if (lhsAllocationVertex == rhsAllocationVertex ||
+          colors[lhsAllocationVertex] != colors[rhsAllocationVertex]) {
         continue;
       }
-      if (interferenceGraph.interferes(lhsVertex, rhsVertex)) {
+      if (interferenceGraph.interferes(lhsAllocationVertex,
+                                       rhsAllocationVertex)) {
         analysisFailure.set(
             moduleOp, "internal DFB allocation assigned one physical index to "
                       "conflicting logical DFBs");
@@ -351,7 +1123,7 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
   FailureOr<ConcurrentAssignmentResult> compilerAssignment =
       computeConcurrentAssignments(
           moduleOp, compilerLogicalIndices, firstCompilerIndex, conflictModel,
-          availableCompilerIndices, exactColoringSearchStateLimit,
+          logicalDFBs, availableCompilerIndices, exactColoringSearchStateLimit,
           analysisFailure, requireMinimum);
   if (failed(compilerAssignment)) {
     return failure();
@@ -406,8 +1178,9 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
 
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
-         logicalDFB.tensorBacking, logicalDFB.launchDomain,
-         logicalDFB.declarations, logicalDFB.bounded});
+         logicalDFB.tensorBacking, logicalDFB.allocationGroup,
+         logicalDFB.launchDomain, logicalDFB.declarations,
+         logicalDFB.bounded || logicalDFB.conditionallyBounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
   }
@@ -482,8 +1255,8 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
   FailureOr<ConcurrentAssignmentResult> assignment =
       computeConcurrentAssignments(
           moduleOp, logicalIndices, /*firstPhysicalIndex=*/0, conflictModel,
-          targetMaxDFBIndices, exactColoringSearchStateLimit, analysisFailure,
-          requireMinimum);
+          logicalDFBs, targetMaxDFBIndices, exactColoringSearchStateLimit,
+          analysisFailure, requireMinimum);
   if (failed(assignment)) {
     return failure();
   }
@@ -499,8 +1272,9 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
-         logicalDFB.tensorBacking, logicalDFB.launchDomain,
-         logicalDFB.declarations, logicalDFB.bounded});
+         logicalDFB.tensorBacking, logicalDFB.allocationGroup,
+         logicalDFB.launchDomain, logicalDFB.declarations,
+         logicalDFB.bounded || logicalDFB.conditionallyBounded});
   }
 
   if (allocation.physicalDFBCount <= targetMaxDFBIndices) {
@@ -541,14 +1315,15 @@ static void setInvalidDFBPageSizeFailure(CircularBufferType dfbType,
 
 /// Returns the L1 bytes required by the unique physical assignments.
 static FailureOr<uint64_t>
-computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+computeAllocationBytes(ModuleOp moduleOp,
+                       ArrayRef<DFBPhysicalIndexAssignment> assignments,
                        std::string &failureReason) {
   DFBAllocationFootprint footprint;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     if (assignment.tensorBacking) {
       continue;
     }
-    if (failed(footprint.add(assignment.physicalIndex,
+    if (failed(footprint.add(moduleOp, assignment.physicalIndex,
                              cast<CircularBufferType>(assignment.type),
                              failureReason))) {
       return failure();
@@ -557,11 +1332,14 @@ computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   return footprint.getTotalBytes();
 }
 
-/// Recomputes an assignment with the minimum physical-index count only when a
-/// valid first-fit assignment exceeds the L1 budget. Both user-reuse policies
-/// therefore share identical search and diagnostic behavior.
+/// Recomputes an assignment with the minimum physical-index count when a valid
+/// first-fit assignment exceeds either the authoritative DFB-plus-reset budget
+/// or the provisional threshold after a conservative PipeNet reservation. The
+/// reservation only triggers search; finalization rejects against the
+/// authoritative budget, and conversion validates exact PipeNet resources.
 static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
+    std::optional<uint64_t> l1BudgetOverride,
     DFBAnalysisFailure &analysisFailure,
     llvm::function_ref<FailureOr<PhysicalAllocationCandidate>(bool)>
         computeAllocation) {
@@ -573,36 +1351,76 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
 
   std::string allocationSizeFailureReason;
   FailureOr<uint64_t> allocationBytes = computeAllocationBytes(
-      allocation->assignments, allocationSizeFailureReason);
+      moduleOp, allocation->assignments, allocationSizeFailureReason);
   if (failed(allocationBytes)) {
     analysisFailure.set(moduleOp, allocationSizeFailureReason);
     return failure();
   }
-  uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp);
-  if (*allocationBytes > l1BudgetBytes && !allocation->minimumProven) {
+  FailureOr<uint64_t> resetStateBytes =
+      getSynchronizedDFBResetStateAllocationBytes(moduleOp);
+  if (failed(resetStateBytes)) {
+    analysisFailure.set(moduleOp,
+                        "failed to compute synchronized-reset scratch size");
+    return failure();
+  }
+  uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp, l1BudgetOverride);
+  if (*resetStateBytes > l1BudgetBytes) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "synchronized-reset scratch requires " << *resetStateBytes
+                  << " L1 bytes but the budget is " << l1BudgetBytes;
+    analysisFailure.set(moduleOp, messageStream.str());
+    return failure();
+  }
+  uint64_t dfbBudgetBytes = l1BudgetBytes - *resetStateBytes;
+  uint64_t minimumSearchTriggerBytes = dfbBudgetBytes;
+  if (auto pipeReservation = moduleOp->getAttrOfType<IntegerAttr>(
+          kPipeConservativeL1BytesAttrName)) {
+    if (pipeReservation.getValue().isNegative()) {
+      analysisFailure.set(moduleOp,
+                          "conservative PipeNet L1 reservation is negative");
+      return failure();
+    }
+    uint64_t pipeBytes = pipeReservation.getValue().getZExtValue();
+    minimumSearchTriggerBytes = pipeBytes > minimumSearchTriggerBytes
+                                    ? 0
+                                    : minimumSearchTriggerBytes - pipeBytes;
+  }
+  if (*allocationBytes > minimumSearchTriggerBytes &&
+      !allocation->minimumProven) {
     allocation = computeAllocation(/*requireMinimum=*/true);
     if (failed(allocation)) {
       return failure();
     }
-    allocationBytes = computeAllocationBytes(allocation->assignments,
+    allocationBytes = computeAllocationBytes(moduleOp, allocation->assignments,
                                              allocationSizeFailureReason);
     if (failed(allocationBytes)) {
       analysisFailure.set(moduleOp, allocationSizeFailureReason);
       return failure();
     }
   }
-  if (allocation->exactSearchLimitReached) {
+  if (allocation->exactSearchLimitReached &&
+      *allocationBytes > dfbBudgetBytes) {
     setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
                                allocation->exactSearchStateCount,
                                exactColoringSearchStateLimit,
                                "the target L1 budget", analysisFailure);
     return failure();
   }
-  if (*allocationBytes > l1BudgetBytes) {
+  if (*allocationBytes > dfbBudgetBytes) {
+    std::optional<uint64_t> combinedBytes =
+        llvm::checkedAddUnsigned(*allocationBytes, *resetStateBytes);
+    if (!combinedBytes) {
+      analysisFailure.set(
+          moduleOp, "combined DFB and reset allocation is not representable");
+      return failure();
+    }
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB allocation requires " << *allocationBytes
-                  << " L1 bytes but the target supports " << l1BudgetBytes;
+    messageStream << "DFB and synchronized-reset allocation requires "
+                  << *combinedBytes << " L1 bytes but the budget is "
+                  << l1BudgetBytes << " (DFB=" << *allocationBytes
+                  << ", reset scratch=" << *resetStateBytes << ")";
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();
   }
@@ -617,7 +1435,16 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     auto [existingIt, inserted] =
         uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
-    if (!inserted && existingIt->second->type != assignment.type) {
+    if (inserted || existingIt->second->type == assignment.type) {
+      continue;
+    }
+    const DFBPhysicalIndexAssignment *existing = existingIt->second;
+    auto existingType = cast<CircularBufferType>(existing->type);
+    auto assignmentType = cast<CircularBufferType>(assignment.type);
+    if (!existing->allocationGroup ||
+        existing->allocationGroup != assignment.allocationGroup ||
+        existingType.getElementType() != assignmentType.getElementType() ||
+        existing->tensorBacking || assignment.tensorBacking) {
       BindCBOp declaration = assignment.declarations.front();
       std::string message;
       llvm::raw_string_ostream messageStream(message);
@@ -626,6 +1453,18 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                     << existingIt->second->type << " and " << assignment.type;
       analysisFailure.set(declaration, messageStream.str());
       return failure();
+    }
+    std::string failureReason;
+    FailureOr<uint64_t> existingBytes =
+        getDFBAllocationSizeBytes(existingType, failureReason);
+    FailureOr<uint64_t> assignmentBytes =
+        getDFBAllocationSizeBytes(assignmentType, failureReason);
+    if (failed(existingBytes) || failed(assignmentBytes)) {
+      analysisFailure.set(assignment.declarations.front(), failureReason);
+      return failure();
+    }
+    if (*assignmentBytes > *existingBytes) {
+      existingIt->second = &assignment;
     }
   }
 
@@ -771,8 +1610,10 @@ validateTensorBackingRanges(ArrayRef<DFBPhysicalIndexAssignment> assignments,
 } // namespace
 
 DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
-    Operation *operation, bool reuseUserDFBs,
+    Operation *operation, bool reuseUserDFBs, bool unsafeAssumeAllocationGroups,
     std::uint64_t exactColoringSearchStateLimit,
+    std::optional<uint64_t> l1BudgetOverride,
+    ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     AnalysisManager analysisManager) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
   std::string targetFailureReason;
@@ -799,7 +1640,28 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
   DFBAnalysisFailure analysisFailure;
-  plan.conflictModel = DFBPhysicalConflictModelBuilder::build(liveness);
+  if (!reuseUserDFBs &&
+      hasAllocationGroups(liveness.getLogicalDFBLifecycles())) {
+    auto groupedDFB =
+        llvm::find_if(liveness.getLogicalDFBLifecycles(),
+                      [](const DFBLogicalLifecycle &logicalDFB) {
+                        return static_cast<bool>(logicalDFB.allocationGroup);
+                      });
+    errorOperation = groupedDFB->declarations.front();
+    errorMessage = "DFB allocation groups require user DFB reuse to be enabled";
+    return;
+  }
+  if (failed(validateAllocationGroups(
+          liveness, staticConfigurationConflicts, unsafeAssumeAllocationGroups,
+          plan.assumedAllocationGroups, analysisFailure))) {
+    errorOperation = analysisFailure.operation;
+    errorMessage = std::move(analysisFailure.message);
+    return;
+  }
+  plan.conflictModel = DFBPhysicalConflictModelBuilder::build(
+      liveness, staticConfigurationConflicts);
+  LLVM_DEBUG(printDFBAllocationDebugReport(llvm::dbgs(), liveness,
+                                           plan.conflictModel));
 
   auto computeAllocation =
       [&](bool requireMinimum) -> FailureOr<PhysicalAllocationCandidate> {
@@ -812,9 +1674,9 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
         moduleOp, liveness, plan.conflictModel, *targetCapacity,
         analysisFailure, exactColoringSearchStateLimit, requireMinimum);
   };
-  FailureOr<PhysicalAllocationCandidate> allocation =
-      computeAllocationWithinL1(moduleOp, exactColoringSearchStateLimit,
-                                analysisFailure, computeAllocation);
+  FailureOr<PhysicalAllocationCandidate> allocation = computeAllocationWithinL1(
+      moduleOp, exactColoringSearchStateLimit, l1BudgetOverride,
+      analysisFailure, computeAllocation);
   if (failed(allocation)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
