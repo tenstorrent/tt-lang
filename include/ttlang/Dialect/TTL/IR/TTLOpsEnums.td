@@ -132,7 +132,7 @@ def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
     [TTL_AccumulationInitialMode_Overwrite,
      TTL_AccumulationInitialMode_AccumulateExisting,
      TTL_AccumulationInitialMode_Init]> {
-        let cppNamespace = "::mlir::tt::ttl";
+  let cppNamespace = "::mlir::tt::ttl";
 }
 
 //===----------------------------------------------------------------------===//

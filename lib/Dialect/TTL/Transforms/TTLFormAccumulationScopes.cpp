@@ -6,8 +6,8 @@
 // TTL Form Accumulation Scopes
 //===----------------------------------------------------------------------===//
 //
-// Inserts accumulation regions around tensor recurrences whose accumulator can
-// stay resident in DST across the source loop.
+// Forms semantic accumulation scopes for additive tensor recurrences before
+// storage strategy lowering.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
 #include "DFBAcquireReleaseAnalysis.h"
@@ -67,12 +68,27 @@ isContiguousSingleTensorAccumulator(const TensorAccumulationMatch &match) {
   return true;
 }
 
-/// Return the information needed to rewrite one tensor accumulation scope. The
-/// caller runs this during an immutable scan so DFB lifecycle analysis observes
-/// one function version.
+/// Return true if formation should wrap the recurrence for `strategy`.
+static bool
+shouldFormTensorAccumulationForStrategy(const TensorAccumulationMatch &match,
+                                        const DFBAcquireReleaseIndex &dfbIndex,
+                                        AccumulationStrategy strategy) {
+  if (strategy == AccumulationStrategy::Dst ||
+      strategy == AccumulationStrategy::L1Pack) {
+    return true;
+  }
+
+  if (succeeded(analyzeTensorAccumulationForDst(match, dfbIndex))) {
+    return true;
+  }
+
+  return succeeded(analyzeTensorAccumulationForL1Pack(match, &dfbIndex));
+}
+
 static FailureOr<TensorAccumulationMatch>
 getTensorAccumulationScopeMatch(scf::ForOp loop,
-                                const DFBAcquireReleaseIndex &dfbIndex) {
+                                const DFBAcquireReleaseIndex &dfbIndex,
+                                AccumulationStrategy strategy) {
   // TTL attributes identify loops owned by another lowering decision. Moving
   // such a loop would make the attribute's scope ambiguous.
   if (loop->getParentOfType<AccumulationScopeOp>() ||
@@ -83,7 +99,7 @@ getTensorAccumulationScopeMatch(scf::ForOp loop,
   FailureOr<TensorAccumulationMatch> match =
       matchAdditiveTensorAccumulation(loop, /*resultIndex=*/0);
   if (failed(match) || !isContiguousSingleTensorAccumulator(*match) ||
-      failed(analyzeTensorAccumulationForDst(*match, dfbIndex))) {
+      !shouldFormTensorAccumulationForStrategy(*match, dfbIndex, strategy)) {
     return failure();
   }
 
@@ -148,6 +164,16 @@ struct TTLFormAccumulationScopesPass
       TTLFormAccumulationScopesPass>::TTLFormAccumulationScopesBase;
 
   void runOnOperation() override {
+    FailureOr<AccumulationStrategy> selectedStrategy =
+        parseAccumulationStrategy(strategy);
+    if (failed(selectedStrategy)) {
+      getOperation().emitOpError()
+          << "invalid accumulation strategy `" << strategy
+          << "`; expected auto, dst, or l1-pack";
+      signalPassFailure();
+      return;
+    }
+
     SmallVector<scf::ForOp> loops;
     getOperation().walk<WalkOrder::PostOrder>(
         [&](scf::ForOp loop) { loops.push_back(loop); });
@@ -178,7 +204,7 @@ struct TTLFormAccumulationScopesPass
       }
 
       FailureOr<TensorAccumulationMatch> match =
-          getTensorAccumulationScopeMatch(loop, *dfbIndex);
+          getTensorAccumulationScopeMatch(loop, *dfbIndex, *selectedStrategy);
       if (succeeded(match)) {
         matches.push_back(*match);
       }
