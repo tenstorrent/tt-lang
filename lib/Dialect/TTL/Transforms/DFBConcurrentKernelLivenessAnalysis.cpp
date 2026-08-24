@@ -461,7 +461,9 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
-static bool isAtMostOnceRegionParent(Operation *operation) {
+// The listed operations execute each nested region at most once per
+// invocation, so only enclosing loops can repeat an access.
+static bool executesRegionsAtMostOnce(Operation *operation) {
   return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
              scf::ExecuteRegionOp, IfSrcOp, IfDstOp>(operation);
 }
@@ -524,7 +526,7 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
           getExactExecutionCountAtLaunchNode(parent, node, domainState);
       // Equality proves that an at-most-once region was selected for every
       // parent invocation, including each enclosing-loop iteration.
-      if (!isAtMostOnceRegionParent(parent) || !parentExecutionCount ||
+      if (!executesRegionsAtMostOnce(parent) || !parentExecutionCount ||
           *parentExecutionCount != nestedExecutionCount) {
         return std::nullopt;
       }
@@ -580,7 +582,7 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
     Operation *parent = region ? region->getParentOp() : nullptr;
     if (!parent || !region->hasOneBlock() ||
         nestedOperation->getBlock() != &region->front() ||
-        !isAtMostOnceRegionParent(parent)) {
+        !executesRegionsAtMostOnce(parent)) {
       return false;
     }
     nestedOperation = parent;
@@ -889,6 +891,8 @@ static SmallVector<llvm::BitVector> collectInconsistentAccessOrder(
   return inconsistent;
 }
 
+// A summarized call orders its effects by sequence index; accesses in
+// distinct operations use structural IR order.
 static bool
 accessOccurrencePrecedes(const DFBAccessOccurrence &before,
                          const DFBAccessOccurrence &after,
@@ -2622,6 +2626,8 @@ static bool proveAllRunExecutionsBefore(
                                 afterEvents->first.entry);
 }
 
+// Run order may be pointwise within each iteration or all-before-all across
+// the complete runs.
 static bool
 proveRunPrecedes(const AccessRun &before, const AccessRun &after,
                  const HappensBeforeGraph &graph,
