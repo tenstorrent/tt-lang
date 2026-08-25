@@ -511,8 +511,7 @@ getConservativePipeResources(ModuleOp sourceModule) {
   const PipeTransferIndex &transferIndex = **maybeTransferIndex;
   PipeForeachLoweringInfo foreachLoweringInfo;
   FailureOr<PipeGraph> maybePipeGraph = PipeGraph::build(
-      module, transferIndex, foreachLoweringInfo,
-      PipeDFBIndexMode::Provisional,
+      module, transferIndex, foreachLoweringInfo, PipeDFBIndexMode::Provisional,
       PipeGraphLaunchDomainMode::WhenPipesPresent);
   if (failed(maybePipeGraph)) {
     return failure();
@@ -580,14 +579,12 @@ getResidualGlobalSemaphoreBytes(ModuleOp module,
 }
 
 /// Compute storage and synchronization facts for one `(R, K)` choice.
-static std::optional<PipeTransportGrouping>
-evaluateGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
-                 int64_t groupSize, int64_t destinationDepth,
-                 const DFBAllocationFootprint &allocationFootprint,
-                 const DFBLogicalIdentityAnalysis &identities,
-                 uint64_t existingScratchBytes, uint64_t globalSemaphoreBytes,
-                 uint64_t resetStateBytes,
-                 uint64_t reconfigurationStateBytes, uint64_t budgetBytes) {
+static std::optional<PipeTransportGrouping> evaluateGrouping(
+    ModuleOp module, PipeTransportLoopCandidate &candidate, int64_t groupSize,
+    int64_t destinationDepth, const DFBAllocationFootprint &allocationFootprint,
+    const DFBLogicalIdentityAnalysis &identities, uint64_t existingScratchBytes,
+    uint64_t globalSemaphoreBytes, uint64_t resetStateBytes,
+    uint64_t reconfigurationStateBytes, uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -774,8 +771,8 @@ selectGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
                const DFBAllocationFootprint &allocationFootprint,
                const DFBLogicalIdentityAnalysis &identities,
                uint64_t existingScratchBytes, uint64_t globalSemaphoreBytes,
-               uint64_t resetStateBytes,
-               uint64_t reconfigurationStateBytes, uint64_t budgetBytes) {
+               uint64_t resetStateBytes, uint64_t reconfigurationStateBytes,
+               uint64_t budgetBytes) {
   int64_t upperBound =
       requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
   std::optional<int64_t> maybeUpperBound = getGroupSizeUpperBound(
@@ -790,11 +787,10 @@ selectGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
     bool requireOverlap = candidate.transferCount / groupSize >= 2;
     int64_t destinationDepth =
         getMinimumDestinationDepth(candidate, groupSize, requireOverlap);
-    std::optional<PipeTransportGrouping> grouping =
-        evaluateGrouping(module, candidate, groupSize, destinationDepth,
-                         allocationFootprint, identities, existingScratchBytes,
-                         globalSemaphoreBytes, resetStateBytes,
-                         reconfigurationStateBytes, budgetBytes);
+    std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
+        module, candidate, groupSize, destinationDepth, allocationFootprint,
+        identities, existingScratchBytes, globalSemaphoreBytes, resetStateBytes,
+        reconfigurationStateBytes, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }
@@ -1013,8 +1009,8 @@ struct TTLFormPipeTransportsPass
             const DFBLogicalIdentityAnalysis &identities) -> LogicalResult {
       FailureOr<DFBAllocationFootprint> allocationFootprint =
           getLogicalDFBAllocationFootprint(module, identities);
-      std::optional<uint64_t> scratchBytes = llvm::checkedAddUnsigned(
-          resources.scratchBytes, *resetStateBytes);
+      std::optional<uint64_t> scratchBytes =
+          llvm::checkedAddUnsigned(resources.scratchBytes, *resetStateBytes);
       if (failed(allocationFootprint) || !scratchBytes) {
         module.emitOpError("combined L1 allocation size is not representable");
         return failure();

@@ -58,8 +58,7 @@ FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
 
 /// Returns the target-aligned L1 allocations for all reconfiguration records.
-FailureOr<uint64_t>
-getDFBReconfigurationStateAllocationBytes(ModuleOp module);
+FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module);
 
 /// Verifies that the selected target implements DFB reconfiguration.
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module);

@@ -1816,6 +1816,7 @@ def _collect_captures(
         if val is None:
             return val
         from .domains import DeviceDomain
+
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_global_semaphore(val):

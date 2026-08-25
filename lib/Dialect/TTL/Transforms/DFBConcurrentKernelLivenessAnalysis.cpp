@@ -1380,9 +1380,9 @@ static LogicalResult collectLogicalDFBs(
       assert(logicalIndex && "DFB dependencies were validated above");
       DFBLogicalLifecycle &logicalDFB = logicalDFBs[*logicalIndex];
       bool opaqueExternalAccess = isa<OpaqueCallOp>(operation);
-      logicalDFB.accesses.push_back(
-          {operation, std::monostate{}, 0, 0, LaunchNodeDomain::unknown(),
-           nullptr, opaqueExternalAccess});
+      logicalDFB.accesses.push_back({operation, std::monostate{}, 0, 0,
+                                     LaunchNodeDomain::unknown(), nullptr,
+                                     opaqueExternalAccess});
       logicalDFB.hasOpaqueExternalAccess |= opaqueExternalAccess;
     }
     return WalkResult::advance();
@@ -1541,8 +1541,7 @@ struct ProgramOrderTopologyInputs {
       return false;
     }
     return std::tie(accesses, synchronizedResets, reconfigurations) ==
-           std::tie(rhs.accesses, rhs.synchronizedResets,
-                    rhs.reconfigurations);
+           std::tie(rhs.accesses, rhs.synchronizedResets, rhs.reconfigurations);
   }
 };
 
@@ -2026,11 +2025,10 @@ struct ProgramOrderGraphState {
   ReconfigurationBoundaryEvents reconfigurationBoundaryEvents;
 
   bool operator==(const ProgramOrderGraphState &rhs) const {
-    return std::tie(graph, operationEvents, accessEvents,
-                    resetBoundaryEvents, reconfigurationBoundaryEvents) ==
+    return std::tie(graph, operationEvents, accessEvents, resetBoundaryEvents,
+                    reconfigurationBoundaryEvents) ==
            std::tie(rhs.graph, rhs.operationEvents, rhs.accessEvents,
-                    rhs.resetBoundaryEvents,
-                    rhs.reconfigurationBoundaryEvents);
+                    rhs.resetBoundaryEvents, rhs.reconfigurationBoundaryEvents);
   }
 };
 
@@ -2261,13 +2259,13 @@ static void buildProgramOrderTopology(
       if (before.boundary == after.boundary) {
         continue;
       }
-      bool everyParticipantOrdered = llvm::all_of(
-          llvm::zip_equal(before.participantOperations,
-                          after.participantOperations),
-          [&](auto pair) {
-            return structuralOrder.precedes(std::get<0>(pair),
-                                            std::get<1>(pair));
-          });
+      bool everyParticipantOrdered =
+          llvm::all_of(llvm::zip_equal(before.participantOperations,
+                                       after.participantOperations),
+                       [&](auto pair) {
+                         return structuralOrder.precedes(std::get<0>(pair),
+                                                         std::get<1>(pair));
+                       });
       if (!everyParticipantOrdered) {
         continue;
       }
@@ -4147,8 +4145,7 @@ static std::optional<DFBQuiescenceProof> tryComputeRepeatedResetLifetime(
     epoch.entryReconfigurationOrdinal =
         entryReconfiguration->boundary.getOrdinal();
   }
-  epoch.activeConfigurationEpochs.push_back(
-      epoch.entryReconfigurationOrdinal);
+  epoch.activeConfigurationEpochs.push_back(epoch.entryReconfigurationOrdinal);
   epoch.terminalResetOrdinal = terminator->reset.getOrdinal();
   epoch.terminalStateCanonical = true;
   epoch.quiescence = proof;
@@ -4451,8 +4448,7 @@ static DFBQuiescenceProof computePerNodeLifetime(
     }
     epoch.earliestEntryEvents = epochLifetime.earliestEntryEvents;
     epoch.terminalCompletionEvents = epochLifetime.terminalCompletionEvents;
-    epoch.terminalWritePointerOwner =
-        epochLifetime.terminalWritePointerOwner;
+    epoch.terminalWritePointerOwner = epochLifetime.terminalWritePointerOwner;
     epoch.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
     lifetime.epochs.push_back(std::move(epoch));
 
@@ -4566,12 +4562,11 @@ static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
                                   lifetime.terminalCompletionEvents,
                                   resetEvents, graph);
   }
-  return llvm::all_of(
-      lifetime.epochs, [&](const DFBLifecycleEpoch &epoch) {
-        return intervalIsOutsideReset(epoch.earliestEntryEvents,
-                                      epoch.terminalCompletionEvents,
-                                      resetEvents, graph);
-      });
+  return llvm::all_of(lifetime.epochs, [&](const DFBLifecycleEpoch &epoch) {
+    return intervalIsOutsideReset(epoch.earliestEntryEvents,
+                                  epoch.terminalCompletionEvents, resetEvents,
+                                  graph);
+  });
 }
 
 enum class ResetSide { Before, After };
@@ -4649,12 +4644,10 @@ static bool unprovenLifecycleIsOutsideReset(
     if (!events) {
       return false;
     }
-    bool beforeReset =
-        graph.strictlyPrecedes(events->last.completion,
-                               resetEvents.first.entry);
-    bool afterReset =
-        graph.strictlyPrecedes(resetEvents.last.completion,
-                               events->first.entry);
+    bool beforeReset = graph.strictlyPrecedes(events->last.completion,
+                                              resetEvents.first.entry);
+    bool afterReset = graph.strictlyPrecedes(resetEvents.last.completion,
+                                             events->first.entry);
     if (beforeReset == afterReset) {
       return false;
     }
@@ -5237,11 +5230,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     ResetBoundaryEvents &resetBoundaryEvents = graphState.resetBoundaryEvents;
     ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents =
         graphState.reconfigurationBoundaryEvents;
-    addSynchronizedResetAccessEdges(
-        logicalDFBs, validatedResets, node, graph, operationEvents,
-        accessEvents, resetBoundaryEvents, executionCounts, accessRuns,
-        structuralOrder,
-        /*includeUnknownDomains=*/false);
+    addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
+                                    operationEvents, accessEvents,
+                                    resetBoundaryEvents, executionCounts,
+                                    accessRuns, structuralOrder,
+                                    /*includeUnknownDomains=*/false);
     addDFBReconfigurationAccessEdges(
         logicalDFBs, validatedReconfigurations, node, graph, operationEvents,
         accessEvents, reconfigurationBoundaryEvents, executionCounts,
@@ -5314,8 +5307,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
 
     collectResetAllocationConflicts(
         logicalDFBs, nodeLifetimes, validatedResets, resetBoundaryEvents, graph,
-        node,
-        structuralOrder, executionCounts, operationEvents, accessEvents,
+        node, structuralOrder, executionCounts, operationEvents, accessEvents,
         accessRuns, domainState, /*usePossibleLifetimes=*/false,
         resetAllocationConflicts);
 
@@ -5362,8 +5354,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addDFBReconfigurationAccessEdges(
         logicalDFBs, validatedReconfigurations, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
-        possibleReconfigurationBoundaryEvents, executionCounts,
-        structuralOrder, /*includeUnknownDomains=*/true);
+        possibleReconfigurationBoundaryEvents, executionCounts, structuralOrder,
+        /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
         possibleAccessEvents, executionCounts, *possibleAccessRuns, node,
@@ -5384,8 +5376,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedResets, possibleResetBoundaryEvents,
           validatedReconfigurations, possibleReconfigurationBoundaryEvents,
           possibleGraph, structuralOrder, possibleOperationEvents,
-          possibleAccessEvents,
-          executionCounts, *possibleAccessRuns, domainState,
+          possibleAccessEvents, executionCounts, *possibleAccessRuns,
+          domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().quiescence = proof;
       possibleNodeLifetimes[logicalIndex] =
@@ -5395,9 +5387,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     collectResetAllocationConflicts(
         logicalDFBs, possibleNodeLifetimes, validatedResets,
         possibleResetBoundaryEvents, possibleGraph, node, structuralOrder,
-        executionCounts,
-        possibleOperationEvents, possibleAccessEvents, *possibleAccessRuns,
-        domainState,
+        executionCounts, possibleOperationEvents, possibleAccessEvents,
+        *possibleAccessRuns, domainState,
         /*usePossibleLifetimes=*/true, resetAllocationConflicts);
 
     conditionallyOrderedBeforeByNode.push_back(

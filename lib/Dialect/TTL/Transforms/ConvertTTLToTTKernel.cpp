@@ -2420,9 +2420,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
            ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
            DFBReconfigurationLowering, OpaqueCallLowering, GetDfbIdLowering,
-           IsDeviceLowering,
-           CurrentDeviceIndexLowering, IsDeviceInRangeLowering,
-           SelectedPipeSourceDeviceIndexLowering,
+           IsDeviceLowering, CurrentDeviceIndexLowering,
+           IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
            SelectedPipeDestinationDeviceIndexLowering,
            SelectedPipeSourceCoordinatesLowering,
            SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);

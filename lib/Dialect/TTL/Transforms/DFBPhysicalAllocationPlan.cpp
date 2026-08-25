@@ -297,8 +297,7 @@ getAllocationGroupEpochEvidence(const AllocationGroupNodeEpoch &epoch,
     return epoch.getQuiescence().evidence;
   }
   if (epoch.epoch && !epoch.epoch->accessOccurrenceIndices.empty()) {
-    return logicalDFB
-        .accesses[epoch.epoch->accessOccurrenceIndices.front()]
+    return logicalDFB.accesses[epoch.epoch->accessOccurrenceIndices.front()]
         .operation;
   }
   return logicalDFB.declarations.front();
@@ -379,7 +378,8 @@ public:
                      /*requireExactDescriptor=*/lhs.hasOpaqueExternalAccess ||
                          rhs.hasOpaqueExternalAccess,
                      /*allowDisjointConfigurationDescriptors=*/
-                     !lhs.hasOpaqueExternalAccess && !rhs.hasOpaqueExternalAccess,
+                     !lhs.hasOpaqueExternalAccess &&
+                         !rhs.hasOpaqueExternalAccess,
                      /*requireMatchingTransactions=*/false,
                      /*useAllocationGroupEpochs=*/true);
     addResetAllocationConflicts(model, liveness,
@@ -522,8 +522,8 @@ private:
         continue;
       }
       bool compareAllocationGroupEpochs =
-          useAllocationGroupEpochs && (!lhsLifetime->epochs.empty() ||
-                                       !rhsLifetime->epochs.empty());
+          useAllocationGroupEpochs &&
+          (!lhsLifetime->epochs.empty() || !rhsLifetime->epochs.empty());
       SmallVector<AllocationGroupNodeEpoch> lhsEpochs;
       SmallVector<AllocationGroupNodeEpoch> rhsEpochs;
       if (compareAllocationGroupEpochs) {
@@ -1768,8 +1768,8 @@ computeReuseAllocation(ModuleOp moduleOp,
       computeConcurrentAssignments(
           moduleOp, logicalIndices, /*firstPhysicalIndex=*/0, conflictModel,
           logicalDFBs, targetMaxDFBIndices, exactColoringSearchStateLimit,
-          analysisFailure, allocationBytesByLogicalIndex,
-          allocationByteLimit, minimumSearchTriggerBytes);
+          analysisFailure, allocationBytesByLogicalIndex, allocationByteLimit,
+          minimumSearchTriggerBytes);
   if (failed(assignment)) {
     return failure();
   }
@@ -1875,8 +1875,8 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
                         "failed to compute DFB reconfiguration state size");
     return failure();
   }
-  std::optional<uint64_t> fixedStateBytes = llvm::checkedAddUnsigned(
-      *resetStateBytes, *reconfigurationStateBytes);
+  std::optional<uint64_t> fixedStateBytes =
+      llvm::checkedAddUnsigned(*resetStateBytes, *reconfigurationStateBytes);
   if (!fixedStateBytes) {
     analysisFailure.set(moduleOp,
                         "combined DFB fixed-state size is not representable");
@@ -1905,8 +1905,8 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     }
     uint64_t reservationBytes = reservation.getValue().getZExtValue();
     if (reservationBytes != 0) {
-      std::optional<uint64_t> fixedBytes = llvm::checkedAddUnsigned(
-          *fixedStateBytes, reservationBytes);
+      std::optional<uint64_t> fixedBytes =
+          llvm::checkedAddUnsigned(*fixedStateBytes, reservationBytes);
       minimumSearchTriggerBytes =
           !fixedBytes || *fixedBytes > l1BudgetBytes
               ? std::optional<uint64_t>(0)
