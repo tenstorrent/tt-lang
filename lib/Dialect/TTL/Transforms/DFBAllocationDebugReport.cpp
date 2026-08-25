@@ -228,7 +228,28 @@ static void printTransactions(llvm::raw_ostream &output,
   }
 }
 
+static bool resetCompletesOpaqueAccess(const DFBLogicalLifecycle &logicalDFB,
+                                       const DFBLifecycleEpoch &epoch) {
+  if (!epoch.terminalResetOrdinal) {
+    return false;
+  }
+  return llvm::any_of(epoch.accessOccurrenceIndices, [&](unsigned accessIndex) {
+    assert(accessIndex < logicalDFB.accesses.size());
+    return logicalDFB.accesses[accessIndex].opaqueExternalAccess;
+  });
+}
+
+static bool
+hasOpaqueAccessCompletedByReset(const DFBLogicalLifecycle &logicalDFB,
+                                const DFBPerNodeLifetime &lifetime) {
+  return llvm::any_of(lifetime.resetEpochs,
+                      [&](const DFBLifecycleEpoch &epoch) {
+                        return resetCompletesOpaqueAccess(logicalDFB, epoch);
+                      });
+}
+
 static void printResetEpochs(llvm::raw_ostream &output,
+                             const DFBLogicalLifecycle &logicalDFB,
                              const DFBPerNodeLifetime &lifetime) {
   output << '[';
   llvm::interleaveComma(
@@ -261,7 +282,7 @@ static void printResetEpochs(llvm::raw_ostream &output,
         } else {
           output << "none";
         }
-        if (epoch.resetCanonicalizedOpaqueProtocol) {
+        if (resetCompletesOpaqueAccess(logicalDFB, epoch)) {
           output << ",opaque_protocol_reset=1";
         }
         output << ",terminal_state="
@@ -288,8 +309,6 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.terminalReadPointerOwner ==
                    rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
-               lhsEpoch.resetCanonicalizedOpaqueProtocol ==
-                   rhsEpoch.resetCanonicalizedOpaqueProtocol &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.completionProof.failure ==
@@ -318,8 +337,6 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
-      lhs.resetCanonicalizedOpaqueProtocol !=
-          rhs.resetCanonicalizedOpaqueProtocol ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs) ||
       !(lhsDiagnostics == rhsDiagnostics)) {
@@ -330,6 +347,7 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
 
 static void
 printLifetimeFacts(llvm::raw_ostream &output,
+                   const DFBLogicalLifecycle &logicalDFB,
                    const DFBPerNodeLifetime &lifetime,
                    const DFBPerNodeLifetimeDiagnostics &diagnostics) {
   output << " evidence=";
@@ -348,7 +366,7 @@ printLifetimeFacts(llvm::raw_ostream &output,
   printValues(output, diagnostics.terminalAccessOccurrenceIndices);
   if (!lifetime.resetEpochs.empty()) {
     output << " reset_epochs=";
-    printResetEpochs(output, lifetime);
+    printResetEpochs(output, logicalDFB, lifetime);
   }
 }
 
@@ -396,7 +414,7 @@ static void printPossibleLifetimes(
            << " domain_assumption=unknown-possible may_be_active="
            << lifetime.mayBeActive
            << " conditional_execution=" << lifetime.conditionalExecutionProven;
-    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+    if (hasOpaqueAccessCompletedByReset(logicalDFB, lifetime)) {
       output << " opaque_protocol_reset=1";
     }
     output << " node_count=" << group.nodes.size();
@@ -410,7 +428,7 @@ static void printPossibleLifetimes(
       output << " exemplar=";
       printNode(output, lifetime.node);
     }
-    printLifetimeFacts(output, lifetime, diagnostics);
+    printLifetimeFacts(output, logicalDFB, lifetime, diagnostics);
     output << '\n';
   }
 }
@@ -436,10 +454,10 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
            << getLifecycleCompletionName(lifetime.completionProof.failure)
            << " domain_assumption=exact conditional_execution="
            << lifetime.conditionalExecutionProven;
-    if (lifetime.resetCanonicalizedOpaqueProtocol) {
+    if (hasOpaqueAccessCompletedByReset(logicalDFB, lifetime)) {
       output << " opaque_protocol_reset=1";
     }
-    printLifetimeFacts(output, lifetime, diagnostics);
+    printLifetimeFacts(output, logicalDFB, lifetime, diagnostics);
     output << '\n';
   }
   printPossibleLifetimes(output, logicalDFB, allocationDiagnostics);

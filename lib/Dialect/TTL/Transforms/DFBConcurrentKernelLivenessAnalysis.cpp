@@ -3002,7 +3002,6 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
             static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data()));
       }
     }
-    lifetime.resetCanonicalizedOpaqueProtocol = true;
     return {};
   }
 
@@ -3539,8 +3538,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epoch.readCursorRuns = epochLifetime.readCursorRuns;
     epoch.writePointerOwner = epochLifetime.writePointerOwner;
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
-    epoch.resetCanonicalizedOpaqueProtocol =
-        epochLifetime.resetCanonicalizedOpaqueProtocol;
     epoch.completionProof = proof;
     if (resetTerminated) {
       const OrderedResetBoundary &boundary = boundaries[epochIndex];
@@ -3570,8 +3567,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       lifetime.readCursorRuns = epochLifetime.readCursorRuns;
       lifetime.writePointerOwner = epochLifetime.writePointerOwner;
       lifetime.readPointerOwner = epochLifetime.readPointerOwner;
-      lifetime.resetCanonicalizedOpaqueProtocol =
-          epochLifetime.resetCanonicalizedOpaqueProtocol;
       hasActiveEpoch = true;
     }
     lifetime.conditionalExecutionProven |=
@@ -3587,8 +3582,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     lifetime.terminalWritePointerOwner =
         epochLifetime.terminalWritePointerOwner;
     lifetime.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
-    lifetime.resetCanonicalizedOpaqueProtocol |=
-        epochLifetime.resetCanonicalizedOpaqueProtocol;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
   }
 

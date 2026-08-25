@@ -164,7 +164,6 @@ struct DFBLifecycleEpoch {
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
-  bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   DFBLifecycleCompletionProof completionProof;
 };
@@ -208,7 +207,6 @@ struct DFBPerNodeLifetime {
   SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
-  bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
   DFBLifecycleCompletionProof completionProof;
