@@ -19,6 +19,7 @@ from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
+_DFB_SOURCE_OCCURRENCE = "_ttl_dfb_source_occurrence"
 
 _NESTED_SCOPES = (
     ast.FunctionDef,
@@ -96,11 +97,16 @@ class _SubstituteTransformer(ast.NodeTransformer):
         rename_map: Dict[str, str],
         callee_name: str,
         caller_name: str,
+        dfb_parameter_names: Set[str],
+        inline_suffix: str,
     ):
         self.bindings = bindings
         self.rename_map = rename_map
         self.callee_name = callee_name
         self.caller_name = caller_name
+        self.dfb_parameter_occurrences = {
+            name: f"{inline_suffix}:{name}" for name in dfb_parameter_names
+        }
 
     def visit_FunctionDef(self, node):
         node.name = self.rename_map.get(node.name, node.name)
@@ -119,6 +125,15 @@ class _SubstituteTransformer(ast.NodeTransformer):
                     f"{node.id!r}"
                 )
             replacement = copy.deepcopy(self.bindings[node.id])
+            if node.id in self.dfb_parameter_occurrences:
+                # The marker distinguishes formal dependency occurrences after
+                # different parameters adapt to the same caller DFB.
+                occurrence = getattr(
+                    node,
+                    _DFB_SOURCE_OCCURRENCE,
+                    self.dfb_parameter_occurrences[node.id],
+                )
+                setattr(replacement, _DFB_SOURCE_OCCURRENCE, occurrence)
             return ast.copy_location(replacement, node)
         if node.id not in self.rename_map:
             return node
@@ -406,6 +421,8 @@ def _expand_call(
         rename_map,
         spec.name,
         caller_name,
+        set(spec.dfb_param_names),
+        suffix,
     )
 
     result: List[ast.stmt] = []

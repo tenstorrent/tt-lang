@@ -83,7 +83,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // -----
 
 // Distinct function symbols may share when their per-node pointer processors
-// match and both producer and consumer entries follow a quiescent handoff.
+// match and both producer and consumer entries follow lifecycle completion.
 
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}]}
 // CHECK-LABEL: func.func @first_owner_producer
@@ -185,8 +185,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// Missing NOC ownership information prevents a quiescence proof and therefore
-// prevents otherwise ordered lifetimes from sharing one physical index.
+// Missing NOC ownership information prevents proving lifecycle completion, so
+// otherwise ordered lifetimes cannot share one physical index.
 
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}]}
 // CHECK-LABEL: func.func @unknown_noc_owner
@@ -228,7 +228,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// Quiescent lifetimes with different transaction sizes retain separate ring
+// Completed lifecycles with different transaction sizes retain separate ring
 // pointer progressions and therefore cannot share a physical index.
 
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}]}

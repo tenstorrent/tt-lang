@@ -83,14 +83,18 @@ StringRef getDFBAllocationGroupAssumptionReasonName(
 
 namespace {
 
-/// Preserves the operation that made a proof conservative, falling back to the
-/// declaration only when no more specific evidence exists.
+// Preserves failed-proof evidence before using the caller-selected fallback.
+static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
+                                      Operation *fallbackEvidence) {
+  if (lifetime && lifetime->completionProof.evidence) {
+    return lifetime->completionProof.evidence;
+  }
+  return fallbackEvidence;
+}
+
 static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
                                       const DFBLogicalLifecycle &logicalDFB) {
-  if (lifetime && lifetime->quiescence.evidence) {
-    return lifetime->quiescence.evidence;
-  }
-  return logicalDFB.declarations.front();
+  return getLifetimeEvidence(lifetime, logicalDFB.declarations.front());
 }
 
 static bool cursorRunsCanRepeat(ArrayRef<DFBTransactionRun> cursorRuns,
@@ -145,6 +149,105 @@ static bool haveCompatibleCursorRuns(const DFBPerNodeLifetime &before,
          cursorRunsCanRepeat(before.terminalReadCursorRuns, physicalTileCount);
 }
 
+struct AllocationGroupNodeEpoch {
+  unsigned logicalIndex = 0;
+  unsigned epochIndex = 0;
+  const DFBPerNodeLifetime *lifetime = nullptr;
+  const DFBLifecycleEpoch *epoch = nullptr;
+  bool possibleDomain = false;
+
+  const DFBLifecycleCompletionProof &getCompletionProof() const {
+    return epoch ? epoch->completionProof : lifetime->completionProof;
+  }
+
+  ArrayRef<DFBTransactionRun> getWriteCursorRuns() const {
+    if (epoch) {
+      return epoch->writeCursorRuns;
+    }
+    return lifetime->writeCursorRuns;
+  }
+
+  ArrayRef<DFBTransactionRun> getReadCursorRuns() const {
+    if (epoch) {
+      return epoch->readCursorRuns;
+    }
+    return lifetime->readCursorRuns;
+  }
+
+  std::optional<DFBPointerOwner> getWritePointerOwner() const {
+    return epoch ? epoch->writePointerOwner : lifetime->writePointerOwner;
+  }
+
+  std::optional<DFBPointerOwner> getReadPointerOwner() const {
+    return epoch ? epoch->readPointerOwner : lifetime->readPointerOwner;
+  }
+
+  std::optional<DFBPointerOwner> getTerminalWritePointerOwner() const {
+    return epoch ? epoch->terminalWritePointerOwner
+                 : lifetime->terminalWritePointerOwner;
+  }
+
+  std::optional<DFBPointerOwner> getTerminalReadPointerOwner() const {
+    return epoch ? epoch->terminalReadPointerOwner
+                 : lifetime->terminalReadPointerOwner;
+  }
+
+  bool hasCanonicalTerminalState() const {
+    return epoch ? epoch->terminalStateCanonical
+                 : lifetime->terminalStateCanonical;
+  }
+
+  bool isInspectionOnly() const {
+    return epoch ? epoch->inspectionOnly : lifetime->inspectionOnly;
+  }
+};
+
+static void appendAllocationGroupNodeEpochs(
+    SmallVectorImpl<AllocationGroupNodeEpoch> &epochs, unsigned logicalIndex,
+    const DFBPerNodeLifetime &lifetime, bool possibleDomain) {
+  if (lifetime.resetEpochs.empty()) {
+    epochs.push_back({logicalIndex, 0, &lifetime, nullptr, possibleDomain});
+    return;
+  }
+  for (auto [epochIndex, epoch] : llvm::enumerate(lifetime.resetEpochs)) {
+    epochs.push_back({logicalIndex, static_cast<unsigned>(epochIndex),
+                      &lifetime, &epoch, possibleDomain});
+  }
+}
+
+static bool isAllocationGroupEpochOrderedBefore(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const AllocationGroupNodeEpoch &before,
+    const AllocationGroupNodeEpoch &after, LaunchNodeCoord node) {
+  if (before.possibleDomain || after.possibleDomain) {
+    return before.possibleDomain && after.possibleDomain &&
+           liveness.isConditionallyEpochOrderedBefore(
+               before.logicalIndex, before.epochIndex, after.logicalIndex,
+               after.epochIndex, node);
+  }
+  return liveness.isEpochOrderedBefore(before.logicalIndex, before.epochIndex,
+                                       after.logicalIndex, after.epochIndex,
+                                       node);
+}
+
+static Operation *
+getAllocationGroupEpochEvidence(const AllocationGroupNodeEpoch &epoch,
+                                const DFBLogicalLifecycle &logicalDFB) {
+  if (!epoch.epoch) {
+    Operation *fallbackEvidence = epoch.lifetime->entryEvidence
+                                      ? epoch.lifetime->entryEvidence
+                                      : logicalDFB.declarations.front();
+    return getLifetimeEvidence(epoch.lifetime, fallbackEvidence);
+  }
+  if (epoch.getCompletionProof().evidence) {
+    return epoch.getCompletionProof().evidence;
+  }
+  assert(!epoch.epoch->accessOccurrenceIndices.empty() &&
+         "active lifecycle epoch must contain an access");
+  return logicalDFB.accesses[epoch.epoch->accessOccurrenceIndices.front()]
+      .operation;
+}
+
 } // namespace
 
 class DFBPhysicalConflictModelBuilder {
@@ -163,9 +266,15 @@ public:
         DFBAllocationGroupAttr lhsGroup = logicalDFBs[lhsIndex].allocationGroup;
         DFBAllocationGroupAttr rhsGroup = logicalDFBs[rhsIndex].allocationGroup;
         bool sameAllocationGroup = lhsGroup && lhsGroup == rhsGroup;
+        bool opaqueAccessRequiresExactDescriptor =
+            logicalDFBs[lhsIndex].hasOpaqueExternalAccess ||
+            logicalDFBs[rhsIndex].hasOpaqueExternalAccess;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                         /*requireExactDescriptor=*/!sameAllocationGroup,
-                         /*requireMatchingTransactions=*/!sameAllocationGroup);
+                         /*requireExactDescriptor=*/
+                         !sameAllocationGroup ||
+                             opaqueAccessRequiresExactDescriptor,
+                         /*requireMatchingTransactions=*/!sameAllocationGroup,
+                         /*useAllocationGroupEpochs=*/sameAllocationGroup);
       }
     }
     addResetAllocationConflicts(model, liveness);
@@ -209,8 +318,10 @@ public:
       return model;
     }
     addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                     /*requireExactDescriptor=*/false,
-                     /*requireMatchingTransactions=*/false);
+                     /*requireExactDescriptor=*/lhs.hasOpaqueExternalAccess ||
+                         rhs.hasOpaqueExternalAccess,
+                     /*requireMatchingTransactions=*/false,
+                     /*useAllocationGroupEpochs=*/true);
     addResetAllocationConflicts(model, liveness,
                                 std::make_pair(lhsIndex, rhsIndex));
     return model;
@@ -267,7 +378,8 @@ private:
                    const DFBConcurrentKernelLivenessAnalysis &liveness,
                    unsigned lhsIndex, unsigned rhsIndex,
                    bool requireExactDescriptor = true,
-                   bool requireMatchingTransactions = true) {
+                   bool requireMatchingTransactions = true,
+                   bool useAllocationGroupEpochs = false) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
@@ -309,6 +421,15 @@ private:
           lhs.launchDomain.intersectWith(rhs.launchDomain);
       llvm::append_range(sharedNodes, exactSharedNodes.nodes);
     }
+    if (sharedNodes.empty()) {
+      return;
+    }
+    if (!lhs.accessCompletionProven || !rhs.accessCompletionProven) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::AccessCompletionNotProven, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
     for (LaunchNodeCoord node : sharedNodes) {
       const DFBPerNodeLifetime *lhsLifetime =
           useConditionalProof ? lhs.findPossibleNodeLifetime(node)
@@ -326,8 +447,62 @@ private:
                     lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
-      if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
-          !rhsLifetime->quiescence.proven()) {
+      if (!lhsLifetime || !rhsLifetime) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::AccessCompletionNotProven, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      if (useAllocationGroupEpochs && (!lhsLifetime->resetEpochs.empty() ||
+                                       !rhsLifetime->resetEpochs.empty())) {
+        SmallVector<AllocationGroupNodeEpoch> lhsEpochs;
+        SmallVector<AllocationGroupNodeEpoch> rhsEpochs;
+        appendAllocationGroupNodeEpochs(lhsEpochs, lhsIndex, *lhsLifetime,
+                                        useConditionalProof);
+        appendAllocationGroupNodeEpochs(rhsEpochs, rhsIndex, *rhsLifetime,
+                                        useConditionalProof);
+        auto unprovenLhsEpoch =
+            llvm::find_if(lhsEpochs, [](const AllocationGroupNodeEpoch &epoch) {
+              return !epoch.getCompletionProof().proven();
+            });
+        auto unprovenRhsEpoch =
+            llvm::find_if(rhsEpochs, [](const AllocationGroupNodeEpoch &epoch) {
+              return !epoch.getCompletionProof().proven();
+            });
+        if (unprovenLhsEpoch != lhsEpochs.end() ||
+            unprovenRhsEpoch != rhsEpochs.end()) {
+          const AllocationGroupNodeEpoch &lhsEvidence =
+              unprovenLhsEpoch != lhsEpochs.end() ? *unprovenLhsEpoch
+                                                  : lhsEpochs.front();
+          const AllocationGroupNodeEpoch &rhsEvidence =
+              unprovenRhsEpoch != rhsEpochs.end() ? *unprovenRhsEpoch
+                                                  : rhsEpochs.front();
+          addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                      DFBConflictReason::AccessCompletionNotProven, node,
+                      getAllocationGroupEpochEvidence(lhsEvidence, lhs),
+                      getAllocationGroupEpochEvidence(rhsEvidence, rhs));
+          continue;
+        }
+        for (const AllocationGroupNodeEpoch &lhsEpoch : lhsEpochs) {
+          for (const AllocationGroupNodeEpoch &rhsEpoch : rhsEpochs) {
+            bool lhsBeforeRhs = isAllocationGroupEpochOrderedBefore(
+                liveness, lhsEpoch, rhsEpoch, node);
+            bool rhsBeforeLhs = isAllocationGroupEpochOrderedBefore(
+                liveness, rhsEpoch, lhsEpoch, node);
+            if (lhsBeforeRhs != rhsBeforeLhs) {
+              continue;
+            }
+            addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                        DFBConflictReason::ConcurrentLifetime, node,
+                        getAllocationGroupEpochEvidence(lhsEpoch, lhs),
+                        getAllocationGroupEpochEvidence(rhsEpoch, rhs));
+          }
+        }
+        continue;
+      }
+      if (!lhsLifetime->completionProof.proven() ||
+          !rhsLifetime->completionProof.proven()) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
@@ -349,25 +524,31 @@ private:
       bool terminalStateCompatible = false;
       bool pointerOwnersCompatible = false;
       if (lhsBeforeRhs || rhsBeforeLhs) {
+        bool hasIdentityTransition =
+            before->inspectionOnly || after->inspectionOnly;
         terminalStateCompatible =
-            before->terminalStateCanonical || !requireMatchingTransactions ||
+            hasIdentityTransition || before->terminalStateCanonical ||
+            !requireMatchingTransactions ||
             haveCompatibleCursorRuns(*before, *after, physicalTileCount);
         pointerOwnersCompatible =
-            before->terminalStateCanonical ||
+            hasIdentityTransition || before->terminalStateCanonical ||
             (before->terminalWritePointerOwner == after->writePointerOwner &&
              before->terminalReadPointerOwner == after->readPointerOwner);
       } else {
         // Preserve the more specific state diagnosis when lifetimes are also
         // unordered; ordering alone must not obscure a protocol mismatch.
+        bool hasIdentityTransition =
+            lhsLifetime->inspectionOnly || rhsLifetime->inspectionOnly;
         terminalStateCompatible =
-            !requireMatchingTransactions ||
+            hasIdentityTransition || !requireMatchingTransactions ||
             (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
                                       physicalTileCount) &&
              haveCompatibleCursorRuns(*rhsLifetime, *lhsLifetime,
                                       physicalTileCount));
         pointerOwnersCompatible =
-            lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
-            lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner;
+            hasIdentityTransition ||
+            (lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
+             lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner);
       }
       if (!terminalStateCompatible) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
@@ -446,34 +627,27 @@ static LogicalResult validateAllocationGroupTypes(
   return success();
 }
 
-struct AllocationGroupNodeMember {
-  unsigned logicalIndex = 0;
-  const DFBPerNodeLifetime *lifetime = nullptr;
-  bool possibleDomain = false;
-};
-
-static bool isAllocationGroupMemberOrderedBefore(
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
-    const AllocationGroupNodeMember &lhs, const AllocationGroupNodeMember &rhs,
-    LaunchNodeCoord node) {
-  if (lhs.possibleDomain || rhs.possibleDomain) {
-    return lhs.possibleDomain && rhs.possibleDomain &&
-           liveness.isConditionallyOrderedBefore(lhs.logicalIndex,
-                                                 rhs.logicalIndex, node);
+static void
+printAllocationGroupNodeEpoch(raw_ostream &output,
+                              const AllocationGroupNodeEpoch &epoch,
+                              ArrayRef<DFBLogicalLifecycle> logicalDFBs) {
+  output << "logical DFB " << logicalDFBs[epoch.logicalIndex].logicalId;
+  if (epoch.epoch) {
+    output << " epoch " << epoch.epochIndex;
   }
-  return liveness.isOrderedBefore(lhs.logicalIndex, rhs.logicalIndex, node);
 }
 
-static bool hasAllocationGroupMemberInconsistentOrder(
+static bool hasAllocationGroupEpochInconsistentOrder(
     const DFBConcurrentKernelLivenessAnalysis &liveness,
-    const AllocationGroupNodeMember &lhs, const AllocationGroupNodeMember &rhs,
+    const AllocationGroupNodeEpoch &lhs, const AllocationGroupNodeEpoch &rhs,
     LaunchNodeCoord node) {
   if (lhs.possibleDomain || rhs.possibleDomain) {
-    return liveness.hasConditionallyInconsistentOrder(lhs.logicalIndex,
-                                                      rhs.logicalIndex, node);
+    return liveness.hasConditionallyInconsistentEpochOrder(
+        lhs.logicalIndex, lhs.epochIndex, rhs.logicalIndex, rhs.epochIndex,
+        node);
   }
-  return liveness.hasInconsistentOrder(lhs.logicalIndex, rhs.logicalIndex,
-                                       node);
+  return liveness.hasInconsistentEpochOrder(
+      lhs.logicalIndex, lhs.epochIndex, rhs.logicalIndex, rhs.epochIndex, node);
 }
 
 struct AllocationGroupCursorState {
@@ -481,39 +655,77 @@ struct AllocationGroupCursorState {
   std::uint64_t readPointerOffset = 0;
 };
 
+enum class AllocationGroupCursorFailure {
+  None,
+  RingBoundary,
+  UnequalOffsets,
+};
+
+static LogicalResult advanceAllocationGroupCursorRuns(
+    ArrayRef<DFBTransactionRun> writeCursorRuns,
+    ArrayRef<DFBTransactionRun> readCursorRuns, std::uint64_t physicalTileCount,
+    AllocationGroupCursorState &cursorState, bool terminalStateCanonical,
+    AllocationGroupCursorFailure *failureReason = nullptr) {
+  FailureOr<std::uint64_t> writePointerOffset = advanceDFBTransactionCursor(
+      writeCursorRuns, physicalTileCount, cursorState.writePointerOffset);
+  FailureOr<std::uint64_t> readPointerOffset = advanceDFBTransactionCursor(
+      readCursorRuns, physicalTileCount, cursorState.readPointerOffset);
+  if (failed(writePointerOffset) || failed(readPointerOffset)) {
+    if (failureReason) {
+      *failureReason = AllocationGroupCursorFailure::RingBoundary;
+    }
+    return failure();
+  }
+  cursorState = {*writePointerOffset, *readPointerOffset};
+  if (terminalStateCanonical) {
+    cursorState = {};
+    if (failureReason) {
+      *failureReason = AllocationGroupCursorFailure::None;
+    }
+    return success();
+  }
+  if (*writePointerOffset != *readPointerOffset) {
+    if (failureReason) {
+      *failureReason = AllocationGroupCursorFailure::UnequalOffsets;
+    }
+    return failure();
+  }
+  if (failureReason) {
+    *failureReason = AllocationGroupCursorFailure::None;
+  }
+  return success();
+}
+
 static FailureOr<AllocationGroupCursorState> advanceAllocationGroupMemberCursor(
     const DFBPerNodeLifetime &lifetime, std::uint64_t physicalTileCount,
     AllocationGroupCursorState cursorState = {}) {
-  auto advanceRuns = [&](ArrayRef<DFBTransactionRun> transactionRuns,
-                         std::uint64_t &pointerOffset) {
-    FailureOr<std::uint64_t> nextOffset = advanceDFBTransactionCursor(
-        transactionRuns, physicalTileCount, pointerOffset);
-    if (succeeded(nextOffset)) {
-      pointerOffset = *nextOffset;
-    }
-    return nextOffset;
-  };
   if (lifetime.resetEpochs.empty()) {
-    if (failed(advanceRuns(lifetime.writeCursorRuns,
-                           cursorState.writePointerOffset)) ||
-        failed(advanceRuns(lifetime.readCursorRuns,
-                           cursorState.readPointerOffset))) {
+    if (failed(advanceAllocationGroupCursorRuns(
+            lifetime.writeCursorRuns, lifetime.readCursorRuns,
+            physicalTileCount, cursorState,
+            /*terminalStateCanonical=*/false))) {
       return failure();
     }
   } else {
     for (const DFBLifecycleEpoch &epoch : lifetime.resetEpochs) {
-      if (failed(advanceRuns(epoch.writeCursorRuns,
-                             cursorState.writePointerOffset)) ||
-          failed(advanceRuns(epoch.readCursorRuns,
-                             cursorState.readPointerOffset))) {
+      if (failed(advanceAllocationGroupCursorRuns(
+              epoch.writeCursorRuns, epoch.readCursorRuns, physicalTileCount,
+              cursorState, epoch.terminalStateCanonical))) {
         return failure();
-      }
-      if (epoch.terminalStateCanonical) {
-        cursorState = {};
       }
     }
   }
-  if (cursorState.writePointerOffset != cursorState.readPointerOffset) {
+  return cursorState;
+}
+
+static FailureOr<AllocationGroupCursorState> advanceAllocationGroupEpochCursor(
+    const AllocationGroupNodeEpoch &epoch, std::uint64_t physicalTileCount,
+    AllocationGroupCursorState cursorState = {},
+    AllocationGroupCursorFailure *failureReason = nullptr) {
+  if (failed(advanceAllocationGroupCursorRuns(
+          epoch.getWriteCursorRuns(), epoch.getReadCursorRuns(),
+          physicalTileCount, cursorState, epoch.hasCanonicalTerminalState(),
+          failureReason))) {
     return failure();
   }
   return cursorState;
@@ -564,7 +776,7 @@ static LogicalResult validateAllocationGroupCursor(
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
       liveness.getLogicalDFBLifecycles();
   for (LaunchNodeCoord node : liveness.getLaunchNodes()) {
-    SmallVector<AllocationGroupNodeMember> activeMembers;
+    SmallVector<AllocationGroupNodeEpoch> activeEpochs;
     for (unsigned logicalIndex : members) {
       const DFBLogicalLifecycle &logicalDFB = logicalDFBs[logicalIndex];
       bool possibleDomain = !logicalDFB.launchDomain.known;
@@ -574,44 +786,60 @@ static LogicalResult validateAllocationGroupCursor(
       if (!lifetime || !lifetime->mayBeActive) {
         continue;
       }
-      activeMembers.push_back({logicalIndex, lifetime, possibleDomain});
+      appendAllocationGroupNodeEpochs(activeEpochs, logicalIndex, *lifetime,
+                                      possibleDomain);
     }
 
-    for (const AllocationGroupNodeMember &member : activeMembers) {
-      if (!hasAllocationGroupMemberInconsistentOrder(liveness, member, member,
-                                                     node)) {
+    bool hasUnprovenOrder = false;
+    for (const AllocationGroupNodeEpoch &epoch : activeEpochs) {
+      if (hasAllocationGroupEpochInconsistentOrder(liveness, epoch, epoch,
+                                                   node)) {
+        std::string message;
+        llvm::raw_string_ostream messageStream(message);
+        messageStream << "DFB allocation group ";
+        printAllocationGroup(messageStream, allocationGroup, members,
+                             logicalDFBs);
+        messageStream << " has contradictory cursor order involving ";
+        printAllocationGroupNodeEpoch(messageStream, epoch, logicalDFBs);
+        messageStream << " on launch node (" << node.x << ',' << node.y << ')';
+        analysisFailure.set(getAllocationGroupEpochEvidence(
+                                epoch, logicalDFBs[epoch.logicalIndex]),
+                            messageStream.str());
+        return failure();
+      }
+      if (epoch.getCompletionProof().proven() || unsafeAssumeAllocationGroups) {
         continue;
       }
-      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
       std::string message;
       llvm::raw_string_ostream messageStream(message);
       messageStream << "DFB allocation group ";
       printAllocationGroup(messageStream, allocationGroup, members,
                            logicalDFBs);
-      messageStream << " has contradictory cursor order involving logical DFB "
-                    << logicalDFB.logicalId << " on launch node (" << node.x
-                    << ',' << node.y << ')';
-      analysisFailure.set(logicalDFB.declarations.front(), messageStream.str());
+      messageStream << " does not have proven lifecycle completion for ";
+      printAllocationGroupNodeEpoch(messageStream, epoch, logicalDFBs);
+      messageStream << " on launch node (" << node.x << ',' << node.y << ')';
+      analysisFailure.set(getAllocationGroupEpochEvidence(
+                              epoch, logicalDFBs[epoch.logicalIndex]),
+                          messageStream.str());
       return failure();
     }
 
-    bool hasUnprovenOrder = false;
-    SmallVector<unsigned> predecessorCounts(activeMembers.size());
-    for (auto [lhsPosition, lhs] : llvm::enumerate(activeMembers)) {
+    SmallVector<unsigned> predecessorCounts(activeEpochs.size());
+    for (auto [lhsPosition, lhs] : llvm::enumerate(activeEpochs)) {
       for (unsigned rhsPosition = lhsPosition + 1;
-           rhsPosition < activeMembers.size(); ++rhsPosition) {
-        const AllocationGroupNodeMember &rhs = activeMembers[rhsPosition];
+           rhsPosition < activeEpochs.size(); ++rhsPosition) {
+        const AllocationGroupNodeEpoch &rhs = activeEpochs[rhsPosition];
         bool lhsBeforeRhs =
-            isAllocationGroupMemberOrderedBefore(liveness, lhs, rhs, node);
+            isAllocationGroupEpochOrderedBefore(liveness, lhs, rhs, node);
         bool rhsBeforeLhs =
-            isAllocationGroupMemberOrderedBefore(liveness, rhs, lhs, node);
+            isAllocationGroupEpochOrderedBefore(liveness, rhs, lhs, node);
         if (lhsBeforeRhs != rhsBeforeLhs) {
           unsigned afterPosition = lhsBeforeRhs ? rhsPosition : lhsPosition;
           ++predecessorCounts[afterPosition];
           continue;
         }
         bool inconsistentOrder =
-            hasAllocationGroupMemberInconsistentOrder(liveness, lhs, rhs, node);
+            hasAllocationGroupEpochInconsistentOrder(liveness, lhs, rhs, node);
         if (!inconsistentOrder && unsafeAssumeAllocationGroups) {
           addAllocationGroupAssumption(
               assumptions,
@@ -629,24 +857,26 @@ static LogicalResult validateAllocationGroupCursor(
         messageStream << (inconsistentOrder
                               ? " has inconsistent cursor order for "
                               : " has no proven cursor order for ")
-                      << "logical DFBs "
-                      << logicalDFBs[lhs.logicalIndex].logicalId << " and "
-                      << logicalDFBs[rhs.logicalIndex].logicalId
-                      << " on launch node (" << node.x << ',' << node.y << ')';
-        analysisFailure.set(logicalDFBs[rhs.logicalIndex].declarations.front(),
-                            messageStream.str());
+                      << "epochs ";
+        printAllocationGroupNodeEpoch(messageStream, lhs, logicalDFBs);
+        messageStream << " and ";
+        printAllocationGroupNodeEpoch(messageStream, rhs, logicalDFBs);
+        messageStream << " on launch node (" << node.x << ',' << node.y << ')';
+        analysisFailure.set(
+            getAllocationGroupEpochEvidence(rhs, logicalDFBs[rhs.logicalIndex]),
+            messageStream.str());
         return failure();
       }
     }
-
     if (hasUnprovenOrder) {
-      for (const AllocationGroupNodeMember &member : activeMembers) {
-        if (succeeded(advanceAllocationGroupMemberCursor(*member.lifetime,
+      DenseSet<unsigned> validatedLogicalIndices;
+      for (const AllocationGroupNodeEpoch &epoch : activeEpochs) {
+        if (!validatedLogicalIndices.insert(epoch.logicalIndex).second ||
+            succeeded(advanceAllocationGroupMemberCursor(*epoch.lifetime,
                                                          physicalTileCount))) {
           continue;
         }
-        const DFBLogicalLifecycle &logicalDFB =
-            logicalDFBs[member.logicalIndex];
+        const DFBLogicalLifecycle &logicalDFB = logicalDFBs[epoch.logicalIndex];
         std::string message;
         llvm::raw_string_ostream messageStream(message);
         messageStream << "DFB allocation group ";
@@ -656,66 +886,145 @@ static LogicalResult validateAllocationGroupCursor(
                       << " tiles makes logical DFB " << logicalDFB.logicalId
                       << " cross the ring boundary on launch node (" << node.x
                       << ',' << node.y << ')';
-        analysisFailure.set(logicalDFB.declarations.front(),
+        analysisFailure.set(getAllocationGroupEpochEvidence(epoch, logicalDFB),
                             messageStream.str());
         return failure();
       }
       continue;
     }
-    SmallVector<AllocationGroupNodeMember> orderedMembers(activeMembers.size());
-    llvm::BitVector occupiedRanks(activeMembers.size());
-    for (auto [memberPosition, member] : llvm::enumerate(activeMembers)) {
-      unsigned rank = predecessorCounts[memberPosition];
-      if (rank < orderedMembers.size() && !occupiedRanks.test(rank)) {
-        orderedMembers[rank] = member;
+    SmallVector<AllocationGroupNodeEpoch> orderedEpochs(activeEpochs.size());
+    llvm::BitVector occupiedRanks(activeEpochs.size());
+    for (auto [epochPosition, epoch] : llvm::enumerate(activeEpochs)) {
+      unsigned rank = predecessorCounts[epochPosition];
+      if (rank < orderedEpochs.size() && !occupiedRanks.test(rank)) {
+        orderedEpochs[rank] = epoch;
         occupiedRanks.set(rank);
         continue;
       }
-      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
       std::string message;
       llvm::raw_string_ostream messageStream(message);
       messageStream << "DFB allocation group ";
       printAllocationGroup(messageStream, allocationGroup, members,
                            logicalDFBs);
-      messageStream << " has inconsistent cursor order for logical DFB "
-                    << logicalDFB.logicalId << " on launch node (" << node.x
-                    << ',' << node.y << ')';
-      analysisFailure.set(logicalDFB.declarations.front(), messageStream.str());
+      messageStream << " has inconsistent cursor order for ";
+      printAllocationGroupNodeEpoch(messageStream, epoch, logicalDFBs);
+      messageStream << " on launch node (" << node.x << ',' << node.y << ')';
+      analysisFailure.set(getAllocationGroupEpochEvidence(
+                              epoch, logicalDFBs[epoch.logicalIndex]),
+                          messageStream.str());
       return failure();
     }
-    activeMembers = std::move(orderedMembers);
+    activeEpochs = std::move(orderedEpochs);
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "DFB allocation group " << allocationGroup
+                   << " launch_node=(" << node.x << ',' << node.y
+                   << ") epoch_order=[";
+      llvm::interleaveComma(activeEpochs, llvm::dbgs(),
+                            [&](const AllocationGroupNodeEpoch &epoch) {
+                              llvm::dbgs()
+                                  << logicalDFBs[epoch.logicalIndex].logicalId
+                                  << ':' << epoch.epochIndex;
+                            });
+      llvm::dbgs() << "]\n";
+    });
 
     AllocationGroupCursorState cursorState;
-    for (const AllocationGroupNodeMember &member : activeMembers) {
-      const DFBPerNodeLifetime &lifetime = *member.lifetime;
-      FailureOr<AllocationGroupCursorState> nextOffset =
-          advanceAllocationGroupMemberCursor(lifetime, physicalTileCount,
-                                             cursorState);
-      if (succeeded(nextOffset)) {
-        cursorState = *nextOffset;
+    const AllocationGroupNodeEpoch *previousEpoch = nullptr;
+    for (const AllocationGroupNodeEpoch &epoch : activeEpochs) {
+      if (epoch.isInspectionOnly()) {
+        if (epoch.hasCanonicalTerminalState()) {
+          cursorState = {};
+          previousEpoch = &epoch;
+        }
+        continue;
+      }
+      bool pointerOwnersCompatible =
+          !previousEpoch || previousEpoch->hasCanonicalTerminalState() ||
+          (previousEpoch->getTerminalWritePointerOwner() ==
+               epoch.getWritePointerOwner() &&
+           previousEpoch->getTerminalReadPointerOwner() ==
+               epoch.getReadPointerOwner());
+      AllocationGroupCursorFailure cursorFailure =
+          AllocationGroupCursorFailure::None;
+      FailureOr<AllocationGroupCursorState> nextState = failure();
+      if (pointerOwnersCompatible) {
+        nextState = advanceAllocationGroupEpochCursor(
+            epoch, physicalTileCount, cursorState, &cursorFailure);
+      }
+      if (succeeded(nextState)) {
+        cursorState = *nextState;
+        previousEpoch = &epoch;
         continue;
       }
 
-      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[member.logicalIndex];
-      FailureOr<AllocationGroupCursorState> resetState =
-          advanceAllocationGroupMemberCursor(lifetime, physicalTileCount);
-      if (unsafeAssumeAllocationGroups && succeeded(resetState)) {
-        addAllocationGroupAssumption(
-            assumptions, DFBAllocationGroupAssumptionReason::EpochReset,
-            logicalDFB.logicalId);
-        cursorState = *resetState;
-        continue;
+      bool differentLogicalMember =
+          previousEpoch && previousEpoch->logicalIndex != epoch.logicalIndex;
+      if (unsafeAssumeAllocationGroups && differentLogicalMember) {
+        AllocationGroupCursorFailure resetFailure =
+            AllocationGroupCursorFailure::None;
+        FailureOr<AllocationGroupCursorState> resetState =
+            advanceAllocationGroupEpochCursor(epoch, physicalTileCount, {},
+                                              &resetFailure);
+        if (succeeded(resetState)) {
+          const DFBLogicalLifecycle &logicalDFB =
+              logicalDFBs[epoch.logicalIndex];
+          addAllocationGroupAssumption(
+              assumptions, DFBAllocationGroupAssumptionReason::EpochReset,
+              logicalDFB.logicalId);
+          cursorState = *resetState;
+          previousEpoch = &epoch;
+          continue;
+        }
+        cursorFailure = resetFailure;
       }
+
+      const DFBLogicalLifecycle &logicalDFB = logicalDFBs[epoch.logicalIndex];
+      if (!pointerOwnersCompatible &&
+          cursorFailure == AllocationGroupCursorFailure::None) {
+        std::string message;
+        llvm::raw_string_ostream messageStream(message);
+        messageStream << "DFB allocation group ";
+        printAllocationGroup(messageStream, allocationGroup, members,
+                             logicalDFBs);
+        messageStream << " cannot alias logical DFBs "
+                      << logicalDFBs[previousEpoch->logicalIndex].logicalId
+                      << " and " << logicalDFB.logicalId << ": "
+                      << getDFBConflictReasonName(
+                             DFBConflictReason::PointerOwnerMismatch);
+        analysisFailure.set(getAllocationGroupEpochEvidence(epoch, logicalDFB),
+                            messageStream.str());
+        return failure();
+      }
+
+      if (cursorFailure == AllocationGroupCursorFailure::UnequalOffsets) {
+        std::string message;
+        llvm::raw_string_ostream messageStream(message);
+        messageStream << "DFB allocation group ";
+        printAllocationGroup(messageStream, allocationGroup, members,
+                             logicalDFBs);
+        messageStream << " leaves unequal write and read offsets after ";
+        printAllocationGroupNodeEpoch(messageStream, epoch, logicalDFBs);
+        messageStream << " on launch node (" << node.x << ',' << node.y << ')';
+        analysisFailure.set(getAllocationGroupEpochEvidence(epoch, logicalDFB),
+                            messageStream.str());
+        return failure();
+      }
+
       std::string message;
       llvm::raw_string_ostream messageStream(message);
       messageStream << "DFB allocation group ";
       printAllocationGroup(messageStream, allocationGroup, members,
                            logicalDFBs);
       messageStream << " physical envelope of " << physicalTileCount
-                    << " tiles makes logical DFB " << logicalDFB.logicalId
-                    << " cross the ring boundary on launch node (" << node.x
+                    << " tiles makes logical DFB " << logicalDFB.logicalId;
+      if (epoch.epoch) {
+        messageStream << " epoch " << epoch.epochIndex;
+      }
+      messageStream << " cross the ring boundary on launch node (" << node.x
                     << ',' << node.y << ')';
-      analysisFailure.set(logicalDFB.declarations.front(), messageStream.str());
+      analysisFailure.set(getAllocationGroupEpochEvidence(epoch, logicalDFB),
+                          messageStream.str());
       return failure();
     }
   }

@@ -202,6 +202,29 @@ def TTL_DFBProtocolEffectArrayAttr
     : TypedArrayAttrBase<TTL_DFBProtocolEffectAttr,
                          "ordered dataflow buffer protocol effects">;
 
+def TTL_DFBNonTransactionalAccessAttr
+    : TTL_Attr<"DFBNonTransactionalAccess", "dfb_non_transactional_access"> {
+  let summary = "One synchronous non-transactional dataflow buffer access";
+  let description = [{
+    Describes an external call's use of one ordered DFB dependency without a
+    reserve, push, wait, or pop transaction. `dependency_index` selects the
+    call's ordered DFB dependency list. `inspect` states that the callee may
+    read the DFB descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. The call must complete all associated work
+    synchronously.
+  }];
+  let parameters = (ins
+    "DFBNonTransactionalAccessKind":$kind,
+    "int64_t":$dependencyIndex
+  );
+  let assemblyFormat = "`<` $kind `,` $dependencyIndex `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DFBNonTransactionalAccessArrayAttr
+    : TypedArrayAttrBase<TTL_DFBNonTransactionalAccessAttr,
+                         "ordered non-transactional dataflow buffer accesses">;
+
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";
   let description = [{
