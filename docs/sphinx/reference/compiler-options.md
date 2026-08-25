@@ -86,6 +86,8 @@ They are independent of the code generation flags above.
 | `TTLANG_DEBUG_LOCATIONS` | `0`/`1` | `0` | Include source locations in printed MLIR (locations are always tracked internally for error messages). |
 | `TTLANG_VERBOSE_ERRORS` | `0`/`1` | `0` | Include raw MLIR diagnostics in error output. |
 | `TTLANG_SIM_ONLY` | `0`/`1` | `0` | Force `import ttl` to skip loading the compiled MLIR extension. Used when running the simulator from a source tree without an installed `tt-lang-sim` wheel (which ships the same signal as a marker module). |
+| `TTLANG_SIM_COMPILER_VALIDATION` | `off`/`auto`/`required` | `off` | Control optional compiler validation before functional simulation. See {ref}`Compiler validation before simulation <compiler-validation-before-simulation>`. |
+| `TTLANG_SIM_COMPILER_TARGET` | `blackhole`/`wormhole_b0` | `blackhole` | Select the offline architecture for target-dependent compiler validation. This setting does not access a device. |
 | `TTL_RELAX_DFB_SPSC` | any value | (unset) | Skip compiler verification that DFB producers, consumers, and waits execute on corresponding dynamically active launch nodes. The program must enforce those ownership and synchronization contracts. Finalized DFB preconditions, PipeNet endpoint guards, transfer correspondence, and synchronization schedules remain enabled. |
 
 Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,

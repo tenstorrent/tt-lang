@@ -18,7 +18,11 @@ from ..condition import DispatchCondition, _BoundDispatchCondition
 from ..dfb_reset import DFBReset, _BoundDFBReset
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
-from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
+from ..dtype_utils import (
+    is_tensor_value,
+    is_ttnn_tensor,
+    tensor_dtype_to_ttcore_datatype,
+)
 from ..layouts import (
     LayoutConfig,
     create_layout,
@@ -1165,7 +1169,7 @@ class TTLGenericCompiler(TTCompilerBase):
         self._tensor_accessor_global_indices = []
         func_arg_types = []
         for name, val in self.captures.items():
-            if is_ttnn_tensor(val):
+            if is_tensor_value(val):
                 tensor_type = _build_tensor_type(
                     self.ctx,
                     val,
@@ -1209,7 +1213,7 @@ class TTLGenericCompiler(TTCompilerBase):
             from ..pipe import Pipe, PipeNet
 
             for name, val in self.captures.items():
-                if is_ttnn_tensor(val):
+                if is_tensor_value(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
                 if val is None:

@@ -16,6 +16,7 @@ from ttl.constants import validate_math_fidelity
 from .typedefs import Shape
 from .context import get_context, cleanup_run_context
 from .kernel import KernelKind
+from .compiler_validation import prepare_operation_validator
 
 
 def set_default_grid(grid: Shape) -> None:
@@ -142,6 +143,17 @@ def operation(
         # anything is done with the body, and with the compiler's own wording.
         validate_operation_interface(func)
 
+        from . import ttl as simulator_ttl
+
+        compiler_validator = prepare_operation_validator(
+            func,
+            grid=actual_grid,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
+            simulator_ttl=simulator_ttl,
+        )
+
         if is_unified_body(func):
             try:
                 modified_func = build_multikernel_function(func, new_globals)
@@ -168,6 +180,8 @@ def operation(
             # discovered PipeNets, schedules the active nodes, and runs them.
             # cleanup_run_context() resets execution-specific state afterwards
             # so subsequent runs start from a clean slate.
+            if compiler_validator is not None:
+                compiler_validator(*args, **kwargs)
             try:
                 run_operation(modified_func, actual_grid, args, kwargs)
             finally:

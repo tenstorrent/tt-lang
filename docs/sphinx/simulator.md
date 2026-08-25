@@ -43,6 +43,104 @@ If you have already built the full TT-Lang compiler (`source build/env/activate`
 tt-lang-sim examples/eltwise_add.py
 ```
 
+(compiler-validation-before-simulation)=
+## Compiler validation before simulation
+
+The functional simulator checks kernel behavior by executing its Python model.
+It does not normally apply compiler restrictions, so a kernel can complete in
+the simulator and still fail during compilation. Optional compiler validation
+runs the compiler frontend and its diagnostic TTL pipeline before each
+operation is simulated. A compiler diagnostic prevents that operation from
+executing in the simulator.
+
+This feature requires a full `tt-lang` installation or compiler build,
+including the compiled MLIR Python extensions. It does not require or open a
+Tenstorrent device. Tensor arguments are represented by host-side shape and
+dtype descriptors, and validation stops before TTKernel and EmitC lowering,
+runtime artifact generation, and device execution. The standalone
+`tt-lang-sim` package remains independent of the compiler.
+
+### Validation modes
+
+`--compiler-validation` requires one of the following mode values:
+
+| Mode | Behavior |
+|---|---|
+| `off` | Do not load the compiler. This is the default. |
+| `auto` | Run validation when a full compiler installation is available. Otherwise, issue one warning and continue with simulation. |
+| `required` | Run validation and report an error if the compiler cannot be loaded. This mode prevents a missing compiler installation from silently disabling validation. |
+
+The `required` mode is appropriate when successful validation is part of a CI
+or kernel-acceptance contract:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation required
+```
+
+The `auto` mode supports development environments where the same command may
+run with either the standalone simulator package or a full compiler build:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation auto
+```
+
+As with other simulator options, the Python script precedes the option on the
+command line.
+
+### Offline compiler target
+
+Most frontend, type, dataflow-buffer, pipe, and structural diagnostics are
+target-independent. Some compiler checks also depend on architectural
+constraints, including available kernel slots and compute or DST
+configuration. `--compiler-target` supplies that architecture description
+without probing hardware.
+
+The default target is `blackhole`. Wormhole B0 validation is selected
+explicitly:
+
+```bash
+tt-lang-sim examples/eltwise_add.py \
+  --compiler-validation required \
+  --compiler-target wormhole_b0
+```
+
+Target selection does not change simulator execution. It affects only the
+compiler diagnostics that run before simulation.
+
+### Environment configuration
+
+The modes and target can also be configured for an entire process:
+
+```bash
+export TTLANG_SIM_COMPILER_VALIDATION=required
+export TTLANG_SIM_COMPILER_TARGET=blackhole
+tt-lang-sim examples/eltwise_add.py
+```
+
+Command-line values take precedence over these defaults. The accepted values
+are the same as the corresponding command-line options.
+
+### Validation scope and limitations
+
+Successful compiler validation is cached for each distinct operation tensor
+signature. It reuses the same Python
+frontend, source-aware diagnostics, IR verification, and TTL pass prefix as
+normal compilation through dataflow-buffer allocation and L1 budget
+validation. The passes may transform temporary compiler IR because later
+diagnostics depend on those normalized forms. That IR is discarded and does
+not alter the Python operation executed by the simulator.
+
+The host tensor descriptor currently includes logical shape and dtype only.
+Validation therefore uses the compiler's default tiled and interleaved layout
+assumptions. It does not model custom tile geometry, sharding, or the amount of
+L1 memory currently available on a live device. Runtime behavior such as
+deadlocks, numerical disagreement, and data-dependent failures remains the
+responsibility of simulation and device testing.
+
+Diagnostics reflect the compiler revision installed alongside the simulator.
+For parity with a deployment compiler, both paths must use the same TT-Lang
+revision and target selection.
+
 Run the simulator test suite:
 
 ```bash

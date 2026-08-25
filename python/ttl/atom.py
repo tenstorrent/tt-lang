@@ -81,7 +81,7 @@ from .dataflow_buffer import (
     make_dfb,
     make_tensor_backed_dfb,
 )
-from .dtype_utils import is_ttnn_tensor
+from .dtype_utils import is_tensor_value, is_ttnn_tensor
 from .kernel import (
     Kernel,
     KernelSelector,
@@ -665,6 +665,7 @@ def _compile_atom(
     l1_budget_override: int,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache=None,
+    static_analysis_only: bool = False,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -683,7 +684,7 @@ def _compile_atom(
     # Register ttnn tensors so the per-thread compiler can resolve global
     # tensor indices for its tensor accessors.
     for idx, (pname, val) in enumerate(bound_arguments.items()):
-        if is_ttnn_tensor(val):
+        if is_tensor_value(val):
             register_tensor_name(val, pname, index=idx)
 
     # Detect L1 vs DRAM addressing from the first tensor (matching
@@ -742,7 +743,7 @@ def _compile_atom(
     # stable; unused ones are removed by MLIR DCE.
     captures: Dict[str, Any] = {}
     for pname, val in bound_arguments.items():
-        if is_ttnn_tensor(val) or isinstance(val, (int, float)):
+        if is_tensor_value(val) or isinstance(val, (int, float)):
             captures[pname] = val
     captures.update(dfbs)
     captures.update(nets)
@@ -796,6 +797,7 @@ def _compile_atom(
         operation_name=spec.name,
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
+        static_analysis_only=static_analysis_only,
     )
 
 
@@ -828,6 +830,7 @@ def _compile_unified_operation(
         l1_budget_override=l1_budget_override,
         runtime_resource_factory=decorator_options["runtime_resource_factory"],
         runtime_resource_cache=runtime_resource_cache,
+        static_analysis_only=decorator_options["static_analysis_only"],
     )
 
 
@@ -849,6 +852,7 @@ class Atom:
             _canonical_tensor_args,
             spec.fn,
             expand_only_params=expand_only_params,
+            allow_host_tensors=decorator_options["static_analysis_only"],
         )
         self._wrapper = _make_operation_wrapper(
             spec.fn,
@@ -859,6 +863,8 @@ class Atom:
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
+            static_analysis_only=decorator_options["static_analysis_only"],
+            static_target_arch=decorator_options["static_target_arch"],
         )
         functools.update_wrapper(self, spec.fn)
 
@@ -888,6 +894,8 @@ def _unified_operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    _static_analysis_only: bool = False,
+    _static_target_arch: Optional[str] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -911,6 +919,8 @@ def _unified_operation(
                 "math_fidelity": math_fidelity,
                 "options": options,
                 "runtime_resource_factory": runtime_resource_factory,
+                "static_analysis_only": _static_analysis_only,
+                "static_target_arch": _static_target_arch,
             },
         )
 
@@ -929,6 +939,8 @@ def operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    _static_analysis_only: bool = False,
+    _static_target_arch: Optional[str] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -944,7 +956,11 @@ def operation(
                 )
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
-            prepare_call = functools.partial(_canonical_tensor_args, fn)
+            prepare_call = functools.partial(
+                _canonical_tensor_args,
+                fn,
+                allow_host_tensors=_static_analysis_only,
+            )
             wrapped = pykernel_gen(
                 grid=grid,
                 indexing_maps=indexing_maps,
@@ -958,6 +974,8 @@ def operation(
                 options=options,
                 runtime_resource_factory=runtime_resource_factory,
                 _prepare_call=prepare_call,
+                _static_analysis_only=_static_analysis_only,
+                _static_target_arch=_static_target_arch,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
             return wrapped
@@ -972,6 +990,8 @@ def operation(
             math_fidelity=math_fidelity,
             options=options,
             runtime_resource_factory=runtime_resource_factory,
+            _static_analysis_only=_static_analysis_only,
+            _static_target_arch=_static_target_arch,
         )(fn)
 
     return _decorator

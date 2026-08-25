@@ -111,6 +111,7 @@ from .diagnostics import (
     format_python_error,
 )
 from .dtype_utils import (
+    is_tensor_value,
     is_ttnn_tensor,
     torch_dtype_to_ttnn_datatype,
 )
@@ -270,6 +271,8 @@ def _get_tensor_cache_info(tensor) -> tuple:
     shape = tuple(tensor.shape)
     padded_shape = tuple(getattr(tensor, "padded_shape", tensor.shape))
     dtype = str(tensor.dtype)
+    if not is_ttnn_tensor(tensor):
+        return (shape, padded_shape, dtype, "host", "interleaved", "tile", None)
     mem_config = tensor.memory_config()
     memory_space = (
         str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
@@ -300,7 +303,7 @@ def _make_cache_key(
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
-    tensor_args = [arg for arg in args if is_ttnn_tensor(arg)]
+    tensor_args = [arg for arg in args if is_tensor_value(arg)]
     tensor_key = tuple(_get_tensor_cache_info(tensor) for tensor in tensor_args)
     first_position_by_identity = {}
     alias_partition = []
@@ -312,7 +315,7 @@ def _make_cache_key(
     # with different shard shapes don't collide in the cache.
     mesh_key = None
     for tensor in tensor_args:
-        if _is_mesh_tensor(tensor):
+        if is_ttnn_tensor(tensor) and _is_mesh_tensor(tensor):
             mesh_key = tuple(tensor.device().shape)
             break
     return (
@@ -1573,7 +1576,7 @@ def _collect_captures(
             return val
         elif is_ttnn_global_semaphore(val):
             return val
-        elif is_ttnn_tensor(val):
+        elif is_tensor_value(val):
             return val
         elif isinstance(val, DataflowBuffer):
             return val
@@ -2095,9 +2098,13 @@ def _compile_kernel(
     l1_budget_override: int = 0,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    static_analysis_only: bool = False,
 ) -> Optional[CompiledTTNNKernel]:
     """
-    Compile kernel function to MLIR and return CompiledTTNNKernel.
+    Compile a kernel function to MLIR.
+
+    Return a ``CompiledTTNNKernel`` for normal compilation or ``None`` after
+    the diagnostic pipeline when ``static_analysis_only`` is enabled.
 
     Args:
         f: User kernel function
@@ -2231,6 +2238,7 @@ def _compile_kernel(
         operation_name=f.__name__,
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
+        static_analysis_only=static_analysis_only,
     )
 
 
@@ -2254,6 +2262,7 @@ def _lower_program_to_kernel(
     operation_name="<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    static_analysis_only: bool = False,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -2490,8 +2499,13 @@ def _lower_program_to_kernel(
             )
         else:
             pipeline_passes.append("ttl-validate-cb-budget")
-        # Add CB flow graph dump if auto-profiling or perf dump is enabled
-        perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
+        # Analysis-only compilation stops after the validation passes. The
+        # remaining pipeline lowers to TTKernel/EmitC and builds runtime
+        # artifacts outside the validation contract.
+        perf_dump = (
+            not static_analysis_only
+            and os.environ.get("TTLANG_PERF_DUMP") == "1"
+        )
         if perf_dump:
             # Remove stale outputs from previous runs
             for stale in ("/tmp/ttlang_cb_flow_graph.json",):
@@ -2502,7 +2516,7 @@ def _lower_program_to_kernel(
         if perf_dump:
             pipeline_passes.append(
                 'ttl-dump-cb-flow-graph{output="/tmp/ttlang_cb_flow_graph.json"}')
-        if is_auto_profile_enabled():
+        if not static_analysis_only and is_auto_profile_enabled():
             if "TTLANG_PROFILE_CSV" in os.environ:
                 cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
             else:
@@ -2512,39 +2526,40 @@ def _lower_program_to_kernel(
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
-        reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
-        pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
-        pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
-        pipe_global_semaphores_only_flag = int(
-            compiler_options.pipe_global_semaphores_only
-        )
-        pipeline_passes += [
-            "ttl-lower-dprint-to-emitc",
-            (
-                f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
-                f"pipe-computed-addresses={pipe_computed_flag} "
-                f"pipe-capacity-sync={pipe_capacity_sync_flag} "
-                f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag} "
-                f"l1-budget-override={l1_budget_override}}}"
-            ),
-            "func.func(ttkernel-lower-scalar-fp-types)",
-            "ttkernel-insert-inits",
-            "ttkernel-insert-l1-accumulation",
-        ]
-        if compiler_options.combine_pack_tiles:
-            pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")
-        pipeline_passes += [
-            "canonicalize",
-            "cse",
-            "lower-affine",
-            "ttl-lower-signpost-to-emitc",
-        ]
-        if compiler_options.specialize_cores:
-            pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
-        pipeline_passes += [
-            "convert-ttkernel-to-emitc",
-            "symbol-dce",
-        ]
+        if not static_analysis_only:
+            reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+            pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
+            pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
+            pipe_global_semaphores_only_flag = int(
+                compiler_options.pipe_global_semaphores_only
+            )
+            pipeline_passes += [
+                "ttl-lower-dprint-to-emitc",
+                (
+                    f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
+                    f"pipe-computed-addresses={pipe_computed_flag} "
+                    f"pipe-capacity-sync={pipe_capacity_sync_flag} "
+                    f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag} "
+                    f"l1-budget-override={l1_budget_override}}}"
+                ),
+                "func.func(ttkernel-lower-scalar-fp-types)",
+                "ttkernel-insert-inits",
+                "ttkernel-insert-l1-accumulation",
+            ]
+            if compiler_options.combine_pack_tiles:
+                pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")
+            pipeline_passes += [
+                "canonicalize",
+                "cse",
+                "lower-affine",
+                "ttl-lower-signpost-to-emitc",
+            ]
+            if compiler_options.specialize_cores:
+                pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
+            pipeline_passes += [
+                "convert-ttkernel-to-emitc",
+                "symbol-dce",
+            ]
 
         pipeline = ",".join(pipeline_passes)
 
@@ -2603,6 +2618,9 @@ def _lower_program_to_kernel(
                 )
             print(f"SAVED FINAL TO {final_mlir_path}")
 
+        if static_analysis_only:
+            return None
+
         # Extract source lines for auto-profiling (use first thread's source)
         profile_source_lines = None
         if all_source_lines:
@@ -2656,6 +2674,7 @@ def _canonical_tensor_args(
     kwargs: dict,
     *,
     expand_only_params=(),
+    allow_host_tensors: bool = False,
 ) -> tuple:
     """Bind a call and return tensor arguments in signature order."""
     if expand_only_params:
@@ -2669,10 +2688,14 @@ def _canonical_tensor_args(
     bound = signature.bind(*args, **kwargs)
     runtime_args = tuple(bound.arguments[name] for name in signature.parameters)
     for name, value in bound.arguments.items():
-        if not is_ttnn_tensor(value):
+        is_tensor = (
+            is_tensor_value(value) if allow_host_tensors else is_ttnn_tensor(value)
+        )
+        if not is_tensor:
             raise TypeError(
-                f"@ttl.operation runtime argument {name!r} must be a TT-NN "
-                f"tensor, got {type(value).__name__}"
+                f"@ttl.operation runtime argument {name!r} must be a "
+                f"{'tensor descriptor' if allow_host_tensors else 'TT-NN tensor'}, "
+                f"got {type(value).__name__}"
             )
     return runtime_args
 
@@ -2687,10 +2710,13 @@ def _make_operation_wrapper(
     math_fidelity: Optional[str],
     options: Optional[str],
     prepare_call: Optional[Callable] = None,
+    static_analysis_only: bool = False,
+    static_target_arch: Optional[str] = None,
 ) -> Callable:
     """Build the shared top-level operation cache and execution wrapper."""
     kernel_id = random.getrandbits(64)
     cache: Dict[tuple, CompiledTTNNKernel] = {}
+    validated: set[tuple] = set()
     cache_lock = threading.RLock()
     runtime_resource_cache = KernelRuntimeResourceCache()
 
@@ -2711,7 +2737,11 @@ def _make_operation_wrapper(
         compiler_options = CompilerOptions.from_string(opts_str).merge(
             CompilerOptions.from_argv()
         )
-        target_arch = _device_target_arch(runtime_args)
+        target_arch = (
+            static_target_arch
+            if static_analysis_only
+            else _device_target_arch(runtime_args)
+        )
         with cache_lock:
             l1_budget_override = _resolve_l1_budget(
                 runtime_args, compiler_options, runtime_resource_cache
@@ -2726,6 +2756,8 @@ def _make_operation_wrapper(
                 compiler_options=compiler_options,
                 l1_budget_override=l1_budget_override,
             )
+            if static_analysis_only and cache_key in validated:
+                return None
             compiled_kernel = cache.get(cache_key)
             if compiled_kernel is None:
                 compiled_kernel = compile_callback(
@@ -2740,6 +2772,8 @@ def _make_operation_wrapper(
                 )
                 if compiled_kernel is not None:
                     cache[cache_key] = compiled_kernel
+                elif static_analysis_only:
+                    validated.add(cache_key)
 
         if compiled_kernel is None or not _should_execute():
             return None
@@ -2777,7 +2811,8 @@ def _make_operation_wrapper(
 
         return result
 
-    attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
+    if not static_analysis_only:
+        attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
     return _wrapper
 
 
@@ -2809,6 +2844,8 @@ def pykernel_gen(
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     _prepare_call: Optional[Callable] = None,
+    _static_analysis_only: bool = False,
+    _static_target_arch: Optional[str] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -2894,6 +2931,7 @@ def pykernel_gen(
                 l1_budget_override=l1_budget_override,
                 runtime_resource_factory=runtime_resource_factory,
                 runtime_resource_cache=runtime_resource_cache,
+                static_analysis_only=_static_analysis_only,
             )
 
         return _make_operation_wrapper(
@@ -2905,6 +2943,8 @@ def pykernel_gen(
             math_fidelity=math_fidelity,
             options=options,
             prepare_call=_prepare_call,
+            static_analysis_only=_static_analysis_only,
+            static_target_arch=_static_target_arch,
         )
 
     return _decorator
