@@ -70,6 +70,85 @@ module attributes {
 
 // -----
 
+// Incomplete access operations that execute before the first reset or after
+// the last reset do not overlap any repeated interface write.
+
+// OUTPUT-LABEL: func.func @repeated_outside_reader
+// OUTPUT: %[[REPEATED_SELECTED_READER:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 6 : index}
+// OUTPUT-NEXT: %[[REPEATED_BEFORE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 7 : index}
+// OUTPUT-LABEL: func.func @repeated_outside_writer
+// OUTPUT: %[[REPEATED_SELECTED_WRITER:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 6 : index}
+// OUTPUT-NEXT: %[[REPEATED_AFTER:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 8 : index}
+
+// WARNING: warning: unsafe DFB allocation-group policy accepted #ttl.dfb_allocation_group<3> members=[6, 7, 8] without compiler proof:
+// WARNING-SAME: access-completion-not-proven
+// WARNING-NOT: reset-domain-write
+
+module attributes {
+  ttl.launch_grid = array<i64: 1, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @repeated_outside_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_unproven_outside">,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %selected = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 6 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %before = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 7 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "untyped_access" dfb_dependencies(%before : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "effects.hpp"} : () -> ()
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <3, participants[<kind = compute, identity = "compute", operation = "repeated_unproven_outside">, <kind = data_movement, identity = "reader", operation = "repeated_unproven_outside">, <kind = data_movement, identity = "writer", operation = "repeated_unproven_outside">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    }
+    return
+  }
+
+  func.func @repeated_outside_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_unproven_outside">,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %selected = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 6 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <3, participants[<kind = compute, identity = "compute", operation = "repeated_unproven_outside">, <kind = data_movement, identity = "reader", operation = "repeated_unproven_outside">, <kind = data_movement, identity = "writer", operation = "repeated_unproven_outside">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    }
+    return
+  }
+
+  func.func @repeated_outside_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_unproven_outside">,
+                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %selected = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 6 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %after = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 8 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <3, participants[<kind = compute, identity = "compute", operation = "repeated_unproven_outside">, <kind = data_movement, identity = "reader", operation = "repeated_unproven_outside">, <kind = data_movement, identity = "writer", operation = "repeated_unproven_outside">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    }
+    ttl.opaque_call "untyped_access" dfb_dependencies(%after : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "effects.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // A runtime predicate makes the untyped-access domain possible rather than exact.
 // Its activity still remains before the reset on every possible launch node.
 

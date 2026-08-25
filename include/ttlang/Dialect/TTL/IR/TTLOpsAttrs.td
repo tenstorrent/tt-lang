@@ -74,18 +74,23 @@ def TTL_SynchronizedDFBResetAttr
     : TTL_Attr<"SynchronizedDFBReset", "synchronized_dfb_reset"> {
   let summary = "Worker-local synchronized dataflow buffer reset identity";
   let description = [{
-    Identifies one dynamic reset instance and the complete set of logical
-    kernels that participate on each active worker. Every participant reaches
-    the same instance before any participant returns. The reset establishes
-    canonical read-pointer, write-pointer, occupancy, and initialization state
-    for each target declared by the operation.
+    Identifies one synchronized reset declaration and the complete set of
+    logical kernels that participate on each active worker. Every participant
+    reaches each corresponding dynamic instance before any participant
+    returns. A declaration in an immutable sequential structured loop denotes
+    one reset instance per iteration; participant loops must define the same
+    nested iteration sequence. The reset establishes canonical read-pointer,
+    write-pointer, occupancy, and initialization state for each target declared
+    by the operation.
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
-    reference the same reset instance. Distinct ordinals identify independent
-    reset instances. Participant order is canonical and otherwise semantically
-    insignificant. The participant set contains one compute kernel and both
-    data movement kernels that own DFB interface state. Each participant
-    executes the declaration at most once per dispatch and launch node.
+    reference the same reset instance or statically repeated instance sequence.
+    Distinct ordinals identify independent reset declarations. Participant
+    order is canonical and otherwise semantically insignificant. The
+    participant set contains one compute kernel and both data movement kernels
+    that own DFB interface state. Each participant executes the declaration at
+    most once at each point in the enclosing nested iteration sequence and
+    launch node.
   }];
   let parameters = (ins
     "int64_t":$ordinal,
