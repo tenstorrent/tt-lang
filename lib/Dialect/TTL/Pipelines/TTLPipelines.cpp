@@ -98,9 +98,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   if (options.specializeCores) {
-    pm.addPass(createTTKernelSpecializeCores());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
+    buildTTKernelSpecializationPipeline(pm);
   }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
@@ -129,6 +127,13 @@ void buildTTLAutoSyncPipeline(OpPassManager &pm) {
   pm.addPass(createTTLCoalesceDFBAcquires());
 }
 
+void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
+  pm.addPass(createTTKernelSpecializeCores());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelAnnotateDFBUse());
+}
+
 void registerTTLPipelines() {
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
@@ -142,6 +147,11 @@ void registerTTLPipelines() {
   PassPipelineRegistration<>("ttl-auto-sync",
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);
+  PassPipelineRegistration<>(
+      "ttkernel-specialize-and-annotate-dfb-use",
+      "Specialize kernels per launch coordinate, fold unused branches, and "
+      "record surviving DFB compile-time argument indices.",
+      buildTTKernelSpecializationPipeline);
 }
 
 } // namespace mlir::tt::ttl

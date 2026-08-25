@@ -1089,6 +1089,38 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
         assert f"ttl.reset_dfbs({reset_name}, dfbs=[target])" in source
 
 
+def test_composition_preserves_inspect_dfb_access():
+    """Inlining and logical-kernel replication retain the typed access."""
+
+    @ttl.operation()
+    def descriptor_helper(descriptor: ttl.DFB):
+        ttl.call_extern_func(
+            "descriptor.hpp",
+            "inspect",
+            template_args=[ttl.dfb_descriptor(descriptor)],
+            dfb_accesses=[ttl.DFBAccess.inspect(descriptor)],
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )
+
+    @ttl.operation()
+    def composed_descriptor_access(descriptor: ttl.DFB):
+        descriptor_helper(descriptor)
+
+    spec = composed_descriptor_access._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"descriptor"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT),
+    ):
+        assert source.count("ttl.DFBAccess.inspect(descriptor)") == 1
+        assert source.count("dfb_accesses=") == 1
+
+
 def test_composition_instantiates_reset_identity_per_call_site():
     """Repeated helper calls denote distinct dynamic reset instances."""
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
