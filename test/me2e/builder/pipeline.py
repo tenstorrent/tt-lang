@@ -42,8 +42,9 @@ def compile_ttl_to_ttkernel(
             compiler-only invocation without a device uses a Wormhole mock.
         maximize_dst: Enable DST maximization (subblocking + scheduling).
         enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
-        specialize_cores: Clone kernels that branch on a core coordinate
-            once per launch coordinate (ttkernel-specialize-cores).
+        specialize_cores: Run the ttkernel-specialize-and-annotate-dfb-use
+            sub-pipeline. Clones kernels that branch on a core coordinate
+            once per launch coordinate, then records surviving DFB uses.
 
     Returns:
         Compiled module with TTKernel/EmitC ops.

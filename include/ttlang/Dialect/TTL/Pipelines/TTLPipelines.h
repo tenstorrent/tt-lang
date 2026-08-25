@@ -123,6 +123,10 @@ void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 /// Add the ordered PipeNet launch-domain and synchronization verifiers.
 void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
 
+/// Clone kernels per launch coordinate, fold unused branches, and record
+/// surviving DFB compile-time argument indices.
+void buildTTKernelSpecializationPipeline(mlir::OpPassManager &pm);
+
 void registerTTLPipelines();
 
 } // namespace mlir::tt::ttl

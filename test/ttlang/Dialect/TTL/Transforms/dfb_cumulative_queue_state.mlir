@@ -6,7 +6,7 @@
 // reservations depend on consumer progress because the DFB holds 12 tiles.
 
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: node (0,0) quiescence=none
+// CHECK: node (0,0) lifecycle_completion=complete
 // CHECK-SAME: transactions=[4, 4, 4, 4]
 
 module {
@@ -64,7 +64,7 @@ module {
 // ALLOC-NEXT: ttl.bind_cb{cb_index = 0, block_count = 3} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
 // CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=24576 handoff=proven
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: node (0,0) quiescence=none
+// CHECK: node (0,0) lifecycle_completion=complete
 // CHECK-SAME: transactions=[4, 4] write_cursor_runs=[8] read_cursor_runs=[4, 4]
 
 module {
@@ -104,7 +104,7 @@ module {
 // moves once by eight tiles.
 
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: node (0,0) quiescence=none
+// CHECK: node (0,0) lifecycle_completion=complete
 // CHECK-SAME: transactions=[4, 4] write_cursor_runs=[8] read_cursor_runs=[4, 4]
 
 module {
@@ -146,7 +146,7 @@ module {
 // One high-water wait may protect two smaller pointer advancements.
 
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: node (0,0) quiescence=none
+// CHECK: node (0,0) lifecycle_completion=complete
 // CHECK-SAME: transactions=[4, 4]
 
 module {
@@ -190,7 +190,7 @@ module {
 // prove differently partitioned producer and consumer cursor movement.
 
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: node (0,0) quiescence=none
+// CHECK: node (0,0) lifecycle_completion=complete
 // CHECK-SAME: transactions=[4, 4, 4] write_cursor_runs=[4, 8] read_cursor_runs=[8, 4]
 
 module {
@@ -236,7 +236,7 @@ module {
 // cumulative DFB has the lower logical identity.
 
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: node (0,0) quiescence=none
+// CHECK: node (0,0) lifecycle_completion=complete
 // CHECK-SAME: transactions=[4, 4, 4] write_cursor_runs=[4, 8] read_cursor_runs=[8, 4]
 
 module {
