@@ -494,13 +494,14 @@ def _add_logical_kernel_bindings(
     selected_kernels: Dict[int, Kernel] = {}
     reset_participant_ids = {
         id(participant)
-        for reset in spec.dfb_resets.values()
+        for reset_name, reset in spec.dfb_resets.items()
+        if reset_name in loaded_names
         for participant in reset.participants
     }
     for name, kernel in spec.logical_kernels.items():
-        if (
-            name not in loaded_names and id(kernel) not in reset_participant_ids
-        ) or name in bindings:
+        if name in bindings:
+            continue
+        if name not in loaded_names and id(kernel) not in reset_participant_ids:
             continue
         existing_name = next(
             (
