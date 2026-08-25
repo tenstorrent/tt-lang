@@ -249,6 +249,9 @@ public:
     return logicalDFBs;
   }
 
+  /// Return whether launch domains use the complete runtime launch grid.
+  bool hasExactLaunchGrid() const { return exactLaunchGrid; }
+
   ArrayRef<LaunchNodeCoord> getLaunchNodes() const { return launchNodes; }
 
   ArrayRef<DFBResetAllocationConflict> getResetAllocationConflicts() const {
@@ -276,6 +279,7 @@ private:
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
+  bool exactLaunchGrid = false;
   SmallVector<LaunchNodeCoord> launchNodes;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;

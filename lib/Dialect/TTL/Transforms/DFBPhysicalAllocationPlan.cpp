@@ -1176,10 +1176,13 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
       physicalIndex = *logicalPhysicalIndex;
     }
 
+    LaunchNodeDomain allocationDomain = liveness.hasExactLaunchGrid()
+                                            ? logicalDFB.launchDomain
+                                            : LaunchNodeDomain::unknown();
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         std::move(allocationDomain), logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
@@ -1270,10 +1273,13 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     int32_t physicalIndex = assignment->assignments[indexedLogicalDFB.index()];
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
+    LaunchNodeDomain allocationDomain = liveness.hasExactLaunchGrid()
+                                            ? logicalDFB.launchDomain
+                                            : LaunchNodeDomain::unknown();
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         std::move(allocationDomain), logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
   }
 
@@ -1514,7 +1520,15 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         dfbType.getElementType(),
         static_cast<int32_t>(*pageSizeBytes),
         static_cast<int32_t>(dfbType.getBlockCount()),
+        LaunchNodeDomain{},
         {}};
+
+    for (const DFBPhysicalIndexAssignment &candidate : assignments) {
+      if (candidate.physicalIndex == physicalIndex) {
+        descriptor.allocationDomain =
+            descriptor.allocationDomain.unionWith(candidate.launchDomain);
+      }
+    }
 
     bool hasTensorBacking = llvm::any_of(
         assignments, [&](const DFBPhysicalIndexAssignment &candidate) {

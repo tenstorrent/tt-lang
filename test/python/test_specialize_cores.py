@@ -52,7 +52,7 @@ import ttl
 import ttl.dialects.ttl as ttl_dialect
 import ttl.ttl_api as ttl_api
 from ttl.ir import Context, Module
-from ttlang_test_utils import assert_pcc, to_dram
+from ttlang_test_utils import assert_pcc, to_dram, to_l1
 
 TILE_SIZE = 32
 

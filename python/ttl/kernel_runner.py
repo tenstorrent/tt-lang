@@ -26,6 +26,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
+_STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
+
 
 def _ensure_ttnn():
     """Lazy import of ttnn."""
@@ -96,6 +98,27 @@ class _DFBAllocation:
     total_size: int
 
 
+@dataclass(frozen=True)
+class _DFBDescriptorPlan:
+    """Runtime descriptor plus the metadata needed to model static storage."""
+
+    descriptor: Any
+    physical_index: int
+    total_size: int
+    nodes: Tuple[Tuple[int, int], ...]
+    has_static_storage: bool
+
+
+@dataclass(frozen=True)
+class _StaticDFBPackingResult:
+    """Predicted TT-Metal placement for one static descriptor order."""
+
+    packed_bytes: int
+    maximum_overflow_bytes: int
+    overflow_core: Optional[Tuple[int, int]]
+    required_bytes_on_overflow_core: int
+
+
 def _validate_physical_dfb_config(
     config: PhysicalDFBConfig, physical_index: int
 ) -> None:
@@ -105,6 +128,25 @@ def _validate_physical_dfb_config(
             f"DFB config at physical index {physical_index} has dfb_index "
             f"{config.dfb_index}"
         )
+    allocation_nodes = None
+    if config.allocation_nodes is not None:
+        for node_position, node in enumerate(config.allocation_nodes):
+            if (
+                not isinstance(node, tuple)
+                or len(node) != 2
+                or any(type(coordinate) is not int for coordinate in node)
+                or node[0] < 0
+                or node[1] < 0
+            ):
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] allocation node "
+                    f"{node_position} must be a nonnegative integer (x, y) tuple"
+                )
+        allocation_nodes = set(config.allocation_nodes)
+        if len(allocation_nodes) != len(config.allocation_nodes):
+            raise ValueError(
+                f"DFB[{config.dfb_index}] allocation_nodes contains duplicates"
+            )
     seen_nodes = set()
     for segment_position, segment in enumerate(config.storage_segments):
         if not segment.nodes:
@@ -119,6 +161,15 @@ def _validate_physical_dfb_config(
                     "multiple storage segments"
                 )
             seen_nodes.add(node)
+    if (
+        allocation_nodes is not None
+        and config.storage_segments
+        and seen_nodes != allocation_nodes
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] storage segments must cover its exact "
+            "allocation nodes"
+        )
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
@@ -147,65 +198,87 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     )
 
 
-def _device_l1_cb_usage(
-    device,
-    excluded_l1_buffer_addresses: Sequence[int] = (),
-) -> Tuple[int, Dict[Tuple[int, int], int]]:
-    """Return ``(cb_limit, L1 bytes used per logical (x, y) core)``."""
-    _ensure_ttnn()
-    if ttnn is None:
-        raise RuntimeError("ttnn is not available")
-
-    budget_bytes = ttnn._ttnn.reports.get_device_info(device).cb_limit
-    excluded_addresses = frozenset(
-        int(address) for address in excluded_l1_buffer_addresses
-    )
-    used_bytes: Dict[Tuple[int, int], int] = {}
-    for page in ttnn._ttnn.reports.get_buffer_pages(device):
-        if page.buffer_type != ttnn.BufferType.L1:
-            continue
-        if int(page.address) in excluded_addresses:
-            continue
-        core = (page.core_x, page.core_y)
-        used_bytes[core] = used_bytes.get(core, 0) + page.page_size
-    return budget_bytes, used_bytes
-
-
 def get_min_remaining_l1_for_device(
     device, excluded_l1_buffer_addresses: Sequence[int] = ()
 ):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
     Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
-    Queries ``cb_limit`` (the hardware CB budget) and subtracts the maximum
-    per-core L1 buffer usage reported by the device.
+    TT-Metal allocates tensors from high L1 addresses and static DFBs from the
+    configured L1 allocator base. The usable interval therefore ends at the
+    lowest live tensor page address, not at the total allocated byte count.
 
-    ``get_buffer_pages`` is called on the original device rather than on
-    per-coordinate submeshes because ``create_submesh`` produces a new
-    device view that does not inherit buffer tracking from the parent.
-    For mesh devices this reports allocations for the first physical
-    device, which is representative because tt-lang distributes tensors
-    uniformly across the mesh. If individual physical devices need tracking,
-    ttnn.reports.get_buffer_pages would have to report allocations on the
-    parent mesh instead of the first device within the mesh.
+    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator.
+    TT-Lang's multi-device tensors and runtime resources use common L1
+    addresses across their mesh, so its lowest live page is also a safe lower
+    bound for every physical device.
 
     ``excluded_l1_buffer_addresses`` removes retained compiler-owned buffers
     before computing the per-core maximum. This reconstructs the compilation
     budget without changing the contribution of unrelated allocations.
     """
-    budget_bytes, bytes_per_core = _device_l1_cb_usage(
-        device, excluded_l1_buffer_addresses
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    device_info = ttnn._ttnn.reports.get_device_info(device)
+    static_dfb_base_address = ttnn.get_allocator_base_address(
+        device, ttnn.BufferType.L1
     )
-    max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
-    return max(0, budget_bytes - max_core_bytes)
+    minimum_remaining_bytes = device_info.cb_limit
+    excluded_addresses = frozenset(
+        int(address) for address in excluded_l1_buffer_addresses
+    )
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type != ttnn.BufferType.L1:
+            continue
+        buffer_address = getattr(page, "address", None)
+        if buffer_address is not None and int(buffer_address) in excluded_addresses:
+            continue
+        minimum_remaining_bytes = min(
+            minimum_remaining_bytes,
+            max(0, page.page_address - static_dfb_base_address),
+        )
+    return minimum_remaining_bytes
+
+
+def _requires_global_l1_floor(device) -> bool:
+    get_num_devices = getattr(device, "get_num_devices", None)
+    return get_num_devices is None or int(get_num_devices()) != 1
 
 
 def _get_remaining_l1_by_core_for_device(
     device, cores: set[tuple[int, int]]
 ) -> dict[tuple[int, int], int]:
-    """Return each requested logical core's remaining static DFB budget."""
-    budget_bytes, used_bytes = _device_l1_cb_usage(device)
-    return {core: max(0, budget_bytes - used_bytes.get(core, 0)) for core in cores}
+    """Return safe static DFB budgets for the requested logical cores."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    device_info = ttnn._ttnn.reports.get_device_info(device)
+    static_dfb_base_address = ttnn.get_allocator_base_address(
+        device, ttnn.BufferType.L1
+    )
+    remaining_bytes = {core: device_info.cb_limit for core in cores}
+    minimum_remaining_bytes = device_info.cb_limit
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type != ttnn.BufferType.L1:
+            continue
+        page_remaining_bytes = max(0, page.page_address - static_dfb_base_address)
+        minimum_remaining_bytes = min(minimum_remaining_bytes, page_remaining_bytes)
+        core = (page.core_x, page.core_y)
+        if core in remaining_bytes:
+            remaining_bytes[core] = min(remaining_bytes[core], page_remaining_bytes)
+
+    # Mesh and unrecognized device wrappers cannot prove that one reported
+    # allocator covers every worker. Common allocation addresses make the
+    # reference allocator's lowest live page safe for every worker.
+    if _requires_global_l1_floor(device):
+        remaining_bytes = {
+            core: min(core_remaining_bytes, minimum_remaining_bytes)
+            for core, core_remaining_bytes in remaining_bytes.items()
+        }
+    return remaining_bytes
 
 
 @dataclass
@@ -1585,16 +1658,33 @@ def _align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
 
 
-def _core_range_coordinates(core_ranges: Any) -> Tuple[Tuple[int, int], ...]:
-    """Return the canonical worker coordinates for a semaphore allocation."""
-    return tuple(
-        sorted(
-            (core_x, core_y)
-            for core_range in core_ranges.ranges()
-            for core_y in range(int(core_range.start.y), int(core_range.end.y) + 1)
-            for core_x in range(int(core_range.start.x), int(core_range.end.x) + 1)
-        )
-    )
+def _core_range_coordinates(
+    core_ranges: Any, *, label: str = "core ranges"
+) -> Tuple[Tuple[int, int], ...]:
+    """Expand a CoreRangeSet-like object into canonical logical coordinates."""
+    if core_ranges is None or not hasattr(core_ranges, "ranges"):
+        raise ValueError(f"{label} must be a CoreRangeSet with ranges")
+    ranges = core_ranges.ranges
+    if callable(ranges):
+        ranges = ranges()
+
+    coordinates = set()
+    for core_range in ranges:
+        try:
+            start_x = int(core_range.start.x)
+            start_y = int(core_range.start.y)
+            end_x = int(core_range.end.x)
+            end_y = int(core_range.end.y)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError(f"{label} contains an invalid core range") from error
+        if end_x < start_x or end_y < start_y:
+            raise ValueError(f"{label} contains an inverted core range")
+        for core_y in range(start_y, end_y + 1):
+            for core_x in range(start_x, end_x + 1):
+                coordinates.add((core_x, core_y))
+    if not coordinates:
+        raise ValueError(f"{label} must cover at least one core")
+    return tuple(sorted(coordinates))
 
 
 def _first_device(tensors: List[Any]) -> Any:
@@ -1625,7 +1715,13 @@ def _allocate_l1_sharded_storage_tensor(
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, 32)
     elements_per_core = max(1, aligned_bytes // 4)
-    num_cores = core_ranges.num_cores()
+    if hasattr(core_ranges, "ranges"):
+        num_cores = len(
+            _core_range_coordinates(core_ranges, label="L1 storage core ranges")
+        )
+    else:
+        grid_size = core_ranges.bounding_box().grid_size()
+        num_cores = grid_size.x * grid_size.y
     shard_spec = ttnn.ShardSpec(
         core_ranges,
         (1, elements_per_core),
@@ -1724,6 +1820,9 @@ def build_pipe_computed_address_dfb_tensors(
 
     device = device if device is not None else _first_device(tensors)
     used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
+    program_cores = set(
+        _core_range_coordinates(core_ranges, label="program core ranges")
+    )
     backing_tensors = {}
     for dfb_index in dfb_indices:
         if dfb_index < 0 or dfb_index >= len(cb_configs):
@@ -1733,17 +1832,28 @@ def build_pipe_computed_address_dfb_tensors(
         config = cb_configs[dfb_index]
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, dfb_index)
-        backing_core_ranges = core_ranges
-        if used_by_core is not None:
-            backing_cores = tuple(
-                sorted(
-                    core
-                    for core, used_indices in used_by_core.items()
-                    if dfb_index in used_indices
-                )
+        backing_cores = (
+            set(program_cores)
+            if config.allocation_nodes is None
+            else set(config.allocation_nodes)
+        )
+        outside_program = backing_cores - program_cores
+        if outside_program:
+            raise ValueError(
+                f"DFB[{dfb_index}] allocation nodes {sorted(outside_program)} "
+                "are outside the program grid"
             )
-            if backing_cores:
-                backing_core_ranges = _make_node_core_ranges(backing_cores)
+        if used_by_core is not None:
+            backing_cores.intersection_update(
+                core
+                for core, used_indices in used_by_core.items()
+                if dfb_index in used_indices
+            )
+        if not backing_cores:
+            # The PipeNet ABI requires a receiver address even when analysis
+            # proves that no launch node installs the corresponding descriptor.
+            backing_cores = {min(program_cores, key=lambda core: (core[1], core[0]))}
+        backing_core_ranges = _make_node_core_ranges(tuple(sorted(backing_cores)))
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             backing_core_ranges, allocation.total_size, device
         )
@@ -2052,26 +2162,6 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
     )
 
 
-def _core_range_coordinates(core_ranges: Any, *, label: str) -> set[Tuple[int, int]]:
-    """Expand a CoreRangeSet into logical ``(x, y)`` pairs."""
-    if core_ranges is None:
-        raise ValueError(f"{label} must be a CoreRangeSet")
-    try:
-        cores = ttnn.corerange_to_cores(core_ranges)
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a CoreRangeSet") from exc
-
-    coordinates = set()
-    for core in cores:
-        try:
-            coordinates.add((int(core.x), int(core.y)))
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ValueError(f"{label} contains an invalid core") from exc
-    if not coordinates:
-        raise ValueError(f"{label} must cover at least one core")
-    return coordinates
-
-
 def _used_dfb_indices_by_core(
     kernel_specs: Optional[List[KernelSpec]],
     program_core_ranges: Any,
@@ -2083,8 +2173,8 @@ def _used_dfb_indices_by_core(
     ):
         return None
 
-    program_cores = _core_range_coordinates(
-        program_core_ranges, label="program core ranges"
+    program_cores = set(
+        _core_range_coordinates(program_core_ranges, label="program core ranges")
     )
     used_by_core = {core: set() for core in program_cores}
     all_indices = set(range(num_dfbs))
@@ -2092,8 +2182,10 @@ def _used_dfb_indices_by_core(
         spec_ranges = (
             spec.core_ranges if spec.core_ranges is not None else program_core_ranges
         )
-        spec_cores = _core_range_coordinates(
-            spec_ranges, label=f"kernel spec {spec_index} core ranges"
+        spec_cores = set(
+            _core_range_coordinates(
+                spec_ranges, label=f"kernel spec {spec_index} core ranges"
+            )
         )
         outside = spec_cores - program_cores
         if outside:
@@ -2232,23 +2324,42 @@ def _validate_tensor_backing_aliases(
             bindings.append((config.dfb_index, nodes, absolute_start, absolute_end))
 
 
-def _specialized_dfb_placements(
+def _resolve_dfb_placements(
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
     backing_tensors: Dict[int, Any],
     kernel_specs: Optional[List[KernelSpec]],
 ) -> Optional[List[Dict[Tuple[int, int], Tuple[str, Optional[int]]]]]:
-    """Resolve the storage source for each used ``(DFB, core)`` pair.
+    """Resolve the storage source for each allocated and used DFB/core pair.
 
     A DFB with ``storage_segments`` must cover every core that still uses it.
     """
     used_by_core = _used_dfb_indices_by_core(kernel_specs, core_ranges, len(cb_configs))
-    if used_by_core is None:
+    has_allocation_domains = any(
+        config.allocation_nodes is not None for config in cb_configs
+    )
+    if used_by_core is None and not has_allocation_domains:
         return None
 
-    program_cores = set(used_by_core)
+    program_cores = set(
+        _core_range_coordinates(core_ranges, label="program core ranges")
+    )
+    if used_by_core is None:
+        all_indices = set(range(len(cb_configs)))
+        used_by_core = {core: set(all_indices) for core in program_cores}
     placements = []
     for dfb_index, config in enumerate(cb_configs):
+        allocation_cores = (
+            program_cores
+            if config.allocation_nodes is None
+            else set(config.allocation_nodes)
+        )
+        outside_program = allocation_cores - program_cores
+        if outside_program:
+            raise ValueError(
+                f"DFB[{dfb_index}] allocation nodes {sorted(outside_program)} "
+                "are outside the program grid"
+            )
         candidates: Dict[Tuple[int, int], Tuple[str, Optional[int]]] = {}
         if dfb_index in backing_tensors:
             if config.storage_segments:
@@ -2256,9 +2367,9 @@ def _specialized_dfb_placements(
                     f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
                     "storage with finalized storage segments"
                 )
-            candidates = {core: ("computed", None) for core in program_cores}
+            candidates = {core: ("computed", None) for core in allocation_cores}
         elif not config.storage_segments:
-            candidates = {core: ("static", None) for core in program_cores}
+            candidates = {core: ("static", None) for core in allocation_cores}
         else:
             for segment_index, segment in enumerate(config.storage_segments):
                 source = (
@@ -2307,7 +2418,305 @@ def _cb_format_descriptor(cb_index: int, allocation: _DFBAllocation) -> Any:
     )
 
 
-def _build_specialized_dfb_descriptors(
+def _order_static_dfb_descriptor_plans(
+    descriptor_plans: List[_DFBDescriptorPlan],
+    remaining_bytes_by_core: Dict[Tuple[int, int], int],
+) -> List[_DFBDescriptorPlan]:
+    """Order static descriptors to fit TT-Metal's per-core L1 allocators."""
+    static_plan_indices = tuple(
+        plan_index
+        for plan_index, plan in enumerate(descriptor_plans)
+        if plan.has_static_storage
+    )
+    if not static_plan_indices:
+        return descriptor_plans
+
+    # ProgramDescriptor preserves the singleton CoreRanges produced by
+    # _make_node_core_ranges. TT-Metal keeps one frontier per core and assigns
+    # each descriptor the maximum frontier across its cores.
+    allocator_cores = tuple(
+        sorted(
+            {
+                node
+                for plan_index in static_plan_indices
+                for node in descriptor_plans[plan_index].nodes
+            }
+        )
+    )
+    allocator_index_by_core = {
+        node: allocator_index for allocator_index, node in enumerate(allocator_cores)
+    }
+    allocator_indices_by_plan = {
+        plan_index: tuple(
+            allocator_index_by_core[node] for node in descriptor_plans[plan_index].nodes
+        )
+        for plan_index in static_plan_indices
+    }
+    available_bytes_by_allocator = tuple(
+        remaining_bytes_by_core[node] for node in allocator_cores
+    )
+
+    address_alignment = int(ttnn.get_dram_alignment())
+    if address_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid DFB address alignment")
+
+    def evaluate_order(order: Tuple[int, ...]) -> _StaticDFBPackingResult:
+        allocator_frontiers = [0] * len(allocator_cores)
+        for plan_index in order:
+            plan = descriptor_plans[plan_index]
+            allocator_indices = allocator_indices_by_plan[plan_index]
+            address = _align_up(
+                max(allocator_frontiers[index] for index in allocator_indices),
+                address_alignment,
+            )
+            end_address = address + plan.total_size
+            for allocator_index in allocator_indices:
+                allocator_frontiers[allocator_index] = end_address
+
+        overflow_records = [
+            (
+                frontier - available_bytes,
+                frontier,
+                allocator_cores[allocator_index],
+            )
+            for allocator_index, (frontier, available_bytes) in enumerate(
+                zip(allocator_frontiers, available_bytes_by_allocator)
+            )
+        ]
+        maximum_overflow, required_bytes, overflow_core = max(
+            overflow_records, default=(0, 0, None)
+        )
+        maximum_overflow = max(0, maximum_overflow)
+        return _StaticDFBPackingResult(
+            packed_bytes=max(allocator_frontiers, default=0),
+            maximum_overflow_bytes=maximum_overflow,
+            overflow_core=overflow_core if maximum_overflow else None,
+            required_bytes_on_overflow_core=(required_bytes if maximum_overflow else 0),
+        )
+
+    def packing_score(result: _StaticDFBPackingResult) -> Tuple[int, int]:
+        return result.maximum_overflow_bytes, result.packed_bytes
+
+    current_order = static_plan_indices
+    current_result = evaluate_order(current_order)
+    if current_result.maximum_overflow_bytes == 0:
+        return descriptor_plans
+
+    candidate_orders = [
+        tuple(
+            sorted(
+                static_plan_indices,
+                key=lambda plan_index: (
+                    len(descriptor_plans[plan_index].nodes),
+                    descriptor_plans[plan_index].physical_index,
+                    plan_index,
+                ),
+            )
+        ),
+        tuple(
+            sorted(
+                static_plan_indices,
+                key=lambda plan_index: (
+                    -len(descriptor_plans[plan_index].nodes),
+                    descriptor_plans[plan_index].physical_index,
+                    plan_index,
+                ),
+            )
+        ),
+    ]
+    evaluated_candidates = [
+        (packing_score(current_result), current_order, current_result)
+    ]
+    for candidate_order in dict.fromkeys(candidate_orders):
+        candidate_result = evaluate_order(candidate_order)
+        evaluated_candidates.append(
+            (packing_score(candidate_result), candidate_order, candidate_result)
+        )
+    current_score, current_order, current_result = min(evaluated_candidates)
+
+    while current_score[0] > 0:
+        next_candidate = None
+        for first_position in range(len(current_order)):
+            for second_position in range(first_position + 1, len(current_order)):
+                candidate_order_list = list(current_order)
+                (
+                    candidate_order_list[first_position],
+                    candidate_order_list[second_position],
+                ) = (
+                    candidate_order_list[second_position],
+                    candidate_order_list[first_position],
+                )
+                candidate_order = tuple(candidate_order_list)
+                candidate_result = evaluate_order(candidate_order)
+                candidate_score = packing_score(candidate_result)
+                if candidate_score >= current_score:
+                    continue
+                candidate = (candidate_score, candidate_order, candidate_result)
+                if next_candidate is None or candidate < next_candidate:
+                    next_candidate = candidate
+        if next_candidate is None:
+            break
+        current_score, current_order, current_result = next_candidate
+
+    def apply_order(order: Tuple[int, ...]) -> List[_DFBDescriptorPlan]:
+        ordered_plans = list(descriptor_plans)
+        for destination_index, source_index in zip(static_plan_indices, order):
+            ordered_plans[destination_index] = descriptor_plans[source_index]
+        return ordered_plans
+
+    if current_score[0] == 0:
+        return apply_order(current_order)
+
+    search_state_count = 0
+    search_limit_reached = False
+    nondominated_frontiers: Dict[int, List[Tuple[int, ...]]] = {}
+    plan_position_by_index = {
+        plan_index: plan_position
+        for plan_position, plan_index in enumerate(static_plan_indices)
+    }
+    plan_index_by_position = tuple(static_plan_indices)
+    allocator_indices_by_position = tuple(
+        allocator_indices_by_plan[plan_index] for plan_index in static_plan_indices
+    )
+    plan_sizes = tuple(
+        descriptor_plans[plan_index].total_size for plan_index in static_plan_indices
+    )
+    preferred_positions = tuple(
+        plan_position_by_index[plan_index] for plan_index in current_order
+    )
+    preferred_rank = {
+        plan_position: rank for rank, plan_position in enumerate(preferred_positions)
+    }
+
+    def remaining_allocation_exceeds_budget(
+        remaining_mask: int, allocator_frontiers: Tuple[int, ...]
+    ) -> bool:
+        for allocator_index, available_bytes in enumerate(available_bytes_by_allocator):
+            remaining_sizes = [
+                plan_sizes[plan_position]
+                for plan_position in range(len(plan_sizes))
+                if remaining_mask & (1 << plan_position)
+                and allocator_index in allocator_indices_by_position[plan_position]
+            ]
+            if not remaining_sizes:
+                continue
+            aligned_sizes = [
+                _align_up(size, address_alignment) for size in remaining_sizes
+            ]
+            maximum_final_padding = max(
+                aligned_size - size
+                for aligned_size, size in zip(aligned_sizes, remaining_sizes)
+            )
+            minimum_final_frontier = (
+                _align_up(allocator_frontiers[allocator_index], address_alignment)
+                + sum(aligned_sizes)
+                - maximum_final_padding
+            )
+            if minimum_final_frontier > available_bytes:
+                return True
+        return False
+
+    def is_dominated(remaining_mask: int, allocator_frontiers: Tuple[int, ...]) -> bool:
+        existing_frontiers = nondominated_frontiers.setdefault(remaining_mask, [])
+        if any(
+            all(
+                existing <= current
+                for existing, current in zip(existing_state, allocator_frontiers)
+            )
+            for existing_state in existing_frontiers
+        ):
+            return True
+        existing_frontiers[:] = [
+            existing_state
+            for existing_state in existing_frontiers
+            if not all(
+                current <= existing
+                for current, existing in zip(allocator_frontiers, existing_state)
+            )
+        ]
+        existing_frontiers.append(allocator_frontiers)
+        return False
+
+    def find_fitting_order(
+        remaining_mask: int, allocator_frontiers: Tuple[int, ...]
+    ) -> Optional[Tuple[int, ...]]:
+        nonlocal search_limit_reached, search_state_count
+        if remaining_mask == 0:
+            return ()
+        if search_state_count >= _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT:
+            search_limit_reached = True
+            return None
+        search_state_count += 1
+        if is_dominated(remaining_mask, allocator_frontiers):
+            return None
+        if remaining_allocation_exceeds_budget(remaining_mask, allocator_frontiers):
+            return None
+
+        candidate_positions = [
+            plan_position
+            for plan_position in preferred_positions
+            if remaining_mask & (1 << plan_position)
+        ]
+        candidate_positions.sort(
+            key=lambda plan_position: (
+                -len(allocator_indices_by_position[plan_position]),
+                preferred_rank[plan_position],
+            )
+        )
+        seen_equivalent_plans = set()
+        for plan_position in candidate_positions:
+            allocator_indices = allocator_indices_by_position[plan_position]
+            equivalent_plan = (allocator_indices, plan_sizes[plan_position])
+            if equivalent_plan in seen_equivalent_plans:
+                continue
+            seen_equivalent_plans.add(equivalent_plan)
+            address = _align_up(
+                max(allocator_frontiers[index] for index in allocator_indices),
+                address_alignment,
+            )
+            end_address = address + plan_sizes[plan_position]
+            if any(
+                end_address > available_bytes_by_allocator[allocator_index]
+                for allocator_index in allocator_indices
+            ):
+                continue
+            next_frontiers = list(allocator_frontiers)
+            for allocator_index in allocator_indices:
+                next_frontiers[allocator_index] = end_address
+            suffix = find_fitting_order(
+                remaining_mask & ~(1 << plan_position), tuple(next_frontiers)
+            )
+            if suffix is not None:
+                return (plan_index_by_position[plan_position],) + suffix
+            if search_limit_reached:
+                return None
+        return None
+
+    fitting_order = find_fitting_order(
+        (1 << len(static_plan_indices)) - 1,
+        (0,) * len(allocator_cores),
+    )
+    if fitting_order is not None:
+        return apply_order(fitting_order)
+
+    overflow_core = current_result.overflow_core
+    assert overflow_core is not None
+    required_bytes = current_result.required_bytes_on_overflow_core
+    available_bytes = remaining_bytes_by_core[overflow_core]
+    search_context = (
+        "Static DFB descriptor packing reached its "
+        f"{_STATIC_DFB_PACKING_SEARCH_STATE_LIMIT}-state search limit;"
+        if search_limit_reached
+        else "No static DFB descriptor order fits;"
+    )
+    raise ValueError(
+        f"{search_context} the best candidate requires {required_bytes} bytes "
+        f"on core {overflow_core}, where {available_bytes} bytes remain, and "
+        f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
+    )
+
+
+def _build_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     allocations: List[_DFBAllocation],
@@ -2354,56 +2763,55 @@ def _build_specialized_dfb_descriptors(
             + "\n  hint: reduce DFB shapes or block_count."
         )
 
-    # Every descriptor uses one of these disjoint partitions. Equal ranges
-    # share TT-Metal's allocation cursor; disjoint ranges cannot overlap.
-    cores_by_signature: Dict[
-        Tuple[Optional[Tuple[str, Optional[int]]], ...],
-        set[Tuple[int, int]],
-    ] = {}
-    for core in all_cores:
-        signature = tuple(placement.get(core) for placement in placements)
-        cores_by_signature.setdefault(signature, set()).add(core)
-
-    descriptors = []
-    for signature, partition_cores in cores_by_signature.items():
-        partition_ranges = _make_node_core_ranges(tuple(sorted(partition_cores)))
-        for dfb_index, source in enumerate(signature):
-            if source is None:
-                continue
-            kind, segment_index = source
+    descriptor_plans = []
+    for dfb_index, placement in enumerate(placements):
+        cores_by_source: Dict[Tuple[str, Optional[int]], set[Tuple[int, int]]] = {}
+        for core, source in placement.items():
+            cores_by_source.setdefault(source, set()).add(core)
+        for source, source_cores in cores_by_source.items():
+            storage_kind, segment_index = source
             allocation = allocations[dfb_index]
-            cb_format = _cb_format_descriptor(dfb_index, allocation)
-            if kind == "tensor":
+            format_descriptor = _dfb_format_descriptor(dfb_index, allocation)
+            source_ranges = _make_node_core_ranges(tuple(sorted(source_cores)))
+            if storage_kind == "tensor":
                 assert segment_index is not None
                 segment = cb_configs[dfb_index].storage_segments[segment_index]
                 tensor_index = segment.tensor_index
                 assert tensor_index is not None
-                descriptors.append(
-                    ttnn.cb_descriptor_from_sharded_tensor(
-                        dfb_index,
-                        tensors[tensor_index],
-                        address_offset=segment.byte_offset,
-                        total_size=allocation.total_size,
-                        core_ranges=partition_ranges,
-                    )
-                )
-                continue
-
-            descriptor = ttnn.CBDescriptor(
-                total_size=allocation.total_size,
-                core_ranges=partition_ranges,
-                format_descriptors=[cb_format],
-            )
-            if kind == "computed":
-                backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                     dfb_index,
-                    backing_tensors[dfb_index],
+                    tensors[tensor_index],
+                    address_offset=segment.byte_offset,
                     total_size=allocation.total_size,
-                    core_ranges=partition_ranges,
+                    core_ranges=source_ranges,
                 )
-                descriptor.set_buffer_from_cb(backing_descriptor)
-            descriptors.append(descriptor)
-    return descriptors
+            else:
+                descriptor = ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=source_ranges,
+                    format_descriptors=[format_descriptor],
+                )
+                if storage_kind == "computed":
+                    backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                        dfb_index,
+                        backing_tensors[dfb_index],
+                        total_size=allocation.total_size,
+                        core_ranges=source_ranges,
+                    )
+                    descriptor.set_buffer_from_cb(backing_descriptor)
+            descriptor_plans.append(
+                _DFBDescriptorPlan(
+                    descriptor=descriptor,
+                    physical_index=dfb_index,
+                    total_size=allocation.total_size,
+                    nodes=tuple(sorted(source_cores)),
+                    has_static_storage=storage_kind == "static",
+                )
+            )
+    descriptor_plans = _order_static_dfb_descriptor_plans(
+        descriptor_plans, remaining_bytes_by_core
+    )
+    return [plan.descriptor for plan in descriptor_plans]
 
 
 def build_cb_descriptors(
@@ -2475,7 +2883,7 @@ def build_cb_descriptors(
                 continue
             break
 
-    placements = _specialized_dfb_placements(
+    placements = _resolve_dfb_placements(
         cb_configs, core_ranges, backing_tensors, kernel_specs
     )
     if placements is not None:
@@ -2487,7 +2895,7 @@ def build_cb_descriptors(
             if device is not None
             else {core: DEFAULT_L1_CB_BUDGET_BYTES for core in placement_cores}
         )
-        return _build_specialized_dfb_descriptors(
+        return _build_dfb_descriptors(
             tensors,
             cb_configs,
             allocations,
@@ -3313,7 +3721,6 @@ def emit_runner_source(
     lines.append("    KernelSpec,")
     lines.append("    MeshProgramPlacement,")
     lines.append("    PipeGlobalSemaphoreCache,")
-    lines.append("    KernelSpec,")
     lines.append("    run_kernel_on_device,")
     lines.append(")")
     lines.append("")
@@ -3424,6 +3831,8 @@ def emit_runner_source(
         lines.append(f"        block_count={config.block_count},")
         lines.append(f"        page_size={config.page_size},")
         lines.append(f"        tile={config.tile!r},")
+        if config.allocation_nodes is not None:
+            lines.append(f"        allocation_nodes={config.allocation_nodes!r},")
         if config.storage_segments:
             lines.append("        storage_segments=(")
             for segment in config.storage_segments:

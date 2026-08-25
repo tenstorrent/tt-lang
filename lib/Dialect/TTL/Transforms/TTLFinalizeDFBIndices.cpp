@@ -75,6 +75,18 @@ collectStaticConfigurationConflicts(
   return conflicts;
 }
 
+static ArrayAttr buildLaunchNodeArray(OpBuilder &builder,
+                                      const LaunchNodeDomain &domain) {
+  assert(domain.known && "runtime metadata requires an exact launch domain");
+  SmallVector<Attribute> nodeAttributes;
+  for (LaunchNodeCoord node : domain.nodes) {
+    nodeAttributes.push_back(
+        builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
+                              builder.getI64IntegerAttr(node.y)}));
+  }
+  return builder.getArrayAttr(nodeAttributes);
+}
+
 /// Materializes decisions already validated by physical allocation analysis.
 static void
 applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
@@ -118,18 +130,17 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
         "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
+    if (descriptor.allocationDomain.known) {
+      entryAttributes.push_back(builder.getNamedAttr(
+          "allocation_nodes",
+          buildLaunchNodeArray(builder, descriptor.allocationDomain)));
+    }
     SmallVector<Attribute> storageSegmentAttributes;
     for (const DFBPhysicalStorageSegment &segment :
          descriptor.storageSegments) {
-      SmallVector<Attribute> nodeAttributes;
-      for (LaunchNodeCoord node : segment.launchDomain.nodes) {
-        nodeAttributes.push_back(
-            builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
-                                  builder.getI64IntegerAttr(node.y)}));
-      }
       SmallVector<NamedAttribute> segmentAttributes;
-      segmentAttributes.push_back(
-          builder.getNamedAttr("nodes", builder.getArrayAttr(nodeAttributes)));
+      segmentAttributes.push_back(builder.getNamedAttr(
+          "nodes", buildLaunchNodeArray(builder, segment.launchDomain)));
       if (segment.tensorBacking) {
         segmentAttributes.push_back(
             builder.getNamedAttr("tensor_backing", segment.tensorBacking));

@@ -3,7 +3,7 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefixes=COMMON,DISTINCT
 // RUN: ttlang-opt %s --split-input-file --ttl-validate-cb-budget='l1-budget-override=1' -o /dev/null
 
-// COMMON: module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_segments = [{nodes = {{\[\[0, 0\], \[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// COMMON: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_segments = [{nodes = {{\[\[0, 0\], \[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>}]}], ttl.launch_grid = array<i64: 2, 1>}
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMMON-LABEL: func.func @publish_input
   func.func @publish_input()
@@ -21,12 +21,12 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // DFBs with different tensor backing may share one hardware index when their
 // exact launch-node domains are disjoint.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}, {nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// REUSE: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}, {nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
 // REUSE-LABEL: func.func @per_node_backing
 // REUSE: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {{.*}}tensor_index = 0
 // REUSE: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {{.*}}tensor_index = 1
 
-// DISTINCT: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// DISTINCT: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}, {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
 // DISTINCT-LABEL: func.func @per_node_backing
 // DISTINCT: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {{.*}}tensor_index = 0
 // DISTINCT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 1, block_count = 2} {{.*}}tensor_index = 1
