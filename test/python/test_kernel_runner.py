@@ -400,6 +400,13 @@ class _FakeTTNN:
         def bounding_box(self):
             return _FakeBoundingBox(self._ranges)
 
+        def contains(self, coordinate):
+            return any(
+                core_range.start.x <= coordinate.x <= core_range.end.x
+                and core_range.start.y <= coordinate.y <= core_range.end.y
+                for core_range in self._ranges
+            )
+
     @staticmethod
     def corerange_to_cores(core_range_set, max_cores=None, row_wise=False):
         cores = []
@@ -417,13 +424,6 @@ class _FakeTTNN:
             if max_cores is not None and len(cores) >= max_cores:
                 return cores[:max_cores]
         return cores
-
-        def contains(self, coordinate):
-            return any(
-                core_range.start.x <= coordinate.x <= core_range.end.x
-                and core_range.start.y <= coordinate.y <= core_range.end.y
-                for core_range in self.ranges
-            )
 
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
@@ -444,11 +444,6 @@ class _FakeTTNN:
     @staticmethod
     def get_dram_alignment():
         return 64
-
-    @staticmethod
-    def corerange_to_cores(_core_ranges, row_wise=True):
-        assert row_wise
-        return [_FakeTTNN.CoreCoord(0, 0)]
 
     @staticmethod
     def generic_op(tensors, program):
