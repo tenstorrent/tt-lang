@@ -1,4 +1,4 @@
-// Verifies BFP subtiles align exponent bytes before DFB budget accounting.
+// Summary: Verifies BFP subtiles align exponent bytes before DFB budget accounting.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=255})'
 
 // The target allocator rounds the 32-, 24-, and 80-byte DFBs to 64, 64, and

@@ -144,7 +144,7 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
                             std::uint64_t physicalTileCount,
                             std::uint64_t initialOffset = 0);
 
-/// Protocol state proved for one access interval between synchronized resets.
+/// Protocol state proved for one access interval between lifecycle boundaries.
 struct DFBLifecycleEpoch {
   SmallVector<unsigned> accessOccurrenceIndices;
   SmallVector<unsigned> earliestEntryEvents;
@@ -154,7 +154,11 @@ struct DFBLifecycleEpoch {
   SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  /// Configuration epochs in which storage retains this lifecycle's state.
+  SmallVector<std::optional<int64_t>> activeConfigurationEpochs;
+  std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
+  std::optional<int64_t> terminalReconfigurationOrdinal;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
 };
@@ -196,7 +200,7 @@ struct DFBPerNodeLifetime {
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   bool terminalStateCanonical = false;
-  SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
+  SmallVector<DFBLifecycleEpoch, 0> epochs;
   DFBQuiescenceProof quiescence;
 };
 
@@ -258,6 +262,11 @@ public:
     return resetAllocationConflicts;
   }
 
+  /// Returns reconfiguration boundary identifiers in proved execution order.
+  ArrayRef<int64_t> getReconfigurationBoundaryOrdinals() const {
+    return reconfigurationBoundaryOrdinals;
+  }
+
   /// Returns true when one indexed lifetime ends before another on `node`.
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
@@ -281,6 +290,7 @@ private:
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   bool exactLaunchGrid = false;
   SmallVector<LaunchNodeCoord> launchNodes;
+  SmallVector<int64_t> reconfigurationBoundaryOrdinals;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   SmallVector<DFBResetAllocationConflict> resetAllocationConflicts;

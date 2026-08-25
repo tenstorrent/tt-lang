@@ -135,6 +135,13 @@ The factory runs for each device execution even when its structural result
 selects an existing cached program. This preserves TT-Metal's distinction
 between stable program structure and current dispatch values.
 
+Per-core `CoreRuntimeArgs` values occupy the portable-resource suffix of the
+unique runtime-argument vector. Synchronized DFB reconfiguration owns a prefix
+containing one configuration address per boundary. The compiler defines
+`TTLANG_PORTABLE_RUNTIME_ARG_BASE` as the first portable-resource index, and
+external kernels must use that definition when loading caller-supplied words.
+The definition name is reserved.
+
 The [operation runtime resources reference](../sphinx/reference/operation-runtime-resources.md)
 defines the callback signature, public records, and usage example.
 

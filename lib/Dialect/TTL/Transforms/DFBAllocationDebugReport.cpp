@@ -224,11 +224,11 @@ static void printTransactions(llvm::raw_ostream &output,
   }
 }
 
-static void printResetEpochs(llvm::raw_ostream &output,
-                             const DFBPerNodeLifetime &lifetime) {
+static void printLifecycleEpochs(llvm::raw_ostream &output,
+                                 const DFBPerNodeLifetime &lifetime) {
   output << '[';
   llvm::interleaveComma(
-      lifetime.resetEpochs, output, [&](const DFBLifecycleEpoch &epoch) {
+      lifetime.epochs, output, [&](const DFBLifecycleEpoch &epoch) {
         output << "{accesses=";
         printValues(output, epoch.accessOccurrenceIndices);
         output << ",transactions=";
@@ -244,9 +244,32 @@ static void printResetEpochs(llvm::raw_ostream &output,
         printPointerOwner(output, epoch.writePointerOwner);
         output << ",read_owner=";
         printPointerOwner(output, epoch.readPointerOwner);
+        output << ",entry_reconfiguration=";
+        if (epoch.entryReconfigurationOrdinal) {
+          output << *epoch.entryReconfigurationOrdinal;
+        } else {
+          output << "initial";
+        }
+        output << ",active_configurations=[";
+        llvm::interleaveComma(
+            epoch.activeConfigurationEpochs, output,
+            [&](std::optional<int64_t> reconfigurationOrdinal) {
+              if (reconfigurationOrdinal) {
+                output << *reconfigurationOrdinal;
+              } else {
+                output << "initial";
+              }
+            });
+        output << ']';
         output << ",terminal_reset=";
         if (epoch.terminalResetOrdinal) {
           output << *epoch.terminalResetOrdinal;
+        } else {
+          output << "none";
+        }
+        output << ",terminal_reconfiguration=";
+        if (epoch.terminalReconfigurationOrdinal) {
+          output << *epoch.terminalReconfigurationOrdinal;
         } else {
           output << "none";
         }
@@ -257,8 +280,8 @@ static void printResetEpochs(llvm::raw_ostream &output,
   output << ']';
 }
 
-static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
-                                ArrayRef<DFBLifecycleEpoch> rhs) {
+static bool hasEqualLifecycleEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
+                                    ArrayRef<DFBLifecycleEpoch> rhs) {
   return llvm::equal(
       lhs, rhs,
       [](const DFBLifecycleEpoch &lhsEpoch, const DFBLifecycleEpoch &rhsEpoch) {
@@ -269,7 +292,13 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.readCursorRuns == rhsEpoch.readCursorRuns &&
                lhsEpoch.writePointerOwner == rhsEpoch.writePointerOwner &&
                lhsEpoch.readPointerOwner == rhsEpoch.readPointerOwner &&
+               lhsEpoch.activeConfigurationEpochs ==
+                   rhsEpoch.activeConfigurationEpochs &&
+               lhsEpoch.entryReconfigurationOrdinal ==
+                   rhsEpoch.entryReconfigurationOrdinal &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
+               lhsEpoch.terminalReconfigurationOrdinal ==
+                   rhsEpoch.terminalReconfigurationOrdinal &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
@@ -297,7 +326,7 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
-      !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs) ||
+      !hasEqualLifecycleEpochs(lhs.epochs, rhs.epochs) ||
       !(lhsDiagnostics == rhsDiagnostics)) {
     return false;
   }
@@ -322,9 +351,9 @@ printLifetimeFacts(llvm::raw_ostream &output,
   printValues(output, diagnostics.earliestAccessOccurrenceIndices);
   output << " terminal_accesses=";
   printValues(output, diagnostics.terminalAccessOccurrenceIndices);
-  if (!lifetime.resetEpochs.empty()) {
-    output << " reset_epochs=";
-    printResetEpochs(output, lifetime);
+  if (!lifetime.epochs.empty()) {
+    output << " epochs=";
+    printLifecycleEpochs(output, lifetime);
   }
 }
 

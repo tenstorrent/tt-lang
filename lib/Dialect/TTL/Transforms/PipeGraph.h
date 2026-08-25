@@ -235,6 +235,7 @@ struct ReceiverDFBInfo {
   int64_t dfbIndex;
   int64_t dfbId;
   CircularBufferType dfbType;
+  bool isTensorBacked;
   bool hasStaticTileOffset;
   int64_t staticTileOffset;
   int64_t receiverSlotSpanBlocks;

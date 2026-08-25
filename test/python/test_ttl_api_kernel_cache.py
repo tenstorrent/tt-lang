@@ -338,8 +338,11 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     events = []
 
     class LifetimeOwner:
+        def __init__(self, name):
+            self.name = name
+
         def __del__(self):
-            events.append("release")
+            events.append(f"release:{self.name}")
 
     class ResourceCompiledKernel:
         all_source_lines = {}
@@ -350,7 +353,10 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
         def __call__(self, *_runtime_args):
             self.runtime_resource_cache.compatibility_key = ("resources",)
             self.runtime_resource_cache.device = "device"
-            self.runtime_resource_cache.pipe_resources = LifetimeOwner()
+            self.runtime_resource_cache.pipe_resources = LifetimeOwner("pipe")
+            self.runtime_resource_cache.reconfiguration_resources = LifetimeOwner(
+                "reconfiguration"
+            )
             return None
 
     def compile_kernel(
@@ -402,7 +408,11 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     gc.collect()
 
     assert wrapper_reference() is None
-    assert events == ["synchronize:device", "release"]
+    assert events == [
+        "synchronize:device",
+        "release:pipe",
+        "release:reconfiguration",
+    ]
 
 
 def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypatch):
@@ -484,6 +494,38 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
     kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
     kernel_runner.release_cached_runtime_resources(runtime_resource_cache)
     assert events == ["synchronize", "cleanup-sync", "release"]
+
+
+def test_runtime_resource_finalizer_retains_owners_when_warning_fails(monkeypatch):
+    runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resources",), device="device", pipe_resources=object()
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "ttnn",
+        type(
+            "FakeTTNN",
+            (),
+            {
+                "synchronize_device": staticmethod(
+                    lambda _device: (_ for _ in ()).throw(KeyboardInterrupt())
+                )
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        kernel_runner.warnings,
+        "warn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("warning")),
+    )
+
+    kernel_runner.finalize_runtime_resource_cache(runtime_resource_cache)
+
+    assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
+    kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    runtime_resource_cache.compatibility_key = None
+    runtime_resource_cache.device = None
+    runtime_resource_cache.pipe_resources = None
 
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
@@ -637,7 +679,7 @@ def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
     monkeypatch.setattr(
         ttl_api,
         "_resolve_l1_budget",
-        lambda runtime_args, compiler_options: next(budgets),
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
     )
 
     @ttl_api.operation(grid=(1, 1))

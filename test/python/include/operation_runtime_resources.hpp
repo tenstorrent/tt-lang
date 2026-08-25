@@ -7,10 +7,15 @@
 #include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
 
+#ifndef TTLANG_PORTABLE_RUNTIME_ARG_BASE
+#define TTLANG_PORTABLE_RUNTIME_ARG_BASE 0
+#endif
+
 inline void write_operation_runtime_value(uint32_t outputDfb) {
-  uint32_t outputValue = get_arg_val<uint32_t>(0);
-  const uint32_t semaphoreId = get_arg_val<uint32_t>(1);
-  const uint32_t generation = get_arg_val<uint32_t>(2);
+  constexpr uint32_t portableArgBase = TTLANG_PORTABLE_RUNTIME_ARG_BASE;
+  uint32_t outputValue = get_arg_val<uint32_t>(portableArgBase);
+  const uint32_t semaphoreId = get_arg_val<uint32_t>(portableArgBase + 1);
+  const uint32_t generation = get_arg_val<uint32_t>(portableArgBase + 2);
   auto *semaphore = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(
       get_semaphore(semaphoreId));
 

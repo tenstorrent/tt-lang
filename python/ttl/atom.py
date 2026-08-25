@@ -69,6 +69,11 @@ from .dfb_allocation_group import (
     _dfb_allocation_group_topology,
     make_dfb_allocation_group,
 )
+from .dfb_reconfiguration import (
+    DFBReconfiguration,
+    _bind_dfb_reconfigurations,
+    _dfb_reconfiguration_topology,
+)
 from .dataflow_buffer import (
     DataflowBuffer,
     _reset_cb_counter,
@@ -221,6 +226,7 @@ class _AtomSpec:
     allocation_groups: Dict[str, DFBAllocationGroup]
     dfb_resets: Dict[str, DFBReset]
     fabric_manager_claims: Dict[str, FabricManagerClaim]
+    dfb_reconfigurations: Dict[str, DFBReconfiguration]
 
 
 def _has_explicit_kernels(fn: Callable) -> bool:
@@ -292,6 +298,7 @@ def _build_atom_spec(
         inlined_allocation_groups,
         inlined_dfb_resets,
         inlined_fabric_manager_claims,
+        inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
@@ -312,6 +319,9 @@ def _build_atom_spec(
     dfb_resets: Dict[str, DFBReset] = dict(inlined_dfb_resets)
     fabric_manager_claims: Dict[str, FabricManagerClaim] = dict(
         inlined_fabric_manager_claims
+    )
+    dfb_reconfigurations: Dict[str, DFBReconfiguration] = dict(
+        inlined_dfb_reconfigurations
     )
     captured_logical_kernels: Dict[str, Kernel] = {}
     captured_names = sorted(loaded_names & captured_values.keys())
@@ -354,6 +364,13 @@ def _build_atom_spec(
         elif isinstance(value, FabricManagerClaim):
             if not any(value is claim for claim in fabric_manager_claims.values()):
                 fabric_manager_claims[capture_name] = value
+        elif isinstance(value, DFBReconfiguration):
+            if capture_name in closure_values.globals:
+                raise ValueError(
+                    f"@ttl.operation {name!r}: DFBReconfiguration "
+                    f"{capture_name!r} must be created by an enclosing factory"
+                )
+            dfb_reconfigurations[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -386,9 +403,9 @@ def _build_atom_spec(
         operation_identity = (
             f"{operation_identity}[dispatch_conditions={topology_digest}]"
         )
-    reset_kernels = dict(logical_kernels)
-    reset_kernels.update(captured_logical_kernels)
-    reset_topology = _dfb_reset_topology(dfb_resets, reset_kernels)
+    synchronization_kernels = dict(logical_kernels)
+    synchronization_kernels.update(captured_logical_kernels)
+    reset_topology = _dfb_reset_topology(dfb_resets, synchronization_kernels)
     if reset_topology:
         encoded_reset_topology = ";".join(
             f"{ordinal}:"
@@ -402,6 +419,25 @@ def _build_atom_spec(
             encoded_reset_topology.encode("utf-8")
         ).hexdigest()[:16]
         operation_identity = f"{operation_identity}[dfb_resets={reset_topology_digest}]"
+    reconfiguration_topology = _dfb_reconfiguration_topology(
+        dfb_reconfigurations, synchronization_kernels
+    )
+    if reconfiguration_topology:
+        encoded_reconfiguration_topology = ";".join(
+            f"{ordinal}:"
+            + ",".join(
+                f"{participant_kind}:{participant_identity}"
+                for participant_kind, participant_identity in participants
+            )
+            for ordinal, participants in reconfiguration_topology
+        )
+        reconfiguration_topology_digest = hashlib.sha256(
+            encoded_reconfiguration_topology.encode("utf-8")
+        ).hexdigest()[:16]
+        operation_identity = (
+            f"{operation_identity}"
+            f"[dfb_reconfigurations={reconfiguration_topology_digest}]"
+        )
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
     if bind_fabric_manager_claims:
@@ -420,6 +456,7 @@ def _build_atom_spec(
     frozen_scope.update(allocation_groups)
     frozen_scope.update(dfb_resets)
     frozen_scope.update(fabric_manager_claims)
+    frozen_scope.update(dfb_reconfigurations)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -441,6 +478,7 @@ def _build_atom_spec(
         allocation_groups=allocation_groups,
         dfb_resets=dfb_resets,
         fabric_manager_claims=fabric_manager_claims,
+        dfb_reconfigurations=dfb_reconfigurations,
     )
 
 
@@ -694,11 +732,13 @@ def _compile_atom(
     bound_dispatch_conditions = _bind_dispatch_conditions(spec.dispatch_conditions)
     bound_allocation_groups = _bind_dfb_allocation_groups(spec.allocation_groups)
     bound_dfb_resets = _bind_dfb_resets(spec.dfb_resets)
+    bound_dfb_reconfigurations = _bind_dfb_reconfigurations(spec.dfb_reconfigurations)
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(logical_kernels)
     eval_scope.update(bound_dispatch_conditions)
     eval_scope.update(bound_allocation_groups)
     eval_scope.update(bound_dfb_resets)
+    eval_scope.update(bound_dfb_reconfigurations)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -772,6 +812,7 @@ def _compile_atom(
     captures.update(bound_dispatch_conditions)
     captures.update(bound_dfb_resets)
     captures.update(spec.fabric_manager_claims)
+    captures.update(bound_dfb_reconfigurations)
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.
@@ -856,7 +897,7 @@ def _compile_unified_operation(
         compiler_options=compiler_options,
         device_domain=decorator_options["device_domain"],
         l1_budget_override=l1_budget_override,
-        runtime_resource_factory=decorator_options["runtime_resource_factory"],
+        runtime_resource_factory=decorator_options.get("runtime_resource_factory"),
         runtime_resource_cache=runtime_resource_cache,
     )
 
@@ -970,14 +1011,29 @@ def operation(
 
     def _decorator(fn):
         validate_operation_interface(fn)
-        global_captures = inspect.getclosurevars(fn).globals
-        for name, value in sorted(global_captures.items()):
-            if isinstance(value, (DispatchCondition, DFBAllocationGroup, DFBReset)):
-                raise ValueError(
-                    f"@ttl.operation {fn.__name__!r}: "
-                    f"{type(value).__name__} {name!r} must be created by an "
-                    "enclosing factory"
-                )
+        function_definition = parse_function_definition(fn)
+        if function_definition is not None:
+            loaded_names = {
+                node.id
+                for node in ast.walk(function_definition)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            for name in sorted(loaded_names):
+                value = fn.__globals__.get(name)
+                if isinstance(
+                    value,
+                    (
+                        DispatchCondition,
+                        DFBAllocationGroup,
+                        DFBReset,
+                        DFBReconfiguration,
+                    ),
+                ):
+                    raise ValueError(
+                        f"@ttl.operation {fn.__name__!r}: "
+                        f"{type(value).__name__} {name!r} must be created by "
+                        "an enclosing factory"
+                    )
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
             prepare_call = functools.partial(_canonical_tensor_args, fn)
