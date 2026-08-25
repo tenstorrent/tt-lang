@@ -56,17 +56,17 @@ synchronized_reset_operation = make_reset_operation()
 # One source call is replicated to exactly its three logical-kernel
 # participants. Participant representation is canonical despite source order.
 # INITIAL-LABEL: func.func @synchronized_reset_operation__trisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "all_reset__participant_0"
-# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "all_reset__participant_0"
-# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "all_reset__participant_0"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
 # INITIAL-LABEL: func.func @synchronized_reset_operation__ncrisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "all_reset__participant_1"
-# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "all_reset__participant_0"
-# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "all_reset__participant_0"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "dfb_reset_participant_data_movement_0_1_0"
+# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
 # INITIAL-LABEL: func.func @synchronized_reset_operation__brisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "all_reset__participant_2"
-# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "all_reset__participant_0"
-# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "all_reset__participant_0"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "dfb_reset_participant_data_movement_0_1_1"
+# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
 
 # The built-in lowering supplies the shared state address and physical-index
 # masks; no user reset helper is required.
