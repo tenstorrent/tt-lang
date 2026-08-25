@@ -1811,15 +1811,22 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       declarations and identity-preserving casts
 
   for each logical DFB pair A, B:
-    add descriptor mismatch if A.type != B.type
+    add descriptor mismatch if A.type != B.type, except for members of one
+        explicit allocation group without opaque external access
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
-      add access-completion-not-proven conflict unless both node lifetimes are
-        proven
-      add transaction conflict unless their transaction tile-count sequences match
-      add pointer-owner conflict unless read and write owners match
-      add concurrent-lifetime conflict unless A precedes B or B precedes A
+      if A and B share an allocation group and either lifetime has reset epochs:
+        add access-completion-not-proven conflict unless every epoch completes
+        add concurrent-lifetime conflict unless every cross-member epoch pair
+            has exactly one proven order
+      else:
+        add access-completion-not-proven conflict unless both node lifetimes
+            are proven
+        add transaction conflict unless their transaction tile-count sequences
+            match
+        add pointer-owner conflict unless read and write owners match
+        add concurrent-lifetime conflict unless A precedes B or B precedes A
 
   for each typed allocation group:
     validate every member pair with descriptor equality disabled
@@ -1827,6 +1834,12 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     reject any storage, static-configuration, protocol, owner, domain, or
       lifetime conflict
     compute the largest scratch byte capacity required by a member
+    for each launch node:
+      order every active member epoch by its proven event relation
+      require each adjacent handoff to preserve pointer owners or follow a
+          canonical reset
+      advance read and write cursors through every epoch in that order
+      reject unequal handoff offsets or a transaction that crosses the envelope
 
   if reuseUserDFBs:
     candidates = all logical DFBs in immutable declaration order
