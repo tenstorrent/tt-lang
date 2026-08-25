@@ -1029,3 +1029,41 @@ func.func @wait_result_through_for_iter_args() attributes {ttl.kernel_thread = #
   }
   func.return
 }
+
+// -----
+
+// Explicit transaction pairs in sibling regions remain unchanged.
+
+// CHECK-LABEL: func.func @repeated_sibling_region_transactions
+// CHECK-COUNT-2: ttl.cb_push
+// CHECK-NOT: ttl.cb_push
+// CHECK-COUNT-2: ttl.cb_pop
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @repeated_sibling_region_transactions()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lower = arith.constant 0 : index
+  %upper = arith.constant 4 : index
+  %step = arith.constant 1 : index
+  %enabled = arith.constant true
+  scf.for %iteration = %lower to %upper step %step {
+    scf.if %enabled {
+      %first_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    scf.if %enabled {
+      %second_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    scf.if %enabled {
+      %first_waited = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    scf.if %enabled {
+      %second_waited = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+  }
+  func.return
+}

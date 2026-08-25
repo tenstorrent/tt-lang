@@ -21,6 +21,10 @@ def _ensure_ttnn():
     try:
         import ttnn as _ttnn
 
+        # A toolchain PYTHONPATH hit can yield a namespace package with no
+        # bindings. Treat that as missing rather than caching a stub.
+        if not hasattr(_ttnn, "DataType"):
+            return None
         ttnn = _ttnn
     except (ModuleNotFoundError, ImportError):
         pass
@@ -165,38 +169,40 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
             )
 
 
-def format_name_to_ttnn_dtype(name: str):
+def format_name_to_ttnn_dtype(name: str, ttnn_module=None):
     """Convert a data format name string to a ttnn.DataType enum value.
 
     Accepts names produced by the compiler's DFB metadata, e.g.,
-    "bfloat16", "float32".
+    "bfloat16", "float32". ``ttnn_module`` selects the ttnn binding; callers
+    that already imported or stubbed ttnn should pass that module so unit
+    tests do not depend on a second global import.
 
     Raises:
         ValueError: If the name is not recognized.
     """
-    _ensure_ttnn()
-    if ttnn is None:
+    module = ttnn_module if ttnn_module is not None else _ensure_ttnn()
+    if module is None:
         raise RuntimeError("ttnn is not available")
 
     match name:
         case "bfloat16" | "bf16":
-            return ttnn.DataType.BFLOAT16
+            return module.DataType.BFLOAT16
         case "bfloat4_b" | "bfp_bf4":
-            return ttnn.DataType.BFLOAT4_B
+            return module.DataType.BFLOAT4_B
         case "bfloat8_b" | "bfp_bf8":
-            return ttnn.DataType.BFLOAT8_B
+            return module.DataType.BFLOAT8_B
         case "float16" | "f16":
-            return ttnn.DataType.BFLOAT16  # hardware implements f16 as bf16
+            return module.DataType.BFLOAT16  # hardware implements f16 as bf16
         case "float32" | "f32":
-            return ttnn.DataType.FLOAT32
+            return module.DataType.FLOAT32
         case "int32" | "i32" | "si32":
-            return ttnn.DataType.INT32
+            return module.DataType.INT32
         case "uint32" | "u32" | "ui32":
-            return ttnn.DataType.UINT32
+            return module.DataType.UINT32
         case "uint16" | "u16" | "ui16":
-            return ttnn.DataType.UINT16
+            return module.DataType.UINT16
         case "uint8" | "u8" | "ui8":
-            return ttnn.DataType.UINT8
+            return module.DataType.UINT8
         case _:
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
