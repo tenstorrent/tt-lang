@@ -2358,7 +2358,7 @@ mlir::tt::ttl::BlockBroadcastOp::getDFBInputOperandIndices() {
   bool needsTileBcast = false;
   if (auto inputType = dyn_cast<mlir::RankedTensorType>(getInput().getType())) {
     needsTileBcast =
-        blockBroadcastRequiresTileBcast(getDims(), inputType.getRank());
+        getTileBroadcastType(getDims(), inputType.getRank()).has_value();
   }
 
   if (needsDFBMaterialization(getInput()) ||
