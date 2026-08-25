@@ -100,6 +100,14 @@ def _make_parser() -> argparse.ArgumentParser:
         "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
     )
     p.add_argument(
+        "--ttl-dynamic-noc",
+        default=None,
+        dest="dynamic_noc",
+        action=argparse.BooleanOptionalAction,
+        help="Allow data-movement kernels to select either NOC dynamically "
+        "(default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -155,6 +163,7 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
     specialize_cores: bool = False
+    dynamic_noc: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

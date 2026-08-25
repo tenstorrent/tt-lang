@@ -963,6 +963,26 @@ def _get_kernel_crta_indices(module, kernel_name: str):
     return [int(IntegerAttr(idx).value) for idx in attr]
 
 
+def _make_data_movement_config(noc_role: int, dynamic_noc: bool):
+    """Build the TTNN config for one TT-Lang data-movement thread."""
+    if not dynamic_noc:
+        if noc_role == 0:
+            return ttnn.ReaderConfigDescriptor()
+        return ttnn.WriterConfigDescriptor()
+
+    if noc_role == 0:
+        processor = ttnn.DataMovementProcessor.RISCV_1
+        noc = ttnn.NOC.RISCV_0_default
+    else:
+        processor = ttnn.DataMovementProcessor.RISCV_0
+        noc = ttnn.NOC.RISCV_1_default
+    return ttnn.DataMovementConfigDescriptor(
+        processor=processor,
+        noc=noc,
+        noc_mode=ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -985,6 +1005,7 @@ def _compile_ttnn_kernel(
     opaque_include_paths: Optional[List[str]] = None,
     runtime_resource_factory=None,
     runtime_dfb_reconfiguration: bool = False,
+    dynamic_noc: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1209,11 +1230,10 @@ def _compile_ttnn_kernel(
             thread_to_kernel["TRISC_1"] = name
             thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
+            config = _make_data_movement_config(noc_role, dynamic_noc)
             if noc_role == 0:
-                config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name
             else:
-                config = ttnn.WriterConfigDescriptor()
                 thread_to_kernel["BRISC"] = name
         else:
             config = ttnn.ReaderConfigDescriptor()
@@ -2379,6 +2399,7 @@ def _lower_program_to_kernel(
             opaque_include_paths=opaque_include_paths,
             runtime_resource_factory=runtime_resource_factory,
             runtime_dfb_reconfiguration=epoch_physical_configs is not None,
+            dynamic_noc=compiler_options.dynamic_noc,
         )
         return compiled_kernel
 
