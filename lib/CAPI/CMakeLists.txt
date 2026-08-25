@@ -25,6 +25,7 @@ add_mlir_library(TTLangCAPI
   MLIRMemRefDialect
   MLIRSCFDialect
   MLIRSupport
+  MLIRTensorDialect
   MLIRTTCoreDialect
   MLIRTTKernelDialect
   MLIRTTLDialect
