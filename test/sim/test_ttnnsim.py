@@ -2766,6 +2766,18 @@ class TestTensorMemoryConfig:
         t = ttnn.from_torch(torch.zeros(64, 128), memory_config=mc)
         assert t.memory_config is mc
 
+    @pytest.mark.parametrize("factory", [ttnn.rand, ttnn.empty, ttnn.zeros])
+    def test_creation_factories_propagate_memory_config(self, factory) -> None:
+        """Tensor creation factories attach the requested MemoryConfig."""
+        spec = ShardSpec(shard_grid=(2,), shard_shape=(32, 64))
+        memory_config = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec
+        )
+
+        tensor = factory((64, 64), memory_config=memory_config)
+
+        assert tensor.memory_config is memory_config
+
     def test_getitem_propagates_memory_config(self) -> None:
         """Slicing a sharded Tensor propagates memory_config to the result."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 4))

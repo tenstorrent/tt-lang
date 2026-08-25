@@ -686,10 +686,10 @@ def _prepare_atom_program(
         if is_tensor_value(val):
             register_tensor_name(val, pname, index=idx)
 
-    # Detect L1 vs DRAM addressing from the first tensor (matching
+    # Detect L1 vs DRAM addressing from the first tensor descriptor (matching
     # @ttl.operation), since the tensor accessor type depends on it.
     first_tensor = next(
-        (v for v in bound_arguments.values() if is_ttnn_tensor(v)), None
+        (v for v in bound_arguments.values() if is_tensor_value(v)), None
     )
     if first_tensor is not None:
         memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)

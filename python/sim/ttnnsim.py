@@ -2799,6 +2799,9 @@ def rand(
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
+        memory_config=(
+            memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+        ),
         dtype=dtype,
         logical_shape=tuple(shape),
     )
@@ -2816,6 +2819,9 @@ def empty(
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
+        memory_config=(
+            memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+        ),
         dtype=dtype,
         logical_shape=tuple(shape),
     )
@@ -2833,6 +2839,9 @@ def zeros(
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
+        memory_config=(
+            memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+        ),
         dtype=dtype,
         logical_shape=tuple(shape),
     )

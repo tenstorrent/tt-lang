@@ -268,6 +268,9 @@ def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
 
 def _get_tensor_cache_info(tensor) -> tuple:
     """Extract tensor properties that affect compilation or DFB descriptors."""
+    static_key = getattr(tensor, "compiler_cache_key", None)
+    if callable(static_key):
+        return static_key()
     shape = tuple(tensor.shape)
     padded_shape = tuple(getattr(tensor, "padded_shape", tensor.shape))
     dtype = str(tensor.dtype)
@@ -315,6 +318,10 @@ def _make_cache_key(
     # with different shard shapes don't collide in the cache.
     mesh_key = None
     for tensor in tensor_args:
+        static_mesh_shape = getattr(tensor, "mesh_shape", None)
+        if static_mesh_shape is not None:
+            mesh_key = tuple(static_mesh_shape)
+            break
         if is_ttnn_tensor(tensor) and _is_mesh_tensor(tensor):
             mesh_key = tuple(tensor.device().shape)
             break
@@ -520,7 +527,12 @@ def _run_signpost_profile(tensors: tuple):
 
 
 def _is_mesh_tensor(tensor) -> bool:
-    """Check if a ttnn tensor is distributed across a multi-device mesh."""
+    """Check whether tensor metadata describes a multi-device mesh."""
+    static_shape = getattr(tensor, "mesh_shape", None)
+    if static_shape is not None:
+        from math import prod
+
+        return prod(static_shape) > 1
     if not is_ttnn_tensor(tensor):
         return False
     device = tensor.device()
@@ -535,8 +547,11 @@ def _is_mesh_tensor(tensor) -> bool:
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
-    """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
-    mem_config = tensor.memory_config()
+    """Detect memory space (L1/DRAM) from tensor metadata."""
+    memory_config = getattr(tensor, "memory_config", None)
+    mem_config = memory_config() if callable(memory_config) else memory_config
+    if mem_config is None:
+        return default
     if hasattr(mem_config, "buffer_type"):
         buffer_type_str = str(mem_config.buffer_type)
         if "L1" in buffer_type_str:
@@ -544,6 +559,33 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
         elif "DRAM" in buffer_type_str:
             return "DRAM"
     return default
+
+
+def _validate_tensor_interop_args(args: tuple) -> None:
+    """Validate tensor metadata required by compiler tensor accessors."""
+    ttnn_count = sum(1 for arg in args if is_ttnn_tensor(arg))
+    if ttnn_count > 0 and ttnn_count < len(args):
+        raise ValueError(
+            f"TTNN interop requires all tensors to be the same type. "
+            f"Got {ttnn_count} TTNN tensors and {len(args) - ttnn_count} host tensors. "
+            f"Mixed tensor types would generate extra bounce kernels."
+        )
+
+    for index, arg in enumerate(args):
+        if not is_tensor_value(arg):
+            continue
+        memory_space = _detect_memory_space_from_tensor(arg, "unknown")
+        if memory_space not in ("L1", "DRAM"):
+            raise ValueError(
+                "TTNN interop requires L1 or DRAM memory space, but tensor "
+                f"{index} is in {memory_space}."
+            )
+        if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
+            raise ValueError(
+                "TTNN interop requires tilized tensors, but tensor "
+                f"{index} has layout {arg.layout}. "
+                "Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
+            )
 
 
 def _require_device(args):
@@ -1185,31 +1227,6 @@ def _compile_ttnn_kernel(
     """
     # Get kernel info from module
     kernel_info = get_ttkernel_names(module)
-
-    # Validate tensor types: must be all TTNN or all torch, not mixed.
-    # Mixed tensors would generate ToLayoutOps for host tensors, creating extra
-    # bounce kernels that exceed the expected kernel count for core assignment.
-    ttnn_count = sum(1 for arg in args if is_ttnn_tensor(arg))
-    if ttnn_count > 0 and ttnn_count < len(args):
-        raise ValueError(
-            f"TTNN interop requires all tensors to be the same type. "
-            f"Got {ttnn_count} TTNN tensors and {len(args) - ttnn_count} host tensors. "
-            f"Mixed tensor types would generate extra bounce kernels."
-        )
-
-    # Validate TTNN tensors - must be L1 or DRAM and tilized
-    for i, arg in enumerate(args):
-        if is_ttnn_tensor(arg):
-            mem_space = _detect_memory_space_from_tensor(arg, "unknown")
-            if mem_space not in ("L1", "DRAM"):
-                raise ValueError(
-                    f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
-                )
-            if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
-                raise ValueError(
-                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout}. "
-                    f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
-                )
 
     # Detect the per-core specialization path: ttkernel-specialize-cores tags each
     # clone with ttl.core_coord (the list of coordinates the clone serves).
@@ -2109,23 +2126,22 @@ def _prepare_explicit_program(
         kernel_source_file = "<unknown>"
         kernel_line_offset = 0
 
-    has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
+    has_tensor_metadata = any(is_tensor_value(arg) for arg in args)
 
     # For mesh tensors, tensor.shape already returns the per-device shard
     # dimensions, so no wrapping is needed.
-    is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
+    is_mesh = has_tensor_metadata and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
 
-    # For TTNN tensors, detect memory space from tensor's buffer type.
+    # Detect memory space from TTNN or host-only tensor metadata.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
-    if has_ttnn_tensors:
-        first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
-        if first_ttnn_tensor is not None:
-            memory_space = _detect_memory_space_from_tensor(
-                first_ttnn_tensor, memory_space
-            )
-            print(f"[TTNN interop] Detected {memory_space} memory space")
+    if has_tensor_metadata:
+        first_tensor = next((arg for arg in args if is_tensor_value(arg)), None)
+        if first_tensor is not None:
+            memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)
+            if is_ttnn_tensor(first_tensor):
+                print(f"[TTNN interop] Detected {memory_space} memory space")
 
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
@@ -2665,6 +2681,7 @@ def _construct_and_validate_program(
     kernel_line_offset,
     logical_kernels=None,
 ) -> _TTLProgramIR:
+    _validate_tensor_interop_args(program.args)
     program_ir = _construct_ttl_program(
         program=program,
         launch_grid=launch_grid,

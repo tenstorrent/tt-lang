@@ -20,7 +20,6 @@ from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import (
     is_tensor_value,
-    is_ttnn_tensor,
     tensor_dtype_to_ttcore_datatype,
 )
 from ..layouts import (
@@ -167,6 +166,14 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type with TTLLayoutAttr encoding."""
     if not tiled:
         raise ValueError("Only tiled tensors supported")
+    tensor_layout = getattr(tensor, "layout", None)
+    if is_tensor_value(tensor) and tensor_layout is not None:
+        if "TILE" not in str(tensor_layout):
+            _raise_tensor_error(
+                tensor,
+                "TTNN interop requires tilized tensors, but tensor has layout "
+                f"{tensor_layout}",
+            )
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(grid) != 2:
@@ -185,11 +192,11 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         )
 
     mem_layout = TENSOR_MEMORY_LAYOUT_INTERLEAVED
-    if is_ttnn_tensor(tensor):
+    if is_tensor_value(tensor):
         mem_layout = detect_memory_layout(tensor)
 
     tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
-    if is_ttnn_tensor(tensor) and hasattr(tensor, "get_tile"):
+    if is_tensor_value(tensor) and hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
 
     layout = create_layout(

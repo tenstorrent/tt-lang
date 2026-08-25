@@ -109,8 +109,12 @@ compiler diagnostics that run before simulation.
 
 ### Validation scope and limitations
 
-Successful compiler validation is cached for each distinct operation tensor
-signature. It reuses the same Python
+Successful compiler validation is cached in memory for each distinct operation
+tensor signature. The signature includes logical and padded shapes, dtype,
+layout, tile geometry, buffer placement, memory layout, sharding and mesh
+metadata, argument aliasing, grid, target, and compiler options. The cache is
+owned by the decorated operation and lasts for the current Python process.
+Failed validation is not cached. Validation reuses the same Python
 frontend, source-aware diagnostics, IR verification, and TTL pass prefix as
 normal compilation through dataflow-buffer allocation and L1 budget
 validation. The compiler represents this prefix as a separate validation
@@ -120,12 +124,18 @@ validation passes may transform temporary compiler IR because later
 diagnostics depend on those normalized forms. That IR is discarded and does
 not alter the Python operation executed by the simulator.
 
-The host tensor descriptor currently includes logical shape and dtype only.
-Validation therefore uses the compiler's default tiled and interleaved layout
-assumptions. It does not model custom tile geometry, sharding, or the amount of
-L1 memory currently available on a live device. Runtime behavior such as
-deadlocks, numerical disagreement, and data-dependent failures remains the
-responsibility of simulation and device testing.
+The simulator passes all tensor configuration metadata that it models to the
+compiler validator. This includes tiled versus row-major layout, DRAM versus L1
+placement, interleaved and compiler-supported sharded memory layouts, shard
+specifications, and mesh distribution. Compiler restrictions still apply; for
+example, TTNN interop currently rejects row-major operation tensors, and the
+TTL dialect does not currently represent ND-sharded layouts. Unsupported
+metadata is reported instead of being silently replaced with defaults. The
+simulator models only the standard 32x32 tile, so it cannot validate custom
+tile geometry. It also cannot report the amount of L1 memory currently
+available on a live device. Runtime behavior such as deadlocks, numerical
+disagreement, and data-dependent failures remains the responsibility of
+simulation and device testing.
 
 Diagnostics reflect the compiler revision installed alongside the simulator.
 For parity with a deployment compiler, both paths must use the same TT-Lang

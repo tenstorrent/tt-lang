@@ -153,13 +153,137 @@ def _is_sim_tensor(value: Any) -> bool:
     )
 
 
+def _read_metadata(value: Any, name: str, default: Any = None) -> Any:
+    """Read a public simulator/TTNN-style property or zero-argument method."""
+    try:
+        result = getattr(value, name)
+        return result() if callable(result) else result
+    except AttributeError:
+        return default
+
+
+def _enum_name(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    name = getattr(value, "name", None)
+    if name is not None:
+        return str(name).upper()
+    return str(value).rsplit(".", maxsplit=1)[-1].upper()
+
+
+def _tuple_metadata(value: Any) -> Optional[tuple]:
+    if value is None:
+        return None
+    return tuple(value)
+
+
+def _core_ranges_metadata(core_ranges: Any) -> tuple[tuple[int, int, int, int], ...]:
+    ranges = _read_metadata(core_ranges, "ranges", ())
+    result = []
+    for region in ranges or ():
+        start = _read_metadata(region, "start")
+        end = _read_metadata(region, "end")
+        if start is None or end is None:
+            continue
+        result.append(
+            (
+                int(_read_metadata(start, "x")),
+                int(_read_metadata(start, "y")),
+                int(_read_metadata(end, "x")),
+                int(_read_metadata(end, "y")),
+            )
+        )
+    return tuple(result)
+
+
+def _shard_grid_metadata(shard_spec: Any, memory_layout: Any) -> Optional[tuple]:
+    if shard_spec is None:
+        return None
+    try:
+        return _tuple_metadata(_read_metadata(shard_spec, "shard_grid"))
+    except ValueError:
+        resolver = getattr(shard_spec, "with_resolved_shard_grid", None)
+        if not callable(resolver) or memory_layout is None:
+            raise
+        resolved = resolver(memory_layout)
+        return _tuple_metadata(_read_metadata(resolved, "shard_grid"))
+
+
+def _compiler_tensor_metadata(value: Any) -> dict[str, Any]:
+    """Serialize every compiler-relevant property exposed by a sim tensor."""
+    layout = _enum_name(_read_metadata(value, "layout"), "TILE")
+    memory_config = _read_metadata(value, "memory_config")
+    memory_space = _enum_name(_read_metadata(memory_config, "buffer_type"), "DRAM")
+    raw_memory_layout = _read_metadata(memory_config, "memory_layout")
+    memory_layout = _enum_name(raw_memory_layout, "INTERLEAVED")
+
+    tile_shape = None
+    tile_size_bytes = None
+    if "TILE" in layout:
+        tile = _read_metadata(value, "tile")
+        if tile is None:
+            tile = _read_metadata(value, "get_tile")
+        tile_shape = _tuple_metadata(_read_metadata(tile, "tile_shape"))
+        if callable(getattr(tile, "get_tile_size", None)):
+            tile_size_bytes = int(tile.get_tile_size(value.dtype))
+
+    shard_spec = _read_metadata(memory_config, "shard_spec")
+    shard_shape = _tuple_metadata(
+        _read_metadata(shard_spec, "shape", _read_metadata(shard_spec, "shard_shape"))
+    )
+    shard_grid = _shard_grid_metadata(shard_spec, raw_memory_layout)
+    shard_orientation = None
+    if shard_spec is not None:
+        shard_orientation = _enum_name(
+            _read_metadata(shard_spec, "orientation"), "UNKNOWN"
+        )
+    shard_core_ranges = _core_ranges_metadata(_read_metadata(shard_spec, "grid"))
+
+    nd_shard_spec = _read_metadata(memory_config, "nd_shard_spec")
+    nd_shard_shape = _tuple_metadata(_read_metadata(nd_shard_spec, "shard_shape"))
+    nd_shard_grid = _tuple_metadata(_read_metadata(nd_shard_spec, "shard_grid"))
+    nd_shard_distribution = None
+    if nd_shard_spec is not None:
+        nd_shard_distribution = _enum_name(
+            _read_metadata(nd_shard_spec, "shard_distribution_strategy"),
+            "UNKNOWN",
+        )
+    nd_shard_core_ranges = _core_ranges_metadata(_read_metadata(nd_shard_spec, "grid"))
+    nd_shard_num_cores = _read_metadata(nd_shard_spec, "num_cores")
+
+    mesh_info = _read_metadata(value, "mesh_shard_info")
+    return {
+        "padded_shape": _tuple_metadata(_read_metadata(value, "padded_shape")),
+        "layout": layout,
+        "memory_space": memory_space,
+        "memory_layout": memory_layout,
+        "tile_shape": tile_shape,
+        "tile_size_bytes": tile_size_bytes,
+        "shard_shape": shard_shape,
+        "shard_grid": shard_grid,
+        "shard_orientation": shard_orientation,
+        "shard_core_ranges": shard_core_ranges,
+        "nd_shard_shape": nd_shard_shape,
+        "nd_shard_grid": nd_shard_grid,
+        "nd_shard_distribution": nd_shard_distribution,
+        "nd_shard_core_ranges": nd_shard_core_ranges,
+        "nd_shard_num_cores": nd_shard_num_cores,
+        "mesh_shape": _tuple_metadata(_read_metadata(mesh_info, "mesh_shape")),
+        "mesh_dims": _tuple_metadata(_read_metadata(mesh_info, "dims")),
+    }
+
+
 def _to_compiler_value(value: Any, backend: _CompilerBackend, memo: dict[int, Any]):
     """Convert a direct simulator tensor while preserving argument aliases."""
     if not _is_sim_tensor(value):
         return value
     identity = id(value)
     if identity not in memo:
-        memo[identity] = backend.tensor_spec_type(value.shape, value.dtype)
+        memo[identity] = backend.tensor_spec_type(
+            value.shape,
+            value.dtype,
+            **_compiler_tensor_metadata(value),
+        )
     return memo[identity]
 
 

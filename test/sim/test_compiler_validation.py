@@ -17,9 +17,32 @@ from sim.decorators import compute
 
 
 class _FakeTensorSpec:
-    def __init__(self, shape, dtype):
+    def __init__(self, shape, dtype, **metadata):
         self.shape = tuple(shape)
         self.dtype = dtype
+        self.__dict__.update(metadata)
+
+
+class _FakeTile:
+    tile_shape = (32, 32)
+
+    @staticmethod
+    def get_tile_size(_dtype):
+        return 2048
+
+
+class _FakeMemoryConfig:
+    buffer_type = "L1"
+    memory_layout = "HEIGHT_SHARDED"
+
+    def __init__(self):
+        self.shard_spec = types.SimpleNamespace(
+            shape=(32, 64),
+            shard_grid=(2, 1),
+            orientation="ROW_MAJOR",
+            grid=None,
+        )
+        self.nd_shard_spec = None
 
 
 class _FakeSimTensor:
@@ -27,7 +50,12 @@ class _FakeSimTensor:
 
     def __init__(self, shape=(32, 32), dtype="bfloat16"):
         self.shape = shape
+        self.padded_shape = tuple(shape)
         self.dtype = dtype
+        self.layout = "TILE"
+        self.memory_config = _FakeMemoryConfig()
+        self.tile = _FakeTile()
+        self.mesh_shard_info = types.SimpleNamespace(mesh_shape=(1, 2), dims=(None, 0))
 
 
 _FakeSimTensor.__name__ = "Tensor"
@@ -230,6 +258,17 @@ def test_validator_converts_tensor_arguments_and_preserves_aliases(
     assert isinstance(args[0], _FakeTensorSpec)
     assert args[0].shape == (64, 96)
     assert args[0].dtype == "bfloat8_b"
+    assert args[0].padded_shape == (64, 96)
+    assert args[0].layout == "TILE"
+    assert args[0].memory_space == "L1"
+    assert args[0].memory_layout == "HEIGHT_SHARDED"
+    assert args[0].tile_shape == (32, 32)
+    assert args[0].tile_size_bytes == 2048
+    assert args[0].shard_shape == (32, 64)
+    assert args[0].shard_grid == (2, 1)
+    assert args[0].shard_orientation == "ROW_MAJOR"
+    assert args[0].mesh_shape == (1, 2)
+    assert args[0].mesh_dims == (None, 0)
     assert kwargs["output"] is args[0]
     assert sys.modules["ttl"] is simulator_ttl
 
@@ -253,6 +292,76 @@ def test_validator_converts_simulator_tensor_subclasses(monkeypatch, validation_
 
     _, args, _ = calls[1]
     assert isinstance(args[0], _FakeTensorSpec)
+
+
+def test_tensor_conversion_preserves_nd_sharding_metadata():
+    tensor = _FakeSimTensor((64, 96))
+    core_ranges = types.SimpleNamespace(
+        ranges=lambda: [
+            types.SimpleNamespace(
+                start=types.SimpleNamespace(x=0, y=1),
+                end=types.SimpleNamespace(x=2, y=3),
+            )
+        ]
+    )
+    tensor.memory_config = types.SimpleNamespace(
+        buffer_type="L1",
+        memory_layout="ND_SHARDED",
+        shard_spec=None,
+        nd_shard_spec=types.SimpleNamespace(
+            shard_shape=(32, 48),
+            shard_grid=(2, 2),
+            shard_distribution_strategy="GRID_2D",
+            grid=core_ranges,
+            num_cores=lambda: 4,
+        ),
+    )
+
+    metadata = compiler_validation._compiler_tensor_metadata(tensor)
+
+    assert metadata["nd_shard_shape"] == (32, 48)
+    assert metadata["nd_shard_grid"] == (2, 2)
+    assert metadata["nd_shard_distribution"] == "GRID_2D"
+    assert metadata["nd_shard_core_ranges"] == ((0, 1, 2, 3),)
+    assert metadata["nd_shard_num_cores"] == 4
+
+
+def test_tensor_conversion_resolves_core_range_shard_grid():
+    tensor = _FakeSimTensor((64, 96))
+    memory_layout = object()
+    core_ranges = types.SimpleNamespace(
+        ranges=lambda: [
+            types.SimpleNamespace(
+                start=types.SimpleNamespace(x=0, y=0),
+                end=types.SimpleNamespace(x=3, y=0),
+            )
+        ]
+    )
+
+    class CoreRangeShardSpec:
+        shape = (16, 96)
+        orientation = "ROW_MAJOR"
+        grid = core_ranges
+
+        @property
+        def shard_grid(self):
+            raise ValueError("grid is represented by CoreRangeSet")
+
+        def with_resolved_shard_grid(self, layout):
+            assert layout is memory_layout
+            return types.SimpleNamespace(shard_grid=(4,))
+
+    tensor.memory_config = types.SimpleNamespace(
+        buffer_type="L1",
+        memory_layout=memory_layout,
+        shard_spec=CoreRangeShardSpec(),
+        nd_shard_spec=None,
+    )
+
+    metadata = compiler_validation._compiler_tensor_metadata(tensor)
+
+    assert metadata["shard_grid"] == (4,)
+    assert metadata["shard_core_ranges"] == ((0, 0, 3, 0),)
 
 
 def test_direct_tensor_capture_is_converted_but_tuple_capture_is_not(
