@@ -911,17 +911,6 @@ static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
   graph.addEdge(before.last.completion, after.last.entry);
 }
 
-// Orders first and last representatives of two equal sequential runs. The
-// middle edge establishes that the next execution of `before` follows the
-// current execution of `after` without creating one event per iteration.
-static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
-                                     const AccessEventSpan &before,
-                                     const AccessEventSpan &after) {
-  graph.addEdge(before.first.completion, after.first.entry);
-  graph.addEdge(after.first.completion, before.last.entry);
-  graph.addEdge(before.last.completion, after.last.entry);
-}
-
 // Requires a release to follow every use owned by its acquisition; textual
 // acquire/release order alone does not prove that those uses have completed.
 // `sameKindAcquires` contains every same-DFB acquisition of the same kind.
@@ -4636,11 +4625,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents =
         graphState.accessEvents;
     ResetBoundaryEvents &resetBoundaryEvents = graphState.resetBoundaryEvents;
-    addSynchronizedResetAccessEdges(
-        logicalDFBs, validatedResets, node, graph, operationEvents,
-        accessEvents, resetBoundaryEvents, executionCounts, accessRuns,
-        structuralOrder,
-        /*includeUnknownDomains=*/false);
+    addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
+                                    operationEvents, accessEvents,
+                                    resetBoundaryEvents, executionCounts,
+                                    accessRuns, structuralOrder,
+                                    /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(logicalDFBs, graph, operationEvents,
                                     accessEvents, executionCounts, accessRuns,
                                     node, domainState, structuralOrder,
@@ -4704,7 +4693,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addSynchronizedResetAccessEdges(
         logicalDFBs, validatedResets, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
-        possibleResetBoundaryEvents, executionCounts, possibleAccessRuns,
+        possibleResetBoundaryEvents, executionCounts, *possibleAccessRuns,
         structuralOrder,
         /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
