@@ -125,8 +125,31 @@ class TestKernelI32ArrayAttr:
         with context:
             module = Module.parse("module { func.func @reader() { return } }")
             assert (
-                ttl_api._get_optional_kernel_i32_array_attr(
+                ttl_api._get_kernel_optional_i32_array_attr(
                     module, "reader", "ttl.pipe_computed_address_dfb_indices"
+                )
+                is None
+            )
+
+    def test_optional_attribute_empty_array_is_not_missing(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @reader() attributes {
+                    ttl.used_dfb_indices = array<i32>
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            assert (
+                ttl_api._get_kernel_optional_i32_array_attr(
+                    module, "reader", "ttl.used_dfb_indices"
                 )
                 == []
             )
@@ -147,7 +170,7 @@ class TestKernelI32ArrayAttr:
                 }
                 """
             )
-            assert ttl_api._get_optional_kernel_i32_array_attr(
+            assert ttl_api._get_kernel_optional_i32_array_attr(
                 module, "reader", "ttl.pipe_computed_address_dfb_indices"
             ) == [2, 5]
 
@@ -168,7 +191,7 @@ class TestKernelI32ArrayAttr:
                 """
             )
             with pytest.raises(ValueError, match="Expected DenseI32ArrayAttr"):
-                ttl_api._get_optional_kernel_i32_array_attr(
+                ttl_api._get_kernel_optional_i32_array_attr(
                     module, "reader", "ttl.pipe_computed_address_dfb_indices"
                 )
 

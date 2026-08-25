@@ -36,22 +36,31 @@ static llvm::StringRef getProtocolEffectName(DFBProtocolEffectKind effect) {
 }
 
 static llvm::StringRef
-getQuiescenceFailureName(DFBQuiescenceFailureReason failure) {
+getNonTransactionalAccessName(DFBNonTransactionalAccessKind access) {
+  switch (access) {
+  case DFBNonTransactionalAccessKind::Inspect:
+    return "inspect";
+  }
+  llvm_unreachable("unknown DFB non-transactional access");
+}
+
+static llvm::StringRef
+getLifecycleCompletionName(DFBLifecycleCompletionFailureReason failure) {
   switch (failure) {
-  case DFBQuiescenceFailureReason::None:
-    return "none";
-  case DFBQuiescenceFailureReason::MissingProtocolEffect:
+  case DFBLifecycleCompletionFailureReason::None:
+    return "complete";
+  case DFBLifecycleCompletionFailureReason::MissingProtocolEffect:
     return "missing-protocol-effect";
-  case DFBQuiescenceFailureReason::UnsupportedControlFlow:
+  case DFBLifecycleCompletionFailureReason::UnsupportedControlFlow:
     return "unsupported-control-flow";
-  case DFBQuiescenceFailureReason::MismatchedTransaction:
+  case DFBLifecycleCompletionFailureReason::MismatchedTransaction:
     return "mismatched-transaction";
-  case DFBQuiescenceFailureReason::IncompleteUseOrder:
+  case DFBLifecycleCompletionFailureReason::IncompleteUseOrder:
     return "incomplete-use-order";
-  case DFBQuiescenceFailureReason::UnknownPointerOwner:
+  case DFBLifecycleCompletionFailureReason::UnknownPointerOwner:
     return "unknown-pointer-owner";
   }
-  llvm_unreachable("unknown DFB quiescence failure");
+  llvm_unreachable("unknown DFB lifecycle-completion failure");
 }
 
 static llvm::StringRef getPointerProcessorName(DFBPointerProcessor processor) {
@@ -142,13 +151,23 @@ static void printAccesses(llvm::raw_ostream &output,
   for (auto indexedAccess : llvm::enumerate(logicalDFB.accesses)) {
     const DFBAccessOccurrence &access = indexedAccess.value();
     output << "  access " << indexedAccess.index() << " effect=";
-    if (access.protocolEffect) {
-      output << getProtocolEffectName(*access.protocolEffect);
+    if (const DFBProtocolEffectKind *protocolEffect =
+            access.getProtocolEffect()) {
+      output << getProtocolEffectName(*protocolEffect);
     } else {
       output << "none";
     }
+    if (const DFBNonTransactionalAccessKind *nonTransactionalAccess =
+            access.getNonTransactionalAccess()) {
+      output << " non_transactional="
+             << getNonTransactionalAccessName(*nonTransactionalAccess);
+    }
     output << " tiles=" << access.numTiles
-           << " sequence=" << access.sequenceIndex << " domain=";
+           << " sequence=" << access.sequenceIndex;
+    if (access.opaqueExternalAccess) {
+      output << " opaque_external=1";
+    }
+    output << " domain=";
     printDomain(output, access.launchDomain);
     output << " operation=";
     printOperation(output, access.operation);
@@ -224,7 +243,28 @@ static void printTransactions(llvm::raw_ostream &output,
   }
 }
 
+static bool resetCompletesOpaqueAccess(const DFBLogicalLifecycle &logicalDFB,
+                                       const DFBLifecycleEpoch &epoch) {
+  if (!epoch.terminalResetOrdinal) {
+    return false;
+  }
+  return llvm::any_of(epoch.accessOccurrenceIndices, [&](unsigned accessIndex) {
+    assert(accessIndex < logicalDFB.accesses.size());
+    return logicalDFB.accesses[accessIndex].opaqueExternalAccess;
+  });
+}
+
+static bool
+hasOpaqueAccessCompletedByReset(const DFBLogicalLifecycle &logicalDFB,
+                                const DFBPerNodeLifetime &lifetime) {
+  return llvm::any_of(lifetime.resetEpochs,
+                      [&](const DFBLifecycleEpoch &epoch) {
+                        return resetCompletesOpaqueAccess(logicalDFB, epoch);
+                      });
+}
+
 static void printResetEpochs(llvm::raw_ostream &output,
+                             const DFBLogicalLifecycle &logicalDFB,
                              const DFBPerNodeLifetime &lifetime) {
   output << '[';
   llvm::interleaveComma(
@@ -244,11 +284,24 @@ static void printResetEpochs(llvm::raw_ostream &output,
         printPointerOwner(output, epoch.writePointerOwner);
         output << ",read_owner=";
         printPointerOwner(output, epoch.readPointerOwner);
+        if (epoch.terminalWritePointerOwner != epoch.writePointerOwner ||
+            epoch.terminalReadPointerOwner != epoch.readPointerOwner) {
+          output << ",terminal_write_owner=";
+          printPointerOwner(output, epoch.terminalWritePointerOwner);
+          output << ",terminal_read_owner=";
+          printPointerOwner(output, epoch.terminalReadPointerOwner);
+        }
         output << ",terminal_reset=";
         if (epoch.terminalResetOrdinal) {
           output << *epoch.terminalResetOrdinal;
         } else {
           output << "none";
+        }
+        if (resetCompletesOpaqueAccess(logicalDFB, epoch)) {
+          output << ",opaque_protocol_reset=1";
+        }
+        if (epoch.inspectionOnly) {
+          output << ",inspection_only=1";
         }
         output << ",terminal_state="
                << (epoch.terminalStateCanonical ? "canonical" : "protocol")
@@ -269,11 +322,18 @@ static bool hasEqualResetEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.readCursorRuns == rhsEpoch.readCursorRuns &&
                lhsEpoch.writePointerOwner == rhsEpoch.writePointerOwner &&
                lhsEpoch.readPointerOwner == rhsEpoch.readPointerOwner &&
+               lhsEpoch.terminalWritePointerOwner ==
+                   rhsEpoch.terminalWritePointerOwner &&
+               lhsEpoch.terminalReadPointerOwner ==
+                   rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
+               lhsEpoch.inspectionOnly == rhsEpoch.inspectionOnly &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
-               lhsEpoch.quiescence.failure == rhsEpoch.quiescence.failure &&
-               lhsEpoch.quiescence.evidence == rhsEpoch.quiescence.evidence;
+               lhsEpoch.completionProof.failure ==
+                   rhsEpoch.completionProof.failure &&
+               lhsEpoch.completionProof.evidence ==
+                   rhsEpoch.completionProof.evidence;
       });
 }
 
@@ -282,8 +342,8 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
                       const DFBPerNodeLifetimeDiagnostics &lhsDiagnostics,
                       const DFBPerNodeLifetime &rhs,
                       const DFBPerNodeLifetimeDiagnostics &rhsDiagnostics) {
-  if (lhs.quiescence.failure != rhs.quiescence.failure ||
-      lhs.quiescence.evidence != rhs.quiescence.evidence ||
+  if (lhs.completionProof.failure != rhs.completionProof.failure ||
+      lhs.completionProof.evidence != rhs.completionProof.evidence ||
       lhs.mayBeActive != rhs.mayBeActive ||
       lhs.conditionalExecutionProven != rhs.conditionalExecutionProven ||
       lhs.transactionRuns != rhs.transactionRuns ||
@@ -296,6 +356,7 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
+      lhs.inspectionOnly != rhs.inspectionOnly ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualResetEpochs(lhs.resetEpochs, rhs.resetEpochs) ||
       !(lhsDiagnostics == rhsDiagnostics)) {
@@ -306,10 +367,11 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
 
 static void
 printLifetimeFacts(llvm::raw_ostream &output,
+                   const DFBLogicalLifecycle &logicalDFB,
                    const DFBPerNodeLifetime &lifetime,
                    const DFBPerNodeLifetimeDiagnostics &diagnostics) {
   output << " evidence=";
-  printOperation(output, lifetime.quiescence.evidence);
+  printOperation(output, lifetime.completionProof.evidence);
   output << " occurrences=";
   printOccurrences(output, diagnostics);
   output << " transactions=";
@@ -324,7 +386,7 @@ printLifetimeFacts(llvm::raw_ostream &output,
   printValues(output, diagnostics.terminalAccessOccurrenceIndices);
   if (!lifetime.resetEpochs.empty()) {
     output << " reset_epochs=";
-    printResetEpochs(output, lifetime);
+    printResetEpochs(output, logicalDFB, lifetime);
   }
 }
 
@@ -367,12 +429,18 @@ static void printPossibleLifetimes(
     const DFBPerNodeLifetime &lifetime = *group.representative.lifetime;
     const DFBPerNodeLifetimeDiagnostics &diagnostics =
         *group.representative.diagnostics;
-    output << "  possible_nodes quiescence="
-           << getQuiescenceFailureName(lifetime.quiescence.failure)
+    output << "  possible_nodes lifecycle_completion="
+           << getLifecycleCompletionName(lifetime.completionProof.failure)
            << " domain_assumption=unknown-possible may_be_active="
            << lifetime.mayBeActive
-           << " conditional_execution=" << lifetime.conditionalExecutionProven
-           << " node_count=" << group.nodes.size();
+           << " conditional_execution=" << lifetime.conditionalExecutionProven;
+    if (hasOpaqueAccessCompletedByReset(logicalDFB, lifetime)) {
+      output << " opaque_protocol_reset=1";
+    }
+    if (lifetime.inspectionOnly) {
+      output << " inspection_only=1";
+    }
+    output << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
       output << " nodes={";
       llvm::interleaveComma(group.nodes, output, [&](LaunchNodeCoord node) {
@@ -383,7 +451,7 @@ static void printPossibleLifetimes(
       output << " exemplar=";
       printNode(output, lifetime.node);
     }
-    printLifetimeFacts(output, lifetime, diagnostics);
+    printLifetimeFacts(output, logicalDFB, lifetime, diagnostics);
     output << '\n';
   }
 }
@@ -405,11 +473,17 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
                        allocationDiagnostics.nodeLifetimeDiagnostics)) {
     output << "  node ";
     printNode(output, lifetime.node);
-    output << " quiescence="
-           << getQuiescenceFailureName(lifetime.quiescence.failure)
+    output << " lifecycle_completion="
+           << getLifecycleCompletionName(lifetime.completionProof.failure)
            << " domain_assumption=exact conditional_execution="
            << lifetime.conditionalExecutionProven;
-    printLifetimeFacts(output, lifetime, diagnostics);
+    if (hasOpaqueAccessCompletedByReset(logicalDFB, lifetime)) {
+      output << " opaque_protocol_reset=1";
+    }
+    if (lifetime.inspectionOnly) {
+      output << " inspection_only=1";
+    }
+    printLifetimeFacts(output, logicalDFB, lifetime, diagnostics);
     output << '\n';
   }
   printPossibleLifetimes(output, logicalDFB, allocationDiagnostics);
@@ -447,7 +521,11 @@ void printDFBAllocationDebugReport(
     output << "DFB logical_id=" << logicalDFB.logicalId
            << " bounded=" << logicalDFB.bounded
            << " compiler_created=" << logicalDFB.compilerCreated
-           << " conditionally_bounded=" << logicalDFB.conditionallyBounded
+           << " conditionally_bounded=" << logicalDFB.conditionallyBounded;
+    if (logicalDFB.hasOpaqueExternalAccess) {
+      output << " opaque_external_access=1";
+    }
+    output << " access_completion_proven=" << logicalDFB.accessCompletionProven
            << " allocation_group=";
     if (logicalDFB.allocationGroup) {
       Attribute allocationGroup = logicalDFB.allocationGroup;
