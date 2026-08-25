@@ -8,8 +8,8 @@
 // REPORT: possible_nodes quiescence=none domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(1,0)}
 // REPORT: DFB logical_id=1 bounded=0 compiler_created=0 conditionally_bounded=1
 // REPORT-SAME: domain=unknown
-// REPORT: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
+// REPORT: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 0 storage index 0 (bounded)
 
 // Separate regions controlled by one opaque predicate preserve one 0-or-1
 // transaction for each DFB and permit sequential physical-index reuse.
@@ -416,7 +416,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // Equal affine operands do not establish condition identity when the
 // immutable IntegerSets differ.
-// REPORT: possible_nodes quiescence=unsupported-control-flow {{.*}} kernel=@different_affine_predicates
+// REPORT: possible_nodes quiescence=incomplete-use-order domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=2 nodes={(0,0), (1,0)}
 // CHECK-LABEL: func.func @different_affine_predicates
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
 // CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
