@@ -733,7 +733,7 @@ def matmul_write():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. The shape of `expr` must exactly match the shape of the destination block, including its rank and every dimension extent. Use `ttl.block.squeeze` or `ttl.block.unsqueeze` for valid singleton-dimension changes and `ttl.block.broadcast` for valid expansion; other extent changes require producing `expr` with the destination shape rather than reshaping during `store`. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
 
 For `ttl.math` functions and block operators see [Appendix B](#appendix-b-block-operators-and-math-functions).
 
