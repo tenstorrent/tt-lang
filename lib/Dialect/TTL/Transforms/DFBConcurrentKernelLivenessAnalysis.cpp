@@ -3419,31 +3419,25 @@ static DFBQuiescenceProof computeProtocolLifetime(
   }
 
   auto populateCallDurationLifetime = [&]() -> DFBQuiescenceProof {
-    SmallVector<const DFBAccessOccurrence *> earliestAccesses =
-        findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
-                                 accessEvents);
+    lifetime.earliestEntryEvents = findMinimalEntryEvents(
+        activeAccesses, graph, operationEvents, accessEvents);
     SmallVector<const DFBAccessOccurrence *> terminalAccesses =
         findMaximalCompletionAccesses(activeAccesses, graph, operationEvents,
                                       accessEvents);
-    if (earliestAccesses.empty() || terminalAccesses.empty()) {
+    if (lifetime.earliestEntryEvents.empty() || terminalAccesses.empty()) {
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
               activeAccesses.empty() ? logicalDFB.declarations.front()
                                      : activeAccesses.front()->operation};
     }
-    for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
-      std::optional<AccessEventSpan> events =
-          getAccessEventSpan(*earliestAccess, operationEvents, accessEvents);
-      if (!events) {
-        return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-                earliestAccess->operation};
-      }
-      if (!llvm::is_contained(lifetime.earliestEntryEvents,
-                              events->first.entry)) {
-        lifetime.earliestEntryEvents.push_back(events->first.entry);
-      }
-      if (diagnostics) {
-        diagnostics->earliestAccessOccurrenceIndices.push_back(
-            static_cast<unsigned>(earliestAccess - logicalDFB.accesses.data()));
+    if (diagnostics) {
+      for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
+        std::optional<AccessEventSpan> events =
+            getAccessEventSpan(*activeAccess, operationEvents, accessEvents);
+        if (events && llvm::is_contained(lifetime.earliestEntryEvents,
+                                         events->first.entry)) {
+          diagnostics->earliestAccessOccurrenceIndices.push_back(
+              static_cast<unsigned>(activeAccess - logicalDFB.accesses.data()));
+        }
       }
     }
     for (const DFBAccessOccurrence *terminalAccess : terminalAccesses) {
