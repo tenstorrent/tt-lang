@@ -7,7 +7,7 @@
 // The acknowledgment DFB orders B's reserve and wait after A's pop. A and B may
 // share physical index 0; the acknowledgment requires physical index 1.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 1 : i32}]}
 // REUSE-LABEL: func.func @synchronized_dm
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: %[[DM_A:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
@@ -36,7 +36,7 @@
 // REPEAT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // REPEAT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 
-// DISABLED: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// DISABLED: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 1 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 2 : i32}]}
 // DISABLED-LABEL: func.func @synchronized_dm
 // DISABLED-SAME: ttl.base_cta_index = 3 : i32
 // DISABLED: ttl.bind_cb{cb_index = 0,

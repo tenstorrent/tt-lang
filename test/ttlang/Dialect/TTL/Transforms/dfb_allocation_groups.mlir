@@ -60,9 +60,9 @@ module {
 // CHECK-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 4} {allocation_group = #ttl.dfb_allocation_group<8>, dfb_id = 9 : index}
 
 // REPORT: DFB allocation group #ttl.dfb_allocation_group<8> members=[8, 10, 9] envelope_bytes=8192 handoff=proven
-// REPORT-NOT: DFB conflict lhs=8 rhs=9
-// REPORT-NOT: DFB conflict lhs=8 rhs=10
-// REPORT-NOT: DFB conflict lhs=9 rhs=10
+// REPORT: DFB conflict lhs=8 rhs=10 reason=transaction-mismatch node=(0,0)
+// REPORT-NEXT: DFB conflict lhs=8 rhs=9 reason=transaction-mismatch node=(0,0)
+// REPORT-NEXT: DFB conflict lhs=10 rhs=9 reason=transaction-mismatch node=(0,0)
 
 module {
   func.func @three_member_group()
@@ -114,7 +114,7 @@ module {
 // Group members on disjoint launch nodes share one index without a temporal
 // ordering relation. Each node retains its own tensor-backed storage segment.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}, {nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}, {nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
 // CHECK-LABEL: func.func @disjoint_node_group
 // CHECK: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 6 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0
 // CHECK-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 7 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 1

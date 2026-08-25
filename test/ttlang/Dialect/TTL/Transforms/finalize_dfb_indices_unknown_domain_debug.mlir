@@ -26,7 +26,7 @@
 // CHECK: DFB logical_id=2 bounded=0 compiler_created=0
 // CHECK-SAME: access_contracts_complete=1
 // CHECK-SAME: domain=unknown
-// CHECK: possible_nodes quiescence=unsupported-control-flow domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=1 nodes={(0,0)}
+// CHECK: possible_nodes quiescence=incomplete-use-order domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=1 nodes={(0,0)}
 // CHECK-SAME: occurrences=[0:unresolved, 1:unresolved, 2:unresolved, 3:unresolved]
 // CHECK: possible_nodes quiescence=none domain_assumption=unknown-possible may_be_active=0 conditional_execution=0 node_count=9 exemplar=(1,0)
 // CHECK-SAME: occurrences=[0:0, 1:0, 2:0, 3:0]
@@ -38,11 +38,19 @@
 // CHECK-SAME: transactions=[1]
 // CHECK: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain node=none
 // CHECK: DFB allocation liveness report end
+// CHECK-NEXT: DFB storage conflict report
+// CHECK-NEXT: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain node=none
+// CHECK-NEXT: DFB conflict lhs=0 rhs=2 reason=unknown-launch-node-domain node=none
+// CHECK-NEXT: DFB conflict lhs=0 rhs=3 reason=unknown-launch-node-domain node=none
+// CHECK-NEXT: DFB conflict lhs=1 rhs=2 reason=unknown-launch-node-domain node=none
+// CHECK-NEXT: DFB conflict lhs=1 rhs=3 reason=unknown-launch-node-domain node=none
+// CHECK-NEXT: DFB conflict lhs=2 rhs=3 reason=unknown-launch-node-domain node=none
+// CHECK-NEXT: DFB storage conflict report end
 // CHECK-NEXT: Total DFB count: 4
-// CHECK-NEXT: DFB assignment: logical DFB 0 -> physical index 0 (unbounded)
-// CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1 (unbounded)
-// CHECK-NEXT: DFB assignment: logical DFB 2 -> physical index 2 (unbounded)
-// CHECK-NEXT: DFB assignment: logical DFB 3 -> physical index 3 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1 storage index 1 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 2 -> physical index 2 storage index 2 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 3 -> physical index 3 storage index 3 (unbounded)
 
 // NO-REPORT-NOT: DFB allocation liveness report
 
