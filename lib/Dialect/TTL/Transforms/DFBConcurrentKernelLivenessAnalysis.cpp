@@ -3589,33 +3589,11 @@ static DFBQuiescenceProof computeProtocolLifetime(
          (resetTerminatedProducer || (!waits.empty() && !pops.empty())) &&
          "supported protocol effects must have access runs");
 
-  SmallVector<const AccessRun *> conditionalRuns;
-  std::size_t storageAccessCount = 0;
+  bool hasConditionalAccess = false;
   for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
-    if (activeAccess->getProtocolEffect() &&
-        isDFBPointerObservationEffect(*activeAccess->getProtocolEffect())) {
-      continue;
-    }
-    ++storageAccessCount;
     const AccessRun &run = accessRuns.at(activeAccess);
-    if (run.conditionalExecution) {
-      conditionalRuns.push_back(&run);
-    }
+    hasConditionalAccess |= run.conditionalExecution;
   }
-  if (!conditionalRuns.empty()) {
-    const AccessRun &reference = *conditionalRuns.front();
-    bool sameCondition = conditionalRuns.size() == storageAccessCount &&
-                         llvm::all_of(llvm::drop_begin(conditionalRuns),
-                                      [&](const AccessRun *run) {
-                                        return proveEquivalentConditionalRuns(
-                                            reference, *run, node, domainState);
-                                      });
-    if (!sameCondition) {
-      return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-              reference.access->operation};
-    }
-  }
-  bool hasConditionalAccess = !conditionalRuns.empty();
   auto getIntervalExecutionCount = [&](const AccessRun &run) {
     if (expectedSelectedExecutionCount) {
       assert(run.executionCount == *expectedSelectedExecutionCount &&
@@ -4767,9 +4745,9 @@ static bool unprovenLifecycleIsOutsideReset(
              DFBProtocolEffectKind::Push, accessSides, accessRuns, node,
              domainState,
              [&](const AccessRun &reserve, const AccessRun &push) {
-               return acquireReleaseRunsAlign(reserve, push, graph,
-                                              structuralOrder, operationEvents,
-                                              accessEvents);
+               return acquireReleaseRunsAlign(
+                   reserve, push, node, domainState, graph, structuralOrder,
+                   operationEvents, accessEvents);
              }) &&
          !protocolRunsCrossReset(
              logicalDFB, DFBProtocolEffectKind::Push,
@@ -4780,8 +4758,9 @@ static bool unprovenLifecycleIsOutsideReset(
              logicalDFB, DFBProtocolEffectKind::Wait,
              DFBProtocolEffectKind::Pop, accessSides, accessRuns, node,
              domainState, [&](const AccessRun &wait, const AccessRun &pop) {
-               return acquireReleaseRunsAlign(wait, pop, graph, structuralOrder,
-                                              operationEvents, accessEvents);
+               return acquireReleaseRunsAlign(
+                   wait, pop, node, domainState, graph, structuralOrder,
+                   operationEvents, accessEvents);
              });
 }
 
