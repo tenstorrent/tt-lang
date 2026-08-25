@@ -1266,14 +1266,15 @@ Ordinary reuse requires identical `CircularBufferType` values (shape, element
 type, and block count). An explicit allocation group may combine scratch DFBs
 with different block shapes or block counts when their element types and page
 formats are identical. The physical descriptor then uses the largest total
-capacity. Both mechanisms require complete quiescent lifecycles. Ordinary reuse
+capacity. Both mechanisms require each lifecycle to complete. Ordinary reuse
 also requires matching write- and read-pointer runs unless a synchronized reset
 establishes canonical state. The matched sequences must remain boundary-safe
 when repeated from their terminal offsets. Allocation groups instead advance
-independent write and read cursors through each ordered member and require equal
-offsets at every handoff. Any pointer movement that crosses the shared physical
-envelope is rejected. These conditions retain one page format, sufficient
-storage, and legal ring-pointer progression.
+independent write and read cursors through each ordered member. A terminal
+synchronized reset establishes equal canonical offsets before the next
+handoff; otherwise the offsets must already be equal. Any pointer movement that
+crosses the shared physical envelope is rejected. These conditions retain one
+page format, sufficient storage, and legal ring-pointer progression.
 `CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
 is a pointer comparison.
 
@@ -1357,16 +1358,21 @@ operation with the ID of the declaration reached from its DFB operand.
 Protocol edges from all logical DFBs share one module graph, so transitive
 order can pass through any number of intermediate kernels.
 
-#### Lifetimes with statically enumerated transactions
+#### Lifetimes with statically known transactions
 
-A logical DFB is bounded only when all of these conditions hold:
+For one-to-one transaction matching, a logical DFB is bounded only when all of
+these conditions hold:
 
-- a positive, equal number of reserve, push, wait, and pop occurrences reference
+- a positive, equal number of reserve, push, wait, and pop executions reference
   it;
-- static execution analysis proves that the operation owning each occurrence
-  executes exactly once on the applicable launched node;
-- occurrences pair by order into reserve/push/wait/pop transactions;
+- static execution analysis proves exact counts and iteration domains for each
+  repeated run;
+- the normalized executions pair by order into reserve/push/wait/pop
+  transactions;
 - within every transaction, reserve precedes push and wait precedes pop;
+- adjacent transaction runs are ordered within one exact static iteration
+  domain, or every execution of the earlier run precedes every execution of the
+  later run;
 - each concrete push follows all uses owned by its reserve, and each concrete
   pop follows all uses owned by its wait;
 - all four actions in a transaction transfer the same tile count (`num_tiles`),
@@ -1375,9 +1381,14 @@ A logical DFB is bounded only when all of these conditions hold:
   wait and pop occurrences have one known read-pointer owner;
 - the final pop follows every active access occurrence on the DFB.
 
+Exact cumulative external effect sequences use the separate queue-state proof
+described under [External calls](#external-calls).
+
 Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
-`ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
-unknown execution remains unproven.
+`ttl.if_src`, or `ttl.if_dst` region, or inside an exact static loop, may satisfy
+these conditions. An at-most-once region inside a static loop also qualifies
+when exact counts prove that the region executes in every loop iteration.
+Dynamic trip counts and runtime-selected repeated regions remain unproven.
 
 An access with an unknown launch-node domain is refined to an exact domain when
 execution-count analysis proves a count on every base launch node. Nodes with
@@ -1418,15 +1429,30 @@ and the order of statically expanded transactions. Effects are synchronous
 facts about actions completed inside the external call; they do not emit
 lifecycle operations.
 
-An occurrence with no effect remains a possible read or write from call entry
-through completion. If operand adaptation aliases several occurrences to one
-DFB, every occurrence requires effects to eliminate that opaque interval.
-Ordinary storage accesses between summarized acquisitions and releases remain
-inside the corresponding lifetime. A partial summary supplies its listed
-events but cannot establish the complete reserve/push/wait/pop lifecycle for
-that DFB. A bounded external lifecycle requires balanced, ordered transactions
-with equal tile counts, known pointer owners, supported execution counts, and
-no access after the terminal pop.
+An occurrence with neither a protocol effect nor a non-transactional access
+remains a possible read or write beginning at call entry. Its access contract
+is incomplete unless a matching synchronized reset proves lifecycle completion,
+so allocation cannot prove bounded reuse with another logical DFB on a shared
+launch node before that boundary. Exact disjoint launch-node domains may still
+share because they never use the physical allocation on the same node. If
+operand adaptation aliases several occurrences to one DFB, every occurrence
+requires an explicit contract or the same reset-completion proof. A partial
+summary supplies its listed events but cannot establish the complete
+reserve/push/wait/pop lifecycle for that DFB. A bounded external lifecycle
+requires balanced, ordered transactions with equal tile counts, known pointer
+owners, supported execution counts, and no access after the terminal pop.
+
+Native `ttl.copy` is not an external access. Its surrounding acquire and release
+operations define slot ownership, so the ordinary lifecycle proof determines
+whether reuse is valid.
+
+`dfb_accesses` describes typed synchronous accesses without queue transactions.
+`ttl.DFBAccess.inspect(dfb)` states that the callee may read the selected DFB's
+descriptor or contents but does not publish, consume, or leave that DFB changed.
+The call remains a storage access, so reuse still requires strict lifetime
+order; the summary establishes an identity queue-state transition. One
+dependency occurrence cannot declare both a protocol effect and a
+non-transactional access.
 
 `unknown_dfb_access` represents access to user-managed DFBs absent from the
 declared dependencies. For allocation, liveness analysis conservatively adds
@@ -1435,9 +1461,15 @@ listed DFBs, over the call's launch-node domain. Listed effects remain available
 to other verification. Unknown access applies only to user-managed DFBs;
 compiler-created DFB accesses require listed operands.
 
-The callee must complete every synchronous and asynchronous DFB access before
-returning. Work that remains active after return requires a separate explicit
-completion contract. The frontend and IR representation are described in
+Every declared effect action must complete before the callee returns. Associated
+interface work may remain active while the declared protocol retains ownership;
+it must complete before the terminal consumer release or a synchronized reset.
+For a named dependency with no effect summary, a synchronized reset ordered
+after the call may terminate the opaque access and canonicalize protocol state.
+The reset must complete earlier interface work before publishing arrival. This
+does not validate the callee's internal protocol. Unlisted access declared by
+`unknown_dfb_access` remains unbounded. The frontend and IR representation are
+described in
 [External Function Interop Lowering](ExternalFuncInteropLowering.md).
 
 An exact static `dfb_effects` sequence may describe cumulative queue state
@@ -1540,8 +1572,8 @@ unrelated third kernel adds no cross-kernel edge. A `B.wait` entered before
 The write- and read-pointer owners are also part of the allocation state. The
 owner is the launched node plus NOC0, NOC1, Pack, or Unpack and the pointer
 direction. Distinct kernel function symbols may share when they execute on the
-same hardware pointer processors. A quiescent handoff does not transfer pointer
-state between different processors.
+same hardware pointer processors. A completed lifecycle does not transfer
+pointer state between different processors.
 
 #### Relation to prior allocation models
 
@@ -1617,8 +1649,10 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         add previous completion -> entry
 
     for each logical DFB active on the node:
-      if statically counted reserve, push, wait, and pop runs match, or one
-         reserve, push, wait, and pop share one at-most-once condition:
+      if statically counted reserve/push and wait/pop runs align within their
+         respective exact iteration domains, producer and consumer counts
+         match, and adjacent runs have proven order, or one reserve, push,
+         wait, and pop share one at-most-once condition:
         DFB.nodeLifetime.transactionRuns = normalized counted transactions
         DFB.nodeLifetime.pointerOwners = read and write hardware processors
         add DFB.push.completion -> DFB.wait.completion
@@ -1630,7 +1664,7 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
       if every use completion precedes the final pop completion:
         DFB.nodeLifetime.earliestEvents = minimal entry events in uses
         DFB.nodeLifetime.terminalEvents = {final pop completion}
-        DFB.nodeLifetime.quiescence = proven
+        DFB.nodeLifetime.completionProof = proven
 
     build a second graph with every unknown access domain treated as possible
     prove conditionally bounded lifetimes only for one complete conditional
@@ -1639,7 +1673,7 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
       identities at one launch coordinate
     retain possible-domain order separately from exact-domain order
 
-  return logical DFB lifecycles, per-node quiescence, pointer owners,
+  return logical DFB lifecycles, per-node lifecycle completion, pointer owners,
          conditional boundedness, source evidence, and pairwise per-node
          exact and possible-domain lifetime order
 ```
@@ -1792,22 +1826,36 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       declarations and identity-preserving casts
 
   for each logical DFB pair A, B:
-    add descriptor mismatch if A.type != B.type
+    add descriptor mismatch if A.type != B.type, except for members of one
+        explicit allocation group without opaque external access
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
-      add access-completion-not-proven conflict unless both node lifetimes are
-        proven
-      add transaction conflict unless their transaction tile-count sequences match
-      add pointer-owner conflict unless read and write owners match
-      add concurrent-lifetime conflict unless A precedes B or B precedes A
+      if A and B share an allocation group and either lifetime has reset epochs:
+        add access-completion-not-proven conflict unless every epoch completes
+        add concurrent-lifetime conflict unless every cross-member epoch pair
+            has exactly one proven order
+      else:
+        add access-completion-not-proven conflict unless both node lifetimes
+            are proven
+        add transaction conflict unless their transaction tile-count sequences
+            match
+        add pointer-owner conflict unless read and write owners match
+        add concurrent-lifetime conflict unless A precedes B or B precedes A
 
   for each typed allocation group:
-    validate every member pair with descriptor equality disabled
+    validate every member pair with descriptor equality disabled unless either
+        member has opaque external access
     reject incompatible element types or tensor-backed capacity envelopes
     reject any storage, static-configuration, protocol, owner, domain, or
       lifetime conflict
     compute the largest scratch byte capacity required by a member
+    for each launch node:
+      order every active member epoch by its proven event relation
+      require each adjacent handoff to preserve pointer owners or follow a
+          canonical reset
+      advance read and write cursors through every epoch in that order
+      reject unequal handoff offsets or a transaction that crosses the envelope
 
   if reuseUserDFBs:
     candidates = all logical DFBs in immutable declaration order
@@ -2080,10 +2128,14 @@ with releases before finalization.
 - **Structured control flow and index reuse.** Lifecycle operations inside
   `scf.if`, `affine.if`, `ttl.if_src`, and `ttl.if_dst` can be bounded when
   launch-node and execution-count analysis prove one execution on the
-  applicable node. Nested operations project to the enclosing kernel-body
-  operation for inter-kernel ordering. Repeated regions and multi-block
-  functions remain conservative. More precise region-local ordering requires
-  occurrence-level entry and completion events.
+  applicable node. Exact static loops can be bounded when matched runs share
+  one iteration domain and their operations have structural order. This
+  includes at-most-once regions proven to execute in every static iteration.
+  Nested operations project to the enclosing kernel-body operation for
+  inter-kernel ordering. Dynamic or runtime-selected repeated regions and
+  multi-block functions remain conservative. More precise region-local
+  ordering for those forms requires occurrence-level entry and completion
+  events.
   MLIR's
   [One-Shot Bufferize](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Bufferization/Transforms/OneShotAnalysis.cpp)
   applies the same conservative restriction when repeated regions invalidate a
@@ -2091,7 +2143,7 @@ with releases before finalization.
 
 - **Unresolved repeated protocols.** Static loops with matched structured
   iteration domains and exact external cumulative sequences are supported.
-  Dynamic trip counts, conditionally repeated iterations, unknown external
+  Dynamic trip counts, runtime-selected iterations, unknown external
   effect order, and mixed native/external cumulative sequences remain
   conservative.
 

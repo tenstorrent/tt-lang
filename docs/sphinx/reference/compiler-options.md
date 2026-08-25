@@ -143,10 +143,10 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
 | `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation-group handoffs that lack a complete compiler proof. Automatic reuse remains proof-based. |
 | `exact-coloring-search-limit` | uint64 | `1000000` | Maximum states examined during deterministic exact DFB allocation before reporting an inconclusive result. |
-| `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
+| `specialize-cores` | bool | `false` | Run the `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
-The pipeline runs these passes in order:
+The pipeline runs these passes and subpasses in order:
 
 - `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
@@ -173,7 +173,7 @@ The pipeline runs these passes in order:
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-cores`, then `canonicalize`, `cse` -- per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -328,12 +328,18 @@ the original does not leave dangling `SymbolRefAttr`s; unrelated functions in
 the module are still specialized. Each clone replaces coordinate reads with
 `arith.constant`s and is tagged with `ttl.core_coord` for runtime dispatch.
 Downstream `canonicalize` / `cse` fold the now-constant branches.
+`ttkernel-annotate-dfb-use` then records surviving DFB compile-time
+argument indices on each specialized function. Debug prints of a DFB
+remain only on cores that still have a non-print use of that DFB; a
+print whose DFB was folded away is dropped rather than keeping the
+descriptor alive for debugging.
 
 This pass is off by default. Enable it through the pipeline option
-`specialize-cores` (Python: `--ttl-specialize-cores`):
+`specialize-cores` (Python: `--ttl-specialize-cores`), which runs the
+registered `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline:
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
 # Or stand-alone:
-ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-cores,canonicalize,cse)'
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-and-annotate-dfb-use)'
 ```

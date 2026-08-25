@@ -367,7 +367,7 @@ func.func @loop_lifecycle()
 // -----
 
 // Ordered lifetimes cannot share when the producer pointer changes from NOC0
-// to Pack. Quiescence does not transfer write-pointer ownership.
+// to Pack. Lifecycle completion does not transfer write-pointer ownership.
 
 // REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @producer_transition_dm

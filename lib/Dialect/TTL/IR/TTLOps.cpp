@@ -234,6 +234,16 @@ llvm::LogicalResult DFBProtocolEffectAttr::verify(
   return success();
 }
 
+llvm::LogicalResult DFBNonTransactionalAccessAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DFBNonTransactionalAccessKind, int64_t dependencyIndex) {
+  if (dependencyIndex < 0) {
+    return emitError() << "DFB dependency index must be nonnegative, got "
+                       << dependencyIndex;
+  }
+  return success();
+}
+
 llvm::LogicalResult TensorBackingAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     int64_t tensorIndex, int64_t byteOffset, int64_t byteSize) {
@@ -2697,6 +2707,7 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
   }
 
   SmallVector<Value> dependencies = getDFBDependencyOperands();
+  llvm::BitVector protocolDependencies(dependencies.size());
   if (std::optional<ArrayAttr> effects = getDfbEffects()) {
     for (auto [effectIndex, attribute] : llvm::enumerate(*effects)) {
       auto effect = cast<DFBProtocolEffectAttr>(attribute);
@@ -2716,6 +2727,33 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                << " exceeds dependency " << effect.getDependencyIndex()
                << " capacity " << dfbType.getTotalElements();
       }
+      protocolDependencies.set(
+          static_cast<size_t>(effect.getDependencyIndex()));
+    }
+  }
+  llvm::BitVector nonTransactionalDependencies(dependencies.size());
+  if (std::optional<ArrayAttr> accesses = getDfbAccesses()) {
+    for (auto [accessIndex, attribute] : llvm::enumerate(*accesses)) {
+      auto access = cast<DFBNonTransactionalAccessAttr>(attribute);
+      size_t dependencyIndex = static_cast<size_t>(access.getDependencyIndex());
+      if (dependencyIndex >= dependencies.size()) {
+        return emitOpError("DFB non-transactional access ")
+               << accessIndex << " dependency index "
+               << access.getDependencyIndex() << " is out of range for "
+               << dependencies.size() << " dependencies";
+      }
+      if (nonTransactionalDependencies.test(dependencyIndex)) {
+        return emitOpError("DFB dependency ")
+               << dependencyIndex
+               << " has more than one non-transactional access summary";
+      }
+      if (protocolDependencies.test(dependencyIndex)) {
+        return emitOpError("DFB dependency ")
+               << dependencyIndex
+               << " cannot declare both protocol effects and a "
+                  "non-transactional access";
+      }
+      nonTransactionalDependencies.set(dependencyIndex);
     }
   }
   if (DispatchConditionAttr condition = getConditionResultAttr()) {
@@ -2728,7 +2766,7 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
              << condition.getScalarType();
     }
     if (!getTemplateDfbOperands().empty() || !dependencies.empty() ||
-        getDfbEffects() || getUnknownDfbAccess()) {
+        getDfbEffects() || getDfbAccesses() || getUnknownDfbAccess()) {
       return emitOpError("condition result call cannot access DFB state");
     }
   }
@@ -2813,6 +2851,27 @@ mlir::tt::ttl::OpaqueCallOp::getDFBProtocolEffects() {
                        static_cast<unsigned>(sequenceIndex)});
   }
   return effects;
+}
+
+llvm::SmallVector<mlir::tt::ttl::DFBNonTransactionalAccess>
+mlir::tt::ttl::OpaqueCallOp::getDFBNonTransactionalAccesses() {
+  llvm::SmallVector<DFBNonTransactionalAccess> accesses;
+  std::optional<ArrayAttr> accessAttrs = getDfbAccesses();
+  if (!accessAttrs) {
+    return accesses;
+  }
+  SmallVector<Value> dependencies = getDFBDependencyOperands();
+  accesses.reserve(accessAttrs->size());
+  for (auto [sequenceIndex, attribute] : llvm::enumerate(*accessAttrs)) {
+    auto access = cast<DFBNonTransactionalAccessAttr>(attribute);
+    size_t dependencyIndex = static_cast<size_t>(access.getDependencyIndex());
+    assert(dependencyIndex < dependencies.size() &&
+           "opaque_call must be verified before querying DFB accesses");
+    accesses.push_back({dependencies[dependencyIndex], access.getKind(),
+                        static_cast<unsigned>(dependencyIndex),
+                        static_cast<unsigned>(sequenceIndex)});
+  }
+  return accesses;
 }
 
 bool mlir::tt::ttl::OpaqueCallOp::hasUnknownDFBAccess() {
