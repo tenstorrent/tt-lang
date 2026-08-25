@@ -6,6 +6,28 @@
 // row-major, missing CB) before the lowering even runs; the cases here cover
 // the reduce-dim/derived-bcast-type cross-check that requires SSA tracing.
 
+// An in-tile broadcast reads through the unpacker and requires a
+// DFB-materialized input before final conversion.
+module {
+  func.func @in_tile_bcast_from_computed(
+      %arg0: tensor<1x1x!ttcore.tile<32x32, f32>>,
+      %arg1: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+    %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 8], !ttcore.tile<32x32, f32>, 2>
+    %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %arg1_cb = ttl.attach_cb %arg1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %reserve = ttl.cb_reserve %cb2 : !ttl.cb<[1, 8], !ttcore.tile<32x32, f32>, 2> -> tensor<1x8x!ttcore.tile<32x32, f32>>
+    %add = ttl.add %arg0_cb, %arg1_cb : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{'ttl.block.broadcast' op broadcast input must come directly from a circular buffer, not from an elementwise result; move the broadcast to its own compute block or make it the first operation in a fused sequence}}
+    %bcast = ttl.block.broadcast %add dims = [-1], shape = [1, 8] : tensor<1x1x!ttcore.tile<32x32, f32>> -> tensor<1x8x!ttcore.tile<32x32, f32>>
+    ttl.store %bcast, %reserve : tensor<1x8x!ttcore.tile<32x32, f32>>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    return
+  }
+}
+
+// -----
+
 // Scalar reduce (REDUCE_SCALAR) feeding a ROW broadcast (dims=[-2]).
 // ROW unpack reads row 0, but REDUCE_SCALAR only has valid data at [0,0].
 module {

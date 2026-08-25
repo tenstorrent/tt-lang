@@ -222,23 +222,26 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
   }
 }
 
-static void
-replaceOutputPushesBeforeCompute(PatternRewriter &rewriter, ComputeOp computeOp,
-                                 const OutputPublicationPlan &outputs,
-                                 SmallVectorImpl<CBPushOp> &replacedPushes) {
+static void relocateOutputPublicationBeforeCompute(
+    PatternRewriter &rewriter, ComputeOp computeOp,
+    const OutputPublicationPlan &outputs,
+    SmallVectorImpl<CBPushOp> &replacedPushes) {
   OpBuilder::InsertionGuard guard(rewriter);
   Operation *insertAfter = computeOp;
-  for (CBPushOp push : outputs.pushes) {
-    assert(push->getBlock() == computeOp->getBlock() &&
-           "pushes absorbed into a compute must be siblings of that compute");
-    // Publications already after the new compute preserve their ordering.
-    if (!push->isBeforeInBlock(computeOp)) {
+  for (Operation *operation : outputs.postComputeOperations) {
+    assert(operation->getBlock() == computeOp->getBlock() &&
+           "relocated publication operations must be compute siblings");
+    if (auto push = dyn_cast<CBPushOp>(operation)) {
+      assert(llvm::is_contained(outputs.pushes, push) &&
+             "publication relocation must contain a planned push");
+      rewriter.setInsertionPointAfter(insertAfter);
+      auto replacement = cast<CBPushOp>(rewriter.clone(*push));
+      insertAfter = replacement;
+      replacedPushes.push_back(push);
       continue;
     }
-    rewriter.setInsertionPointAfter(insertAfter);
-    auto replacement = cast<CBPushOp>(rewriter.clone(*push));
-    insertAfter = replacement;
-    replacedPushes.push_back(push);
+    operation->moveAfter(insertAfter);
+    insertAfter = operation;
   }
 }
 
@@ -577,8 +580,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
-                                   replacedPushes);
+  relocateOutputPublicationBeforeCompute(rewriter, computeOp, outputs,
+                                         replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
@@ -672,8 +675,8 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   YieldOp::create(rewriter, loc);
 
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
-                                   replacedPushes);
+  relocateOutputPublicationBeforeCompute(rewriter, computeOp, outputs,
+                                         replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
   for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
@@ -773,8 +776,8 @@ static LogicalResult buildComputeFromInputs(
          "source anchor");
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
-                                   replacedPushes);
+  relocateOutputPublicationBeforeCompute(rewriter, computeOp, outputs,
+                                         replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(op, computeOp.getResult(0));
   for (const ComputeInstrumentationPlacement &placement :
@@ -999,7 +1002,10 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op,
     return success(); // pattern will handle gracefully
   }
 
-  if (!getAttachedCB(op.getInput())) {
+  int64_t rank = inputType.getRank();
+  bool requiresTileBroadcast =
+      getTileBroadcastType(op.getDims(), rank).has_value();
+  if (requiresTileBroadcast && !getAttachedCB(op.getInput())) {
     if (mode == TTLToComputeMode::ProducerCreation) {
       return success();
     }
@@ -1008,8 +1014,6 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op,
         "an elementwise result; move the broadcast to its own compute block "
         "or make it the first operation in a fused sequence");
   }
-
-  int64_t rank = inputType.getRank();
 
   // Validate broadcast dims vs. producing reduce (#444). The derived
   // BcastType determines the hardware unpack type and must agree with the
@@ -1061,6 +1065,9 @@ struct LowerBlockBroadcastToCompute
 
   LogicalResult matchAndRewrite(BlockBroadcastOp op,
                                 PatternRewriter &rewriter) const override {
+    if (!getAttachedCB(op.getInput())) {
+      return tryFusion(op.getOperation(), rewriter, this->kernelPlan);
+    }
     return buildComputeFromInputs(
         op, rewriter, ComputeOpCreationRecipe::BlockBroadcast, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,

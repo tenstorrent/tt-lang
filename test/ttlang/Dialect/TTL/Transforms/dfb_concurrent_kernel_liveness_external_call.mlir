@@ -1,19 +1,18 @@
 // Tests external-call DFB uses in concurrent-kernel lifetime analysis.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
 
-// A descriptor reference keeps A live through the external call without a
-// runtime DFB argument. The unsummarized call may change A's protocol state,
-// so A remains unbounded and cannot share with B. The index query after the pop
-// does not access physical storage and does not extend A's lifetime.
+// A descriptor inspection keeps A live through the external call without
+// changing protocol state. A and B can therefore share storage. The index
+// query after the pop does not access physical storage or extend A's lifetime.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}]}
+// CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}]}
 // CHECK-LABEL: func.func @external_use_before_release_dm
-// CHECK-SAME: ttl.base_cta_index = 3 : i32
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
 // CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-// CHECK-DAG: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+// CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 // CHECK-LABEL: func.func @external_use_before_release_compute
-// CHECK-SAME: ttl.base_cta_index = 3 : i32
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
 // CHECK-DAG: %[[A:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // CHECK-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}

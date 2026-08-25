@@ -1,14 +1,14 @@
 // Verifies exact conversion rejects combined PipeNet, reset, and DFB overflow.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false l1-budget-override=8255})'
 
-// expected-error @below {{combined DFB and runtime resources require 8256 L1 bytes but the budget is 8255 (DFB=8192, scratch=64, global semaphores=0)}}
+// expected-error @below {{combined DFB and runtime resources require 8256 L1 bytes but the budget is 8255 (DFB=8192, scratch=64, global semaphores=0, reconfiguration state=0)}}
 module attributes {
   ttl.launch_grid = array<i64: 2, 2>,
   ttl.target_arch = #ttcore.arch<blackhole>
 } {
   func.func @pipe_receive()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_dst attributes {
         records = #ttl.pipenet_records<net 0 name "reset_pipe" pipes [
@@ -32,7 +32,7 @@ module attributes {
 
   func.func @pipe_and_reset()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_src attributes {
         records = #ttl.pipenet_records<net 0 name "reset_pipe" pipes [

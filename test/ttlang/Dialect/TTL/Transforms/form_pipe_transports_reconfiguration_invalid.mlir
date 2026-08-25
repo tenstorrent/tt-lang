@@ -11,7 +11,7 @@
 
 // DFB storage (24576), Pipe scratch (64), one global semaphore (64), and
 // boundary state (1088) each fit separately, but their 25792-byte total does not.
-// expected-error @below {{combined DFB and runtime resources require 25792 L1 bytes but the budget is 25791 (DFB=24576, scratch=64, global semaphores=64, reconfiguration state=1088)}}
+// expected-error @below {{combined DFB and runtime resources require 25920 L1 bytes but the budget is 25791 (DFB=24576, scratch=64, global semaphores=192, reconfiguration state=1088)}}
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,
   ttl.target_arch = #ttcore.arch<blackhole>

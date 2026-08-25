@@ -10,7 +10,7 @@
 
 // Local selected records retain one receiver-published address table.
 // CHECK-NOT: ttl.pipe_conservative_l1_bytes
-// CHECK: module attributes {ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64}
+// CHECK: module attributes {{.*}}ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64}
 
 module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 

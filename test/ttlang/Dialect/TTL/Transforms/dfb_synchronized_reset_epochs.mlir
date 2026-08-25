@@ -812,7 +812,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // three-tile physical allocation.
 // CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=6144 handoff=proven
 // CHECK: DFB logical_id=0 bounded=1
-// CHECK: reset_epochs=[{executions=4,accesses=[0, 1, 2, 3],transactions=[2]
+// CHECK: epochs=[{executions=4,accesses=[0, 1, 2, 3],transactions=[2]
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 // CHECK: DFB assignment: logical DFB 0 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)

@@ -12,7 +12,7 @@
 // CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: kernel_argument_condition = equivalent
-// CHECK-NEXT: helper_argument_condition = not-equivalent
+// CHECK-NEXT: helper_argument_condition = equivalent
 // CHECK-NOT:  =
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {

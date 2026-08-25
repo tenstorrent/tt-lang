@@ -11,7 +11,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %old = ttl.bind_cb {cb_index = 0, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] cannot alias logical DFBs 0 and 1: unproven-quiescence}}
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] cannot alias logical DFBs 0 and 1: access-completion-not-proven}}
     %current = ttl.bind_cb {cb_index = 1, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -46,7 +46,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.opaque_call "reserve_only" dfb_dependencies(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "explicit">, <kind = data_movement, identity = "reader", operation = "explicit">, <kind = data_movement, identity = "writer", operation = "explicit">]>(%old, %current : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<4> members=[0, 1] cannot alias logical DFBs 0 and 1: unproven-quiescence}}
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<4> members=[0, 1] cannot alias logical DFBs 0 and 1: access-completion-not-proven}}
     %slot = ttl.cb_reserve %current
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -217,7 +217,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %current = ttl.bind_cb {cb_index = 1, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<3>, dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<3> members=[0, 1] cannot alias logical DFBs 0 and 1: unproven-quiescence}}
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<3> members=[0, 1] cannot alias logical DFBs 0 and 1: access-completion-not-proven}}
     ttl.opaque_call "opaque" dfb_dependencies(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "opaque.hpp", unknown_dfb_access} : () -> ()
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "unknown">, <kind = data_movement, identity = "reader", operation = "unknown">, <kind = data_movement, identity = "writer", operation = "unknown">]>(%old, %current : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     %slot = ttl.cb_reserve %current

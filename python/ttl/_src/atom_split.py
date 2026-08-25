@@ -41,10 +41,6 @@ _EXTERNAL_CALL_NAME = "call_extern_func"
 _KERNEL_KEYWORD = "kernel"
 _DFB_RESET_CALLS = frozenset({"reset_dfbs", "reset_all_dfbs"})
 _DFB_RECONFIGURATION_CALL_NAME = "reconfigure_dfbs"
-_PIPE_SOURCE_KERNEL = Kernel._implicit(
-    KernelKind.DATA_MOVEMENT,
-    _PIPE_SOURCE_KERNEL_ROLE,
-)
 
 
 class _Placement(Enum):

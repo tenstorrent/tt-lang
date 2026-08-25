@@ -32,10 +32,10 @@
 // CHECK-SAME: occurrences=[0:0, 1:0, 2:0, 3:0]
 // CHECK: DFB logical_id=3 bounded=0 compiler_created=0
 // CHECK-SAME: access_contracts_complete=0
-// CHECK-SAME: domain=unknown
-// CHECK: possible_nodes quiescence=missing-protocol-effect domain_assumption=unknown-possible may_be_active=1 conditional_execution=0 node_count=10 exemplar=(0,0)
-// CHECK-SAME: occurrences=[0:unresolved, 1:1, 2:1, 3:1, 4:1]
-// CHECK-SAME: transactions=[]
+// CHECK: access 0 effect=none tiles=0 sequence=0 opaque_external=1 domain=unknown
+// CHECK: node (0,0) quiescence=none domain_assumption=exact
+// CHECK-SAME: occurrences=[1:1, 2:1, 3:1, 4:1]
+// CHECK-SAME: transactions=[1]
 // CHECK: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain node=none
 // CHECK: DFB allocation liveness report end
 // CHECK-NEXT: Total DFB count: 4

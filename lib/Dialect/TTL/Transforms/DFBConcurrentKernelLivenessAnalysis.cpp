@@ -4549,6 +4549,7 @@ static bool intervalIsOutsideReset(ArrayRef<unsigned> earliestEntryEvents,
 }
 
 static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
+                                   SynchronizedDFBResetAttr reset,
                                    const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
   if (lifetime.epochs.empty()) {
@@ -4557,6 +4558,9 @@ static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
                                   resetEvents, graph);
   }
   return llvm::all_of(lifetime.epochs, [&](const DFBLifecycleEpoch &epoch) {
+    if (epoch.terminalResetOrdinal == reset.getOrdinal()) {
+      return true;
+    }
     return intervalIsOutsideReset(epoch.earliestEntryEvents,
                                   epoch.terminalCompletionEvents, resetEvents,
                                   graph);
@@ -4738,7 +4742,8 @@ static void collectResetAllocationConflicts(
         }
         bool outsideReset =
             lifetime->quiescence.proven()
-                ? lifetimeIsOutsideReset(*lifetime, resetEvents->second, graph)
+                ? lifetimeIsOutsideReset(*lifetime, reset.reset,
+                                         resetEvents->second, graph)
                 : unprovenLifecycleIsOutsideReset(
                       logicalDFB, node, executionCounts,
                       /*includeUnknownDomains=*/usePossibleLifetimes,

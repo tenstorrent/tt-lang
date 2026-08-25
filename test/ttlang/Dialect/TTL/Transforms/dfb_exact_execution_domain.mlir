@@ -207,7 +207,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // REPORT: DFB logical_id=21 bounded=1 compiler_created=0
 // REPORT-SAME: access_contracts_complete=1
 // REPORT-SAME: domain={(0,0), (1,0)}
-// REPORT: DFB conflict lhs=20 rhs=21 reason=unproven-quiescence
+// REPORT: DFB conflict lhs=20 rhs=21 reason=access-completion-not-proven
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @overlapping_incomplete_access_contract()
@@ -241,12 +241,12 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // REPORT: DFB logical_id=16 bounded=0 compiler_created=0
 // REPORT-SAME: access_contracts_complete=0
-// REPORT-SAME: domain=unknown
+// REPORT-SAME: domain={(0,0), (1,0)}
 // REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(0,0), (1,0)}
 // REPORT: access 4 effect=none tiles=0 sequence=0 opaque_external=1 domain=unknown
 // REPORT: DFB logical_id=17 bounded=1 compiler_created=0
 // REPORT-SAME: domain={(0,0), (1,0)}
-// REPORT: DFB conflict lhs=16 rhs=17 reason=unknown-launch-node-domain
+// REPORT: DFB conflict lhs=16 rhs=17 reason=access-completion-not-proven
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @one_unresolved_access(%runtime_offset: index)

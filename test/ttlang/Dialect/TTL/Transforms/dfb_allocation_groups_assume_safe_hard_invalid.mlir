@@ -188,6 +188,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
                   ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
                   ttl.crta_indices = []} {
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<2> members=[4, 5] physical envelope of 3 tiles makes logical DFB 4 cross the ring boundary on launch node (0,0)}}
     %first = ttl.bind_cb {cb_index = 0, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<2>, dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -198,7 +199,6 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
     scf.for %transaction = %lower to %upper step %step {
-      // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<2> members=[4, 5] physical envelope of 3 tiles makes logical DFB 4 cross the ring boundary on launch node (0,0)}}
       ttl.opaque_call "produce_two" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
     }
     %second_slot = ttl.cb_reserve %second

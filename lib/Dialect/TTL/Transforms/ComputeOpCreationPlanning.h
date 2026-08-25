@@ -349,6 +349,12 @@ struct OutputPublicationPlan {
   /// Existing `ttl.cb_push` operations matched to transactions, in block order.
   SmallVector<CBPushOp> pushes;
 
+  /// Publication operations that precede the creation anchor and must execute
+  /// after the created compute, in their original block order. This includes
+  /// each affected push and same-generation consumers whose SSA users would
+  /// otherwise remain before the publication.
+  SmallVector<Operation *> postComputeOperations;
+
   /// Acquire-delimited output transactions in first-store order.
   SmallVector<OutputDFBTransaction> transactions;
 

@@ -848,7 +848,9 @@ FusionTraceResult traceFusionToRoots(
     return result;
   }
 
-  // BlockBroadcastOp is a fusion leaf because its input must be DFB-attached.
+  // In-tile broadcasts consume a DFB root through the unpacker. Inter-tile
+  // broadcasts only change indexing and can therefore fuse through a computed
+  // input.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
     mlir::OpOperand &inputOperand = bcastOp->getOpOperand(0);
     mlir::Value bcastInput = inputOperand.get();
@@ -861,10 +863,26 @@ FusionTraceResult traceFusionToRoots(
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // The broadcast cannot be formed until its input is materialized.
-    result.failureReason = TraceFailureReason::NotCBAttached;
-    result.failedValue = bcastInput;
-    result.failedOperand = &inputOperand;
+
+    auto inputType = dyn_cast<RankedTensorType>(bcastInput.getType());
+    if (!inputType ||
+        getTileBroadcastType(bcastOp.getDims(), inputType.getRank())) {
+      result.failureReason = TraceFailureReason::NotCBAttached;
+      result.failedValue = bcastInput;
+      result.failedOperand = &inputOperand;
+      return result;
+    }
+
+    FusionTraceResult inputTrace =
+        traceFusionToRoots(bcastInput, isMaterializationPlanned);
+    if (inputTrace.failureReason != TraceFailureReason::Success) {
+      if (!inputTrace.failedOperand) {
+        inputTrace.failedOperand = &inputOperand;
+      }
+      return inputTrace;
+    }
+    result = std::move(inputTrace);
+    result.opsInOrder.insert(defOp);
     return result;
   }
 
