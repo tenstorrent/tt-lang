@@ -221,7 +221,7 @@ argument.
 | Source argument | Generated C++ interface | Restrictions |
 | --- | --- | --- |
 | `ttl.dfb_descriptor(dfb)` in `template_args` | `ttlang::DFBDescriptor<...>` template type | Declares a direct DFB dependency. |
-| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args`, `ttl.dfb_descriptor`, or `dfb_dependencies`. |
+| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | Declares identity-only index consumption without a DFB storage access. A callee that also accesses the storage must declare a dependency through `func_args`, `dfb_dependencies`, or a `ttl.dfb_descriptor` template argument. |
 | DFB in `func_args` | Physical DFB index `uint32_t` parameter | Declares a direct DFB dependency. |
 | DFB in `dfb_dependencies` | No generated C++ argument | Declares dependency-only storage access. Entries must be distinct and must not duplicate automatic dependencies. |
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |

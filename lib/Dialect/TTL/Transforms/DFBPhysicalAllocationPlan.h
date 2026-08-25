@@ -29,6 +29,7 @@ class DFBPhysicalConflictModelBuilder;
 struct DFBPhysicalIndexAssignment {
   int64_t logicalId = 0;
   int32_t physicalIndex = 0;
+  int32_t storageIndex = 0;
   Type type;
   TensorBackingAttr tensorBacking;
   DFBAllocationGroupAttr allocationGroup;
@@ -56,6 +57,7 @@ struct DFBConfigurationEpochDescriptor {
 /// Runtime allocation descriptor for one physical DFB.
 struct DFBPhysicalAllocationDescriptor {
   int32_t physicalIndex = 0;
+  int32_t storageIndex = 0;
   int32_t numTiles = 0;
   Type elementType;
   int32_t pageSize = 0;

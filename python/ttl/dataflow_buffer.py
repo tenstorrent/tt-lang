@@ -309,6 +309,7 @@ class PhysicalDFBConfig:
     tile: Optional[Tuple[int, int]]
     storage_segments: Tuple["DFBStorageSegment", ...] = ()
     allocation_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
+    storage_index: Optional[int] = None
 
 
 @dataclass(frozen=True)

@@ -2029,6 +2029,17 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
             context=f"{context}.allocation_nodes",
             allow_empty=True,
         )
+    storage_index = None
+    if "storage_index" in entry:
+        try:
+            storage_index = int(entry["storage_index"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid {context}.storage_index: {error}") from None
+        if storage_index < 0:
+            raise ValueError(
+                f"{context}.storage_index must be a nonnegative integer, "
+                f"got {storage_index!r}"
+            )
     return PhysicalDFBConfig(
         dfb_index=dfb_index,
         num_tiles=num_tiles,
@@ -2038,6 +2049,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         tile=tile,
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
+        storage_index=storage_index,
     )
 
 

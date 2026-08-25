@@ -5357,6 +5357,112 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
+def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+def test_storage_group_uses_one_lcm_aligned_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    configs = [
+        PhysicalDFBConfig(0, 3, "bfloat16", 1, 3072, None, storage_index=4),
+        PhysicalDFBConfig(1, 2, "bfloat16", 1, 4096, None, storage_index=4),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 12288
+    assert [
+        descriptor.buffer_index for descriptor in descriptors[0].format_descriptors
+    ] == [0, 1]
+
+
+def test_storage_group_partitions_disjoint_residency_signatures(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+            storage_index=2,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "float32",
+            1,
+            4096,
+            (32, 32),
+            allocation_nodes=((1, 0),),
+            storage_index=2,
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert descriptors_by_index[0].total_size == 2048
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert descriptors_by_index[1].total_size == 4096
+    assert _descriptor_cores(descriptors_by_index[1]) == {(1, 0)}
+
+
 def test_empty_allocation_nodes_omit_dfb_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
@@ -5714,6 +5820,48 @@ def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
             core_ranges=full_grid,
             kernel_specs=[_specialized_spec(full_grid, None)],
         )
+
+
+def test_static_dfb_descriptor_relocation_escapes_swap_local_minimum(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    size_unit_bytes = 2048
+    monkeypatch.setattr(
+        kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 17 * size_unit_bytes
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    plan_specs = (
+        (((0, 0), (1, 0)), 7),
+        (((1, 0),), 1),
+        (((2, 0),), 9),
+        (((0, 0), (1, 0)), 7),
+        (((0, 0), (1, 0), (2, 0)), 1),
+        (((0, 0), (2, 0)), 2),
+    )
+    configs = [
+        PhysicalDFBConfig(
+            physical_index,
+            size_units * (size_unit_bytes // 64),
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=allocation_nodes,
+        )
+        for physical_index, (allocation_nodes, size_units) in enumerate(plan_specs)
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    # Every improving swap remains at 18 units. Moving DFB 1 after DFB 4
+    # avoids the synchronization gap and fits the exact 17-unit budget.
+    assert [
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
+    ] == [0, 2, 3, 4, 1, 5]
 
 
 def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):

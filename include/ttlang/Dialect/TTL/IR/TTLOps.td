@@ -2285,8 +2285,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     depend on an incidental signed intermediate type.
 
     A DFB descriptor entry is itself a direct DFB dependency. A DFB index entry
-    does not declare a call-level DFB access. If the callee consumes that index,
-    the same DFB must be returned by `getDFBDependencyOperands()`.
+    explicitly declares identity-only consumption of the finalized physical
+    index and does not declare a call-level DFB storage access. Passing an index
+    through an ordinary scalar function argument instead requires the same DFB
+    to occur in the ordered dependency list so physical-index provenance cannot
+    escape through untyped integer dataflow.
 
     The optional result is a signless i32 or i64 scalar. When absent the call
     is treated as a void function invocation.
@@ -2351,9 +2354,11 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
   let description = [{
     Returns the integer DFB index for the given dataflow buffer as an
     i32 SSA value. At EmitC time this resolves to a raw integer literal.
-    Integer SSA dataflow does not preserve a call-level DFB access; an
-    external callee that accesses the DFB must also receive it as a DFB
-    operand.
+    Integer SSA dataflow does not preserve a call-level DFB access or an
+    identity-only index declaration. An external callee consuming the value as
+    an ordinary scalar argument must also receive the DFB as a dependency.
+    `ttl.get_dfb_id` in an opaque call's template argument list preserves the
+    DFB as a typed identity-only index operand instead.
   }];
   let arguments = (ins TTL_CircularBuffer:$dfb);
   let results = (outs I32:$result);

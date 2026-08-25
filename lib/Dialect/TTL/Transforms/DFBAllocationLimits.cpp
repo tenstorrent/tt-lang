@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <numeric>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -304,6 +305,92 @@ FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
     return failure();
   }
   return *allocationBytes;
+}
+
+FailureOr<DFBStorageLayout>
+mergeDFBStorageLayout(const DFBStorageLayout &layout, uint64_t memberBytes,
+                      uint64_t memberPageSize, std::string &failureReason) {
+  if (memberPageSize == 0) {
+    failureReason = "DFB storage page size must be positive";
+    return failure();
+  }
+  uint64_t commonDivisor = std::gcd(layout.alignmentBytes, memberPageSize);
+  std::optional<uint64_t> mergedAlignment = llvm::checkedMulUnsigned(
+      layout.alignmentBytes / commonDivisor, memberPageSize);
+  if (!mergedAlignment) {
+    failureReason = "DFB storage alignment is not representable";
+    return failure();
+  }
+  uint64_t requiredCapacity = std::max(layout.capacityBytes, memberBytes);
+  std::optional<uint64_t> roundedNumerator = llvm::checkedAddUnsigned(
+      requiredCapacity, *mergedAlignment - 1);
+  if (!roundedNumerator) {
+    failureReason = "DFB storage allocation size is not representable";
+    return failure();
+  }
+  uint64_t pageCount = *roundedNumerator / *mergedAlignment;
+  std::optional<uint64_t> mergedCapacity =
+      llvm::checkedMulUnsigned(pageCount, *mergedAlignment);
+  if (!mergedCapacity) {
+    failureReason = "DFB storage allocation size is not representable";
+    return failure();
+  }
+  return DFBStorageLayout{*mergedCapacity, *mergedAlignment};
+}
+
+FailureOr<bool> DFBStorageFootprint::add(int64_t storageIndex,
+                                         CircularBufferType type,
+                                         std::string &failureReason) {
+  FailureOr<uint64_t> allocationBytes =
+      getDFBAllocationSizeBytes(type, failureReason);
+  FailureOr<uint64_t> pageSize = getDFBPageSizeBytes(type);
+  if (failed(allocationBytes) || failed(pageSize)) {
+    if (failureReason.empty()) {
+      failureReason = "DFB page size is not representable";
+    }
+    return failure();
+  }
+  DFBStorageLayout &layout = layoutByIndex[storageIndex];
+  FailureOr<DFBStorageLayout> mergedLayout = mergeDFBStorageLayout(
+      layout, *allocationBytes, *pageSize, failureReason);
+  if (failed(mergedLayout)) {
+    return failure();
+  }
+  bool increased = mergedLayout->capacityBytes > layout.capacityBytes;
+  layout = *mergedLayout;
+  return increased;
+}
+
+FailureOr<uint64_t> DFBStorageFootprint::getTotalBytes() const {
+  uint64_t totalBytes = 0;
+  for (const DFBStorageLayout &layout :
+       llvm::make_second_range(layoutByIndex)) {
+    std::optional<uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalBytes, layout.capacityBytes);
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
+  }
+  return totalBytes;
+}
+
+uint64_t DFBStorageFootprint::getBytes(int64_t storageIndex) const {
+  auto indexIt = layoutByIndex.find(storageIndex);
+  assert(indexIt != layoutByIndex.end() &&
+         "storage index must be present in the footprint");
+  return indexIt->second.capacityBytes;
+}
+
+llvm::SmallVector<int64_t>
+DFBStorageFootprint::getSortedStorageIndices() const {
+  llvm::SmallVector<int64_t> storageIndices;
+  storageIndices.reserve(layoutByIndex.size());
+  for (int64_t storageIndex : llvm::make_first_range(layoutByIndex)) {
+    storageIndices.push_back(storageIndex);
+  }
+  llvm::sort(storageIndices);
+  return storageIndices;
 }
 
 FailureOr<bool> DFBAllocationFootprint::add(ModuleOp module,

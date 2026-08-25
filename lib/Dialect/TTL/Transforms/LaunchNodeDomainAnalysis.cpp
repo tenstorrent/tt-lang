@@ -10,6 +10,7 @@
 
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -879,6 +880,7 @@ struct UnresolvedControlFrame {
   std::size_t regionNumber = 0;
   IntegerSetAttr affinePredicate;
   SmallVector<Value, 3> controlValues;
+  std::optional<std::uint64_t> loopTripCount;
 };
 
 /// Structured-control frames that determine an unresolved count.
@@ -960,7 +962,8 @@ getUnresolvedExecutionCountContext(
       context.frames.push_back({UnresolvedControlFrameKind::ScfIf,
                                 region->getRegionNumber(),
                                 nullptr,
-                                {ifOp.getCondition()}});
+                                {ifOp.getCondition()},
+                                std::nullopt});
     } else if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent);
                affineIfOp && state.hasLaunchGrid) {
       LaunchNodeDomainResult trueDomain =
@@ -984,7 +987,8 @@ getUnresolvedExecutionCountContext(
           {UnresolvedControlFrameKind::ScfFor,
            region->getRegionNumber(),
            nullptr,
-           {forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep()}});
+           {forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep()},
+           tt::getLoopTripCount(forOp)});
     } else if (isa<scf::ExecuteRegionOp>(parent)) {
       current = parent;
       continue;
@@ -1256,7 +1260,26 @@ static bool proveEquivalentUnresolvedExecutionContexts(
         resolveRhsFunctionArgument,
     const LaunchNodeDomainState &state, bool requireConditionalExecution) {
   bool sameFunction = lhsContext.function == rhsContext.function;
-  if (lhsContext.frames.size() != rhsContext.frames.size() ||
+  SmallVector<const UnresolvedControlFrame *> lhsFrames;
+  SmallVector<const UnresolvedControlFrame *> rhsFrames;
+  auto collectRelevantFrames = [&](const UnresolvedExecutionCountContext &context,
+                                   SmallVectorImpl<const UnresolvedControlFrame *>
+                                       &frames) {
+    for (const UnresolvedControlFrame &frame : context.frames) {
+      // A statically one-trip loop neither predicates execution nor repeats
+      // its body. Conditions inside it remain explicit frames below.
+      if (requireConditionalExecution &&
+          frame.kind == UnresolvedControlFrameKind::ScfFor &&
+          frame.loopTripCount == 1) {
+        continue;
+      }
+      frames.push_back(&frame);
+    }
+  };
+  collectRelevantFrames(lhsContext, lhsFrames);
+  collectRelevantFrames(rhsContext, rhsFrames);
+
+  if (lhsFrames.size() != rhsFrames.size() ||
       (!requireConditionalExecution && !sameFunction) ||
       (requireConditionalExecution && !sameFunction &&
        !(lhsLocation == rhsLocation))) {
@@ -1264,29 +1287,30 @@ static bool proveEquivalentUnresolvedExecutionContexts(
   }
 
   llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
-  for (auto &&[lhsFrame, rhsFrame] :
-       llvm::zip_equal(lhsContext.frames, rhsContext.frames)) {
-    if (lhsFrame.kind != rhsFrame.kind ||
-        lhsFrame.regionNumber != rhsFrame.regionNumber ||
-        lhsFrame.affinePredicate != rhsFrame.affinePredicate ||
-        lhsFrame.controlValues.size() != rhsFrame.controlValues.size() ||
+  for (auto [lhsFrame, rhsFrame] : llvm::zip_equal(lhsFrames, rhsFrames)) {
+    if (lhsFrame->kind != rhsFrame->kind ||
+        lhsFrame->regionNumber != rhsFrame->regionNumber ||
+        lhsFrame->affinePredicate != rhsFrame->affinePredicate ||
+        lhsFrame->controlValues.size() != rhsFrame->controlValues.size() ||
         (requireConditionalExecution &&
-         lhsFrame.kind == UnresolvedControlFrameKind::ScfFor) ||
+         lhsFrame->kind == UnresolvedControlFrameKind::ScfFor) ||
         (requireConditionalExecution && !sameFunction &&
-         lhsFrame.kind == UnresolvedControlFrameKind::AffineIf)) {
+         lhsFrame->kind == UnresolvedControlFrameKind::AffineIf)) {
       return false;
     }
     for (auto &&[lhsValue, rhsValue] :
-         llvm::zip_equal(lhsFrame.controlValues, rhsFrame.controlValues)) {
-      bool equalValue = sameFunction &&
-                        proveEqualValuesAtLaunchLocations(
-                            lhsValue, lhsLocation, lhsContextValueEvaluator,
-                            resolveLhsFunctionArgument, rhsValue, rhsLocation,
-                            rhsContextValueEvaluator,
-                            resolveRhsFunctionArgument, state, equalValueCache);
+         llvm::zip_equal(lhsFrame->controlValues, rhsFrame->controlValues)) {
+      bool equalValue =
+          (sameFunction ||
+           (requireConditionalExecution && lhsLocation == rhsLocation)) &&
+          proveEqualValuesAtLaunchLocations(
+              lhsValue, lhsLocation, lhsContextValueEvaluator,
+              resolveLhsFunctionArgument, rhsValue, rhsLocation,
+              rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+              equalValueCache);
       if (!equalValue && lhsLocation == rhsLocation &&
           requireConditionalExecution &&
-          lhsFrame.kind == UnresolvedControlFrameKind::ScfIf) {
+          lhsFrame->kind == UnresolvedControlFrameKind::ScfIf) {
         equalValue = proveEquivalentDispatchConditionExpressions(
             lhsValue, true, rhsValue, true);
       }
@@ -1295,7 +1319,7 @@ static bool proveEquivalentUnresolvedExecutionContexts(
       }
     }
   }
-  return !requireConditionalExecution || !lhsContext.frames.empty();
+  return !requireConditionalExecution || !lhsFrames.empty();
 }
 
 } // namespace

@@ -9,14 +9,16 @@ include "mlir/IR/OpBase.td"
 
 def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
   let description = [{
-    Operations that expose dataflow buffer dependencies, ordered protocol
-    actions, and typed non-transactional accesses. Dependencies identify every
-    statically known DFB storage access. Protocol effects identify synchronous
-    reserve, push, wait, and pop actions that occur on every operation
-    execution, in execution order. Non-transactional summaries describe
-    synchronous accesses that do not change queue state. Unknown access is
-    distinct from a malformed or partial summary and conservatively applies to
-    user-managed DFB storage.
+    Operations that expose dataflow buffer dependencies, identity-only physical
+    index operands, ordered protocol actions, and typed non-transactional
+    accesses. Dependencies identify every statically known DFB storage access.
+    Index operands identify DFBs whose finalized physical indices are consumed
+    without accessing their storage. Protocol effects identify synchronous
+    reserve, push, wait, and pop actions that occur on every operation execution,
+    in execution order. Non-transactional summaries describe synchronous
+    accesses that do not change queue state. Unknown access is distinct from a
+    malformed or partial summary and conservatively applies to user-managed DFB
+    storage.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
@@ -40,7 +42,7 @@ def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
       /*methodBody=*/"",
       /*defaultImplementation=*/"return {};">,
     InterfaceMethod<
-      /*desc=*/"Return DFBs whose physical indices are consumed by the operation.",
+      /*desc=*/"Return DFBs whose physical indices are consumed without storage access.",
       /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
       /*methodName=*/"getDFBIndexOperands",
       /*args=*/(ins),

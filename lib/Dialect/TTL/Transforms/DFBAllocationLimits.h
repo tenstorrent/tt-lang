@@ -63,6 +63,37 @@ FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module);
 /// Verifies that the selected target implements DFB reconfiguration.
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
 
+/// Static storage capacity and page alignment shared by one or more DFBs.
+struct DFBStorageLayout {
+  uint64_t capacityBytes = 0;
+  uint64_t alignmentBytes = 1;
+};
+
+/// Extends a shared storage layout for one DFB allocation. The capacity is
+/// rounded to a multiple of every member's page size so each runtime format
+/// descriptor can use the same backing allocation.
+FailureOr<DFBStorageLayout>
+mergeDFBStorageLayout(const DFBStorageLayout &layout, uint64_t memberBytes,
+                      uint64_t memberPageSize, std::string &failureReason);
+
+/// Per-node L1 footprint aggregated by compiler-selected storage index.
+class DFBStorageFootprint {
+public:
+  /// Adds one DFB and returns true when it increases the storage capacity.
+  /// On failure, `failureReason` describes the invalid allocation type.
+  FailureOr<bool> add(int64_t storageIndex, CircularBufferType type,
+                      std::string &failureReason);
+
+  bool empty() const { return layoutByIndex.empty(); }
+  /// Returns the total allocation size, or failure when the sum overflows.
+  FailureOr<uint64_t> getTotalBytes() const;
+  uint64_t getBytes(int64_t storageIndex) const;
+  llvm::SmallVector<int64_t> getSortedStorageIndices() const;
+
+private:
+  llvm::DenseMap<int64_t, DFBStorageLayout> layoutByIndex;
+};
+
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:

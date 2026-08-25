@@ -89,7 +89,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %dfb_index = ttl.get_dfb_id %dfb
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as a dependency operand}}
+    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as an identity-only index operand or storage dependency}}
     ttl.opaque_call "custom_consume" (%dfb_index)
         {header = "custom_consume.hpp"} : (i32) -> ()
     return
@@ -110,7 +110,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %zero = arith.constant 0 : i32
     %laundered = arith.addi %dfb_index, %zero : i32
-    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as a dependency operand}}
+    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as an identity-only index operand or storage dependency}}
     ttl.opaque_call "custom_consume" (%laundered)
         {header = "custom_consume.hpp"} : (i32) -> ()
     return

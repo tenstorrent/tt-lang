@@ -19,11 +19,16 @@ def _entry(
     element_type="bf16",
     block_count=2,
     page_size=2048,
+    storage_index=None,
 ):
     """Build one textual physical-allocation metadata entry."""
 
+    storage_field = (
+        "" if storage_index is None else f"storage_index = {storage_index} : i32, "
+    )
     return (
-        f"{{dfb_index = {dfb_index} : i32, num_tiles = {num_tiles} : i32, "
+        f"{{dfb_index = {dfb_index} : i32, {storage_field}"
+        f"num_tiles = {num_tiles} : i32, "
         f"element_type = {element_type}, block_count = {block_count} : i32, "
         f"page_size = {page_size} : i32}}"
     )
@@ -59,10 +64,19 @@ def test_complete_physical_allocations_are_sorted():
         ]
 
 
+def test_storage_indices_are_preserved():
+    with Context():
+        module = _module([_entry(0, storage_index=3), _entry(1, storage_index=3)])
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, None, storage_index=3),
+            PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048, None, storage_index=3),
+        ]
+
+
 def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
     with Context():
-        module = Module.parse(
-            """module attributes {ttl.dfb_allocations = [{
+        module = Module.parse("""module attributes {ttl.dfb_allocations = [{
               block_count = 1 : i32,
               dfb_index = 0 : i32,
               element_type = !ttcore.tile<32x32, bf16>,
@@ -73,8 +87,7 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
                   tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
                 nodes = [[1, 0], [0, 0]]
               }]
-            }]} {}"""
-        )
+            }]} {}""")
 
         assert _resolve_dfb_configs(module) == [
             PhysicalDFBConfig(
@@ -196,6 +209,7 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, num_tiles=0)], "num_tiles must be positive"),
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
+        ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
