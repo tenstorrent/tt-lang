@@ -146,6 +146,21 @@ constexpr llvm::StringLiteral
 /// (array of {old_index, new_index} dictionaries).
 constexpr llvm::StringLiteral kDFBIndexMapAttrName("ttl.dfb_index_map");
 
+/// Module attribute carrying static backing allocations for epoch-reused DFBs.
+constexpr llvm::StringLiteral
+    kDFBEpochPhysicalConfigsAttrName("ttl.dfb_epoch_physical_configs");
+
+/// Original logical index retained on epoch-reused BindCBOp operations.
+constexpr llvm::StringLiteral
+    kDFBEpochLogicalIndexAttrName("ttl.dfb_epoch_logical_index");
+
+/// External helper called by the reset_dataflow_buffers syntax operation.
+constexpr llvm::StringLiteral
+    kResetDataflowBuffersCallee("ttlang::reset_dataflow_buffers");
+
+/// Hardware semaphores used by the four non-coordinator worker RISCs.
+constexpr int64_t kResetDataflowBuffersSemaphoreCount = 4;
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");

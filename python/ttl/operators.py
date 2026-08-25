@@ -600,6 +600,22 @@ def copy(src, dst) -> CopyTransferHandler:
         )
 
 
+@syntax("reset_dataflow_buffers")
+def reset_dataflow_buffers():
+    """Synchronously start a new physical dataflow-buffer allocation epoch.
+
+    Valid only at top level and in the same order on all five worker RISCs.
+    No dataflow buffer, acquired block, or pending buffer transaction crosses
+    the boundary.
+    """
+    ttl.opaque_call(
+        [],
+        "ttlang::reset_dataflow_buffers",
+        "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h",
+        [],
+    )
+
+
 @syntax("node")
 def node(*, dims):
     """
@@ -1156,6 +1172,7 @@ __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
     "copy",
+    "reset_dataflow_buffers",
     "core",
     "grid_size",
     "signpost",

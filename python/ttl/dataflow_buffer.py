@@ -186,6 +186,17 @@ class CompilerAllocatedDFBConfig:
     block_count: int
 
 
+@dataclass(frozen=True)
+class EpochPhysicalDFBConfig:
+    """Compiler-selected initial descriptor for an epoch-reused physical DFB."""
+
+    dfb_index: int
+    data_format: str
+    tile_height: int
+    tile_width: int
+    total_size: int
+
+
 def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],

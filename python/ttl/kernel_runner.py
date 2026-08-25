@@ -34,7 +34,7 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dataflow_buffer import CompilerAllocatedDFBConfig
+from .dataflow_buffer import CompilerAllocatedDFBConfig, EpochPhysicalDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
@@ -126,6 +126,7 @@ class KernelSpec:
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
         compiler_include_paths: Additional -I paths for the JIT compiler.
+        defines: Preprocessor definitions applied only to this kernel descriptor.
     """
 
     path: str
@@ -134,6 +135,7 @@ class KernelSpec:
     config: Any
     core_ranges: Optional[Any] = None
     compiler_include_paths: List[str] = field(default_factory=list)
+    defines: List[Tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -297,11 +299,18 @@ def build_kernel_descriptors(
                 if kernel_ranges.contains(entry[0])
             ]
 
+        kernel_define_names = {name for name, _ in spec.defines}
+        kernel_defines = [
+            define
+            for define in defines_by_thread.get(thread_name, [])
+            if define[0] not in kernel_define_names
+        ]
+        kernel_defines.extend(spec.defines)
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
-            defines=defines_by_thread.get(thread_name, []),
+            defines=kernel_defines,
             runtime_args=thread_runtime_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
@@ -495,6 +504,31 @@ def cb_geometry(index: int, cb: Any) -> CBGeometry:
         raise ValueError(
             f"Missing CB config for index {index}. "
             f"All DFB indices must have associated DataflowBuffer configurations."
+        )
+
+    if isinstance(cb, EpochPhysicalDFBConfig):
+        data_format = format_name_to_ttnn_dtype(cb.data_format)
+        tile_shape = (cb.tile_height, cb.tile_width)
+        tile = ttnn.Tile(tile_shape)
+        page_size = tile.get_tile_size(data_format)
+        if cb.total_size <= 0 or cb.total_size % page_size != 0:
+            raise ValueError(
+                f"Epoch physical CB[{index}] total_size={cb.total_size} must be "
+                f"a positive multiple of its {page_size}-byte tile"
+            )
+        return CBGeometry(
+            data_format=data_format,
+            page_size=page_size,
+            num_pages=cb.total_size // page_size,
+            total_size=cb.total_size,
+            tile_descriptor=ttnn.TileDescriptor(tile),
+            tile=tile_shape,
+            shape=None,
+            block_count=1,
+            breakdown=(
+                f"  CB[{index}]: epoch physical tile={tile_shape} "
+                f"format={cb.data_format} -> {cb.total_size} bytes"
+            ),
         )
 
     if isinstance(cb, CompilerAllocatedDFBConfig):
@@ -1083,6 +1117,15 @@ def run_kernel_on_device(
     if runtime_resource_lifetime is not None:
         runtime_resource_lifetime[:] = program_resources.lifetimes
 
+    if any(isinstance(cb, EpochPhysicalDFBConfig) for cb in cb_configs) and (
+        program_resources.cb_descriptors_override is not None
+        or program_resources.cb_pages_by_core
+    ):
+        raise ValueError(
+            "ProgramRuntimeResources cannot override compiler-selected "
+            "epoch dataflow-buffer descriptors"
+        )
+
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
         kernel_specs=kernel_specs,
@@ -1166,7 +1209,11 @@ def run_kernel_on_device(
 def _dtype_to_ttnn_str(data_format) -> str:
     """Convert a data format to ttnn.dtype string for code emission."""
     dtype_str = str(data_format)
-    if "bfloat16" in dtype_str.lower():
+    if "bfloat8_b" in dtype_str.lower():
+        return "ttnn.bfloat8_b"
+    elif "bfloat4_b" in dtype_str.lower():
+        return "ttnn.bfloat4_b"
+    elif "bfloat16" in dtype_str.lower():
         return "ttnn.bfloat16"
     elif "float32" in dtype_str.lower():
         return "ttnn.float32"
@@ -1176,6 +1223,8 @@ def _dtype_to_ttnn_str(data_format) -> str:
         return "ttnn.uint32"
     elif "uint16" in dtype_str.lower():
         return "ttnn.uint16"
+    elif "uint8" in dtype_str.lower():
+        return "ttnn.uint8"
     elif "int32" in dtype_str.lower():
         return "ttnn.int32"
     return "ttnn.bfloat16"
@@ -1284,6 +1333,12 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
+    lines.append("KERNEL_DEFINES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {spec.defines!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
     # Per-kernel dispatch ranges from KernelSpec.core_ranges. None means use
     # the whole-grid core_ranges below; a list of ((sx, sy), (ex, ey)) pairs
     # rebuilds a CoreRangeSet for specialize-cores clones.
@@ -1311,20 +1366,34 @@ def emit_runner_source(
         if cb is None:
             lines.append(f"    None,  # CB {i}")
             continue
-        if isinstance(cb, CompilerAllocatedDFBConfig):
+        if isinstance(cb, EpochPhysicalDFBConfig):
+            data_format = format_name_to_ttnn_dtype(cb.data_format)
+            tile_shape = (cb.tile_height, cb.tile_width)
+            page_size = ttnn.Tile(tile_shape).get_tile_size(data_format)
+            num_tiles = cb.total_size // page_size
+            total_size = cb.total_size
+            shape = None
+            block_count = 1
+        elif isinstance(cb, CompilerAllocatedDFBConfig):
             data_format = format_name_to_ttnn_dtype(cb.data_format)
             page_size = tile_bytes_from_dtype(data_format)
             num_tiles = cb.num_tiles * cb.block_count
             shape = (1, cb.num_tiles)
+            block_count = cb.block_count
+            tile_shape = None
+            total_size = num_tiles * page_size
         else:
             data_format = _cb_data_format(cb)
             page_size = ttnn.Tile(cb.tile).get_tile_size(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
             shape = cb.shape
+            block_count = cb.block_count
+            tile_shape = None
+            total_size = num_tiles * page_size
         dtype_str = _dtype_to_ttnn_str(data_format)
-        total_size = num_tiles * page_size
         lines.append(
-            f"    ({shape!r}, {cb.block_count}, {dtype_str}, {page_size}, {total_size}),  # CB {i}"
+            f"    ({shape!r}, {block_count}, {dtype_str}, {page_size}, "
+            f"{total_size}, {tile_shape!r}),  # CB {i}"
         )
     lines.append("]")
     lines.append("")
@@ -1358,12 +1427,18 @@ def emit_runner_source(
 
     lines.append("    cb_descriptors = []")
     lines.append(
-        "    for i, (shape, block_count, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
+        "    for i, (shape, block_count, dtype, page_size, total_size, tile_shape) in enumerate(CB_CONFIGS):"
+    )
+    lines.append("        format_kwargs = {}")
+    lines.append("        if tile_shape is not None:")
+    lines.append(
+        "            format_kwargs['tile'] = ttnn.TileDescriptor(ttnn.Tile(tile_shape))"
     )
     lines.append("        cb_format = ttnn.CBFormatDescriptor(")
     lines.append("            buffer_index=i,")
     lines.append("            data_format=dtype,")
     lines.append("            page_size=page_size,")
+    lines.append("            **format_kwargs,")
     lines.append("        )")
     lines.append("        cb_desc = ttnn.CBDescriptor(")
     lines.append("            total_size=total_size,")
@@ -1402,6 +1477,7 @@ def emit_runner_source(
     lines.append("                thread_type=thread_type,")
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append("                config=config,")
+    lines.append("                defines=KERNEL_DEFINES[kernel_idx],")
     lines.append(
         "                core_ranges=_core_ranges_from_spec("
         "KERNEL_CORE_RANGES[kernel_idx]),"

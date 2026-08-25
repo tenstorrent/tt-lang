@@ -74,6 +74,7 @@ from .dataflow_buffer import (
     CircularBuffer,
     CompilerAllocatedDFBConfig,
     DataflowBuffer,
+    EpochPhysicalDFBConfig,
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
@@ -103,6 +104,11 @@ from .ttl_utils import get_thread_type_string
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
+
+_RUNTIME_DFB_RECONFIGURATION_DEFINE = (
+    "TTLANG_RUNTIME_DFB_RECONFIGURATION",
+    "1",
+)
 
 
 def _register_thread(thread_fn: Callable) -> None:
@@ -566,6 +572,7 @@ class CompiledTTNNKernel:
         num_pipe_global_semaphores=0,
         opaque_include_paths=None,
         runtime_resource_factory=None,
+        runtime_dfb_reconfiguration=False,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -595,6 +602,8 @@ class CompiledTTNNKernel:
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
+            runtime_dfb_reconfiguration: Whether compute descriptors need mutable
+                runtime DFB metadata for compiler-planned epochs.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -615,6 +624,7 @@ class CompiledTTNNKernel:
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
         self._pipe_global_semaphore_lifetime = []
         self.runtime_resource_factory = runtime_resource_factory
+        self.runtime_dfb_reconfiguration = runtime_dfb_reconfiguration
         self._runtime_resource_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
         self._hang_key = hang.program_key(kernel_paths) if kernel_paths else ""
@@ -647,6 +657,11 @@ class CompiledTTNNKernel:
                 config=config,
                 core_ranges=self.kernel_core_ranges[kernel_idx],
                 compiler_include_paths=self.opaque_include_paths,
+                defines=(
+                    [_RUNTIME_DFB_RECONFIGURATION_DEFINE]
+                    if self.runtime_dfb_reconfiguration
+                    else []
+                ),
             )
             kernel_specs.append(spec)
 
@@ -699,10 +714,13 @@ class _CompiledTTNNKernelTemplate:
         self.pipe_sram_scratch_bytes = kernel.pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = kernel.num_pipe_global_semaphores
         self.opaque_include_paths = list(kernel.opaque_include_paths)
+        self.runtime_dfb_reconfiguration = kernel.runtime_dfb_reconfiguration
 
     @staticmethod
     def _detach_cb(config):
-        if config is None or isinstance(config, CompilerAllocatedDFBConfig):
+        if config is None or isinstance(
+            config, (CompilerAllocatedDFBConfig, EpochPhysicalDFBConfig)
+        ):
             return config
         detached = _copy.copy(config)
         # Preserve format inference without retaining the device allocation
@@ -734,6 +752,7 @@ class _CompiledTTNNKernelTemplate:
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             opaque_include_paths=list(self.opaque_include_paths),
             runtime_resource_factory=runtime_resource_factory,
+            runtime_dfb_reconfiguration=self.runtime_dfb_reconfiguration,
         )
 
 
@@ -965,6 +984,7 @@ def _compile_ttnn_kernel(
     num_pipe_global_semaphores: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
     runtime_resource_factory=None,
+    runtime_dfb_reconfiguration: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1247,6 +1267,7 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         runtime_resource_factory=runtime_resource_factory,
+        runtime_dfb_reconfiguration=runtime_dfb_reconfiguration,
     )
 
     # Recorded at compile time, not per launch: the hang collector needs the
@@ -1270,6 +1291,11 @@ def _compile_ttnn_kernel(
                 config=kernel_configs[kernel_idx],
                 core_ranges=kernel_core_ranges[kernel_idx],
                 compiler_include_paths=opaque_include_paths or [],
+                defines=(
+                    [_RUNTIME_DFB_RECONFIGURATION_DEFINE]
+                    if runtime_dfb_reconfiguration
+                    else []
+                ),
             )
             kernel_specs_for_emit.append(spec)
 
@@ -1426,6 +1452,17 @@ _MLIR_TYPE_TO_FORMAT = {
     "ui16": "uint16",
 }
 
+_EPOCH_MLIR_TYPE_TO_FORMAT = {
+    "bf16": "bfloat16",
+    "f32": "float32",
+    "bfp_bf8": "bfp8",
+    "bfp_bf4": "bfp4",
+    "u32": "uint32",
+    "u16": "uint16",
+    "u8": "uint8",
+    "si32": "int32",
+}
+
 
 def _parse_mlir_element_type(type_str: str) -> str:
     """Extract the base data format name from an MLIR TypeAttr string.
@@ -1445,6 +1482,20 @@ def _parse_mlir_element_type(type_str: str) -> str:
     raise ValueError(
         f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
         f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
+    )
+
+
+def _parse_epoch_mlir_element_type(type_str: str) -> str:
+    """Map a TTCore TileType element mnemonic to a runtime format name."""
+    token = type_str.strip()
+    if "," in token:
+        token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
+    fmt = _EPOCH_MLIR_TYPE_TO_FORMAT.get(token)
+    if fmt is not None:
+        return fmt
+    raise ValueError(
+        f"Unrecognized epoch DFB element type '{token}' (from '{type_str}'). "
+        f"Known types: {list(_EPOCH_MLIR_TYPE_TO_FORMAT.keys())}"
     )
 
 
@@ -1472,6 +1523,55 @@ def _extract_compiler_allocated_dfbs(module):
                 num_tiles=num_tiles,
                 data_format=data_format,
                 block_count=block_count,
+            )
+        )
+    return configs
+
+
+def _extract_dfb_epoch_physical_configs(module):
+    """Read compiler-selected initial descriptors for epoch-reused DFB ids.
+
+    Returns ``None`` when the marker attribute is absent. An empty present
+    attribute is retained as a marker so compute kernels still opt into mutable
+    descriptor storage.
+    """
+    attr = module.operation.attributes.get("ttl.dfb_epoch_physical_configs", None)
+    if attr is None:
+        return None
+
+    configs = []
+    seen_indices = set()
+    for entry in attr:
+        dfb_index = int(entry["dfb_index"])
+        tile_height = int(entry["tile_height"])
+        tile_width = int(entry["tile_width"])
+        total_size = int(entry["total_size"])
+        if dfb_index < 0:
+            raise ValueError(
+                "Epoch physical DFB index must be non-negative, " f"got {dfb_index}"
+            )
+        if dfb_index in seen_indices:
+            raise ValueError(
+                f"Duplicate epoch physical DFB config for index {dfb_index}"
+            )
+        if tile_height <= 0 or tile_width <= 0:
+            raise ValueError(
+                f"Epoch physical DFB[{dfb_index}] tile must be positive, got "
+                f"({tile_height}, {tile_width})"
+            )
+        if total_size <= 0:
+            raise ValueError(
+                f"Epoch physical DFB[{dfb_index}] total_size must be positive, "
+                f"got {total_size}"
+            )
+        seen_indices.add(dfb_index)
+        configs.append(
+            EpochPhysicalDFBConfig(
+                dfb_index=dfb_index,
+                data_format=_parse_epoch_mlir_element_type(str(entry["element_type"])),
+                tile_height=tile_height,
+                tile_width=tile_width,
+                total_size=total_size,
             )
         )
     return configs
@@ -1564,6 +1664,31 @@ def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
             continue
         merged[dfb.dfb_index] = dfb
     return merged
+
+
+def _apply_dfb_epoch_physical_configs(cb_configs, epoch_physical_configs):
+    """Use the compiler-selected physical descriptor table when present."""
+    if epoch_physical_configs is None:
+        return cb_configs
+    if not epoch_physical_configs:
+        return []
+
+    physical_max = max(config.dfb_index for config in epoch_physical_configs)
+    physical_configs = [None] * (physical_max + 1)
+    for config in epoch_physical_configs:
+        if physical_configs[config.dfb_index] is not None:
+            raise ValueError(
+                f"Duplicate epoch physical DFB config for index {config.dfb_index}"
+            )
+        physical_configs[config.dfb_index] = config
+
+    missing = [index for index, config in enumerate(physical_configs) if config is None]
+    if missing:
+        raise ValueError(
+            "Epoch physical DFB configs must densely cover indices from zero; "
+            f"missing {missing}"
+        )
+    return physical_configs
 
 
 def _run_thread_compiler(
@@ -2210,6 +2335,10 @@ def _lower_program_to_kernel(
         cb_configs = _apply_dfb_index_map(cb_configs, module)
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+        epoch_physical_configs = _extract_dfb_epoch_physical_configs(module)
+        cb_configs = _apply_dfb_epoch_physical_configs(
+            cb_configs, epoch_physical_configs
+        )
         write_cb_table(
             cb_configs,
             cb_names,
@@ -2249,6 +2378,7 @@ def _lower_program_to_kernel(
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
             runtime_resource_factory=runtime_resource_factory,
+            runtime_dfb_reconfiguration=epoch_physical_configs is not None,
         )
         return compiled_kernel
 

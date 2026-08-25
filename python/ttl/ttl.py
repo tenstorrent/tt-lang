@@ -23,7 +23,7 @@ Math operations:
 from .ttl_api import compute, datamovement, Program
 from .atom import operation, DFB
 from .dataflow_buffer import make_dataflow_buffer_like, make_dfb
-from .operators import copy, node, grid_size, matmul
+from .operators import copy, node, grid_size, matmul, reset_dataflow_buffers
 
 # Math operations namespace
 from . import ttl_math as math
@@ -37,6 +37,7 @@ __all__ = [
     "make_dataflow_buffer_like",
     "make_dfb",
     "copy",
+    "reset_dataflow_buffers",
     "node",
     "grid_size",
     "matmul",

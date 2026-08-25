@@ -145,6 +145,24 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
+    ArrayAttr epochConfigs =
+        moduleOp->getAttrOfType<ArrayAttr>(kDFBEpochPhysicalConfigsAttrName);
+    if (epochConfigs) {
+      maxBytesByIndex.clear();
+      for (Attribute configAttr : epochConfigs) {
+        auto config = cast<DictionaryAttr>(configAttr);
+        int64_t index = config.getAs<IntegerAttr>("dfb_index").getInt();
+        int64_t totalSize = config.getAs<IntegerAttr>("total_size").getInt();
+        maxBytesByIndex[index] = static_cast<uint64_t>(totalSize);
+        if (!bindForIndex.contains(index)) {
+          moduleOp.emitError()
+              << "epoch physical DFB " << index << " has no binding";
+          signalPassFailure();
+          return;
+        }
+      }
+    }
+
     if (maxBytesByIndex.empty()) {
       return;
     }
@@ -163,6 +181,11 @@ struct TTLValidateCBBudgetPass
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
       for (int64_t idx : sortedIndices) {
+        if (epochConfigs) {
+          diag << "\n  CB[" << idx << "]: epoch backing, "
+               << maxBytesByIndex[idx] << " bytes";
+          continue;
+        }
         BindCBOp bindOp = bindForIndex[idx];
         auto cbTy =
             mlir::cast<CircularBufferType>(bindOp.getResult().getType());

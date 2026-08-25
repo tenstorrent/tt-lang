@@ -1,0 +1,462 @@
+diff --git a/tt_metal/hw/inc/api/dataflow/dataflow_api.h b/tt_metal/hw/inc/api/dataflow/dataflow_api.h
+index b608a351b46..75cfaf94958 100644
+--- a/tt_metal/hw/inc/api/dataflow/dataflow_api.h
++++ b/tt_metal/hw/inc/api/dataflow/dataflow_api.h
+@@ -275,9 +275,15 @@ void cb_pop_front(int32_t operand, int32_t num_pages) {
+ 
+ #ifdef DATA_FORMATS_DEFINED
+ 
++#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
++#define TTLANG_DFB_DESCRIPTOR_GETTER inline
++#else
++#define TTLANG_DFB_DESCRIPTOR_GETTER constexpr inline
++#endif
++
+ // this API is used by both the reader and writer side of the CB
+ // it uses unpack_src_format, but because unpack_src_format == pack_dst_format, we can use either
+-constexpr inline std::int32_t get_tile_size(const std::int32_t operand) {
++TTLANG_DFB_DESCRIPTOR_GETTER std::int32_t get_tile_size(const std::int32_t operand) {
+     std::uint32_t input = operand;
+ 
+     // L1 16B words
+@@ -287,20 +293,21 @@ constexpr inline std::int32_t get_tile_size(const std::int32_t operand) {
+     return num_words;
+ }
+ 
+-constexpr inline uint32_t get_tile_hw(const std::int32_t operand) {
++TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_hw(const std::int32_t operand) {
+     std::uint32_t input = operand;
+     return (uint32_t)unpack_tile_r_dim[input] * (uint32_t)unpack_tile_c_dim[input];
+ }
+ 
+-constexpr inline uint32_t get_tile_num_faces(const std::int32_t operand) {
++TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_num_faces(const std::int32_t operand) {
+     std::uint32_t input = operand;
+     return (uint32_t)unpack_tile_num_faces[input];
+ }
+ 
+-constexpr inline DataFormat get_dataformat(const std::int32_t operand) {
++TTLANG_DFB_DESCRIPTOR_GETTER DataFormat get_dataformat(const std::int32_t operand) {
+     return static_cast<DataFormat>((uint)unpack_src_format[operand]);
+ }
+ 
++#undef TTLANG_DFB_DESCRIPTOR_GETTER
+ #endif
+ 
+ // clang-format off
+diff --git a/tt_metal/hw/inc/api/dataflow/dataflow_buffer.h b/tt_metal/hw/inc/api/dataflow/dataflow_buffer.h
+index 49320dbbab1..93e636fc29a 100644
+--- a/tt_metal/hw/inc/api/dataflow/dataflow_buffer.h
++++ b/tt_metal/hw/inc/api/dataflow/dataflow_buffer.h
+@@ -106,9 +106,15 @@ public:
+ #endif
+ 
+ #ifdef DFB_DESCRIPTORS_DEFINED
++#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
++#define TTLANG_DFB_DESCRIPTOR_GETTER
++#else
++#define TTLANG_DFB_DESCRIPTOR_GETTER constexpr
++#endif
++
+     // JIT descriptor values from chlkc_descriptors.h (indexed by logical_dfb_id_).
+     // PACK TRISC uses pack_* arrays; UNPACK/MATH TRISC and DM use unpack_*.
+-    constexpr uint32_t get_tile_size() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_size() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_tile_size[logical_dfb_id_];
+ #else
+@@ -116,7 +122,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_tile_r_dim() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_r_dim() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_tile_r_dim[logical_dfb_id_];
+ #else
+@@ -124,7 +130,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_tile_c_dim() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_c_dim() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_tile_c_dim[logical_dfb_id_];
+ #else
+@@ -132,9 +138,9 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_tile_hw() const { return get_tile_r_dim() * get_tile_c_dim(); }
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_hw() const { return get_tile_r_dim() * get_tile_c_dim(); }
+ 
+-    constexpr uint32_t get_tile_num_faces() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_tile_num_faces() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_tile_num_faces[logical_dfb_id_];
+ #else
+@@ -142,7 +148,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_face_r_dim() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_face_r_dim() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_tile_face_r_dim[logical_dfb_id_];
+ #else
+@@ -150,7 +156,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_partial_face() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_partial_face() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_partial_face[logical_dfb_id_];
+ #else
+@@ -158,7 +164,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_narrow_tile() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_narrow_tile() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_narrow_tile[logical_dfb_id_];
+ #else
+@@ -166,7 +172,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_num_faces_r_dim() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_num_faces_r_dim() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_num_faces_r_dim[logical_dfb_id_];
+ #else
+@@ -174,7 +180,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr uint32_t get_num_faces_c_dim() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER uint32_t get_num_faces_c_dim() const {
+ #if defined(UCK_CHLKC_PACK)
+         return pack_num_faces_c_dim[logical_dfb_id_];
+ #else
+@@ -182,7 +188,7 @@ public:
+ #endif
+     }
+ 
+-    constexpr DataFormat get_dataformat() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER DataFormat get_dataformat() const {
+ #if defined(UCK_CHLKC_PACK)
+         return static_cast<DataFormat>(pack_dst_format[logical_dfb_id_]);
+ #else
+@@ -191,24 +197,25 @@ public:
+     }
+ 
+ #if !defined(UCK_CHLKC_PACK)
+-    constexpr DataFormat get_unpack_dst_format() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER DataFormat get_unpack_dst_format() const {
+         return static_cast<DataFormat>(unpack_dst_format[logical_dfb_id_]);
+     }
+ #endif
+ 
+ // pack_* format arrays are only emitted for PACK TRISC and DM (see genfiles.cpp).
+ #if defined(UCK_CHLKC_PACK) || (!defined(UCK_CHLKC_MATH) && !defined(UCK_CHLKC_UNPACK))
+-    constexpr DataFormat get_pack_src_format() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER DataFormat get_pack_src_format() const {
+         return static_cast<DataFormat>(pack_src_format[logical_dfb_id_]);
+     }
+ #endif
+ 
+ #if !defined(UCK_CHLKC_MATH) && !defined(UCK_CHLKC_UNPACK)
+-    constexpr DataFormat get_pack_dst_format() const {
++    TTLANG_DFB_DESCRIPTOR_GETTER DataFormat get_pack_dst_format() const {
+         return static_cast<DataFormat>(pack_dst_format[logical_dfb_id_]);
+     }
+ #endif
+ 
++#undef TTLANG_DFB_DESCRIPTOR_GETTER
+ #endif // DFB_DESCRIPTORS_DEFINED
+ 
+ #ifdef COMPILE_FOR_TRISC
+diff --git a/tt_metal/jit_build/fake_kernels_target/fake_jit_prelude.h b/tt_metal/jit_build/fake_kernels_target/fake_jit_prelude.h
+index c7a69fb2b35..dda766cf34d 100644
+--- a/tt_metal/jit_build/fake_kernels_target/fake_jit_prelude.h
++++ b/tt_metal/jit_build/fake_kernels_target/fake_jit_prelude.h
+@@ -20,88 +20,96 @@ constexpr bool DST_ACCUM_MODE = false;
+ constexpr bool APPROX = true;
+ constexpr std::int32_t MATH_FIDELITY = 255;
+ 
++#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
++#define TTLANG_DFB_DESCRIPTOR_CONST static
++#else
++#define TTLANG_DFB_DESCRIPTOR_CONST constexpr
++#endif
++
+ // chlkc_descriptors.h (pack data format arrays)
+-constexpr unsigned char pack_src_format[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST unsigned char pack_src_format[32] = {
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+ };
+-constexpr unsigned char pack_dst_format[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST unsigned char pack_dst_format[32] = {
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+ };
+ 
+ // chlkc_descriptors.h (pack tile dim arrays)
+-constexpr uint8_t pack_tile_num_faces[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_tile_num_faces[32] = {
+     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+ };
+-constexpr uint8_t pack_partial_face[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_partial_face[32] = {
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+ };
+-constexpr uint8_t pack_tile_face_r_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_tile_face_r_dim[32] = {
+     16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+     16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+ };
+-constexpr uint8_t pack_narrow_tile[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_narrow_tile[32] = {
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+ };
+-constexpr uint8_t pack_tile_r_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_tile_r_dim[32] = {
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+ };
+-constexpr uint8_t pack_tile_c_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_tile_c_dim[32] = {
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+ };
+-constexpr uint16_t pack_tile_size[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint16_t pack_tile_size[32] = {
+     1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088,
+     1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088,
+ };
+-constexpr uint8_t pack_num_faces_r_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_num_faces_r_dim[32] = {
+     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+ };
+-constexpr uint8_t pack_num_faces_c_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t pack_num_faces_c_dim[32] = {
+     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+ };
+ 
+ // chlkc_descriptors.h (unpack data format arrays)
+-constexpr std::int32_t unpack_src_format[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST std::int32_t unpack_src_format[32] = {
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+ };
+-constexpr std::int32_t unpack_dst_format[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST std::int32_t unpack_dst_format[32] = {
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+ };
+ 
+ // chlkc_descriptors.h (unpack tile dim arrays)
+-constexpr uint8_t unpack_tile_num_faces[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_tile_num_faces[32] = {
+     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+ };
+-constexpr uint8_t unpack_partial_face[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_partial_face[32] = {
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+ };
+-constexpr uint8_t unpack_tile_face_r_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_tile_face_r_dim[32] = {
+     16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+     16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+ };
+-constexpr uint8_t unpack_narrow_tile[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_narrow_tile[32] = {
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+ };
+-constexpr uint8_t unpack_tile_r_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_tile_r_dim[32] = {
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+ };
+-constexpr uint8_t unpack_tile_c_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_tile_c_dim[32] = {
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+     32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+ };
+-constexpr uint16_t unpack_tile_size[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint16_t unpack_tile_size[32] = {
+     1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088,
+     1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088, 1088,
+ };
+-constexpr uint8_t unpack_num_faces_r_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_num_faces_r_dim[32] = {
+     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+ };
+-constexpr uint8_t unpack_num_faces_c_dim[32] = {
++TTLANG_DFB_DESCRIPTOR_CONST uint8_t unpack_num_faces_c_dim[32] = {
+     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+ };
++
++#undef TTLANG_DFB_DESCRIPTOR_CONST
+diff --git a/tt_metal/jit_build/genfiles.cpp b/tt_metal/jit_build/genfiles.cpp
+index 1699a25e64d..f67ea368ceb 100644
+--- a/tt_metal/jit_build/genfiles.cpp
++++ b/tt_metal/jit_build/genfiles.cpp
+@@ -88,6 +88,24 @@ void write_file(const string& path, const string& content) {
+     }
+ }
+ 
++void write_runtime_dfb_reconfiguration_header(const string& out_dir, const JitBuildSettings& settings) {
++    const string path = out_dir + "runtime_dfb_reconfiguration_generated.h";
++    jit_build::utils::FileRenamer tmp(path);
++    std::ofstream out(tmp.path());
++    if (!out) {
++        throw std::runtime_error("Cannot create file: " + path);
++    }
++    out << "#pragma once\n\n";
++    settings.process_defines([&out](const string& define, const string& value) {
++        if (define == "TTLANG_RUNTIME_DFB_RECONFIGURATION") {
++            out << "#define " << define << " " << value << "\n";
++        }
++    });
++    if (!out) {
++        throw std::runtime_error("Failed to write file: " + path);
++    }
++}
++
+ // METAL 2.0 only:
+ // This is only invoked for Metal 2.0 kernels created via the new ProgramSpec host APIs.
+ // Legacy kernels (created via CreateKernel) do not get kernel_bindings_generated.h.
+@@ -403,6 +421,7 @@ void jit_build_genfiles_triscs_src(
+         write_kernel_bindings_generated_header(out_dir, settings);
+         write_kernel_args_generated_header(out_dir, settings);
+     }
++    write_runtime_dfb_reconfiguration_header(out_dir, settings);
+ 
+     const string unpack_cpp = out_dir + "chlkc_unpack.cpp";
+     const string math_cpp = out_dir + "chlkc_math.cpp";
+@@ -523,8 +542,8 @@ void emit_unpack_data_formats(
+     // DataFormat values fit in a byte (Invalid==255); emit as uint8_t to save 3B/entry of LDM (the
+     // .data region shares the TRISC's 2KB local memory with the stack). Matches pack_src/dst_format
+     // and the unpack tile-dim arrays, which are already uint8_t. All consumers read+promote to uint32.
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_src_format", max_cbs, src_formats_all_cbs);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_dst_format", max_cbs, dst_formats_all_cbs);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_src_format", max_cbs, src_formats_all_cbs);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_dst_format", max_cbs, dst_formats_all_cbs);
+ }
+ 
+ std::pair<std::vector<DataFormat>, std::vector<DataFormat>> generate_pack_data_formats(
+@@ -579,8 +598,10 @@ void emit_pack_data_formats(
+     const std::vector<DataFormat>& src_formats_all_cbs,
+     const std::vector<DataFormat>& dst_formats_all_cbs,
+     uint32_t max_cbs) {
+-    emit_formats_array(out, "constexpr unsigned char", "pack_src_format", max_cbs, src_formats_all_cbs);
+-    emit_formats_array(out, "constexpr unsigned char", "pack_dst_format", max_cbs, dst_formats_all_cbs);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST unsigned char", "pack_src_format", max_cbs, src_formats_all_cbs);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST unsigned char", "pack_dst_format", max_cbs, dst_formats_all_cbs);
+ }
+ 
+ void equalize_data_format_vectors(std::vector<DataFormat>& v1, std::vector<DataFormat>& v2) {
+@@ -727,33 +748,44 @@ std::pair<std::vector<uint32_t>, std::vector<uint32_t>> compute_num_faces_rc_dim
+ }
+ 
+ void emit_unpack_tile_dims(std::ostream& out, const tt_hlk_desc& desc, uint32_t max_cbs) {
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_tile_num_faces", max_cbs, desc.buf_num_faces_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_partial_face", max_cbs, desc.buf_partial_face_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_tile_face_r_dim", max_cbs, desc.buf_face_r_dim_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_narrow_tile", max_cbs, desc.buf_narrow_tile_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_tile_r_dim", max_cbs, desc.buf_tile_r_dim_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_tile_c_dim", max_cbs, desc.buf_tile_c_dim_arr);
+-    emit_formats_array(out, "constexpr uint16_t", "unpack_tile_size", max_cbs, desc.buf_tile_size_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_tile_num_faces", max_cbs, desc.buf_num_faces_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_partial_face", max_cbs, desc.buf_partial_face_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_tile_face_r_dim", max_cbs, desc.buf_face_r_dim_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_narrow_tile", max_cbs, desc.buf_narrow_tile_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_tile_r_dim", max_cbs, desc.buf_tile_r_dim_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_tile_c_dim", max_cbs, desc.buf_tile_c_dim_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint16_t", "unpack_tile_size", max_cbs, desc.buf_tile_size_arr);
+ 
+     auto [r_dims, c_dims] = compute_num_faces_rc_dims(
+         desc.buf_tile_r_dim_arr, desc.buf_tile_c_dim_arr, desc.buf_face_r_dim_arr, desc.buf_num_faces_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_num_faces_r_dim", max_cbs, r_dims);
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_num_faces_c_dim", max_cbs, c_dims);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_num_faces_r_dim", max_cbs, r_dims);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_num_faces_c_dim", max_cbs, c_dims);
+ }
+ 
+ void emit_pack_tile_dims(std::ostream& out, const tt_hlk_desc& desc, uint32_t max_cbs) {
+-    emit_formats_array(out, "constexpr uint8_t", "pack_tile_num_faces", max_cbs, desc.buf_num_faces_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_partial_face", max_cbs, desc.buf_partial_face_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_tile_face_r_dim", max_cbs, desc.buf_face_r_dim_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_narrow_tile", max_cbs, desc.buf_narrow_tile_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_tile_r_dim", max_cbs, desc.buf_tile_r_dim_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_tile_c_dim", max_cbs, desc.buf_tile_c_dim_arr);
+-    emit_formats_array(out, "constexpr uint16_t", "pack_tile_size", max_cbs, desc.buf_tile_size_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_tile_num_faces", max_cbs, desc.buf_num_faces_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_partial_face", max_cbs, desc.buf_partial_face_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_tile_face_r_dim", max_cbs, desc.buf_face_r_dim_arr);
++    emit_formats_array(
++        out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_narrow_tile", max_cbs, desc.buf_narrow_tile_arr);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_tile_r_dim", max_cbs, desc.buf_tile_r_dim_arr);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_tile_c_dim", max_cbs, desc.buf_tile_c_dim_arr);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint16_t", "pack_tile_size", max_cbs, desc.buf_tile_size_arr);
+ 
+     auto [r_dims, c_dims] = compute_num_faces_rc_dims(
+         desc.buf_tile_r_dim_arr, desc.buf_tile_c_dim_arr, desc.buf_face_r_dim_arr, desc.buf_num_faces_arr);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_num_faces_r_dim", max_cbs, r_dims);
+-    emit_formats_array(out, "constexpr uint8_t", "pack_num_faces_c_dim", max_cbs, c_dims);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_num_faces_r_dim", max_cbs, r_dims);
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "pack_num_faces_c_dim", max_cbs, c_dims);
+ }
+ 
+ void emit_compute_scalar_descriptors(std::ostream& out, const JitBuildOptions& options, tt::ARCH arch) {
+@@ -796,6 +828,14 @@ void generate_all_descriptors(const JitBuildEnv& env, const JitBuildOptions& opt
+     auto fmts = compute_data_formats(options, env.get_arch(), max_cbs);
+ 
+     out << "#pragma once\n\n"
++           "#if __has_include(\"runtime_dfb_reconfiguration_generated.h\")\n"
++           "#include \"runtime_dfb_reconfiguration_generated.h\"\n"
++           "#endif\n\n"
++           "#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)\n"
++           "#define TTLANG_DFB_DESCRIPTOR_CONST static\n"
++           "#else\n"
++           "#define TTLANG_DFB_DESCRIPTOR_CONST constexpr\n"
++           "#endif\n\n"
+            "#if defined(UCK_CHLKC_MATH)\n"
+            "#include \"llk_defs.h\"\n";
+     emit_math_scalar_descriptors(out, desc);
+@@ -818,14 +858,15 @@ void generate_all_descriptors(const JitBuildEnv& env, const JitBuildOptions& opt
+     // if the original input format is 8-bit (Int8, UInt8, Fp8_e4m3, Lf8) since those formats
+     // do not require the tilize workaround. This is needed to determine whether to skip the workaround in llk_pack_init.
+     out << "#if defined(UCK_CHLKC_PACK)\n";
+-    emit_formats_array(out, "constexpr uint8_t", "unpack_src_format", max_cbs, fmts.unpack_src);
+-    out << "#endif\n";   // if pack
+-    out << "#endif\n\n"; // if not math and not unpack
++    emit_formats_array(out, "TTLANG_DFB_DESCRIPTOR_CONST uint8_t", "unpack_src_format", max_cbs, fmts.unpack_src);
++    out << "#endif\n";    // if pack
++    out << "#endif\n\n";  // if not math and not unpack
+ 
+     out << "#if defined(UCK_CHLKC_MATH) || defined(UCK_CHLKC_PACK) || defined(UCK_CHLKC_UNPACK) || "
+            "defined(UCK_CHLKC_ISOLATE_SFPU)\n";
+     emit_compute_scalar_descriptors(out, options, env.get_arch());
+-    out << "#endif\n";
++    out << "#endif\n\n"
++           "#undef TTLANG_DFB_DESCRIPTOR_CONST\n";
+ 
+     if (!out) {
+         throw std::runtime_error("Failed to write file: " + descriptors_path);

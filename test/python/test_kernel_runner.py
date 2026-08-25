@@ -957,7 +957,7 @@ def test_emit_runner_source_preserves_subtile_page_size(monkeypatch):
         num_tensors=1,
     )
 
-    assert "((1, 9), 4, ttnn.bfloat16, 512, 18432),  # CB 0" in source
+    assert "((1, 9), 4, ttnn.bfloat16, 512, 18432, None),  # CB 0" in source
 
 
 def test_emit_runner_source_handles_compiler_allocated_cb(monkeypatch):
@@ -987,7 +987,7 @@ def test_emit_runner_source_handles_compiler_allocated_cb(monkeypatch):
         num_tensors=1,
     )
 
-    assert "((1, 3), 2, ttnn.bfloat16, 2048, 12288),  # CB 0" in source
+    assert "((1, 3), 2, ttnn.bfloat16, 2048, 12288, None),  # CB 0" in source
 
 
 def test_emit_runner_file_preserves_positional_options(tmp_path):

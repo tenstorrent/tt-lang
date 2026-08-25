@@ -202,7 +202,7 @@ struct TTLVerifyDFBSPSCPass
       if (isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op)) {
         hasAcquire = true;
       } else if (auto bindOp = dyn_cast<BindCBOp>(op)) {
-        std::optional<int64_t> idx = getCBIndex(bindOp.getResult());
+        std::optional<int64_t> idx = getLogicalCBIndex(bindOp.getResult());
         if (idx.has_value()) {
           bindSites.try_emplace(*idx, op);
         }
@@ -249,7 +249,7 @@ struct TTLVerifyDFBSPSCPass
       if (!thread) {
         return;
       }
-      std::optional<int64_t> idx = getCBIndex(cb);
+      std::optional<int64_t> idx = getLogicalCBIndex(cb);
       assert(idx.has_value() &&
              "ttl-verify-dfb-spsc requires finalized cb_index; run "
              "ttl-finalize-dfb-indices first");

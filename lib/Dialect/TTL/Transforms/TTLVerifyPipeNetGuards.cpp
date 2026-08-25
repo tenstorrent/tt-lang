@@ -337,13 +337,13 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         state.recordPipeWaitEvent(wait, domain, unanalyzableOp);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
-        if (auto cbIndex = getCBIndex(push.getCb())) {
+        if (auto cbIndex = getLogicalCBIndex(push.getCb())) {
           state.cbProducerDomains[*cbIndex] =
               state.cbProducerDomains[*cbIndex].unionWith(domain);
         }
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
-        if (auto cbIndex = getCBIndex(wait.getCb())) {
+        if (auto cbIndex = getLogicalCBIndex(wait.getCb())) {
           state.waitUses.push_back({wait, domain, *cbIndex});
         }
       });

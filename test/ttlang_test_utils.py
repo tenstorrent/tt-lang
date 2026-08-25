@@ -384,6 +384,8 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
+    from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
+
     layout_map = {
         "height": ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
         "width": ttnn.TensorMemoryLayout.WIDTH_SHARDED,
@@ -393,7 +395,6 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
         raise ValueError(
             f"Unknown shard layout {layout!r}, expected one of {list(layout_map)}"
         )
-    dram_tensor = to_dram(torch_tensor, device)
     rows, cols = torch_tensor.shape[-2], torch_tensor.shape[-1]
     shard_spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
@@ -405,7 +406,16 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
         ttnn.BufferType.L1,
         shard_spec,
     )
-    return ttnn.to_memory_config(dram_tensor, memory_config=sharded_mem_config)
+    host_tensor = ttnn.from_torch(
+        torch_tensor,
+        dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
+        layout=ttnn.TILE_LAYOUT,
+    )
+    return ttnn.to_device(
+        host_tensor,
+        device,
+        memory_config=sharded_mem_config,
+    )
 
 
 __all__ = [

@@ -8,9 +8,11 @@
 //
 // Module-level pass that runs after all DFB-creating passes. Reuses
 // compiler-created DFBs within exact CircularBufferType partitions and
-// balanced user DFBs local to one kernel thread. It then computes the true
-// DFB count, updates ttl.base_cta_index on every function, and publishes the
-// final index assignment for the Python runtime.
+// balanced user DFBs local to one kernel thread. Explicit reset boundaries
+// additionally compact each first-use epoch into an independent physical
+// index space. The pass then computes the true DFB count, updates
+// ttl.base_cta_index on every function, and publishes the final index
+// assignment for the Python runtime.
 //
 // A logical DFB is one cb_index, bound by one bind_cb per kernel thread that
 // touches it. The same physical CB index has shared pages_received /
@@ -21,10 +23,11 @@
 //   - their per-thread lifetimes are disjoint in both threads' program order,
 //   - compiler DFBs have the same complete CB type; user DFBs have the same
 //     page type and use a slot sized to their largest member.
-// User and compiler DFBs never share a physical index.
+// User and compiler DFBs never share a physical index within one epoch.
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -35,11 +38,15 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <cstdlib>
+#include <limits>
+#include <optional>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -90,6 +97,7 @@ struct LogicalDFB {
   SmallVector<func::FuncOp, 2> externThreads;
   StringRef refusal;
   int64_t finalIndex = -1;
+  int64_t firstUseEpoch = std::numeric_limits<int64_t>::max();
 
   /// Per-block tallies of the four flow-control operations. A block that
   /// waits more often than it pops, or reserves more often than it pushes,
@@ -112,6 +120,82 @@ struct LogicalDFB {
 
   int64_t totalPages() const { return blockCount * elemsPerBlock; }
 };
+
+enum class HardwareDataFormat : int64_t {
+  Float32 = 0,
+  Tf32 = 4,
+  Float16B = 5,
+  Bfp8B = 6,
+  Bfp4B = 7,
+  Int32 = 8,
+  UInt16 = 9,
+  UInt32 = 24,
+  UInt8 = 30,
+};
+
+HardwareDataFormat l1DataFormat(ttcore::DataType dtype) {
+  switch (dtype) {
+  case ttcore::DataType::Float32:
+    return HardwareDataFormat::Float32;
+  case ttcore::DataType::BFloat16:
+    return HardwareDataFormat::Float16B;
+  case ttcore::DataType::BFP_BFloat8:
+    return HardwareDataFormat::Bfp8B;
+  case ttcore::DataType::BFP_BFloat4:
+    return HardwareDataFormat::Bfp4B;
+  case ttcore::DataType::UInt32:
+    return HardwareDataFormat::UInt32;
+  case ttcore::DataType::UInt16:
+    return HardwareDataFormat::UInt16;
+  case ttcore::DataType::UInt8:
+    return HardwareDataFormat::UInt8;
+  case ttcore::DataType::Int32:
+    return HardwareDataFormat::Int32;
+  default:
+    llvm_unreachable("unsupported epoch DFB data type");
+  }
+}
+
+bool isEpochRuntimeDataTypeSupported(ttcore::DataType dtype) {
+  switch (dtype) {
+  case ttcore::DataType::BFloat16:
+  case ttcore::DataType::Float32:
+  case ttcore::DataType::BFP_BFloat8:
+  case ttcore::DataType::BFP_BFloat4:
+  case ttcore::DataType::UInt32:
+  case ttcore::DataType::UInt16:
+  case ttcore::DataType::UInt8:
+  case ttcore::DataType::Int32:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isBlockFloat(ttcore::DataType dtype) {
+  return dtype == ttcore::DataType::BFP_BFloat8 ||
+         dtype == ttcore::DataType::BFP_BFloat4;
+}
+
+bool isSupportedEpochTileShape(int64_t height, int64_t width) {
+  if (width != 16 && width != 32) {
+    return false;
+  }
+  return height == 1 || height == 2 || height == 4 || height == 8 ||
+         height == 16 || height == 32;
+}
+
+HardwareDataFormat packSourceFormat(ttcore::DataType dtype,
+                                    HardwareDataFormat fp32Route,
+                                    bool fp32DestAcc) {
+  if (dtype == ttcore::DataType::Float32) {
+    return fp32DestAcc ? HardwareDataFormat::Float32 : fp32Route;
+  }
+  if (isBlockFloat(dtype)) {
+    return HardwareDataFormat::Bfp8B;
+  }
+  return l1DataFormat(dtype);
+}
 
 /// Program order of ops within any block of one kernel thread, computed on
 /// demand. `posIn(block, op)` is the position in `block` of `op` itself or of
@@ -254,6 +338,75 @@ struct TTLFinalizeDFBIndicesPass
     llvm::MapVector<int64_t, LogicalDFB> dfbs;
     llvm::SmallDenseMap<Operation *, std::unique_ptr<ThreadOrder>> orders;
     bool sawBind = false;
+    bool invalidResetContract = false;
+
+    llvm::SmallDenseMap<Operation *, SmallVector<OpaqueCallOp, 4>, 3>
+        resetCallsByFunction;
+    moduleOp->walk([&](OpaqueCallOp call) {
+      if (call.getCallee() != kResetDataflowBuffersCallee) {
+        return;
+      }
+      func::FuncOp func = getEnclosingKernelThread(call);
+      if (!func) {
+        call.emitError("must be inside a kernel thread");
+        invalidResetContract = true;
+        return;
+      }
+      if (call->getBlock() != &func.getBody().front()) {
+        call.emitError("must be a top-level operation");
+        invalidResetContract = true;
+        return;
+      }
+      resetCallsByFunction[func.getOperation()].push_back(call);
+    });
+    std::optional<size_t> resetCount;
+    moduleOp->walk([&](func::FuncOp func) {
+      if (!func->hasAttr(kKernelThreadAttrName)) {
+        return;
+      }
+      auto it = resetCallsByFunction.find(func.getOperation());
+      size_t count = it == resetCallsByFunction.end() ? 0 : it->second.size();
+      if (!resetCount) {
+        resetCount = count;
+      } else if (*resetCount != count) {
+        func.emitError("must call reset_dataflow_buffers the same number of "
+                       "times as every other kernel thread");
+        invalidResetContract = true;
+      }
+    });
+    if (invalidResetContract) {
+      signalPassFailure();
+      return;
+    }
+    const bool hasResetDataflowBuffers = !resetCallsByFunction.empty();
+
+    for (auto &[funcOperation, calls] : resetCallsByFunction) {
+      auto func = cast<func::FuncOp>(funcOperation);
+      auto &order = orders[funcOperation];
+      order = std::make_unique<ThreadOrder>(func);
+      Block *entry = &func.getBody().front();
+      llvm::sort(calls, [&](OpaqueCallOp lhs, OpaqueCallOp rhs) {
+        return order->posIn(entry, lhs) < order->posIn(entry, rhs);
+      });
+    }
+
+    auto firstUseEpoch = [&](func::FuncOp func, Operation *op,
+                             ThreadOrder &order) {
+      auto callsIt = resetCallsByFunction.find(func.getOperation());
+      if (callsIt == resetCallsByFunction.end()) {
+        return int64_t{0};
+      }
+      Block *entry = &func.getBody().front();
+      int64_t opPosition = order.posIn(entry, op);
+      int64_t epoch = 0;
+      for (OpaqueCallOp call : callsIt->second) {
+        if (order.posIn(entry, call) >= opPosition) {
+          break;
+        }
+        ++epoch;
+      }
+      return epoch;
+    };
 
     bool externReuse = std::getenv("TTL_DFB_REUSE_EXTERN") != nullptr;
 
@@ -272,6 +425,12 @@ struct TTLFinalizeDFBIndicesPass
         // One logical DFB must have one physical ring geometry on every
         // thread that binds it.
         dfb.eligible = false;
+        if (hasResetDataflowBuffers && !invalidResetContract) {
+          bindOp.emitError()
+              << "dataflow buffer " << idx
+              << " has a different type in another kernel thread";
+          invalidResetContract = true;
+        }
       }
       dfb.elemType = cbType.getElementType();
       dfb.blockCount = cbType.getBlockCount();
@@ -287,6 +446,21 @@ struct TTLFinalizeDFBIndicesPass
       if (!order) {
         order = std::make_unique<ThreadOrder>(func);
       }
+
+      auto recordTouch = [&](Operation *op) {
+        extendInterval(dfb, op, func, *order);
+        if (hasResetDataflowBuffers) {
+          int64_t epoch = firstUseEpoch(func, op, *order);
+          if (dfb.firstUseEpoch == std::numeric_limits<int64_t>::max()) {
+            dfb.firstUseEpoch = epoch;
+          } else if (dfb.firstUseEpoch != epoch && !invalidResetContract) {
+            op->emitError() << "dataflow buffer " << dfb.origIndex
+                            << " is used across a reset_dataflow_buffers "
+                               "boundary";
+            invalidResetContract = true;
+          }
+        }
+      };
 
       // The bind anchors the interval; binds are hoisted to the function
       // entry, so the start is refined to the first acquire below.
@@ -327,7 +501,7 @@ struct TTLFinalizeDFBIndicesPass
       };
 
       for (Operation *user : bindOp.getResult().getUsers()) {
-        extendInterval(dfb, user, func, *order);
+        recordTouch(user);
         // A direct DFB operand to foreign code may reserve, wait, push, pop,
         // or retain pages, and OpaqueCallOp carries no memory effects or
         // producer/consumer role metadata of its own. It is still not opaque
@@ -387,11 +561,11 @@ struct TTLFinalizeDFBIndicesPass
         if (auto waitOp = dyn_cast<CBWaitOp>(user)) {
           markPipeUsers(waitOp.getResult());
           for (Operation *reader : waitOp.getResult().getUsers()) {
-            extendInterval(dfb, reader, func, *order);
+            recordTouch(reader);
             if (auto attachOp = dyn_cast<AttachCBOp>(reader)) {
               markPipeUsers(attachOp.getResult());
               for (Operation *consumer : attachOp.getResult().getUsers()) {
-                extendInterval(dfb, consumer, func, *order);
+                recordTouch(consumer);
               }
             }
           }
@@ -399,7 +573,12 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    if (!sawBind) {
+    if (invalidResetContract) {
+      signalPassFailure();
+      return;
+    }
+
+    if (!sawBind && !hasResetDataflowBuffers) {
       return;
     }
 
@@ -427,6 +606,9 @@ struct TTLFinalizeDFBIndicesPass
     bool crossThreadReuse = std::getenv("TTL_DFB_REUSE_CROSS_THREAD") != nullptr;
     bool externPaired = std::getenv("TTL_DFB_REUSE_EXTERN_PAIRED") != nullptr;
     for (auto &[idx, dfb] : dfbs) {
+      if (dfb.firstUseEpoch == std::numeric_limits<int64_t>::max()) {
+        dfb.firstUseEpoch = 0;
+      }
       // An extern that carries one side -- or both sides -- of a handoff
       // leaves that role unnamed in the IR, but not unknown: the call sits in
       // a func.func whose ttl.kernel_thread says which RISC it runs on. Fill
@@ -519,25 +701,48 @@ struct TTLFinalizeDFBIndicesPass
       }
     }
 
+    llvm::DenseSet<int64_t> unpackToDestFp32DFBs;
+    bool fp32DestAcc = false;
+    if (hasResetDataflowBuffers) {
+      moduleOp->walk([&](func::FuncOp func) {
+        auto thread = func->getAttrOfType<ttkernel::ThreadTypeAttr>(
+            kKernelThreadAttrName);
+        if (!thread || thread.getValue() != ttkernel::ThreadType::Compute) {
+          return;
+        }
+        if (auto attr = func->getAttrOfType<BoolAttr>(kFp32DestAccEnAttrName)) {
+          fp32DestAcc |= attr.getValue();
+        }
+        if (auto attr = func->getAttrOfType<DenseI32ArrayAttr>(
+                kUnpackToDestFp32AttrName)) {
+          for (int32_t index : attr.asArrayRef()) {
+            unpackToDestFp32DFBs.insert(index);
+          }
+        }
+      });
+    }
+
     // Compiler DFBs are partitioned by the complete CircularBufferType. Their
     // lowering may depend on the exact physical ring geometry; widening this
     // to element type caused a silent global-attention regression. Balanced
     // thread-local user DFBs may share different capacities with the same page
     // type because the runtime sizes their arena slot to the largest member.
     // The final boolean keeps user and compiler storage strictly separate.
-    using ClassKey = std::tuple<Type, Operation *, Operation *, int64_t>;
+    using ClassKey = std::tuple<Type, Operation *, Operation *, int64_t, bool>;
     llvm::MapVector<ClassKey, SmallVector<LogicalDFB *>> classes;
     for (auto &[idx, dfb] : dfbs) {
       if (dfb.eligible) {
         // Cross-thread shares take the page type, like thread-local ones: the
         // runtime sizes the slot to the largest member, and the placement
         // loop below refuses any group whose ring would not wrap on a block
-        // boundary for every member.
+        // boundary for every member. User and compiler slots remain separate
+        // within each epoch.
         Type storageType = dfb.compilerAllocated ? dfb.cbType : dfb.elemType;
         int64_t kind = static_cast<int64_t>(dfb.compilerAllocated) +
                        2 * static_cast<int64_t>(dfb.crossThread);
         classes[{storageType, dfb.producer.getOperation(),
-                 dfb.consumer.getOperation(), kind}]
+                 dfb.consumer.getOperation(), kind,
+                 unpackToDestFp32DFBs.contains(dfb.origIndex)}]
             .push_back(&dfb);
       } else {
         dfb.finalIndex = dfb.origIndex;
@@ -601,24 +806,53 @@ struct TTLFinalizeDFBIndicesPass
       }
     }
 
-    // Compact to a dense index space (the runtime builds one CB descriptor
-    // per index), preserving relative order.
-    SmallVector<int64_t> usedIndices;
-    for (auto &[idx, dfb] : dfbs) {
-      usedIndices.push_back(dfb.finalIndex);
-    }
-    llvm::sort(usedIndices);
-    usedIndices.erase(llvm::unique(usedIndices), usedIndices.end());
-    DenseMap<int64_t, int64_t> rank;
-    for (auto [i, index] : llvm::enumerate(usedIndices)) {
-      rank[index] = static_cast<int64_t>(i);
-    }
-    for (auto &[idx, dfb] : dfbs) {
-      dfb.finalIndex = rank[dfb.finalIndex];
+    if (hasResetDataflowBuffers) {
+      llvm::MapVector<int64_t, SmallVector<LogicalDFB *>> dfbsByEpoch;
+      for (auto &[idx, dfb] : dfbs) {
+        dfbsByEpoch[dfb.firstUseEpoch].push_back(&dfb);
+      }
+      for (auto &[epoch, epochDFBs] : dfbsByEpoch) {
+        (void)epoch;
+        SmallVector<int64_t> usedIndices;
+        for (LogicalDFB *dfb : epochDFBs) {
+          usedIndices.push_back(dfb->finalIndex);
+        }
+        llvm::sort(usedIndices);
+        usedIndices.erase(llvm::unique(usedIndices), usedIndices.end());
+        DenseMap<int64_t, int64_t> rank;
+        for (auto [i, index] : llvm::enumerate(usedIndices)) {
+          rank[index] = static_cast<int64_t>(i);
+        }
+        for (LogicalDFB *dfb : epochDFBs) {
+          dfb->finalIndex = rank[dfb->finalIndex];
+        }
+      }
+    } else {
+      // Compact to a dense index space (the runtime builds one CB descriptor
+      // per index), preserving relative order.
+      SmallVector<int64_t> usedIndices;
+      for (auto &[idx, dfb] : dfbs) {
+        usedIndices.push_back(dfb.finalIndex);
+      }
+      llvm::sort(usedIndices);
+      usedIndices.erase(llvm::unique(usedIndices), usedIndices.end());
+      DenseMap<int64_t, int64_t> rank;
+      for (auto [i, index] : llvm::enumerate(usedIndices)) {
+        rank[index] = static_cast<int64_t>(i);
+      }
+      for (auto &[idx, dfb] : dfbs) {
+        dfb.finalIndex = rank[dfb.finalIndex];
+      }
     }
 
     // Rewrite bind_cb indices in every kernel thread.
     for (auto &[idx, dfb] : dfbs) {
+      if (hasResetDataflowBuffers) {
+        for (BindCBOp bindOp : dfb.binds) {
+          bindOp->setAttr(kDFBEpochLogicalIndexAttrName,
+                          builder.getI64IntegerAttr(dfb.origIndex));
+        }
+      }
       if (dfb.finalIndex == dfb.origIndex) {
         continue;
       }
@@ -628,6 +862,193 @@ struct TTLFinalizeDFBIndicesPass
       }
       LLVM_DEBUG(llvm::dbgs() << "DFB reuse: cb" << dfb.origIndex << " -> cb"
                               << dfb.finalIndex << "\n");
+    }
+
+    if (hasResetDataflowBuffers) {
+      int64_t epochCount = 1;
+      for (const auto &[func, calls] : resetCallsByFunction) {
+        (void)func;
+        epochCount =
+            std::max(epochCount, static_cast<int64_t>(calls.size()) + 1);
+      }
+
+      SmallVector<llvm::MapVector<int64_t, LogicalDFB *>> configsByEpoch(
+          epochCount);
+      SmallVector<llvm::DenseSet<int64_t>> unpackSlotsByEpoch(epochCount);
+      for (auto &[idx, dfb] : dfbs) {
+        if (dfb.firstUseEpoch >= epochCount) {
+          configsByEpoch.resize(dfb.firstUseEpoch + 1);
+          unpackSlotsByEpoch.resize(dfb.firstUseEpoch + 1);
+          epochCount = dfb.firstUseEpoch + 1;
+        }
+        auto &configs = configsByEpoch[dfb.firstUseEpoch];
+        auto [it, inserted] = configs.try_emplace(dfb.finalIndex, &dfb);
+        auto tileType = dyn_cast<ttcore::TileType>(dfb.elemType);
+        if (!tileType) {
+          moduleOp.emitError()
+              << "reset_dataflow_buffers requires tile-typed DFB elements";
+          signalPassFailure();
+          return;
+        }
+        if (!isEpochRuntimeDataTypeSupported(tileType.getDataType())) {
+          moduleOp.emitError()
+              << "reset_dataflow_buffers does not support DFB element type "
+              << tileType;
+          signalPassFailure();
+          return;
+        }
+        int64_t tileHeight = tileType.getHeight();
+        int64_t tileWidth = tileType.getWidth();
+        if (!isSupportedEpochTileShape(tileHeight, tileWidth)) {
+          moduleOp.emitError()
+              << "reset_dataflow_buffers does not support tile shape "
+              << tileHeight << "x" << tileWidth;
+          signalPassFailure();
+          return;
+        }
+        if (isBlockFloat(tileType.getDataType()) &&
+            (tileHeight != 32 || tileWidth != 32)) {
+          moduleOp.emitError()
+              << "reset_dataflow_buffers requires 32x32 block-float tiles, "
+                 "got "
+              << tileType;
+          signalPassFailure();
+          return;
+        }
+        if (!inserted) {
+          auto currentTileType = cast<ttcore::TileType>(it->second->elemType);
+          int64_t currentBytes =
+              it->second->totalPages() * currentTileType.getSizeBytes();
+          int64_t candidateBytes = dfb.totalPages() * tileType.getSizeBytes();
+          if (candidateBytes > currentBytes) {
+            it->second = &dfb;
+          }
+        }
+        if (unpackToDestFp32DFBs.contains(dfb.origIndex)) {
+          unpackSlotsByEpoch[dfb.firstUseEpoch].insert(dfb.finalIndex);
+        }
+      }
+
+      const HardwareDataFormat fp32Route =
+          fp32DestAcc ? HardwareDataFormat::Tf32 : HardwareDataFormat::Float16B;
+
+      int64_t physicalSlotCount = 0;
+      for (const auto &configs : configsByEpoch) {
+        physicalSlotCount =
+            std::max(physicalSlotCount, static_cast<int64_t>(configs.size()));
+      }
+      SmallVector<Attribute> physicalConfigs;
+      for (int64_t physicalIndex = 0; physicalIndex < physicalSlotCount;
+           ++physicalIndex) {
+        LogicalDFB *initialDFB = nullptr;
+        int64_t maxBytes = 0;
+        for (const auto &configs : configsByEpoch) {
+          auto configIt = configs.find(physicalIndex);
+          if (configIt == configs.end()) {
+            continue;
+          }
+          LogicalDFB *dfb = configIt->second;
+          auto tileType = cast<ttcore::TileType>(dfb->elemType);
+          if (!initialDFB) {
+            initialDFB = dfb;
+          }
+          maxBytes = std::max(
+              maxBytes, dfb->totalPages() *
+                            static_cast<int64_t>(tileType.getSizeBytes()));
+        }
+        assert(initialDFB && "epoch-local DFB indices must be dense");
+        auto initialTileType = cast<ttcore::TileType>(initialDFB->elemType);
+        int64_t initialPageBytes = initialTileType.getSizeBytes();
+        int64_t totalSize =
+            ((maxBytes + initialPageBytes - 1) / initialPageBytes) *
+            initialPageBytes;
+        physicalConfigs.push_back(DictionaryAttr::get(
+            ctx,
+            {builder.getNamedAttr("dfb_index",
+                                  builder.getI32IntegerAttr(
+                                      static_cast<int32_t>(physicalIndex))),
+             builder.getNamedAttr("element_type",
+                                  TypeAttr::get(initialDFB->elemType)),
+             builder.getNamedAttr(
+                 "tile_height", builder.getI32IntegerAttr(static_cast<int32_t>(
+                                    initialTileType.getHeight()))),
+             builder.getNamedAttr(
+                 "tile_width", builder.getI32IntegerAttr(static_cast<int32_t>(
+                                   initialTileType.getWidth()))),
+             builder.getNamedAttr("total_size",
+                                  builder.getI64IntegerAttr(totalSize))}));
+      }
+      moduleOp->setAttr(kDFBEpochPhysicalConfigsAttrName,
+                        builder.getArrayAttr(physicalConfigs));
+
+      auto appendConfiguration = [&](OpaqueCallOp call, int64_t epoch) {
+        SmallVector<Attribute> templateArgs{builder.getI64IntegerAttr(0)};
+
+        auto &configs = configsByEpoch[epoch];
+        templateArgs.push_back(
+            builder.getI64IntegerAttr(static_cast<int64_t>(configs.size())));
+        for (int64_t physicalIndex = 0;
+             physicalIndex < static_cast<int64_t>(configs.size());
+             ++physicalIndex) {
+          auto configIt = configs.find(physicalIndex);
+          assert(configIt != configs.end() &&
+                 "epoch-local DFB indices must be dense");
+          LogicalDFB *dfb = configIt->second;
+          auto tileType = cast<ttcore::TileType>(dfb->elemType);
+          int64_t pageBytes = tileType.getSizeBytes();
+          int64_t numPages = dfb->totalPages();
+          int64_t tileHeight = tileType.getHeight();
+          int64_t tileWidth = tileType.getWidth();
+          int64_t faceHeight = std::min<int64_t>(tileHeight, 16);
+          int64_t faceWidth = std::min<int64_t>(tileWidth, 16);
+          int64_t numFaces =
+              (tileHeight / faceHeight) * (tileWidth / faceWidth);
+          auto dtype = tileType.getDataType();
+          HardwareDataFormat l1Format = l1DataFormat(dtype);
+          HardwareDataFormat unpackDstFormat = l1Format;
+          if (dtype == ttcore::DataType::Float32) {
+            unpackDstFormat = unpackSlotsByEpoch[epoch].contains(physicalIndex)
+                                  ? HardwareDataFormat::Float32
+                                  : fp32Route;
+          }
+          HardwareDataFormat packSrcFormat =
+              packSourceFormat(dtype, fp32Route, fp32DestAcc);
+          int64_t values[] = {
+              physicalIndex,
+              numPages * pageBytes,
+              numPages,
+              pageBytes,
+              static_cast<int64_t>(l1Format),
+              tileHeight,
+              tileWidth,
+              faceHeight,
+              numFaces,
+              static_cast<int64_t>(unpackDstFormat),
+              static_cast<int64_t>(packSrcFormat),
+          };
+          for (int64_t value : values) {
+            templateArgs.push_back(builder.getI64IntegerAttr(value));
+          }
+        }
+        call->setAttr("template_args", builder.getArrayAttr(templateArgs));
+      };
+
+      for (auto &[funcOperation, calls] : resetCallsByFunction) {
+        for (auto [ordinal, call] : llvm::enumerate(calls)) {
+          appendConfiguration(call, static_cast<int64_t>(ordinal) + 1);
+        }
+
+        auto func = cast<func::FuncOp>(funcOperation);
+        auto prologue = cast<OpaqueCallOp>(calls.front()->clone());
+        appendConfiguration(prologue, 0);
+        Block &entry = func.getBody().front();
+        auto insertionPoint = entry.begin();
+        while (insertionPoint != entry.end() &&
+               isa<BindCBOp>(&*insertionPoint)) {
+          ++insertionPoint;
+        }
+        prologue->insertBefore(&entry, insertionPoint);
+      }
     }
 
     int32_t numDFBs = getNextAvailableDFBIndex(moduleOp);
@@ -677,7 +1098,8 @@ struct TTLFinalizeDFBIndicesPass
                      << entry.getValue() << "\n";
       }
       for (auto &[key, members] : classes) {
-        auto [storage, prod, cons, kind] = key;
+        auto [storage, prod, cons, kind, unpackToDestFp32] = key;
+        (void)unpackToDestFp32;
         llvm::DenseSet<int64_t> placed;
         for (LogicalDFB *dfb : members) {
           placed.insert(dfb->finalIndex);

@@ -10,6 +10,7 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SINGLE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=USER
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=XTHREAD
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=EPOCH
 
 // -----
 
@@ -357,5 +358,37 @@ func.func @xt_compute()
   ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// An explicit epoch boundary restarts physical indices at zero even when the
+// next epoch changes data type and page size.
+
+// EPOCH: ttl.dfb_epoch_physical_configs = [{dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, tile_height = 32 : i32, tile_width = 32 : i32, total_size = 8192 : i64}]
+// EPOCH: ttl.dfb_index_map = [{new_index = 0 : i32, old_index = 1 : i32}]
+// EPOCH-LABEL: func.func @epoch_restart
+// EPOCH-COUNT-2: ttl.bind_cb{cb_index = 0,
+// EPOCH: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0 : i64, 1 : i64, 0 : i64, 4096 : i64, 2 : i64, 2048 : i64, 5 : i64, 32 : i64, 32 : i64, 16 : i64, 4 : i64, 5 : i64, 5 : i64]}
+// EPOCH: ttl.cb_reserve
+// EPOCH: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0 : i64, 1 : i64, 0 : i64, 8192 : i64, 2 : i64, 4096 : i64, 0 : i64, 32 : i64, 32 : i64, 16 : i64, 4 : i64, 5 : i64, 5 : i64]}
+// EPOCH: ttl.cb_reserve
+// EPOCH-NOT: cb_index = 1
+// EPOCH: return
+func.func @epoch_restart()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32,
+                ttl.crta_indices = []} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
+  %r1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   return
 }

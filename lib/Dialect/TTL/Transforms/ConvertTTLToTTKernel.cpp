@@ -1645,6 +1645,41 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                                                 pipeResourceRequirements))) {
     return failure();
   }
+
+  SmallVector<OpaqueCallOp> resetDataflowBufferCalls;
+  mod.walk([&](OpaqueCallOp op) {
+    if (op.getCallee() == kResetDataflowBuffersCallee) {
+      resetDataflowBufferCalls.push_back(op);
+    }
+  });
+  if (!resetDataflowBufferCalls.empty()) {
+    const int64_t firstResetSemaphore =
+        pipeResourceRequirements.syncSemaphoreCount;
+    if (firstResetSemaphore + kResetDataflowBuffersSemaphoreCount >
+        kMaxHardwareSemaphoreIds) {
+      mod.emitError() << "dataflow-buffer reset requires "
+                      << kResetDataflowBuffersSemaphoreCount
+                      << " local semaphore IDs after the "
+                      << pipeResourceRequirements.syncSemaphoreCount
+                      << " IDs reserved by pipes, exceeding the hardware "
+                         "limit of "
+                      << kMaxHardwareSemaphoreIds;
+      return failure();
+    }
+    for (OpaqueCallOp op : resetDataflowBufferCalls) {
+      ArrayAttr config = op.getTemplateArgsAttr();
+      if (!config || config.size() < 2) {
+        op.emitError("is missing finalized dataflow-buffer epoch metadata");
+        return failure();
+      }
+      SmallVector<Attribute> args(config.begin(), config.end());
+      args[0] =
+          IntegerAttr::get(IntegerType::get(&ctx, 64), firstResetSemaphore);
+      op.setTemplateArgsAttr(ArrayAttr::get(&ctx, args));
+    }
+    pipeResourceRequirements.syncSemaphoreCount +=
+        kResetDataflowBuffersSemaphoreCount;
+  }
   mod->setAttr(kPipeSyncSemaphoreCountAttrName,
                IntegerAttr::get(IntegerType::get(&ctx, 64),
                                 pipeResourceRequirements.syncSemaphoreCount));

@@ -100,6 +100,7 @@ _TTL_OPS: Dict[str, str] = {
     "Pipe": "control",
     "PipeNet": "control",
     "make_dataflow_buffer_like": "control",
+    "reset_dataflow_buffers": "control",
     "node": "control",
     "grid_size": "control",
     "dims": "control",

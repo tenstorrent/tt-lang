@@ -187,6 +187,8 @@ def format_name_to_ttnn_dtype(name: str):
             return ttnn.DataType.UINT32
         case "uint16" | "u16":
             return ttnn.DataType.UINT16
+        case "uint8" | "u8":
+            return ttnn.DataType.UINT8
         case "bfp8" | "bfloat8_b":
             return ttnn.DataType.BFLOAT8_B
         case "bfp4" | "bfloat4_b":

@@ -241,6 +241,11 @@ static bool isSyncBoundary(Operation *op) {
              ttk::TileRegsReleaseOp>(op);
 }
 
+static bool isResetDataflowBuffers(Operation *op) {
+  auto call = dyn_cast<ttk::OpaqueCallOp>(op);
+  return call && call.getCallee() == kResetDataflowBuffersCallee;
+}
+
 //===----------------------------------------------------------------------===//
 // Common init insertion
 //===----------------------------------------------------------------------===//
@@ -408,6 +413,9 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
             forOp->hasAttr(kReductionLoopAttrName)) {
           for (Operation *prev = forOp->getPrevNode(); prev;
                prev = prev->getPrevNode()) {
+            if (isResetDataflowBuffers(prev)) {
+              break;
+            }
             if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
               if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
                    prevFor->hasAttr(kReductionLoopAttrName)) &&

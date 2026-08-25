@@ -230,6 +230,18 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
+/// Resolve the logical CB index retained before epoch-local compaction.
+inline std::optional<int64_t> getLogicalCBIndex(mlir::Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+    if (auto attr = bindOp->getAttrOfType<mlir::IntegerAttr>(
+            kDFBEpochLogicalIndexAttrName)) {
+      return attr.getInt();
+    }
+  }
+  return getCBIndex(cb);
+}
+
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {
