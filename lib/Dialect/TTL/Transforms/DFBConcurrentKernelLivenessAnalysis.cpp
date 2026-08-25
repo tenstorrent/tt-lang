@@ -4063,7 +4063,7 @@ static bool protocolRunsCrossReset(
 static bool unprovenLifecycleIsOutsideReset(
     const DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
     const AccessExecutionCounts &executionCounts, bool includeUnknownDomains,
-    EventPair resetEvents, const HappensBeforeGraph &graph,
+    const AccessEventSpan &resetEvents, const HappensBeforeGraph &graph,
     const StructuralOperationOrder &structuralOrder,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
@@ -4079,10 +4079,10 @@ static bool unprovenLifecycleIsOutsideReset(
     if (!events) {
       return false;
     }
-    bool beforeReset =
-        graph.strictlyPrecedes(events->last.completion, resetEvents.entry);
-    bool afterReset =
-        graph.strictlyPrecedes(resetEvents.completion, events->first.entry);
+    bool beforeReset = graph.strictlyPrecedes(events->last.completion,
+                                              resetEvents.first.entry);
+    bool afterReset = graph.strictlyPrecedes(resetEvents.last.completion,
+                                             events->first.entry);
     if (beforeReset == afterReset) {
       return false;
     }
