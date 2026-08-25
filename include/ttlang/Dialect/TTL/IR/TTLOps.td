@@ -1994,9 +1994,10 @@ def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
   let description = [{
     `ttl.reset_dfbs` is one worker-local synchronization boundary shared by
     the three logical kernels named by `reset`. Each participant executes the
-    same zero-or-one dynamic instance per dispatch and launch node. Before any
-    participant returns, the operation completes prior DFB-interface work and
-    restores the listed DFBs to canonical empty protocol state without
+    same zero-or-one dynamic instance per dispatch and launch node, or one
+    instance per iteration of an equivalent immutable sequential loop nest.
+    Before any participant returns, the operation completes prior DFB-interface
+    work and restores the listed DFBs to canonical empty protocol state without
     changing descriptor configuration or payload storage.
 
     The operation resets read and write pointers, the packer write-tile
