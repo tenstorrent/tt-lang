@@ -208,6 +208,7 @@ def _fake_cb_descriptor(
     page_size=32,
     tile=(1, 32),
     data_format="bf16",
+    additional_formats=(),
 ):
     return SimpleNamespace(
         total_size=total_size,
@@ -218,7 +219,8 @@ def _fake_cb_descriptor(
                 data_format=data_format,
                 page_size=page_size,
                 tile=SimpleNamespace(height=tile[0], width=tile[1]),
-            )
+            ),
+            *additional_formats,
         ],
     )
 
@@ -446,9 +448,7 @@ def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):
         grid_cols=2,
         grid_rows=1,
         num_cbs=0,
-        runtime_args_by_thread={
-            "brisc": [("core-0", [10]), ("core-1", [11])]
-        },
+        runtime_args_by_thread={"brisc": [("core-0", [10]), ("core-1", [11])]},
     )
 
     assert descriptors[0].runtime_args == [("core-1", [11])]
@@ -693,6 +693,86 @@ def test_cb_descriptor_override_rejects_mismatched_page_format(monkeypatch):
         )
 
 
+def test_cb_descriptor_override_accepts_shared_backing_aliases(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 96)
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    alias_format = SimpleNamespace(
+        buffer_index=1,
+        data_format="bf16",
+        page_size=48,
+        tile=SimpleNamespace(height=1, width=24),
+    )
+    descriptors = [
+        _fake_cb_descriptor(
+            0,
+            core,
+            total_size=96,
+            page_size=32,
+            additional_formats=(alias_format,),
+        )
+    ]
+
+    result = kernel_runner.validate_cb_descriptors_override(
+        descriptors=descriptors,
+        program_core_ranges=core,
+        tensors=[_FakeTensorWithoutDevice()],
+        num_cbs=2,
+    )
+
+    assert result == descriptors
+
+
+def test_cb_descriptor_override_rejects_misaligned_shared_alias(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    alias_format = SimpleNamespace(
+        buffer_index=1,
+        data_format="bf16",
+        page_size=64,
+        tile=SimpleNamespace(height=1, width=32),
+    )
+    descriptor = _fake_cb_descriptor(
+        0,
+        core,
+        total_size=96,
+        page_size=32,
+        additional_formats=(alias_format,),
+    )
+
+    with pytest.raises(ValueError, match=r"CB\[1\].*page-aligned"):
+        kernel_runner.validate_cb_descriptors_override(
+            descriptors=[descriptor],
+            program_core_ranges=core,
+            tensors=[_FakeTensorWithoutDevice()],
+            num_cbs=2,
+        )
+
+
+def test_cb_descriptor_override_rejects_duplicate_shared_alias_id(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    duplicate_format = SimpleNamespace(
+        buffer_index=0,
+        data_format="bf16",
+        page_size=32,
+        tile=SimpleNamespace(height=1, width=32),
+    )
+    descriptor = _fake_cb_descriptor(
+        0,
+        core,
+        total_size=64,
+        additional_formats=(duplicate_format,),
+    )
+
+    with pytest.raises(ValueError, match="repeats CB id 0"):
+        kernel_runner.validate_cb_descriptors_override(
+            descriptors=[descriptor],
+            program_core_ranges=core,
+            tensors=[_FakeTensorWithoutDevice()],
+            num_cbs=1,
+        )
+
+
 def test_cb_descriptor_override_rejects_per_core_budget_overflow(monkeypatch):
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
     core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
@@ -798,8 +878,7 @@ def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
         128,
     ]
     assert [
-        descriptor.format_descriptors[0].buffer_index
-        for descriptor in descriptors
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [1, 1, 0, 0]
 
 
@@ -882,8 +961,7 @@ def test_cb_pages_by_core_preserves_specialization_order(monkeypatch):
     )
 
     assert [
-        descriptor.format_descriptors[0].buffer_index
-        for descriptor in descriptors
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [1, 1, 0, 0]
 
 
@@ -994,10 +1072,7 @@ def test_emit_runner_source_preserves_explicit_data_movement_config(monkeypatch)
         num_tensors=1,
     )
 
-    assert (
-        "('data_movement', 'RISCV_1', 'RISCV_0_default', 'DM_DYNAMIC_NOC')"
-        in source
-    )
+    assert "('data_movement', 'RISCV_1', 'RISCV_0_default', 'DM_DYNAMIC_NOC')" in source
     assert "processor=getattr(ttnn.DataMovementProcessor, processor)" in source
     assert "noc=getattr(ttnn.NOC, noc)" in source
     assert "noc_mode=getattr(ttnn.NOC_MODE, noc_mode)" in source

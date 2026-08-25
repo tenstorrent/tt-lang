@@ -92,22 +92,15 @@ def get_remaining_l1_by_core_for_device(device, core_coordinates):
     info = ttnn._ttnn.reports.get_device_info(device)
     cb_base = int(info.address_at_first_l1_cb_buffer)
     cb_limit = int(info.cb_limit)
-    first_occupied = {
-        tuple(core): cb_limit for core in core_coordinates
-    }
+    first_occupied = {tuple(core): cb_limit for core in core_coordinates}
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type != ttnn.BufferType.L1:
             continue
         core = (int(page.core_x), int(page.core_y))
         if core in first_occupied:
-            first_occupied[core] = min(
-                first_occupied[core], int(page.page_address)
-            )
+            first_occupied[core] = min(first_occupied[core], int(page.page_address))
 
-    return {
-        core: max(0, address - cb_base)
-        for core, address in first_occupied.items()
-    }
+    return {core: max(0, address - cb_base) for core, address in first_occupied.items()}
 
 
 @dataclass
@@ -164,9 +157,7 @@ class ProgramRuntimeResources:
     runtime_args_by_thread: Dict[str, List[Tuple[Any, List[int]]]] = field(
         default_factory=dict
     )
-    defines_by_thread: Dict[str, List[Tuple[str, str]]] = field(
-        default_factory=dict
-    )
+    defines_by_thread: Dict[str, List[Tuple[str, str]]] = field(default_factory=dict)
     lifetimes: List[Any] = field(default_factory=list)
     # Optional exact replacement for the whole-grid descriptors normally
     # synthesized from ``cb_configs``.  This is deliberately a runtime-resource
@@ -179,9 +170,7 @@ class ProgramRuntimeResources:
     # is ``[(CoreRangeSet, num_pages), ...]`` and must partition the program
     # grid.  Formats still come from the compiler-derived ``cb_configs``;
     # unlisted ids retain their normal whole-grid descriptors.
-    cb_pages_by_core: Dict[int, List[Tuple[Any, int]]] = field(
-        default_factory=dict
-    )
+    cb_pages_by_core: Dict[int, List[Tuple[Any, int]]] = field(default_factory=dict)
 
 
 def _data_movement_thread_name(config: Any) -> str:
@@ -660,12 +649,8 @@ def _remaining_cb_budgets_by_core(
             continue
         device = tensor.device()
         if device is not None:
-            return get_remaining_l1_by_core_for_device(
-                device, core_coordinates
-            )
-    return {
-        core: DEFAULT_L1_CB_BUDGET_BYTES for core in core_coordinates
-    }
+            return get_remaining_l1_by_core_for_device(device, core_coordinates)
+    return {core: DEFAULT_L1_CB_BUDGET_BYTES for core in core_coordinates}
 
 
 def validate_cb_descriptors_override(
@@ -676,14 +661,16 @@ def validate_cb_descriptors_override(
 ) -> List[Any]:
     """Validate an exact, possibly per-core CB descriptor replacement.
 
-    The same numeric CB id may occur in more than one descriptor only when
-    those descriptors cover disjoint cores and use one identical page format.
-    Their capacities may differ.  L1 usage is checked as the maximum sum on
-    any one core, rather than summing mutually exclusive descriptors globally.
+    One backing descriptor may expose multiple distinct CB ids.  The same
+    numeric CB id may occur in more than one descriptor only when those
+    descriptors cover disjoint cores and use one identical page format.  Their
+    capacities may differ.  L1 usage is checked as the maximum sum of backing
+    descriptors on any one core, rather than summing aliases or mutually
+    exclusive descriptors globally.
 
     This intentionally supports the static subset of Blaze's descriptor
-    model.  It does not support runtime phase reconfiguration, overlapping
-    aliases, or multiple format ids attached to one backing descriptor.
+    model.  It does not support runtime phase reconfiguration or aliases across
+    separate backing descriptors.
     """
     if descriptors is None:
         raise ValueError("CB descriptor override must not be None")
@@ -698,73 +685,97 @@ def validate_cb_descriptors_override(
     format_by_id: Dict[int, Tuple[str, Optional[Tuple[int, int]], int]] = {}
     claims: Dict[Tuple[int, Tuple[int, int]], int] = {}
     bytes_by_core = {core: 0 for core in program_cores}
-    claim_sizes_by_core: Dict[Tuple[int, int], List[Tuple[int, int]]] = {
+    claim_sizes_by_core: Dict[Tuple[int, int], List[Tuple[str, int]]] = {
         core: [] for core in program_cores
     }
 
     for descriptor_index, descriptor in enumerate(descriptors):
         formats = list(getattr(descriptor, "format_descriptors", ()))
-        if len(formats) != 1:
+        if not formats:
             raise ValueError(
                 "CB descriptor override entry "
-                f"{descriptor_index} must contain exactly one format descriptor"
+                f"{descriptor_index} must contain at least one format descriptor"
             )
-        fmt = formats[0]
         try:
-            cb_id = int(fmt.buffer_index)
-            page_size = int(fmt.page_size)
             total_size = int(descriptor.total_size)
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError(
                 f"CB descriptor override entry {descriptor_index} is malformed"
             ) from exc
-        if cb_id < 0 or cb_id >= num_cbs:
+        if total_size <= 0:
             raise ValueError(
-                f"CB descriptor override entry {descriptor_index} has CB id "
-                f"{cb_id}, outside [0, {num_cbs})"
+                "CB descriptor override entry "
+                f"{descriptor_index} requires positive total_size; "
+                f"got {total_size}"
             )
-        if page_size <= 0 or total_size <= 0 or total_size % page_size:
-            raise ValueError(
-                f"CB[{cb_id}] override requires positive page-aligned total_size; "
-                f"got total_size={total_size}, page_size={page_size}"
-            )
-
-        # Real TTNN descriptors expose the enum safely through the integer
-        # binding.  Accessing ``data_format`` directly is broken on some
-        # pybind builds (it returns an unregistered ``tt::DataFormat``).
-        data_format = getattr(fmt, "data_format_as_uint8", None)
-        if data_format is None:
-            data_format = getattr(fmt, "data_format", None)
-        if data_format is None:
-            raise ValueError(f"CB[{cb_id}] override is missing a data format")
-        tile_key = _tile_descriptor_key(getattr(fmt, "tile", None))
-        format_key = (str(data_format), tile_key, page_size)
-        previous_format = format_by_id.setdefault(cb_id, format_key)
-        if previous_format != format_key:
-            raise ValueError(
-                f"CB[{cb_id}] override uses inconsistent page formats across cores: "
-                f"{previous_format} vs {format_key}"
-            )
-
         descriptor_cores = _core_range_coordinates(
             getattr(descriptor, "core_ranges", None),
-            label=f"CB[{cb_id}] descriptor core ranges",
+            label=f"CB descriptor override entry {descriptor_index} core ranges",
         )
         outside = descriptor_cores - program_cores
         if outside:
             raise ValueError(
-                f"CB[{cb_id}] override claims cores outside the program grid: "
+                "CB descriptor override entry "
+                f"{descriptor_index} claims cores outside the program grid: "
                 f"{sorted(outside)}"
             )
-        for core in descriptor_cores:
-            claim_key = (cb_id, core)
-            if claim_key in claims:
+
+        descriptor_cb_ids = set()
+        for format_index, fmt in enumerate(formats):
+            try:
+                cb_id = int(fmt.buffer_index)
+                page_size = int(fmt.page_size)
+            except (AttributeError, TypeError, ValueError) as exc:
                 raise ValueError(
-                    f"CB[{cb_id}] override has overlapping descriptors on core {core}"
+                    "CB descriptor override entry "
+                    f"{descriptor_index} format {format_index} is malformed"
+                ) from exc
+            if cb_id in descriptor_cb_ids:
+                raise ValueError(
+                    "CB descriptor override entry "
+                    f"{descriptor_index} repeats CB id {cb_id}"
                 )
-            claims[claim_key] = descriptor_index
+            descriptor_cb_ids.add(cb_id)
+            if cb_id < 0 or cb_id >= num_cbs:
+                raise ValueError(
+                    f"CB descriptor override entry {descriptor_index} has CB id "
+                    f"{cb_id}, outside [0, {num_cbs})"
+                )
+            if page_size <= 0 or total_size % page_size:
+                raise ValueError(
+                    f"CB[{cb_id}] override requires positive page-aligned total_size; "
+                    f"got total_size={total_size}, page_size={page_size}"
+                )
+
+            # Real TTNN descriptors expose the enum safely through the integer
+            # binding.  Accessing ``data_format`` directly is broken on some
+            # pybind builds (it returns an unregistered ``tt::DataFormat``).
+            data_format = getattr(fmt, "data_format_as_uint8", None)
+            if data_format is None:
+                data_format = getattr(fmt, "data_format", None)
+            if data_format is None:
+                raise ValueError(f"CB[{cb_id}] override is missing a data format")
+            tile_key = _tile_descriptor_key(getattr(fmt, "tile", None))
+            format_key = (str(data_format), tile_key, page_size)
+            previous_format = format_by_id.setdefault(cb_id, format_key)
+            if previous_format != format_key:
+                raise ValueError(
+                    f"CB[{cb_id}] override uses inconsistent page formats across cores: "
+                    f"{previous_format} vs {format_key}"
+                )
+
+            for core in descriptor_cores:
+                claim_key = (cb_id, core)
+                if claim_key in claims:
+                    raise ValueError(
+                        f"CB[{cb_id}] override has overlapping descriptors on core {core}"
+                    )
+                claims[claim_key] = descriptor_index
+
+        descriptor_label = ",".join(str(cb_id) for cb_id in sorted(descriptor_cb_ids))
+        for core in descriptor_cores:
             bytes_by_core[core] += total_size
-            claim_sizes_by_core[core].append((cb_id, total_size))
+            claim_sizes_by_core[core].append((descriptor_label, total_size))
 
     missing_ids = sorted(set(range(num_cbs)) - set(format_by_id))
     if missing_ids:
@@ -774,9 +785,7 @@ def validate_cb_descriptors_override(
         )
 
     budget_bytes = _remaining_cb_budget(tensors)
-    budgets_by_core = _remaining_cb_budgets_by_core(
-        tensors, program_cores
-    )
+    budgets_by_core = _remaining_cb_budgets_by_core(tensors, program_cores)
     if bytes_by_core:
         peak_core, peak_bytes = max(
             bytes_by_core.items(), key=lambda item: (item[1], item[0])
@@ -799,17 +808,13 @@ def validate_cb_descriptors_override(
                 )
         overflow_core, overflow_bytes = max(
             bytes_by_core.items(),
-            key=lambda item: (
-                item[1] - budgets_by_core[item[0]], item[0]
-            ),
+            key=lambda item: (item[1] - budgets_by_core[item[0]], item[0]),
         )
         overflow_budget = budgets_by_core[overflow_core]
         if overflow_bytes > overflow_budget:
             breakdown = ", ".join(
                 f"CB[{cb_id}]={size}"
-                for cb_id, size in sorted(
-                    claim_sizes_by_core[overflow_core]
-                )
+                for cb_id, size in sorted(claim_sizes_by_core[overflow_core])
             )
             raise ValueError(
                 "Per-core circular buffer descriptor override allocation "
@@ -849,10 +854,7 @@ def _core_ranges_from_coordinates(coordinates: set[Tuple[int, int]]):
         while (end_x + 1, start_y) in remaining:
             end_x += 1
         end_y = start_y
-        while all(
-            (x, end_y + 1) in remaining
-            for x in range(start_x, end_x + 1)
-        ):
+        while all((x, end_y + 1) in remaining for x in range(start_x, end_x + 1)):
             end_y += 1
         for y in range(start_y, end_y + 1):
             for x in range(start_x, end_x + 1):
@@ -878,9 +880,7 @@ def build_cb_descriptors_by_core(
         raise RuntimeError("ttnn is not available")
 
     geometries = [cb_geometry(i, cb) for i, cb in enumerate(cb_configs)]
-    program_cores = _core_range_coordinates(
-        core_ranges, label="program core ranges"
-    )
+    program_cores = _core_range_coordinates(core_ranges, label="program core ranges")
     specialized = {}
     for raw_index, entries in dict(pages_by_core).items():
         try:
@@ -932,8 +932,7 @@ def build_cb_descriptors_by_core(
                 )
             if overlap:
                 raise ValueError(
-                    f"per-core CB[{index}] entries overlap on "
-                    f"{sorted(overlap)}"
+                    f"per-core CB[{index}] entries overlap on " f"{sorted(overlap)}"
                 )
             covered.update(entry_cores)
             configured_pages.append(pages)
@@ -960,9 +959,7 @@ def build_cb_descriptors_by_core(
     specialized_indices = tuple(specialized)
     cores_by_signature = {}
     for core in sorted(program_cores):
-        signature = tuple(
-            specialized[index][core] for index in specialized_indices
-        )
+        signature = tuple(specialized[index][core] for index in specialized_indices)
         cores_by_signature.setdefault(signature, set()).add(core)
     partitions = [
         (signature, _core_ranges_from_coordinates(coordinates))
