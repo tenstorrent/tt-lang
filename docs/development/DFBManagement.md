@@ -105,6 +105,7 @@ ttl-set-compute-kernel-config      (ModuleOp) Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations       (FuncOp) Copy DFB indices to tile ops
 ttl-verify-dfb-spsc                (Module) Verify producer/consumer uniqueness
+ttl-erase-pipenet-scopes           (Module) Remove verified PipeNet markers
 ttl-validate-cb-budget             (Module) Validate target-aligned DFB and fixed state
 convert-ttl-to-ttkernel            (Module) Lower and validate exact combined L1 use
 ttkernel-insert-inits              (Module) Insert hardware init calls
@@ -296,12 +297,13 @@ active in every crossed allocation epoch. A lifecycle beginning under a
 conditional boundary must use the same condition so an inactive boundary
 cannot leave a stale descriptor for unconditional following work.
 
-The allocation conflict graph permits two lifecycle epochs to share a physical
-index only when their per-node active epochs are disjoint and their static
-element type and tile descriptor are compatible. Reconfiguration can change
-outer DFB geometry, block count, and storage. Tensor-backed ranges are checked
-against the complete set of descriptors installed initially and after each
-boundary, in proven execution order.
+Within one configuration epoch, ordinary reuse and explicit allocation groups
+follow the typed compatibility and handoff rules described below.
+Reconfiguration additionally permits lifecycles with disjoint per-node active
+epoch sets to share an index with different outer geometry, block count, or
+storage, provided their static element type and tile descriptor are compatible.
+Tensor-backed ranges are checked against the complete set of descriptors
+installed initially and after each boundary, in proven execution order.
 
 Finalization emits the initial descriptor for every physical index and one
 entry configuration for every lifecycle that begins at a boundary. Live
@@ -318,7 +320,10 @@ updates complete. Configuration tensors, PipeNet scratch, computed-address
 backing, and GlobalSemaphore objects remain owned by the operation's serialized
 runtime-resource cache. Compatible calls reuse one generation. Incompatible
 replacement and owner destruction synchronize the device before releasing it;
-failed synchronization retains ownership.
+failed synchronization retains ownership. Declarative portable runtime
+resources, including external fabric connections, are retained through device
+completion and synchronized before release; each invocation constructs its
+current portable-resource plan.
 
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. It includes one aligned maximum allocation per non-tensor-backed

@@ -315,9 +315,9 @@ with transport-owned scratch; scalar residuals retain the original lifecycle.
 Selection uses a conservative upper bound for target-aligned DFB allocation,
 synchronized-reset state, receiver-published addresses, transport scratch,
 GlobalSemaphore counters, record-selected callback resources, and
-reconfiguration state. A group size of one records the reservation without
-grouping. Exact combined validation occurs after PipeNet planning in
-`convert-ttl-to-ttkernel`.
+reconfiguration state. A group size of one validates the conservative bound
+and records the reservation without grouping. Exact combined validation occurs
+after PipeNet planning in `convert-ttl-to-ttkernel`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

@@ -129,11 +129,12 @@ def TTLFormPipeTransports
     bytes. Selection uses a conservative upper bound for target-aligned DFB
     allocation, synchronized-reset state, receiver-published address storage,
     transport scratch, GlobalSemaphore counters, record-selected callback
-    resources, and DFB reconfiguration state. `group-size = 1` disables grouping
-    and records the same reservation for physical DFB allocation. A larger value
-    is an upper bound; the pass selects a smaller group when the loop trip count
-    or conservative L1 bound requires it. Ineligible loops retain scalar
-    transfer IR. After PipeNet lowering chooses exact resources,
+    resources, and DFB reconfiguration state. `group-size = 1` disables grouping,
+    validates this conservative bound, and records the same reservation for
+    physical DFB allocation. A larger value is an upper bound; the pass selects
+    a smaller group when the loop trip count or conservative L1 bound requires
+    it. Ineligible loops retain scalar transfer IR. After PipeNet lowering
+    chooses exact resources,
     `convert-ttl-to-ttkernel` validates the authoritative combined per-core
     allocation.
 
@@ -348,7 +349,8 @@ def TTLConvertTTLToTTKernel
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
-    exact endpoint-contained launch-node domains and single-block event regions
+    launch-node domains that are exact when analyzable and otherwise
+    conservative within the endpoints, plus the single-block event regions
     required by protocol planning.
     A module containing PipeNet protocol operations must assign `dfb_id` to
     every user-declared DFB before physical allocation.

@@ -1,4 +1,4 @@
-// Verifies conservative PipeNet validation includes aligned fixed resources.
+// Summary: Verifies conservative PipeNet validation includes aligned fixed resources.
 // RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25791})'
 
 #layout = #ttl.layout<
