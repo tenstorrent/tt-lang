@@ -618,7 +618,9 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=tuple(
-                    selected_kernels[id(participant)]
+                    participant
+                    if participant._implicit_role is not None
+                    else selected_kernels[id(participant)]
                     for participant in reset.participants
                 ),
             )

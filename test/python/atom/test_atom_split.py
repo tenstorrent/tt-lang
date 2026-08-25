@@ -1478,6 +1478,34 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
         assert f"ttl.reset_dfbs({reset_name}, dfbs=[target])" in source
 
 
+def test_composition_preserves_implicit_reset_participant():
+    """Inlining retains the compiler-owned PipeNet source participant."""
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, ttl.PIPE_SOURCE_KERNEL)
+    )
+
+    @ttl.operation()
+    def reset_helper(target: ttl.DFB):
+        ttl.reset_dfbs(reset, dfbs=[target])
+
+    @ttl.operation()
+    def composed_reset(target: ttl.DFB):
+        reset_helper(target)
+
+    spec = composed_reset._spec
+    composed_reset_identity = next(iter(spec.dfb_resets.values()))
+    assert composed_reset_identity.participants[2] is ttl.PIPE_SOURCE_KERNEL
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"target"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    assert _kernel_src(result, ttl.PIPE_SOURCE_KERNEL).count("ttl.reset_dfbs(") == 1
+
+
 def test_composition_preserves_inspect_dfb_access():
     """Inlining and logical-kernel replication retain the typed access."""
 
