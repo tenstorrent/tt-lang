@@ -17,7 +17,7 @@ from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.fabric import FabricManagerClaim
 from ttl.dfb_reconfiguration import DFBReconfiguration
-from ttl.kernel import Kernel
+from ttl.kernel import Kernel, KernelKind
 from ttl.scalar import ScalarType
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
@@ -619,7 +619,8 @@ def _add_dfb_reset_bindings(
             reset_instance = DFBReset(
                 participants=tuple(
                     participant
-                    if participant._implicit_role is not None
+                    if isinstance(participant, KernelKind)
+                    or participant._implicit_role is not None
                     else selected_kernels[id(participant)]
                     for participant in reset.participants
                 ),

@@ -387,6 +387,9 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
                 participant_tokens = []
                 for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
                     if participant._implicit_role is not None:
                         participant_tokens.append(
                             "role:"

@@ -1694,6 +1694,66 @@ def test_synchronized_dfb_reset_is_replicated_to_every_participant():
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
 
 
+def test_composed_reset_uses_canonical_kernel_selectors():
+    """Canonical reset participants remain one target-sized kernel set."""
+    reset = ttl.DFBReset(
+        participants=(
+            KernelKind.COMPUTE,
+            KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reset_helper(target: ttl.DFB):
+        ttl.reset_dfbs(reset, dfbs=[target])
+
+    @ttl.operation()
+    def composed_reset(first: ttl.DFB, second: ttl.DFB):
+        reset_helper(first)
+        reset_helper(second)
+
+    spec = composed_reset._spec
+    assert spec.logical_kernels == {}
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"first", "second"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+        kernel_capacities={
+            KernelKind.COMPUTE: 1,
+            KernelKind.DATA_MOVEMENT: 2,
+        },
+    )
+    assert result.plan.kernels == (
+        KernelKind.COMPUTE,
+        KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT, 0),
+        _kind_src(result, KernelKind.DATA_MOVEMENT, 1),
+    ):
+        assert source.count("ttl.reset_dfbs(") == 2
+
+
+def test_synchronized_dfb_reset_requires_complete_distinct_participants():
+    """A reset names one compute kernel and both data-movement kernels."""
+    with pytest.raises(ValueError, match="one compute kernel and two data movement"):
+        ttl.DFBReset(
+            participants=(KernelKind.COMPUTE, KernelKind.DATA_MOVEMENT)
+        )
+    with pytest.raises(ValueError, match="participants must be distinct"):
+        ttl.DFBReset(
+            participants=(
+                KernelKind.COMPUTE,
+                KernelKind.DATA_MOVEMENT,
+                KernelKind.DATA_MOVEMENT,
+            )
+        )
+
+
 def test_dfb_reconfiguration_requires_complete_distinct_participants():
     """A boundary names one compute kernel and both data-movement kernels."""
     with pytest.raises(TypeError, match="nonempty tuple"):

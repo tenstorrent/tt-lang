@@ -299,8 +299,12 @@ class _KernelSelectorResolver:
                 f"the enclosing operation{type_detail}",
             )
         for participant in participants:
-            if participant._implicit_role is None and not any(
-                participant is kernel for kernel in self.logical_kernels.values()
+            if (
+                isinstance(participant, Kernel)
+                and participant._implicit_role is None
+                and not any(
+                    participant is kernel for kernel in self.logical_kernels.values()
+                )
             ):
                 raise _split_error(
                     reset_node,

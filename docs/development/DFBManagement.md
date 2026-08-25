@@ -240,6 +240,19 @@ node, or once per iteration of the same immutable sequential loop nest in all
 participants. Conditional occurrences must use equivalent structured conditions
 on all participants and cannot form a repeated reset run.
 
+Canonical operation kernels can participate without explicit handles. This
+keeps composed operations on the target's canonical worker kernels:
+
+```python
+reset_boundary = ttl.DFBReset(
+    participants=(
+        ttl.KernelKind.COMPUTE,
+        ttl.KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    )
+)
+```
+
 The compiler treats the interval before the first reset, each interval between
 resets, and the interval after the last reset as separate allocation epochs.
 An epoch is an analysis interval; the compiler does not emit an epoch object.

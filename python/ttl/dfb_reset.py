@@ -11,38 +11,49 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Collection, Iterator, Mapping
 
-from .kernel import Kernel, KernelKind
+from .kernel import Kernel, KernelKind, KernelSelector
 
 
 @dataclass(frozen=True, eq=False)
 class DFBReset:
     """One worker-local synchronized DFB reset declaration.
 
-    ``participants`` contains one compute ``Kernel`` and two data movement
-    ``Kernel`` handles created in the same enclosing operation factory. A call
-    to ``ttl.reset_dfbs`` or ``ttl.reset_all_dfbs`` is replicated to those
-    three logical kernels. A declaration may execute once or once per iteration
-    of the same immutable sequential loop nest in every participant. Runtime
-    lowering is supported only on Blackhole.
+    ``participants`` contains one compute selector and two data movement
+    selectors. A ``KernelKind`` names the operation's canonical kernel of that
+    kind; a ``Kernel`` names an explicit operation-local or compiler-owned
+    kernel. A call to ``ttl.reset_dfbs`` or ``ttl.reset_all_dfbs`` is replicated
+    to those three logical kernels. A declaration may execute once or once per
+    iteration of the same immutable sequential loop nest in every participant.
+    Runtime lowering is supported only on Blackhole.
     """
 
-    participants: tuple[Kernel, ...]
+    participants: tuple[KernelSelector, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.participants, tuple) or not self.participants:
             raise TypeError("DFBReset participants must be a nonempty tuple")
+        seen_kinds: set[KernelKind] = set()
         seen_kernels: set[int] = set()
         for participant in self.participants:
+            if isinstance(participant, KernelKind):
+                if participant in seen_kinds:
+                    raise ValueError("DFBReset participants must be distinct")
+                seen_kinds.add(participant)
+                continue
             if not isinstance(participant, Kernel):
                 raise TypeError(
-                    "DFBReset participants must contain only Kernel values, "
+                    "DFBReset participants must contain only KernelKind or "
+                    "Kernel values, "
                     f"got {type(participant).__name__}"
                 )
             identity = id(participant)
             if identity in seen_kernels:
                 raise ValueError("DFBReset participants must be distinct")
             seen_kernels.add(identity)
-        participant_kinds = [participant.kind for participant in self.participants]
+        participant_kinds = [
+            participant if isinstance(participant, KernelKind) else participant.kind
+            for participant in self.participants
+        ]
         compute_count = participant_kinds.count(KernelKind.COMPUTE)
         data_movement_count = participant_kinds.count(KernelKind.DATA_MOVEMENT)
         if compute_count != 1 or data_movement_count != 2:
@@ -58,7 +69,7 @@ class _BoundDFBReset:
     ordinal: int
 
     @property
-    def participants(self) -> tuple[Kernel, ...]:
+    def participants(self) -> tuple[KernelSelector, ...]:
         return self.declaration.participants
 
 
@@ -116,7 +127,7 @@ def _transitive_participant_kernels(
         reset = resets[reset_name]
         reset_ordinal = reset_ordinals.setdefault(id(reset), len(reset_ordinals))
         for participant in reset.participants:
-            if not isinstance(participant, Kernel):
+            if isinstance(participant, KernelKind):
                 continue
             if (
                 participant._implicit_role is not None
@@ -159,8 +170,10 @@ def _transitive_participant_kernels(
 
 
 def _participant_topology(
-    participant: Kernel, logical_kernels: Mapping[str, Kernel]
+    participant: KernelSelector, logical_kernels: Mapping[str, Kernel]
 ) -> tuple[str, str]:
+    if isinstance(participant, KernelKind):
+        return ("kind", participant.name)
     for name, kernel in logical_kernels.items():
         if participant is kernel:
             return ("kernel", f"{participant.kind.name}:{name}")

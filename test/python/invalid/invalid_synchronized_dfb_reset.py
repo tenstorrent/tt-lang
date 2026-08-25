@@ -31,7 +31,7 @@ MODE = sys.argv[1]
 if MODE == "declaration":
     ttl.DFBReset(participants=[ttl.KernelKind.COMPUTE])
 elif MODE == "element":
-    ttl.DFBReset(participants=(ttl.KernelKind.COMPUTE,))
+    ttl.DFBReset(participants=(17,))
 elif MODE == "duplicate":
     duplicate_compute = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -110,7 +110,7 @@ elif MODE not in {"declaration", "element", "duplicate", "participants"}:
 
 
 # DECLARATION: TypeError: DFBReset participants must be a nonempty tuple
-# ELEMENT: TypeError: DFBReset participants must contain only Kernel values, got KernelKind
+# ELEMENT: TypeError: DFBReset participants must contain only KernelKind or Kernel values, got int
 # DUPLICATE: ValueError: DFBReset participants must be distinct
 # PARTICIPANTS: ValueError: DFBReset participants must contain one compute kernel and two data movement kernels
 # RAW: ValueError: @ttl.operation split: ttl.reset_dfbs reset must be a DFBReset captured by the enclosing operation
