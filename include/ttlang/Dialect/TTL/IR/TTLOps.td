@@ -2070,16 +2070,28 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     greater than the selected DFB's capacity. Every listed effect occurs on
     every execution of the call. Repeated effects retain list order. The summary
     does not emit protocol calls. Effects omitted for a dependency occurrence
-    leave its access opaque for the call duration. If one DFB occupies multiple
-    dependency occurrences, every occurrence requires its own effects to avoid
-    an opaque call-duration access. The
+    leave its access opaque. If one DFB occupies multiple dependency
+    occurrences, every occurrence requires its own effects to avoid an opaque
+    access. The
     `unknown_dfb_access` unit attribute declares that the callee may also access
     unlisted user-managed DFBs and disables physical-index reuse in affected
     allocation scopes.
 
-    Every asynchronous DFB access must also complete before the call returns.
-    A callee with outstanding asynchronous work requires a separate explicit
-    completion contract and cannot use this operation's synchronous summary.
+    A named DFB dependency occurrence without `dfb_effects` contributes an
+    opaque storage access that begins at call entry. Its protocol and
+    asynchronous interface work may remain live after the call. When the call
+    is ordered before a synchronized DFB reset through the same participating
+    logical kernel, reset completion terminates the access and canonicalizes
+    its unknown protocol state. The reset implementation must complete each
+    participant's earlier interface work before publishing arrival. Storage
+    reuse is permitted only after the reset. This does not validate the
+    callee's internal queue protocol.
+
+    Every action declared by `dfb_effects` must occur before the call returns.
+    Interface work still active after return must remain ordered by the
+    declared protocol and complete before its terminal consumer release or a
+    synchronized reset. Work that can outlive that terminal must leave the
+    affected DFB dependency opaque.
 
     `unsigned_arg_indices` identifies signless i32 operands that represent
     unsigned addresses at the C++ boundary. The lowering inserts explicit

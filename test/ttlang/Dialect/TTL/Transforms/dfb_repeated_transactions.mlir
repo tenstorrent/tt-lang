@@ -3,12 +3,13 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
 
 // A loop producer and an explicit external consumer describe the same four
-// transactions. The non-protocol producer access executes in the same loop.
+// transactions, but the unsummarized producer access may change protocol state.
+// Both DFBs therefore remain distinct.
 
 // REUSE-LABEL: func.func @loop_to_explicit
-// REUSE-SAME: ttl.base_cta_index = 1 : i32
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
+// REUSE-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 
 module {
   func.func @loop_to_explicit()
@@ -76,6 +77,13 @@ module {
 // REPORT: node (0,0) quiescence=none
 // REPORT-SAME: occurrences=[0:4, 1:4, 2:1, 3:1, 4:1, 5:1, 6:1, 7:1, 8:1, 9:1]
 // REPORT-SAME: transactions=[4, 4, 4, 4]
+// REPORT: node (1,0) quiescence=none
+// REPORT-SAME: transactions=[4, 4, 4, 4]
+// REPORT: operation=ttl.cb_reserve kernel=@nested_explicit_consumer
+// REPORT: node (0,0) quiescence=none
+// REPORT-SAME: transactions=[4, 4, 4, 4]
+// REPORT: node (1,0) quiescence=none
+// REPORT-SAME: transactions=[4, 4, 4, 4]
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @nested_explicit_consumer()
@@ -109,12 +117,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// An explicit producer summary and a loop consumer normalize identically.
+// An explicit producer summary and a loop consumer describe matching
+// transactions, but the unsummarized consumer access may change protocol
+// state. Both DFBs therefore remain distinct.
 
 // REUSE-LABEL: func.func @explicit_to_loop
-// REUSE-SAME: ttl.base_cta_index = 1 : i32
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
+// REUSE-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 
 module {
   func.func @explicit_to_loop()
@@ -150,7 +160,12 @@ module {
 // REUSE-SAME: ttl.base_cta_index = 1 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
 // REUSE-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
-// REPORT-COUNT-6: transactions=[4, 4, 4, 4]
+// REPORT: operation=ttl.cb_reserve kernel=@loop_to_loop
+// REPORT: node (0,0) quiescence=none
+// REPORT-SAME: transactions=[4, 4, 4, 4]
+// REPORT: operation=ttl.cb_reserve kernel=@loop_to_loop
+// REPORT: node (0,0) quiescence=none
+// REPORT-SAME: transactions=[4, 4, 4, 4]
 
 module {
   func.func @loop_to_loop()
@@ -183,8 +198,8 @@ module {
 
 // -----
 
-// Each straight-line acquisition owns only the direct DFB accesses before the
-// next same-kind acquisition. Both producer and consumer runs remain bounded.
+// Unsummarized accesses in the straight-line producer and consumer may change
+// protocol state, so the combined DFB lifetime remains unbounded.
 
 // REUSE-LABEL: func.func @straight_line_producer
 // REUSE-SAME: ttl.base_cta_index = 1 : i32
@@ -192,9 +207,10 @@ module {
 // REUSE-LABEL: func.func @straight_line_consumer
 // REUSE-SAME: ttl.base_cta_index = 1 : i32
 // REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// REPORT: DFB logical_id=0 bounded=1
-// REPORT: node (0,0) quiescence=none
-// REPORT-SAME: transactions=[1, 1]
+// REPORT: DFB logical_id=0 bounded=0
+// REPORT: node (0,0) quiescence=missing-protocol-effect
+// REPORT-SAME: evidence=ttl.opaque_call kernel=@straight_line_producer
+// REPORT-SAME: transactions=[]
 
 module {
   func.func @straight_line_producer()

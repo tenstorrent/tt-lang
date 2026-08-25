@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Use typed DFB descriptors in external functions while reusing an index.
+"""Use typed DFB descriptors in external functions.
 
 TTL operations declare each DFB transaction around the opaque C++ calls. An
-acknowledgment orders the first result's pop before the second result's reserve,
-which permits those two logical DFBs to use one physical index.
+acknowledgment orders the first result's pop before the second result's reserve.
+The calls do not summarize their storage behavior, so their result DFBs remain
+distinct despite that ordering.
 """
 
 import os
@@ -25,7 +26,7 @@ EXTERNAL_MULTIPLY_HEADER = os.path.join(
 
 
 @ttl.operation(grid=(1, 1))
-def external_dfb_reuse(lhs, rhs, result):
+def external_dfb_descriptors(lhs, rhs, result):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
     first_result_dfb = ttl.make_dataflow_buffer_like(
@@ -142,7 +143,9 @@ def main() -> None:
             previous_final_mlir = os.environ.get("TTLANG_FINAL_MLIR")
             os.environ["TTLANG_FINAL_MLIR"] = str(final_mlir_path)
             try:
-                external_dfb_reuse(lhs, rhs, result, options="--ttl-reuse-user-dfbs")
+                external_dfb_descriptors(
+                    lhs, rhs, result, options="--ttl-reuse-user-dfbs"
+                )
             finally:
                 if previous_final_mlir is None:
                     del os.environ["TTLANG_FINAL_MLIR"]
@@ -150,7 +153,7 @@ def main() -> None:
                     os.environ["TTLANG_FINAL_MLIR"] = previous_final_mlir
 
             first_index, second_index = _descriptor_result_indices(final_mlir_path)
-            assert first_index == second_index
+            assert first_index != second_index
         torch.testing.assert_close(ttnn.to_torch(result), lhs_host * rhs_host)
     finally:
         ttnn.close_device(device)

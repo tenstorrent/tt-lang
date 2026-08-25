@@ -6,11 +6,12 @@
 // CHECK: constexpr uint32_t stateWordCount = 4;
 // CHECK: constexpr uint32_t participantCount = 3;
 // CHECK: static_assert(releaseWord + 1 == stateWordCount);
-// CHECK: FORCE_INLINE void drainComputeEngine()
-// CHECK: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
-// CHECK: sync_regfile_write(completionGpr);
-// CHECK: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState)
+// CHECK: FORCE_INLINE void completeInterfaceWork()
 // CHECK: noc_async_full_barrier();
+// CHECK: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+// CHECK-NEXT: tensix_sync();
+// CHECK: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState)
+// CHECK: completeInterfaceWork();
 // CHECK: while (!participantsHaveState(synchronizationState, entryComplete))
 // CHECK: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState)
 // CHECK: while (!participantsHaveState(synchronizationState, exitComplete))
@@ -21,6 +22,8 @@
 // CHECK: *get_cb_tiles_received_ptr(dfbIndex) = 0;
 // CHECK: *get_cb_tiles_acked_ptr(dfbIndex) = 0;
 // CHECK: interface.fifo_wr_tile_ptr = 0;
+// CHECK: FORCE_INLINE void complete_dfb_interface_work()
+// CHECK: dfb_reset_detail::completeInterfaceWork();
 // CHECK: FORCE_INLINE void reset_dfb_interfaces(uint32_t synchronizationAddress,
 // CHECK: dfb_reset_detail::applyMask(lowMask, 0);
 // CHECK: dfb_reset_detail::applyMask(highMask, 32);

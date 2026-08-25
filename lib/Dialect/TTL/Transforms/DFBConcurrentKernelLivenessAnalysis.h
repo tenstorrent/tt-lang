@@ -71,12 +71,13 @@ struct DFBQuiescenceProof {
 /// A concrete lifecycle operation contributes one occurrence. An operation
 /// with a protocol summary contributes one occurrence per effect, preserving
 /// actions on different DFBs as distinct events. A dependency occurrence with
-/// no effect contributes an opaque call-duration access.
+/// no effect contributes an opaque access whose completion may require a
+/// synchronized reset.
 struct DFBAccessOccurrence {
   /// Operation that performs the access; several occurrences may share it.
   Operation *operation = nullptr;
 
-  /// Null for an opaque call-duration storage access.
+  /// Null for an access without an explicit protocol effect.
   std::optional<DFBProtocolEffectKind> protocolEffect;
 
   /// Positive for protocol effects and zero for opaque accesses.
@@ -90,6 +91,9 @@ struct DFBAccessOccurrence {
 
   /// Operation that prevented a precise launch domain, or null when precise.
   Operation *unanalyzableDomainOperation = nullptr;
+
+  /// Whether this occurrence is a named opaque external DFB dependency.
+  bool opaqueExternalAccess = false;
 };
 
 /// Execution count retained for one access in the allocation report.
@@ -157,6 +161,7 @@ struct DFBLifecycleEpoch {
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
+  bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   DFBQuiescenceProof quiescence;
 };
@@ -200,6 +205,7 @@ struct DFBPerNodeLifetime {
   SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  bool resetCanonicalizedOpaqueProtocol = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
   DFBQuiescenceProof quiescence;
@@ -220,6 +226,7 @@ struct DFBLogicalLifecycle {
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;
+  bool hasOpaqueExternalAccess = false;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;
