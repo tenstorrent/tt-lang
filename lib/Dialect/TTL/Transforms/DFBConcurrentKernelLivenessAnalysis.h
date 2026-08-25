@@ -176,6 +176,7 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
 
 /// Access lifetime and queue state proved between synchronized resets.
 struct DFBLifecycleEpoch {
+  std::uint64_t executionCount = 1;
   SmallVector<unsigned> accessOccurrenceIndices;
   SmallVector<unsigned> earliestEntryEvents;
   SmallVector<unsigned> terminalCompletionEvents;

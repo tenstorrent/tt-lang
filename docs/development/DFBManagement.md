@@ -171,9 +171,10 @@ reset_operation = make_reset_operation()
 The same `DFBReset` value identifies the three occurrences as one dynamic
 boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
 every allocated physical DFB index. A declaration contains exactly one compute
-kernel and two data movement kernels, and it executes at most once per dispatch
-and launch node. Conditional occurrences must use equivalent structured
-conditions on all participants.
+kernel and two data movement kernels. It executes once per dispatch and launch
+node, or once per iteration of the same immutable sequential loop nest in all
+participants. Conditional occurrences must use equivalent structured conditions
+on all participants and cannot form a repeated reset run.
 
 The compiler treats the interval before the first reset, each interval between
 resets, and the interval after the last reset as separate allocation epochs.
@@ -185,8 +186,8 @@ selects the same DFB set. The reset discards producer-only occupancy and
 terminates the old lifecycle at canonical empty state. A later lifecycle can
 then reuse the physical index when its launch-node domain, storage, element
 type, and other allocation constraints are compatible. Missing participants,
-repeated dynamic instances, mismatched conditions or target sets, incomplete
-transactions, and unordered boundaries are compilation errors.
+nonuniform or mismatched repeated sequences, mismatched conditions or target
+sets, incomplete transactions, and unordered boundaries are compilation errors.
 
 On Blackhole, `convert-ttl-to-ttkernel` lowers each occurrence to
 `experimental::reset_dfb_interfaces(state_address, low_mask, high_mask)` from
@@ -1277,6 +1278,29 @@ crosses the shared physical envelope is rejected. These conditions retain one
 page format, sufficient storage, and legal ring-pointer progression.
 `CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
 is a pointer comparison.
+
+### Repeated synchronized reset intervals
+
+A synchronized reset declaration in an immutable sequential `scf.for` or
+`affine.for` loop denotes one collective reset instance per iteration. Every
+participant must execute once in each iteration on the same launch node and
+must have the same nested trip-count sequence. Unknown counts, conditional
+iterations, non-sequential loops, participant-count differences, and target-set
+differences are rejected because they cannot establish corresponding collective
+instances.
+
+The liveness analysis represents the first and last reset instances without
+expanding the happens-before graph by the trip count. A DFB receives a repeated
+interval lifetime only when every active access executes once per iteration in
+the same local loop nest and completes before that iteration's reset. Protocol
+validation then normalizes each selected access to one representative interval.
+The reset supplies the terminal canonical pointer and occupancy state, and the
+lifecycle epoch records the number of represented intervals.
+
+This representative interval does not create a dispatch-wide allocation
+boundary between unrelated DFB declarations. Accesses outside the matching loop
+domain, consumer-only intervals that may block before the reset, and incomplete
+or conditionally mismatched protocols remain conservative.
 
 ### Logical identity
 
