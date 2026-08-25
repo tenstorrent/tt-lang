@@ -18,6 +18,7 @@ set(LLK_HEADERS
   experimental_fabric_api
   experimental_reg_api
   experimental_semaphore
+  reset_dataflow_buffers
 )
 
 set(GENERATED_LLK_HEADERS)

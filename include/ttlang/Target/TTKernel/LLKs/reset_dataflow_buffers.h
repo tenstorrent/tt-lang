@@ -83,9 +83,13 @@ synchronizationWord(uint32_t participant) {
   uint32_t semaphore = BaseSemaphore + participant;
 #if defined(TTLANG_DFB_UNPACK) || defined(TTLANG_DFB_MATH) ||                  \
     defined(TTLANG_DFB_PACK)
+  auto *mailboxes = reinterpret_cast<tt_l1_ptr mailboxes_t *>(MEM_MAILBOX_BASE);
+  auto &kernelConfig =
+      mailboxes->launch[mailboxes->launch_msg_rd_ptr].kernel_config;
   uintptr_t address =
-      reinterpret_cast<uintptr_t>(
-          sem_l1_base[static_cast<int>(ProgrammableCoreType::TENSIX)]) +
+      kernelConfig.kernel_config_base[static_cast<int>(
+          ProgrammableCoreType::TENSIX)] +
+      kernelConfig.sem_offset[static_cast<int>(ProgrammableCoreType::TENSIX)] +
       semaphore * L1_ALIGNMENT;
 #else
   uintptr_t address = get_semaphore(semaphore);

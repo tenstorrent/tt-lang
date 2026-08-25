@@ -370,9 +370,9 @@ func.func @xt_compute()
 // EPOCH: ttl.dfb_index_map = [{new_index = 0 : i32, old_index = 1 : i32}]
 // EPOCH-LABEL: func.func @epoch_restart
 // EPOCH-COUNT-2: ttl.bind_cb{cb_index = 0,
-// EPOCH: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0 : i64, 1 : i64, 0 : i64, 4096 : i64, 2 : i64, 2048 : i64, 5 : i64, 32 : i64, 32 : i64, 16 : i64, 4 : i64, 5 : i64, 5 : i64]}
+// EPOCH: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 4096, 2, 2048, 5, 32, 32, 16, 4, 5, 5]}
 // EPOCH: ttl.cb_reserve
-// EPOCH: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0 : i64, 1 : i64, 0 : i64, 8192 : i64, 2 : i64, 4096 : i64, 0 : i64, 32 : i64, 32 : i64, 16 : i64, 4 : i64, 5 : i64, 5 : i64]}
+// EPOCH: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 8192, 2, 4096, 0, 32, 32, 16, 4, 5, 5]}
 // EPOCH: ttl.cb_reserve
 // EPOCH-NOT: cb_index = 1
 // EPOCH: return

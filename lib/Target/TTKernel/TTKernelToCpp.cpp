@@ -19,6 +19,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers_generated.h"
 #include "ttlang/Target/TTKernel/TTKernelIncludesMap.h"
 
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
@@ -97,8 +98,11 @@ public:
         hasDevicePrint = true;
       }
 
+      const bool isResetDataflowBuffers =
+          callee == "ttlang::reset_dataflow_buffers";
       if (auto headerAttr =
-              callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
+              callOp->getAttrOfType<StringAttr>("ttlang.opaque_header");
+          headerAttr && !isResetDataflowBuffers) {
         headers.insert(headerAttr.getValue());
       }
 
@@ -123,6 +127,10 @@ public:
           callee == "experimental::semaphore_wait_min") {
         emitLlk(experimental_semaphore_generated,
                 experimental_semaphore_generated_len);
+      }
+      if (isResetDataflowBuffers) {
+        emitLlk(reset_dataflow_buffers_generated,
+                reset_dataflow_buffers_generated_len);
       }
       if (callee == "experimental::convert_logical_x_to_translated" ||
           callee == "experimental::convert_logical_y_to_translated") {

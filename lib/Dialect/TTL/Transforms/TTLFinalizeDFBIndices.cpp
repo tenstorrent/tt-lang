@@ -340,7 +340,7 @@ struct TTLFinalizeDFBIndicesPass
     bool sawBind = false;
     bool invalidResetContract = false;
 
-    llvm::SmallDenseMap<Operation *, SmallVector<OpaqueCallOp, 4>, 3>
+    llvm::SmallDenseMap<Operation *, SmallVector<OpaqueCallOp, 4>, 4>
         resetCallsByFunction;
     moduleOp->walk([&](OpaqueCallOp call) {
       if (call.getCallee() != kResetDataflowBuffersCallee) {
@@ -727,8 +727,10 @@ struct TTLFinalizeDFBIndicesPass
     // to element type caused a silent global-attention regression. Balanced
     // thread-local user DFBs may share different capacities with the same page
     // type because the runtime sizes their arena slot to the largest member.
-    // The final boolean keeps user and compiler storage strictly separate.
-    using ClassKey = std::tuple<Type, Operation *, Operation *, int64_t, bool>;
+    // `kind` separates user and compiler storage; the final field separates
+    // incompatible FP32 unpack routes.
+    using ClassKey =
+        std::tuple<Type, Operation *, Operation *, int64_t, int64_t>;
     llvm::MapVector<ClassKey, SmallVector<LogicalDFB *>> classes;
     for (auto &[idx, dfb] : dfbs) {
       if (dfb.eligible) {
@@ -742,7 +744,8 @@ struct TTLFinalizeDFBIndicesPass
                        2 * static_cast<int64_t>(dfb.crossThread);
         classes[{storageType, dfb.producer.getOperation(),
                  dfb.consumer.getOperation(), kind,
-                 unpackToDestFp32DFBs.contains(dfb.origIndex)}]
+                 static_cast<int64_t>(
+                     unpackToDestFp32DFBs.contains(dfb.origIndex))}]
             .push_back(&dfb);
       } else {
         dfb.finalIndex = dfb.origIndex;
@@ -1047,7 +1050,7 @@ struct TTLFinalizeDFBIndicesPass
                isa<BindCBOp>(&*insertionPoint)) {
           ++insertionPoint;
         }
-        prologue->insertBefore(&entry, insertionPoint);
+        entry.getOperations().insert(insertionPoint, prologue);
       }
     }
 
