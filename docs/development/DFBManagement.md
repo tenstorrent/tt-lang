@@ -1829,7 +1829,8 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
         add concurrent-lifetime conflict unless A precedes B or B precedes A
 
   for each typed allocation group:
-    validate every member pair with descriptor equality disabled
+    validate every member pair with descriptor equality disabled unless either
+        member has opaque external access
     reject incompatible element types or tensor-backed capacity envelopes
     reject any storage, static-configuration, protocol, owner, domain, or
       lifetime conflict
