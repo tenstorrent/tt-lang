@@ -28,6 +28,7 @@ DispatchConditionAttr = ir.DispatchConditionAttr
 DFBAllocationGroupAttr = ir.DFBAllocationGroupAttr
 SynchronizedDFBResetAttr = ir.SynchronizedDFBResetAttr
 DFBProtocolEffectAttr = ir.DFBProtocolEffectAttr
+DFBNonTransactionalAccessAttr = ir.DFBNonTransactionalAccessAttr
 TensorBackingAttr = ir.TensorBackingAttr
 PipeRecordAttr = ir.PipeRecordAttr
 PipeNetRecordsAttr = ir.PipeNetRecordsAttr

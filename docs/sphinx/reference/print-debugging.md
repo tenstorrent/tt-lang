@@ -89,6 +89,14 @@ print(inp_dfb, thread="unpack")
 
 When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MATH(...)`, `DPRINT_PACK(...)`, or `DPRINT_UNPACK(...)` macro. In compute kernels, the thread is automatically selected based on the print mode when no explicit `thread` is given: scalar and DST prints use `math`, DFB and tile prints use `pack`. Tensor page prints (`num_pages=`) are only supported in datamovement kernels. In datamovement kernels, no wrapping is applied when `thread` is omitted.
 
+### Core specialization
+
+`--ttl-specialize-cores` clones kernels per launch coordinate and folds
+branches that depend on the core coordinate. A DFB or tile print that
+survives only on a core with no remaining wait, reserve, or other
+non-print use of that DFB is dropped. Cores that still use the DFB keep
+both the descriptor and the print. Scalar and DST prints are unaffected.
+
 ## In depth + code gen
 
 ### Scalar
