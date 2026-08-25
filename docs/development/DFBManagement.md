@@ -1491,16 +1491,21 @@ operation with the ID of the declaration reached from its DFB operand.
 Protocol edges from all logical DFBs share one module graph, so transitive
 order can pass through any number of intermediate kernels.
 
-#### Lifetimes with statically enumerated transactions
+#### Lifetimes with statically known transactions
 
-A logical DFB is bounded only when all of these conditions hold:
+For one-to-one transaction matching, a logical DFB is bounded only when all of
+these conditions hold:
 
-- a positive, equal number of reserve, push, wait, and pop occurrences reference
+- a positive, equal number of reserve, push, wait, and pop executions reference
   it;
-- static execution analysis proves that the operation owning each occurrence
-  executes exactly once on the applicable launched node;
-- occurrences pair by order into reserve/push/wait/pop transactions;
+- static execution analysis proves exact counts and iteration domains for each
+  repeated run;
+- the normalized executions pair by order into reserve/push/wait/pop
+  transactions;
 - within every transaction, reserve precedes push and wait precedes pop;
+- adjacent transaction runs are ordered within one exact static iteration
+  domain, or every execution of the earlier run precedes every execution of the
+  later run;
 - each concrete push follows all uses owned by its reserve, and each concrete
   pop follows all uses owned by its wait;
 - all four actions in a transaction transfer the same tile count (`num_tiles`),
@@ -1509,9 +1514,14 @@ A logical DFB is bounded only when all of these conditions hold:
   wait and pop occurrences have one known read-pointer owner;
 - the final pop follows every active access occurrence on the DFB.
 
+Exact cumulative external effect sequences use the separate queue-state proof
+described under [External calls](#external-calls).
+
 Lifecycle operations inside a statically selected `scf.if`, `affine.if`,
-`ttl.if_src`, or `ttl.if_dst` region may satisfy these conditions. Repeated or
-unknown execution remains unproven.
+`ttl.if_src`, or `ttl.if_dst` region, or inside an exact static loop, may satisfy
+these conditions. An at-most-once region inside a static loop also qualifies
+when exact counts prove that the region executes in every loop iteration.
+Dynamic trip counts and runtime-selected repeated regions remain unproven.
 
 An access with an unknown launch-node domain is refined to an exact domain when
 execution-count analysis proves a count on every base launch node. Nodes with
@@ -1751,8 +1761,10 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
         add previous completion -> entry
 
     for each logical DFB active on the node:
-      if statically counted reserve, push, wait, and pop runs match, or one
-         reserve, push, wait, and pop share one at-most-once condition:
+      if statically counted reserve/push and wait/pop runs align within their
+         respective exact iteration domains, producer and consumer counts
+         match, and adjacent runs have proven order, or one reserve, push,
+         wait, and pop share one at-most-once condition:
         DFB.nodeLifetime.transactionRuns = normalized counted transactions
         DFB.nodeLifetime.pointerOwners = read and write hardware processors
         add DFB.push.completion -> DFB.wait.completion
@@ -2227,10 +2239,14 @@ with releases before finalization.
 - **Structured control flow and index reuse.** Lifecycle operations inside
   `scf.if`, `affine.if`, `ttl.if_src`, and `ttl.if_dst` can be bounded when
   launch-node and execution-count analysis prove one execution on the
-  applicable node. Nested operations project to the enclosing kernel-body
-  operation for inter-kernel ordering. Repeated regions and multi-block
-  functions remain conservative. More precise region-local ordering requires
-  occurrence-level entry and completion events.
+  applicable node. Exact static loops can be bounded when matched runs share
+  one iteration domain and their operations have structural order. This
+  includes at-most-once regions proven to execute in every static iteration.
+  Nested operations project to the enclosing kernel-body operation for
+  inter-kernel ordering. Dynamic or runtime-selected repeated regions and
+  multi-block functions remain conservative. More precise region-local
+  ordering for those forms requires occurrence-level entry and completion
+  events.
   MLIR's
   [One-Shot Bufferize](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Bufferization/Transforms/OneShotAnalysis.cpp)
   applies the same conservative restriction when repeated regions invalidate a
@@ -2238,7 +2254,7 @@ with releases before finalization.
 
 - **Unresolved repeated protocols.** Static loops with matched structured
   iteration domains and exact external cumulative sequences are supported.
-  Dynamic trip counts, conditionally repeated iterations, unknown external
+  Dynamic trip counts, runtime-selected iterations, unknown external
   effect order, and mixed native/external cumulative sequences remain
   conservative.
 

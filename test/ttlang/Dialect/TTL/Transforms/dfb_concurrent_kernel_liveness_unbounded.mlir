@@ -58,8 +58,8 @@ module {
 
 // -----
 
-// The analysis does not model operations inside nested regions, so the DFB's
-// lifetime remains unbounded even though the region executes exactly once.
+// An acquisition nested in a separate region from its release is not a valid
+// automatic synchronization interval.
 
 // CHECK-LABEL: func.func @nested_reserve
 // CHECK-SAME: ttl.base_cta_index = 2 : i32

@@ -224,3 +224,56 @@ module {
     return
   }
 }
+
+// -----
+
+// Two transactions in each loop iteration form one complete protocol run.
+
+// REPORT: operation=ttl.cb_reserve kernel=@two_transactions_per_iteration_producer
+// REPORT: node (0,0) quiescence=none
+// REPORT-SAME: transactions=[1, 1, 1, 1, 1, 1, 1, 1]
+
+module {
+  func.func @two_transactions_per_iteration_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    %enabled = arith.constant true
+    scf.for %iteration = %lower to %upper step %step {
+      scf.if %enabled {
+        %reserved_0 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+      scf.if %enabled {
+        %reserved_1 = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+    }
+    return
+  }
+
+  func.func @two_transactions_per_iteration_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    %enabled = arith.constant true
+    scf.for %iteration = %lower to %upper step %step {
+      scf.if %enabled {
+        %waited_0 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+      scf.if %enabled {
+        %waited_1 = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+    }
+    return
+  }
+}
