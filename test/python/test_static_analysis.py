@@ -102,34 +102,34 @@ def test_valid_unified_operation_uses_same_host_only_pipeline(monkeypatch):
 
 
 def test_successful_analysis_is_cached_by_tensor_signature(monkeypatch):
-    lower_calls = 0
-    original_lower = ttl_api._lower_program_to_kernel
+    construction_calls = 0
+    original_construct = ttl_api._construct_ttl_program
 
-    def count_lowerings(*args, **kwargs):
-        nonlocal lower_calls
-        lower_calls += 1
-        return original_lower(*args, **kwargs)
+    def count_constructions(*args, **kwargs):
+        nonlocal construction_calls
+        construction_calls += 1
+        return original_construct(*args, **kwargs)
 
-    monkeypatch.setattr(ttl_api, "_lower_program_to_kernel", count_lowerings)
+    monkeypatch.setattr(ttl_api, "_construct_ttl_program", count_constructions)
     validator = build_operation_validator(
         add_operation, grid=(1, 1), target_arch="blackhole"
     )
 
     validator(_spec(), _spec(), _spec())
     validator(_spec(), _spec(), _spec())
-    assert lower_calls == 1
+    assert construction_calls == 1
 
 
 def test_analysis_cache_distinguishes_dtypes(monkeypatch):
-    lower_calls = 0
-    original_lower = ttl_api._lower_program_to_kernel
+    construction_calls = 0
+    original_construct = ttl_api._construct_ttl_program
 
-    def count_lowerings(*args, **kwargs):
-        nonlocal lower_calls
-        lower_calls += 1
-        return original_lower(*args, **kwargs)
+    def count_constructions(*args, **kwargs):
+        nonlocal construction_calls
+        construction_calls += 1
+        return original_construct(*args, **kwargs)
 
-    monkeypatch.setattr(ttl_api, "_lower_program_to_kernel", count_lowerings)
+    monkeypatch.setattr(ttl_api, "_construct_ttl_program", count_constructions)
     validator = build_operation_validator(
         add_operation, grid=(1, 1), target_arch="wormhole_b0"
     )
@@ -137,7 +137,23 @@ def test_analysis_cache_distinguishes_dtypes(monkeypatch):
     validator(_spec(), _spec(), _spec())
     with pytest.raises((TTLangCompileError, RuntimeError, TypeError, ValueError)):
         validator(_spec(torch.float32), _spec(), _spec())
-    assert lower_calls == 2
+    assert construction_calls == 2
+
+
+def test_validation_pipeline_excludes_runtime_lowering():
+    compiler_options = ttl_api.CompilerOptions()
+    validation_passes = ttl_api._validation_pipeline_passes(
+        fp32_dest_acc_en=None,
+        dst_full_sync_en=None,
+        compiler_options=compiler_options,
+        l1_budget_override=0,
+    )
+    runtime_passes = ttl_api._runtime_lowering_pipeline_passes(compiler_options, 0)
+
+    assert "ttl-validate-cb-budget" in validation_passes
+    assert not any("convert-ttl-to-ttkernel" in item for item in validation_passes)
+    assert any("convert-ttl-to-ttkernel" in item for item in runtime_passes)
+    assert not any("ttl-validate-cb-budget" in item for item in runtime_passes)
 
 
 def test_grid_size_one_dimensional_is_rejected():

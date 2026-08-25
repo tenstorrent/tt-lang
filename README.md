@@ -208,8 +208,7 @@ compiler is available and otherwise continues with a warning. This path uses
 shape and dtype descriptors, stops before TTKernel/runtime lowering, and does
 not open or require a Tenstorrent device. Blackhole is the default offline
 target; `--compiler-target wormhole_b0` selects Wormhole B0 for the checks that
-depend on architecture constraints. The equivalent environment variables are
-`TTLANG_SIM_COMPILER_VALIDATION` and `TTLANG_SIM_COMPILER_TARGET`. See
+depend on architecture constraints. See
 [Compiler validation before simulation](docs/sphinx/simulator.md#compiler-validation-before-simulation)
 for modes, CI guidance, validation scope, and limitations.
 

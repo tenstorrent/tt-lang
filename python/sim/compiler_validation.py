@@ -18,11 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
+from .context import get_context
 
 _VALID_MODES = {"off", "auto", "required"}
 _VALID_TARGETS = {"blackhole", "wormhole_b0"}
-_VALIDATION_ENV = "TTLANG_SIM_COMPILER_VALIDATION"
-_TARGET_ENV = "TTLANG_SIM_COMPILER_TARGET"
 _COMPILER_SCOPE_LOCK = threading.RLock()
 
 
@@ -116,13 +115,6 @@ def _validate_configuration(mode: str, target_arch: str) -> None:
         )
 
 
-def _configuration() -> tuple[str, str]:
-    mode = os.environ.get(_VALIDATION_ENV, "off")
-    target_arch = os.environ.get(_TARGET_ENV, "blackhole")
-    _validate_configuration(mode, target_arch)
-    return mode, target_arch
-
-
 @functools.cache
 def _warn_unavailable(message: str) -> None:
     warnings.warn(message, RuntimeWarning, stacklevel=3)
@@ -142,8 +134,9 @@ def _report_unavailable(mode: str, load: _BackendLoad) -> None:
 def configure(mode: str, target_arch: str) -> None:
     """Configure optional compiler validation for subsequently defined ops."""
     _validate_configuration(mode, target_arch)
-    os.environ[_VALIDATION_ENV] = mode
-    os.environ[_TARGET_ENV] = target_arch
+    config = get_context().config
+    config.compiler_validation_mode = mode
+    config.compiler_validation_target = target_arch
     if mode == "off":
         return
 
@@ -227,7 +220,9 @@ def prepare_operation_validator(
     simulator_ttl: Any = None,
 ) -> Optional[Callable]:
     """Build the optional compiler-side validator for a simulator operation."""
-    mode, target_arch = _configuration()
+    config = get_context().config
+    mode = config.compiler_validation_mode
+    target_arch = config.compiler_validation_target
     if mode == "off":
         return None
     load = _load_backend()

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
-from .atom import operation
+from .atom import _operation_validator
 
 
 @dataclass(frozen=True)
@@ -49,13 +49,12 @@ def build_operation_validator(
     A successful call returns ``None``; compiler diagnostics are raised with
     the same source-aware errors as normal compilation.
     """
-    return operation(
+    return _operation_validator(
         grid=grid,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
         math_fidelity=math_fidelity,
-        _static_analysis_only=True,
-        _static_target_arch=target_arch,
+        target_arch=target_arch,
     )(function)
 
 

@@ -35,12 +35,9 @@ _FakeSimTensor.__name__ = "Tensor"
 
 @pytest.fixture(autouse=True)
 def reset_compiler_validation_configuration(monkeypatch):
-    monkeypatch.delenv("TTLANG_SIM_COMPILER_VALIDATION", raising=False)
-    monkeypatch.delenv("TTLANG_SIM_COMPILER_TARGET", raising=False)
+    compiler_validation.configure("off", "blackhole")
     compiler_validation._warn_unavailable.cache_clear()
     yield
-    compiler_validation.os.environ.pop("TTLANG_SIM_COMPILER_VALIDATION", None)
-    compiler_validation.os.environ.pop("TTLANG_SIM_COMPILER_TARGET", None)
     compiler_validation._warn_unavailable.cache_clear()
 
 
@@ -64,8 +61,7 @@ def validation_state(monkeypatch):
     )
     load = compiler_validation._BackendLoad(backend, None)
     monkeypatch.setattr(compiler_validation, "_load_backend", lambda: load)
-    monkeypatch.setenv("TTLANG_SIM_COMPILER_VALIDATION", "required")
-    monkeypatch.setenv("TTLANG_SIM_COMPILER_TARGET", "blackhole")
+    compiler_validation.configure("required", "blackhole")
     return backend, calls
 
 
@@ -89,8 +85,6 @@ def test_off_mode_does_not_load_compiler(monkeypatch):
         load_attempted = True
         raise AssertionError("compiler should not load")
 
-    monkeypatch.setenv("TTLANG_SIM_COMPILER_VALIDATION", "off")
-    monkeypatch.setenv("TTLANG_SIM_COMPILER_TARGET", "blackhole")
     monkeypatch.setattr(compiler_validation, "_load_backend", load_backend)
 
     assert (
@@ -321,6 +315,19 @@ def test_required_mode_reports_unavailable_compiler(monkeypatch):
         match="full tt-lang compiler build",
     ):
         compiler_validation.configure("required", "blackhole")
+
+
+def test_configuration_is_process_local(monkeypatch, validation_state):
+    monkeypatch.delenv("TTLANG_SIM_COMPILER_VALIDATION", raising=False)
+    monkeypatch.delenv("TTLANG_SIM_COMPILER_TARGET", raising=False)
+
+    compiler_validation.configure("auto", "wormhole_b0")
+
+    config = compiler_validation.get_context().config
+    assert config.compiler_validation_mode == "auto"
+    assert config.compiler_validation_target == "wormhole_b0"
+    assert "TTLANG_SIM_COMPILER_VALIDATION" not in compiler_validation.os.environ
+    assert "TTLANG_SIM_COMPILER_TARGET" not in compiler_validation.os.environ
 
 
 def test_auto_mode_warns_and_continues_when_compiler_is_unavailable(monkeypatch):

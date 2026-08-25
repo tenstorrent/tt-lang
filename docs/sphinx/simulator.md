@@ -107,26 +107,16 @@ tt-lang-sim examples/eltwise_add.py \
 Target selection does not change simulator execution. It affects only the
 compiler diagnostics that run before simulation.
 
-### Environment configuration
-
-The modes and target can also be configured for an entire process:
-
-```bash
-export TTLANG_SIM_COMPILER_VALIDATION=required
-export TTLANG_SIM_COMPILER_TARGET=blackhole
-tt-lang-sim examples/eltwise_add.py
-```
-
-Command-line values take precedence over these defaults. The accepted values
-are the same as the corresponding command-line options.
-
 ### Validation scope and limitations
 
 Successful compiler validation is cached for each distinct operation tensor
 signature. It reuses the same Python
 frontend, source-aware diagnostics, IR verification, and TTL pass prefix as
 normal compilation through dataflow-buffer allocation and L1 budget
-validation. The passes may transform temporary compiler IR because later
+validation. The compiler represents this prefix as a separate validation
+phase. The simulator returns after that phase; normal compilation continues
+with TTKernel and EmitC lowering and runtime artifact construction. The
+validation passes may transform temporary compiler IR because later
 diagnostics depend on those normalized forms. That IR is discarded and does
 not alter the Python operation executed by the simulator.
 

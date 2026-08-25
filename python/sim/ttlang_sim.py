@@ -20,7 +20,6 @@ no script.
 import sys
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -353,7 +352,7 @@ def main() -> None:
     parser.add_argument(
         "--compiler-validation",
         choices=["off", "auto", "required"],
-        default=os.environ.get("TTLANG_SIM_COMPILER_VALIDATION", "off"),
+        default="off",
         help=(
             "Run the compiler's host-only static validation before simulation. "
             "'auto' continues when the compiler is unavailable; 'required' fails."
@@ -363,7 +362,7 @@ def main() -> None:
     parser.add_argument(
         "--compiler-target",
         choices=["blackhole", "wormhole_b0"],
-        default=os.environ.get("TTLANG_SIM_COMPILER_TARGET", "blackhole"),
+        default="blackhole",
         help="Offline architecture target for compiler validation (default: blackhole)",
     )
 
