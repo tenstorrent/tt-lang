@@ -42,6 +42,10 @@ INSPECT_DFB_ACCESS_HEADER = os.path.join(
 )
 
 
+def _count_final_dfb_allocations(final_mlir_path):
+    return final_mlir_path.read_text().count("dfb_index =")
+
+
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
     @ttl.operation()
     def exp_via_scratch(source: ttl.DFB, destination: ttl.DFB):
@@ -1634,8 +1638,7 @@ def test_repeated_transaction_lifecycles_reuse_dfb(
 
     # The two source DFBs have identical pointer owners and non-overlapping
     # lifetimes. Completion and output retain distinct DFB types or owners.
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 3
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
@@ -1673,8 +1676,7 @@ def test_cumulative_queue_state_lifecycles_reuse_dfb(
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
     operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 2
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
     if dtype == torch.bfloat16:
@@ -1712,8 +1714,7 @@ def test_same_runtime_condition_reuses_sequential_dfbs(
 
     # Input and output ownership prevent them from sharing with compute DFBs.
     # Three allocations prove that all three scratch lifecycles share one index.
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 3
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
@@ -1759,8 +1760,7 @@ def test_dispatch_condition_reuses_dfbs_across_logical_kernels(
 
     # The first and second sources have equal types and pointer owners. Their
     # separately evaluated producer and consumer conditions share one identity.
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 3
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = (
@@ -1811,8 +1811,7 @@ def test_synchronized_reset_terminates_producer_epoch(
 
     # The producer-only DFB becomes canonical at the reset and shares with the
     # following source. The compute-produced output retains a distinct index.
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 2
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host[:, TILE * grid_cols :].float()
@@ -1953,8 +1952,7 @@ def test_selected_reset_preserves_non_target_live_aliases(
     for _invocation_index in range(2):
         operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 2
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
     assert_allclose(
         ttnn.to_torch(output_tensor).float(),
         input_host.float(),
@@ -1990,8 +1988,7 @@ def test_allocation_group_reuses_interleaved_reset_epochs(
     for _ in range(2):
         operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
 
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 1
+    assert _count_final_dfb_allocations(final_mlir_path) == 1
     actual = ttnn.to_torch(output_tensor).float()
     expected = torch.cat(
         (
@@ -2072,8 +2069,7 @@ def test_nested_unknown_reset_target_does_not_reverse_reset_order(
 
     # The interleaved group uses one index. The unresolved dynamic scratch
     # remains separate rather than creating a global reverse reset relation.
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 2
+    assert _count_final_dfb_allocations(final_mlir_path) == 2
     actual = ttnn.to_torch(output_tensor).float()
     expected = torch.cat(
         (
@@ -2159,8 +2155,7 @@ def test_disjoint_incompatible_static_configurations_do_not_reuse_dfb(
 
     # The two input DFBs are active on disjoint nodes, but their unpack modes
     # require distinct physical indices. The output DFB adds a third index.
-    physical_dfb_count = final_mlir_path.read_text().count("dfb_index =")
-    assert physical_dfb_count == 3
+    assert _count_final_dfb_allocations(final_mlir_path) == 3
 
     first_expected = torch.exp(first_input)
     second_expected = second_input[0:1, :].expand(TILE, TILE)
