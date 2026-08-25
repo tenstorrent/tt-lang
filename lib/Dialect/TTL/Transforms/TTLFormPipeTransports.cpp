@@ -510,8 +510,10 @@ getConservativePipeResources(ModuleOp sourceModule) {
   }
   const PipeTransferIndex &transferIndex = **maybeTransferIndex;
   PipeForeachLoweringInfo foreachLoweringInfo;
-  FailureOr<PipeGraph> maybePipeGraph =
-      PipeGraph::build(module, transferIndex, foreachLoweringInfo);
+  FailureOr<PipeGraph> maybePipeGraph = PipeGraph::build(
+      module, transferIndex, foreachLoweringInfo,
+      PipeDFBIndexMode::Provisional,
+      PipeGraphLaunchDomainMode::WhenPipesPresent);
   if (failed(maybePipeGraph)) {
     return failure();
   }
