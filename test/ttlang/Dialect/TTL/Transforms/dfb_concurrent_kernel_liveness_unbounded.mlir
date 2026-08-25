@@ -58,37 +58,6 @@ module {
 
 // -----
 
-// An acquisition nested in a separate region from its release is not a valid
-// automatic synchronization interval.
-
-// CHECK-LABEL: func.func @nested_reserve
-// CHECK-SAME: ttl.base_cta_index = 2 : i32
-// CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// CHECK-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-
-module {
-  func.func @nested_reserve()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %first_reserved = scf.execute_region -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-      %nested_reserved = ttl.cb_reserve %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      scf.yield %nested_reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    }
-    ttl.cb_push %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %first_waited = ttl.cb_wait %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second_reserved = ttl.cb_reserve %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second_waited = ttl.cb_wait %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    return
-  }
-}
-
-// -----
-
 // A multi-block function has no modeled linear program order.
 
 // CHECK-LABEL: func.func @multiple_blocks

@@ -886,15 +886,15 @@ static void addPerIterationSpanOrder(HappensBeforeGraph &graph,
 // Requires a release to follow every use owned by its acquisition; textual
 // acquire/release order alone does not prove that those uses have completed.
 // `sameKindAcquires` contains every same-DFB acquisition of the same kind.
-static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release,
-                                    ArrayRef<Operation *> sameKindAcquires) {
-  if (acquire->getBlock() != release->getBlock()) {
-    return false;
-  }
+static bool
+releaseFollowsOwnedUses(Operation *acquire, Operation *release,
+                        ArrayRef<Operation *> sameKindAcquires,
+                        const StructuralOperationOrder &structuralOrder) {
   DFBAcquireInterval interval =
       makeDFBAcquireInterval(acquire, sameKindAcquires);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
+  return lastOwnedUse == acquire ||
+         structuralOrder.precedes(lastOwnedUse, release);
 }
 
 // Finds every access without a proved predecessor so all possible lifetime
@@ -3182,7 +3182,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
       }
       if (isa<CBReserveOp>(reserve->access->operation) &&
           !releaseFollowsOwnedUses(reserve->access->operation,
-                                   push->access->operation, nativeReserves)) {
+                                   push->access->operation, nativeReserves,
+                                   structuralOrder)) {
         return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
                 push->access->operation};
       }
@@ -3204,7 +3205,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
       }
       if (isa<CBWaitOp>(wait->access->operation) &&
           !releaseFollowsOwnedUses(wait->access->operation,
-                                   pop->access->operation, nativeWaits)) {
+                                   pop->access->operation, nativeWaits,
+                                   structuralOrder)) {
         return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
                 pop->access->operation};
       }
