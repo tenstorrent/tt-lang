@@ -1182,6 +1182,11 @@ getDirectInputOperandIndices(Operation *source) {
   if (isa<FillOp>(source)) {
     return SmallVector<unsigned>{};
   }
+  if (isa<BlockBroadcastOp>(source)) {
+    // The DFB input interface reports conditional materialization
+    // requirements, but direct broadcast creation always consumes its input.
+    return SmallVector<unsigned>{0};
+  }
   if (auto dfbInputOp = dyn_cast<DFBInputOpInterface>(source)) {
     return dfbInputOp.getDFBInputOperandIndices();
   }
@@ -1211,6 +1216,7 @@ static std::optional<SmallVector<Value>> collectDirectInputs(
 static PlanningResult<OutputPublicationPlan>
 resolveTransactionPushes(OutputPublicationPlan plan) {
   plan.pushes.clear();
+  plan.postComputeOperations.clear();
   for (OutputDFBTransaction &transaction : plan.transactions) {
     transaction.push.reset();
     for (StoreOp store : transaction.stores) {
@@ -1253,6 +1259,57 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
   llvm::sort(plan.pushes, [](CBPushOp lhs, CBPushOp rhs) {
     return lhs->isBeforeInBlock(rhs);
   });
+
+  DenseSet<Operation *> postComputeOperations;
+  SmallVector<Operation *> worklist;
+  auto recordPostComputeOperation = [&](Operation *operation) {
+    if (postComputeOperations.insert(operation).second) {
+      worklist.push_back(operation);
+    }
+  };
+  for (CBPushOp push : plan.pushes) {
+    if (!push->isBeforeInBlock(plan.insertionAnchor)) {
+      continue;
+    }
+    recordPostComputeOperation(push);
+    Value dfb = push.getCb();
+    for (Operation *operation = push->getNextNode();
+         operation && operation != plan.insertionAnchor;
+         operation = operation->getNextNode()) {
+      if (auto reserve = dyn_cast<CBReserveOp>(operation);
+          reserve && reserve.getCb() == dfb) {
+        break;
+      }
+      Value accessedDFB;
+      if (auto nextPush = dyn_cast<CBPushOp>(operation)) {
+        accessedDFB = nextPush.getCb();
+      } else if (auto wait = dyn_cast<CBWaitOp>(operation)) {
+        accessedDFB = wait.getCb();
+      } else if (auto pop = dyn_cast<CBPopOp>(operation)) {
+        accessedDFB = pop.getCb();
+      }
+      if (accessedDFB == dfb) {
+        recordPostComputeOperation(operation);
+      }
+    }
+  }
+
+  while (!worklist.empty()) {
+    Operation *operation = worklist.pop_back_val();
+    for (Value result : operation->getResults()) {
+      for (Operation *user : result.getUsers()) {
+        if (user->getBlock() == plan.insertionAnchor->getBlock() &&
+            user->isBeforeInBlock(plan.insertionAnchor)) {
+          recordPostComputeOperation(user);
+        }
+      }
+    }
+  }
+  for (Operation &operation : *plan.insertionAnchor->getBlock()) {
+    if (postComputeOperations.contains(&operation)) {
+      plan.postComputeOperations.push_back(&operation);
+    }
+  }
   return PlanningResult<OutputPublicationPlan>::planned(std::move(plan));
 }
 

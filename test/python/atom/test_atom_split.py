@@ -457,6 +457,92 @@ def test_captured_kernel_cannot_bind_to_two_operations():
         _build_atom_spec(second_operation)
 
 
+def test_reset_owned_kernel_cannot_bind_to_two_operations():
+    """Reset metadata cannot transfer a bound kernel to another operation."""
+    compute_kernel = Kernel(KernelKind.COMPUTE)
+    reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(participants=(compute_kernel, reader_kernel, writer_kernel))
+
+    @ttl.operation()
+    def first_operation():
+        ttl.reset_all_dfbs(reset)
+
+    with pytest.raises(TypeError, match="already bound to operation"):
+
+        @ttl.operation()
+        def second_operation():
+            ttl.reset_all_dfbs(reset)
+
+
+def test_reset_participant_membership_changes_operation_identity():
+    """Anonymous reset participant membership contributes to identity."""
+
+    def make_reset_operation(shared_participants):
+        first_participants = (
+            Kernel(KernelKind.COMPUTE),
+            Kernel(KernelKind.DATA_MOVEMENT),
+            Kernel(KernelKind.DATA_MOVEMENT),
+        )
+        second_participants = (
+            first_participants
+            if shared_participants
+            else (
+                Kernel(KernelKind.COMPUTE),
+                Kernel(KernelKind.DATA_MOVEMENT),
+                Kernel(KernelKind.DATA_MOVEMENT),
+            )
+        )
+        first_reset = ttl.DFBReset(participants=first_participants)
+        second_reset = ttl.DFBReset(participants=second_participants)
+
+        @ttl.operation()
+        def reset_operation():
+            ttl.reset_all_dfbs(first_reset)
+            ttl.reset_all_dfbs(second_reset)
+
+        return reset_operation
+
+    shared_operation = make_reset_operation(shared_participants=True)
+    independent_operation = make_reset_operation(shared_participants=False)
+
+    assert (
+        shared_operation._spec.operation_identity
+        != independent_operation._spec.operation_identity
+    )
+
+
+def test_reset_only_kernel_names_ignore_participant_order():
+    """Reset participant tuples represent sets in operation identity."""
+
+    def make_reset_operation(reverse_participants):
+        compute_participant = Kernel(KernelKind.COMPUTE)
+        reader_participant = Kernel(KernelKind.DATA_MOVEMENT)
+        writer_participant = Kernel(KernelKind.DATA_MOVEMENT)
+        participants = (
+            compute_participant,
+            reader_participant,
+            writer_participant,
+        )
+        if reverse_participants:
+            participants = tuple(reversed(participants))
+        first_reset = ttl.DFBReset(participants=participants)
+
+        @ttl.operation()
+        def reset_operation():
+            ttl.reset_all_dfbs(first_reset)
+
+        return reset_operation
+
+    forward_operation = make_reset_operation(False)
+    reversed_operation = make_reset_operation(True)
+
+    assert (
+        forward_operation._spec.operation_identity
+        == reversed_operation._spec.operation_identity
+    )
+
+
 def test_captured_kernel_cannot_have_two_names():
     """Alias validation completes before the handle is bound."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
@@ -1367,6 +1453,11 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
 
     spec = composed_reset._spec
     assert len(spec.dfb_resets) == 1
+    assert set(spec.logical_kernels.values()) == {
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    }
     composed_reset_identity = next(iter(spec.dfb_resets.values()))
     assert composed_reset_identity is not reset
     assert composed_reset_identity.participants == reset.participants
@@ -1385,6 +1476,38 @@ def test_composition_preserves_one_synchronized_dfb_reset_identity():
     for source in participant_sources:
         assert source.count("ttl.reset_dfbs(") == 1
         assert f"ttl.reset_dfbs({reset_name}, dfbs=[target])" in source
+
+
+def test_composition_preserves_inspect_dfb_access():
+    """Inlining and logical-kernel replication retain the typed access."""
+
+    @ttl.operation()
+    def descriptor_helper(descriptor: ttl.DFB):
+        ttl.call_extern_func(
+            "descriptor.hpp",
+            "inspect",
+            template_args=[ttl.dfb_descriptor(descriptor)],
+            dfb_accesses=[ttl.DFBAccess.inspect(descriptor)],
+            kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+        )
+
+    @ttl.operation()
+    def composed_descriptor_access(descriptor: ttl.DFB):
+        descriptor_helper(descriptor)
+
+    spec = composed_descriptor_access._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"descriptor"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT),
+    ):
+        assert source.count("ttl.DFBAccess.inspect(descriptor)") == 1
+        assert source.count("dfb_accesses=") == 1
 
 
 def test_composition_instantiates_reset_identity_per_call_site():

@@ -15,8 +15,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Target/TargetInfo.h"
 
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
@@ -171,8 +171,7 @@ FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
   return *stateBytes;
 }
 
-FailureOr<uint64_t>
-getDFBReconfigurationStateAllocationBytes(ModuleOp module) {
+FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module) {
   FailureOr<uint64_t> stateBytes = getDFBReconfigurationStateBytes(module);
   if (failed(stateBytes) || *stateBytes == 0) {
     return stateBytes;
@@ -478,8 +477,7 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
                        << ", scratch=" << *scratchAllocationBytes
                        << ", global semaphores=" << *globalSemaphoreBytes
                        << ", reconfiguration state="
-                       << *reconfigurationStateBytes
-                       << ")";
+                       << *reconfigurationStateBytes << ")";
   return failure();
 }
 

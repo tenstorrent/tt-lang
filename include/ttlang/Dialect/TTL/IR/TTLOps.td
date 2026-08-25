@@ -2139,9 +2139,10 @@ def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
   let description = [{
     `ttl.reset_dfbs` is one worker-local synchronization boundary shared by
     the three logical kernels named by `reset`. Each participant executes the
-    same zero-or-one dynamic instance per dispatch and launch node. Before any
-    participant returns, the operation completes prior DFB-interface work and
-    restores the listed DFBs to canonical empty protocol state without
+    same zero-or-one dynamic instance per dispatch and launch node, or one
+    instance per iteration of an equivalent immutable sequential loop nest.
+    Before any participant returns, the operation completes prior DFB-interface
+    work and restores the listed DFBs to canonical empty protocol state without
     changing descriptor configuration or payload storage.
 
     The operation resets read and write pointers, the packer write-tile
@@ -2212,7 +2213,8 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
 def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
      DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface,
-                               ["getDFBIndexOperands",
+                               ["getDFBNonTransactionalAccesses",
+                                "getDFBIndexOperands",
                                 "hasUnknownDFBAccess"]>]> {
   let summary = "Call an external C/C++ function by name";
   let description = [{
@@ -2245,17 +2247,37 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     `getDFBDependencyOperands()` and carries a positive static tile count no
     greater than the selected DFB's capacity. Every listed effect occurs on
     every execution of the call. Repeated effects retain list order. The summary
-    does not emit protocol calls. Effects omitted for a dependency occurrence
-    leave its access opaque for the call duration. If one DFB occupies multiple
-    dependency occurrences, every occurrence requires its own effects to avoid
-    an opaque call-duration access. The
-    `unknown_dfb_access` unit attribute declares that the callee may also access
-    unlisted user-managed DFBs and disables physical-index reuse in affected
-    allocation scopes.
+    does not emit protocol calls.
 
-    Every asynchronous DFB access must also complete before the call returns.
-    A callee with outstanding asynchronous work requires a separate explicit
-    completion contract and cannot use this operation's synchronous summary.
+    The ordered `dfb_accesses` list describes synchronous DFB accesses that do
+    not perform queue transactions. `inspect` states that a callee may read the
+    dependency's descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. One dependency occurrence cannot declare
+    both a protocol effect and an inspection because their relative execution
+    order would be unspecified. Effects and accesses omitted for a dependency
+    occurrence leave its access opaque for the call duration and incomplete for
+    reuse with another logical DFB on a shared launch node. If one DFB occupies
+    multiple dependency occurrences, every occurrence requires its own summary
+    to avoid an opaque call-duration access. The `unknown_dfb_access` unit
+    attribute declares that the callee may also access unlisted user-managed
+    DFBs and adds an opaque occurrence to each affected DFB. Exact disjoint
+    launch-node domains remain eligible for physical-index sharing.
+
+    A named DFB dependency occurrence without `dfb_effects` contributes an
+    opaque storage access that begins at call entry. Its protocol and
+    asynchronous interface work may remain live after the call. When the call
+    is ordered before a synchronized DFB reset through the same participating
+    logical kernel, reset completion terminates the access and canonicalizes
+    its unknown protocol state. The reset implementation must complete each
+    participant's earlier interface work before publishing arrival. Storage
+    reuse is permitted only after the reset. This does not validate the
+    callee's internal queue protocol.
+
+    Every action declared by `dfb_effects` must occur before the call returns.
+    Interface work still active after return must remain ordered by the
+    declared protocol and complete before its terminal consumer release or a
+    synchronized reset. Work that can outlive that terminal must leave the
+    affected DFB dependency opaque.
 
     `unsigned_arg_indices` identifies signless i32 operands that represent
     unsigned addresses at the C++ boundary. The lowering inserts explicit
@@ -2272,8 +2294,9 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     `condition_result` states that the scalar result evaluates one immutable
     dispatch-stable condition. Calls using the same typed identity may be
     evaluated independently in different logical kernels. Such a call cannot
-    access a DFB, declare DFB effects, or declare unknown DFB access because
-    condition evaluation is stable and repeat-safe rather than stateful.
+    access a DFB, declare DFB effects or non-transactional accesses, or declare
+    unknown DFB access because condition evaluation is stable and repeat-safe
+    rather than stateful.
 
     `fabric_manager_effects` declares ownership effects for external fabric
     connection managers. The enclosing operation binds each claim to one
@@ -2300,6 +2323,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<TypedArrayAttrBase<TTL_FabricManagerEffectAttr,
                                     "fabric manager effects">>:$fabric_manager_effects,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
+    OptionalAttr<TTL_DFBNonTransactionalAccessArrayAttr>:$dfb_accesses,
     UnitAttr:$unknown_dfb_access,
     OptionalAttr<TTL_DispatchConditionAttr>:$condition_result
   );
@@ -2311,6 +2335,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
      type($dependency_dfb_operands) `)`)?
     (`dfb_effects` $dfb_effects^)?
+    (`dfb_accesses` $dfb_accesses^)?
     ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];

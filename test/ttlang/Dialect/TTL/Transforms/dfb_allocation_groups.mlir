@@ -114,7 +114,7 @@ module {
 // Group members on disjoint launch nodes share one index without a temporal
 // ordering relation. Each node retains its own tensor-backed storage segment.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}, {nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 64>}, {nodes = {{\[\[1, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}]}], ttl.launch_grid = array<i64: 2, 1>}
 // CHECK-LABEL: func.func @disjoint_node_group
 // CHECK: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 6 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0
 // CHECK-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 7 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 1

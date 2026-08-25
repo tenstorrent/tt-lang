@@ -74,18 +74,23 @@ def TTL_SynchronizedDFBResetAttr
     : TTL_Attr<"SynchronizedDFBReset", "synchronized_dfb_reset"> {
   let summary = "Worker-local synchronized dataflow buffer reset identity";
   let description = [{
-    Identifies one dynamic reset instance and the complete set of logical
-    kernels that participate on each active worker. Every participant reaches
-    the same instance before any participant returns. The reset establishes
-    canonical read-pointer, write-pointer, occupancy, and initialization state
-    for each target declared by the operation.
+    Identifies one synchronized reset declaration and the complete set of
+    logical kernels that participate on each active worker. Every participant
+    reaches each corresponding dynamic instance before any participant
+    returns. A declaration in an immutable sequential structured loop denotes
+    one reset instance per iteration; participant loops must define the same
+    nested iteration sequence. The reset establishes canonical read-pointer,
+    write-pointer, occupancy, and initialization state for each target declared
+    by the operation.
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
-    reference the same reset instance. Distinct ordinals identify independent
-    reset instances. Participant order is canonical and otherwise semantically
-    insignificant. The participant set contains one compute kernel and both
-    data movement kernels that own DFB interface state. Each participant
-    executes the declaration at most once per dispatch and launch node.
+    reference the same reset instance or statically repeated instance sequence.
+    Distinct ordinals identify independent reset declarations. Participant
+    order is canonical and otherwise semantically insignificant. The
+    participant set contains one compute kernel and both data movement kernels
+    that own DFB interface state. Each participant executes the declaration at
+    most once at each point in the enclosing nested iteration sequence and
+    launch node.
   }];
   let parameters = (ins
     "int64_t":$ordinal,
@@ -379,6 +384,29 @@ def TTL_DFBProtocolEffectAttr
 def TTL_DFBProtocolEffectArrayAttr
     : TypedArrayAttrBase<TTL_DFBProtocolEffectAttr,
                          "ordered dataflow buffer protocol effects">;
+
+def TTL_DFBNonTransactionalAccessAttr
+    : TTL_Attr<"DFBNonTransactionalAccess", "dfb_non_transactional_access"> {
+  let summary = "One synchronous non-transactional dataflow buffer access";
+  let description = [{
+    Describes an external call's use of one ordered DFB dependency without a
+    reserve, push, wait, or pop transaction. `dependency_index` selects the
+    call's ordered DFB dependency list. `inspect` states that the callee may
+    read the DFB descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. The call must complete all associated work
+    synchronously.
+  }];
+  let parameters = (ins
+    "DFBNonTransactionalAccessKind":$kind,
+    "int64_t":$dependencyIndex
+  );
+  let assemblyFormat = "`<` $kind `,` $dependencyIndex `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DFBNonTransactionalAccessArrayAttr
+    : TypedArrayAttrBase<TTL_DFBNonTransactionalAccessAttr,
+                         "ordered non-transactional dataflow buffer accesses">;
 
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";

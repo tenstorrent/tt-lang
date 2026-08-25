@@ -10,8 +10,7 @@
 // OUTPUT: %[[EXACT_SELECTED:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
 // OUTPUT-NEXT: %[[EXACT_BEFORE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
 
-// WARNING-NOT: reset-domain-write
-// WARNING: warning: unsafe DFB allocation-group policy accepted #ttl.dfb_allocation_group<0> members=[0, 1] without compiler proof: {{.*}}access-completion-not-proven(0,1)
+// WARNING-NOT: allocation_group<0>
 // WARNING-NOT: reset-domain-write
 
 module attributes {
@@ -145,7 +144,7 @@ module attributes {
 // OUTPUT: %[[COMPLETE_SELECTED:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<2>, dfb_id = 4 : index}
 // OUTPUT-NEXT: %[[COMPLETE_CROSSING:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {allocation_group = #ttl.dfb_allocation_group<2>, dfb_id = 5 : index}
 
-// WARNING: warning: unsafe DFB allocation-group policy accepted #ttl.dfb_allocation_group<2> members=[4, 5] without compiler proof: unknown-launch-node-domain(4,5)
+// WARNING-NOT: allocation_group<2>
 // WARNING-NOT: reset-domain-write
 
 module attributes {

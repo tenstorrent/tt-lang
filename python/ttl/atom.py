@@ -61,7 +61,12 @@ from .condition import (
     _bind_dispatch_conditions,
     _dispatch_condition_topology,
 )
-from .dfb_reset import DFBReset, _bind_dfb_resets, _dfb_reset_topology
+from .dfb_reset import (
+    DFBReset,
+    _bind_dfb_resets,
+    _dfb_reset_topology,
+    _transitive_participant_kernels,
+)
 from .dfb_allocation_group import (
     DFBAllocationGroup,
     _bind_dfb_allocation_groups,
@@ -350,26 +355,10 @@ def _build_atom_spec(
             allocation_groups[capture_name] = value
         elif isinstance(value, DFBReset):
             dfb_resets[capture_name] = value
-            for participant_index, participant in enumerate(value.participants):
-                if any(
-                    participant is kernel
-                    for kernel in (
-                        *logical_kernels.values(),
-                        *captured_logical_kernels.values(),
-                    )
-                ):
-                    continue
-                participant_name = f"{capture_name}__participant_{participant_index}"
-                captured_logical_kernels[participant_name] = participant
         elif isinstance(value, FabricManagerClaim):
             if not any(value is claim for claim in fabric_manager_claims.values()):
                 fabric_manager_claims[capture_name] = value
         elif isinstance(value, DFBReconfiguration):
-            if capture_name in closure_values.globals:
-                raise ValueError(
-                    f"@ttl.operation {name!r}: DFBReconfiguration "
-                    f"{capture_name!r} must be created by an enclosing factory"
-                )
             dfb_reconfigurations[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
@@ -379,6 +368,13 @@ def _build_atom_spec(
                 f"{capture_name!r} has unsupported type "
                 f"{type(value).__name__}"
             )
+
+    transitive_participant_kernels = _transitive_participant_kernels(
+        dfb_resets,
+        {**logical_kernels, **captured_logical_kernels},
+        loaded_names,
+    )
+    captured_logical_kernels.update(transitive_participant_kernels)
 
     operation_identity = _operation_identity(fn)
     allocation_group_topology = _dfb_allocation_group_topology(allocation_groups)

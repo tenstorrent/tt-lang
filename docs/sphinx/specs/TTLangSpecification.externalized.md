@@ -54,6 +54,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
+| 0.21 | 08/18/2026 | Add `ttl.read_index`; extend DFB storage, allocation, mutation, and inspection; add completed PipeNet receive selection |
 
 
 ## Introduction
@@ -160,7 +161,7 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between threads running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
-`ttl.make_dataflow_buffer_like` allocates scratch DFB storage. `ttl.make_tensor_backed_dfb` instead uses the complete compiled DFB capacity at a page-aligned byte offset in a TILE, height-sharded L1 operation tensor. Tensor-backed DFBs support BF16 and FP32. A data movement thread calls `publish()` once to make an already-resident input capacity readable without copying its bytes. Tensor-backed outputs use the normal reserve, store and push protocol.
+`ttl.make_dataflow_buffer_like` allocates scratch DFB storage. `ttl.make_tensor_backed_dfb` instead uses the complete compiled DFB capacity at a page-aligned byte offset in a TILE, height-, width-, or block-sharded L1 operation tensor. Tensor-backed DFBs support BF16 and FP32. Interleaved and ND-sharded tensors are rejected. A data movement thread calls `publish()` once to make an already-resident input capacity readable without copying its bytes. Tensor-backed outputs use the normal reserve, store and push protocol.
 
 The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for block to be used with tiled tensor, it needs to have at least two dimensions (see example below). In this case, the translation from Torch shape affects two innermost dimensions. For example, if a TT-NN tensor is of tiled layout and has Torch shape of `(2, 2, 120, 30)`, the corresponding block that fits this entire tensor will have shape of `(2, 2, 4, 1)`.
 
@@ -182,10 +183,47 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 
 <!-- @spec:example dataflow_buffer/dataflow_buffer.py -->
 
+A compute thread may replace a waited block after reading its original value.
+This preserves occupancy and both DFB pointers; the enclosing wait still ends
+with its normal pop. The compiler requires a straight-line, complete acquisition
+of a one-block DFB as that compute kernel's first access to the DFB. It rejects
+partial, repeated, conditional, or unresolved replacement.
+
+#### Waited block replacement example
+
+<!-- @spec:example dataflow_buffer/waited_block_replacement.py -->
+
+An allocation group requests one physical DFB index and one storage definition
+for several logical DFBs. The group is an immutable compile-time identity. The
+compiler accepts the request only after proving that every pair has the same
+page format, compatible storage and static configuration, complete reusable
+protocol state, and non-overlapping lifecycles. Different scratch block shapes
+and block counts use the largest total-capacity member as the physical
+allocation; tensor-backed members require one exact backing range and
+descriptor. The declaration does not synchronize or reset DFB state.
+
+#### Dataflow buffer allocation group example
+
+<!-- @spec:example dataflow_buffer/allocation_group.py -->
+
+An external function can declare synchronous, non-consuming DFB access with
+`ttl.DFBAccess.inspect(dfb)`. The function may read the DFB descriptor or
+contents but does not publish, consume, or leave that DFB changed when it
+returns. The annotation does not synchronize threads or change the generated
+C++ call signature. An external DFB dependency without a complete typed summary
+remains conservative.
+
+#### External DFB inspection example
+
+<!-- @spec:example dataflow_buffer/inspect_external_dfb.py -->
+
 | Type alias/Function | Description |
 | :---- | :---- |
-|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
-| `ttl.make_tensor_backed_dfb(ttnn.Tensor: tensor, shape: ttl.Shape, block_count: ttl.Size = 1, byte_offset: ttl.Size = 0) -> ttl.DataflowBuffer` | Create a dataflow buffer whose complete capacity uses a byte range of `tensor`'s node-local L1 allocation. |
+| `ttl.make_dfb_allocation_group() -> ttl.DFBAllocationGroup` | Create an immutable compile-time identity for compiler-verified physical DFB allocation sharing. |
+| `ttl.make_dfb(dtype, shape: ttl.Shape, block_count: ttl.Size = 2, tile = (32, 32), *, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a scratch dataflow buffer from an explicit element type. |
+|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2, *, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+| `ttl.make_tensor_backed_dfb(ttnn.Tensor: tensor, shape: ttl.Shape, *, block_count: ttl.Size = 1, byte_offset: ttl.Size = 0, allocation_group: ttl.DFBAllocationGroup | None = None) -> ttl.DataflowBuffer` | Create a dataflow buffer whose complete capacity uses a byte range of `tensor`'s node-local L1 allocation. |
+| `ttl.DFBAccess.inspect(dfb: ttl.DataflowBuffer) -> ttl.DFBAccess` | Declare that a synchronous external function reads a DFB without changing its contents or queue position. |
 | `ttl.DataflowBuffer.publish(self)` | Publish the complete capacity of a tensor-backed input without copying bytes. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
@@ -207,7 +245,7 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in a reserved block or replaces a compiler-proved waited block after reading its original value. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
 
 For `ttl.math` functions and block operators see [Appendix B](#appendix-b-block-operators-and-math-functions).
 
@@ -318,7 +356,20 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 ## Copy
 
-The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` is executed on a data movement thread.
+The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. Copies between blocks and tensor slices, or from a block to a pipe, return a *transfer handle*. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use. A copy from a pipe to a block posts a receive and returns a *receive request*. The `ttl.copy` is executed on a data movement thread.
+
+
+### Selecting among completed receives
+
+A receiver can have several outstanding PipeNet transfers. Waiting for one specific transfer delays work when another completes first. The receiver needs to process whichever transfer completes and rotate priority when several are complete.
+
+The caller supplies a nonempty ordered tuple of distinct receive requests and a starting index. The starting index is normalized modulo the tuple length. Candidates are inspected in cyclic tuple order beginning at that index, and the first completed candidate in that order is selected. If no candidate has completed, `ttl.wait_any` blocks and repeats the inspection. `ReadyReceive.index()` returns the selected tuple index.
+
+The returned value establishes completion only for the selected request. Nonselected requests remain pending with their destination dataflow buffer reservations and may be included in a later `ttl.wait_any` call or awaited directly. The selected branch may publish and consume its destination block. A caller can provide rotating priority by starting the next selection at the index after the previous selection. PipeNet completion resources remain compiler-owned and are not observable through the source language.
+
+#### Receive selection example
+
+<!-- @spec:example pipe/wait_any_receive.py -->
 
 
 ### Group transfer
@@ -331,8 +382,12 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.Transfer` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by the pipe net's `if_src` where this pipe is the source, and by `if_dst` where this pipe is the destination. |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer` | Copy data between a block and a tensor slice, or send a block through a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by the pipe net's `if_src` where this pipe is the source. |
+| `ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.ReceiveRequest` | Post a receive from a pipe into a reserved destination block. **This function is non-blocking.** There must be a corresponding pipe send, and the receive must be guarded by the pipe net's `if_dst` where this pipe is the destination. |
 | `ttl.Transfer.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called.  **This function is blocking.** |
+| `ttl.ReceiveRequest.wait()` | Wait for this receive to complete. The destination block is safe to publish or use when the function returns. **This function is blocking.** |
+| `ttl.wait_any(requests: Tuple[ttl.ReceiveRequest, ...], start: ttl.Index = 0) -> ttl.ReadyReceive` | Wait until at least one request completes, then select the first completed request in cyclic tuple order beginning at `start`. The tuple must be nonempty and contain distinct requests. **This function is blocking.** |
+| `ttl.ReadyReceive.index() -> ttl.Index` | Return the tuple index selected by `ttl.wait_any`. |
 | `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
@@ -430,6 +485,8 @@ TT-Lang includes ability to print information to the standard output for debuggi
 | *Pipe net’s condition body function* | A Python function passed to be executed conditionally if the current node is a source, a destination, or both in the given pipe net. A condition function can be called multiple times sequentially if the current node participates in multiple pipes. |
 | *Tensor slice* | A Python slice expression used with TT-NN tensor to specify a view to be used as a source or a destination in a copy operation. |
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
+| *Receive request* | A typed handle for one PipeNet receive posted into a reserved destination block. It can be awaited directly or included in `ttl.wait_any`. |
+| *Ready receive* | The result of selecting a completed receive request with `ttl.wait_any`. It identifies the selected request by its tuple index. |
 | *Semaphore* | A communication primitive for general synchronization between data movement threads on different nodes. |
 | *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each node. This value can be set or incremented by a data movement thread on the local or a remote node. |
 
@@ -559,6 +616,7 @@ number of SFPU lane iterations and defaults to 8.
 | :---- | :---- |
 | `ttl.raw_element_read(block: ttl.Block, *coords: List[ttl.NaturalInt]) -> float` | Read a single scalar element from a block at the given coordinates. The block must be in `MR` or `RW` state. Can be used only in data movement kernels. Coordinates are flat scalar-element positions (one per block dimension). |
 | `ttl.raw_element_write(block: ttl.Block, *coords: List[ttl.NaturalInt], value: float)` | Write a scalar `value` to a block at the given coordinates. The block must be in `MW` or `RW` state. Can be used only in data movement kernels. |
+| `ttl.read_index(block: ttl.Block, *coords: List[ttl.NaturalInt]) -> ttl.NaturalInt` | Read an f32 or bf16 scalar from a block in `MR` or `RW` state and convert it to an index. Fractional values truncate toward zero. The source must be finite, nonnegative, and no greater than INT32_MAX; behavior is undefined otherwise. Can be used only in data movement kernels. |
 
 #### Limitations
 
@@ -575,6 +633,7 @@ number of SFPU lane iterations and defaults to 8.
 | Dataflow buffer | Snake case with `dfb` suffix. Example `attention_mask_dfb`, `bias_dfb2` |
 | Block | Snake case with `blk` suffix. Example `attention_mask_blk`, `bias_blk2` |
 | Transfer handle | Snake case with `xf` suffix. Example `attention_mask_xf`, `bias_xf2` |
+| Receive request | Snake case with `request` suffix. Example `activation_request`, `weight_request2` |
 | Pipe net | Snake case with `net` suffix. Example `mcast_attention_mask_net`, `bias_net2` |
 
 
@@ -593,6 +652,7 @@ number of SFPU lane iterations and defaults to 8.
 | `ttl.Block.store` | 0.1.7 | 0.1.7 |
 | Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | 1.0.0 |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
+| `ttl.ReceiveRequest`, `ttl.ReadyReceive`, and `ttl.wait_any` | 1.0.0 | 1.0.0 |
 | `ttl.GroupTransfer` | 1.0.0 | N/S |
 | `ttl.Semaphore` on 2D grid | N/S | N/S |
 | `ttl.Semaphore` on 4D grid | N/S | N/S |

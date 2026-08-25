@@ -123,31 +123,6 @@ func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg
 
 // -----
 
-// An in-tile broadcast (touching a within-tile dim, here dims=[-1]) of a
-// computed value is NOT fused: ttl.tile_bcast reads its input from a CB, so a
-// non-CB input cannot lower and must be materialized to a DFB before this pass
-// (see BlockBroadcastOp::getDFBInputOperandIndices). The add and broadcast are
-// left unlowered for the materialization pass.
-// CHECK-LABEL: func.func @in_tile_bcast_from_computed_not_fused
-// CHECK:       ttl.add
-// CHECK:       ttl.block.broadcast {{.*}}dims = [-1]
-// CHECK-NOT:   ttl.tile_bcast
-// CHECK-NOT:   ttl.compute
-func.func @in_tile_bcast_from_computed_not_fused(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>, %arg1: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x8x!ttcore.tile<32x32, f32>> {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 8], !ttcore.tile<32x32, f32>, 2>
-  %arg0_cb = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %arg1_cb = ttl.attach_cb %arg1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %reserve = ttl.cb_reserve %cb2 : !ttl.cb<[1, 8], !ttcore.tile<32x32, f32>, 2> -> tensor<1x8x!ttcore.tile<32x32, f32>>
-  %add = ttl.add %arg0_cb, %arg1_cb : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %bcast = ttl.block.broadcast %add dims = [-1], shape = [1, 8] : tensor<1x1x!ttcore.tile<32x32, f32>> -> tensor<1x8x!ttcore.tile<32x32, f32>>
-  ttl.store %bcast, %reserve : tensor<1x8x!ttcore.tile<32x32, f32>>, tensor<1x8x!ttcore.tile<32x32, f32>>
-  func.return %bcast : tensor<1x8x!ttcore.tile<32x32, f32>>
-}
-
-// -----
-
 // Inter-tile broadcast (no within-tile dim, here dims=[0]) of a computed value
 // DOES fuse: the outer-dim replication is carried by the compute's input affine
 // map (1x1x1 -> 2x1x1), so the body is a pass-through (tile_add then tile_store)

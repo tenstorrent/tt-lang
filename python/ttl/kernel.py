@@ -305,7 +305,7 @@ def _referenced_operation_values(function: Callable) -> dict[str, object]:
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
     # Local imports avoid resource-declaration import cycles during module
     # initialization while retaining typed resource checks.
-    from .dfb_reset import DFBReset
+    from .dfb_reset import DFBReset, _transitive_participant_kernels
     from .dfb_reconfiguration import DFBReconfiguration
 
     function_id = id(function)
@@ -354,6 +354,24 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
             for name, value in identity_captures.items()
             if isinstance(value, Kernel)
         }
+        reset_captures = {
+            name: value
+            for name, value in identity_captures.items()
+            if isinstance(value, DFBReset)
+        }
+        direct_kernels = {
+            name: value
+            for name, value in identity_captures.items()
+            if isinstance(value, Kernel)
+        }
+        transitive_kernels = _transitive_participant_kernels(
+            reset_captures,
+            direct_kernels,
+            identity_captures.keys(),
+        )
+        kernel_capture_names.update(
+            {id(kernel): name for name, kernel in transitive_kernels.items()}
+        )
         for name, value in sorted(identity_captures.items()):
             if isinstance(value, DispatchCondition):
                 binding = bound_conditions[name]
@@ -368,7 +386,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 reset_identity = id(value)
                 ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
                 participant_tokens = []
-                for participant_index, participant in enumerate(value.participants):
+                for participant in value.participants:
                     if participant._implicit_role is not None:
                         participant_tokens.append(
                             "role:"
@@ -378,12 +396,18 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                         continue
                     participant_name = kernel_capture_names.get(id(participant))
                     if participant_name is None:
-                        participant_tokens.append(
-                            "reset-kernel:"
-                            f"{participant_index}:{participant.kind.name}"
+                        if participant._identity is not None:
+                            raise TypeError(
+                                "DFBReset participant Kernel is already bound to "
+                                f"operation {participant._operation_identity!r}"
+                            )
+                        raise TypeError(
+                            "DFBReset participant Kernel must be captured by "
+                            "the enclosing @ttl.operation"
                         )
-                    else:
-                        participant_tokens.append(f"kernel:{participant_name}")
+                    participant_tokens.append(
+                        f"kernel:{participant.kind.name}:{participant_name}"
+                    )
                 encoded = (
                     f"dfb-reset:{ordinal}:" + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")

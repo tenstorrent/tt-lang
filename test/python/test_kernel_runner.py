@@ -638,13 +638,11 @@ def test_cached_resources_reuse_equivalent_device_wrapper(monkeypatch):
     }
 
     first_pipe_resources, first_reconfiguration_resources = (
-        kernel_runner.get_cached_runtime_resources(
-        device=first_device, **arguments
-        )
+        kernel_runner.get_cached_runtime_resources(device=first_device, **arguments)
     )
     repeated_pipe_resources, repeated_reconfiguration_resources = (
         kernel_runner.get_cached_runtime_resources(
-        device=equivalent_device, **arguments
+            device=equivalent_device, **arguments
         )
     )
 
@@ -770,6 +768,8 @@ def test_cached_global_semaphore_budget_uses_reported_allocation_pages(monkeypat
     )
 
     assert remaining == 1024
+
+
 class _FakeFabricNodeId(NamedTuple):
     mesh_id: int
     chip_id: int
@@ -4770,31 +4770,20 @@ def test_cached_pipe_resources_distinguish_reset_initialization(monkeypatch):
     }
 
     first_without_reset, first_without_reset_reconfiguration = (
-        kernel_runner.get_cached_runtime_resources(
-        num_dfb_resets=0, **arguments
-        )
+        kernel_runner.get_cached_runtime_resources(num_dfb_resets=0, **arguments)
     )
     repeated_without_reset, repeated_without_reset_reconfiguration = (
-        kernel_runner.get_cached_runtime_resources(
-        num_dfb_resets=0, **arguments
-        )
+        kernel_runner.get_cached_runtime_resources(num_dfb_resets=0, **arguments)
     )
     first_with_reset, first_with_reset_reconfiguration = (
-        kernel_runner.get_cached_runtime_resources(
-        num_dfb_resets=1, **arguments
-        )
+        kernel_runner.get_cached_runtime_resources(num_dfb_resets=1, **arguments)
     )
     repeated_with_reset, repeated_with_reset_reconfiguration = (
-        kernel_runner.get_cached_runtime_resources(
-        num_dfb_resets=1, **arguments
-        )
+        kernel_runner.get_cached_runtime_resources(num_dfb_resets=1, **arguments)
     )
 
     assert first_without_reset is repeated_without_reset
-    assert (
-        first_without_reset_reconfiguration
-        is repeated_without_reset_reconfiguration
-    )
+    assert first_without_reset_reconfiguration is repeated_without_reset_reconfiguration
     assert first_with_reset is repeated_with_reset
     assert first_with_reset_reconfiguration is repeated_with_reset_reconfiguration
     assert first_with_reset is not first_without_reset
@@ -4958,9 +4947,7 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
     fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0}
-    )
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
@@ -5084,9 +5071,7 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
     fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0}
-    )
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
@@ -6806,6 +6791,7 @@ def test_emitted_runner_without_resources_executes_shared_runner(monkeypatch):
     def record_run(**kwargs):
         calls.append(kwargs)
         return "executed"
+
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[],

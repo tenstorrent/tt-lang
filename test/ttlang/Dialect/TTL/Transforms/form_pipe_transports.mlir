@@ -4,7 +4,7 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4' | FileCheck %s --check-prefix=BOUND
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24704' | FileCheck %s --check-prefix=NOFIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24832' | FileCheck %s --check-prefix=NOFIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57600' | FileCheck %s --check-prefix=EXACT-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57599' | FileCheck %s --check-prefix=BELOW-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET

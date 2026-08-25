@@ -89,13 +89,13 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "first", operation = "cyclic_order">,
                   ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
                   ttl.crta_indices = []} {
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<5> members=[10, 11] has contradictory cursor order involving logical DFB 10 on launch node (0,0)}}
     %first = ttl.bind_cb {cb_index = 0, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<5>, dfb_id = 10 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %second = ttl.bind_cb {cb_index = 1, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<5>, dfb_id = 11 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<5> members=[10, 11] has contradictory cursor order involving logical DFB 10 on launch node (0,0)}}
     %first_read = ttl.cb_wait %first
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>

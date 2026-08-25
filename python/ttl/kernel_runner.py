@@ -1527,6 +1527,8 @@ def plan_program_runtime_resources(
             tuple(normalized_fabric_connections),
         ),
     )
+
+
 @dataclass
 class DFBReconfigurationRuntimeResources:
     """Host allocations referenced by synchronized DFB reconfiguration."""
@@ -1986,12 +1988,10 @@ def build_pipe_computed_address_dfb_tensors(
         configurations = [config]
         if dfb_reconfiguration_plan is not None:
             configurations.extend(
-                epoch.config
-                for epoch in dfb_reconfiguration_plan.dfb_epochs[dfb_index]
+                epoch.config for epoch in dfb_reconfiguration_plan.dfb_epochs[dfb_index]
             )
         if any(
-            epoch_config.allocation_nodes is None
-            for epoch_config in configurations
+            epoch_config.allocation_nodes is None for epoch_config in configurations
         ):
             backing_cores = set(program_cores)
         else:
@@ -2540,6 +2540,7 @@ def build_dfb_reconfiguration_runtime_resources(
         configuration_runtime_args=configuration_runtime_args,
         device=resource_device,
     )
+
 
 def build_pipe_sync_semaphore_descriptors(
     core_ranges: Any,
@@ -4266,9 +4267,7 @@ def _append_physical_dfb_config_source(
     lines.append(f"{indent}    page_size={config.page_size},")
     lines.append(f"{indent}    tile={config.tile!r},")
     if config.allocation_nodes is not None:
-        lines.append(
-            f"{indent}    allocation_nodes={config.allocation_nodes!r},"
-        )
+        lines.append(f"{indent}    allocation_nodes={config.allocation_nodes!r},")
     if config.storage_segments:
         lines.append(f"{indent}    storage_segments=(")
         for segment in config.storage_segments:

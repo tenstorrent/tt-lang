@@ -112,6 +112,14 @@ class _ExternalDFBEffectRepeat:
     effects: tuple[object, ...]
 
 
+@dataclass(frozen=True)
+class _ExternalDFBAccess:
+    """One parsed external-call non-transactional DFB access."""
+
+    kind: object
+    dfb: object
+
+
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
     """Create an MLIR file location from an AST node."""
     if not hasattr(node, "lineno"):
@@ -3055,6 +3063,39 @@ class TTLGenericCompiler(TTCompilerBase):
         self._append_dfb_effect_sequence(parsed_effects, resolved_effects)
         return resolved_effects
 
+    def _resolve_dfb_access(self, node):
+        """Resolve ``DFBAccess.inspect(dfb)`` to a typed fact."""
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_accesses element must be "
+                "ttl.DFBAccess.inspect",
+            )
+
+        access_owner = node.func.value
+        is_qualified_owner = (
+            isinstance(access_owner, ast.Attribute)
+            and access_owner.attr == "DFBAccess"
+            and isinstance(access_owner.value, ast.Name)
+            and access_owner.value.id == "ttl"
+        )
+        is_direct_owner = (
+            isinstance(access_owner, ast.Name) and access_owner.id == "DFBAccess"
+        )
+        if not (is_qualified_owner or is_direct_owner) or (node.func.attr != "inspect"):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_accesses element must be "
+                "ttl.DFBAccess.inspect",
+            )
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node,
+                "ttl.DFBAccess.inspect() requires exactly one DFB argument",
+            )
+        dfb = self._resolve_dfb_value(node.args[0], "dfb_accesses")
+        return _ExternalDFBAccess(ttl.ir.DFBNonTransactionalAccessKind.Inspect, dfb)
+
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
         if len(node.args) != 1 or node.keywords:
@@ -3098,6 +3139,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     ttl.DFBEffect.wait(dfb, tiles=1),
                     ttl.DFBEffect.pop(dfb, tiles=1),
                 ],
+                dfb_accesses=[ttl.DFBAccess.inspect(descriptor_dfb)],
                 unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
                 result_type=ttl.ScalarType.I64, # optional scalar result
@@ -3148,6 +3190,7 @@ class TTLGenericCompiler(TTCompilerBase):
             "fabric_manager_effects",
             "dfb_dependencies",
             "dfb_effects",
+            "dfb_accesses",
             "unknown_dfb_access",
             "result_type",
             "condition_result",
@@ -3216,6 +3259,18 @@ class TTLGenericCompiler(TTCompilerBase):
         if "dfb_effects" in kw_map:
             effects_node = kw_map["dfb_effects"]
             resolved_dfb_effects = self._resolve_dfb_effect_sequence(effects_node)
+
+        resolved_dfb_accesses = []
+        if "dfb_accesses" in kw_map:
+            accesses_node = kw_map["dfb_accesses"]
+            if not isinstance(accesses_node, ast.List):
+                self._raise_error(
+                    accesses_node,
+                    "ttl.call_extern_func() dfb_accesses must be a list",
+                )
+            resolved_dfb_accesses = [
+                self._resolve_dfb_access(element) for element in accesses_node.elts
+            ]
 
         unknown_dfb_access = False
         if "unknown_dfb_access" in kw_map:
@@ -3355,6 +3410,7 @@ class TTLGenericCompiler(TTCompilerBase):
             template_dfb_operands
             or ordered_dependencies
             or resolved_dfb_effects
+            or resolved_dfb_accesses
             or unknown_dfb_access
         ):
             self._raise_error(
@@ -3381,6 +3437,23 @@ class TTLGenericCompiler(TTCompilerBase):
                     effect.num_tiles,
                 )
             )
+        access_attrs = []
+        for access in resolved_dfb_accesses:
+            try:
+                dependency_index = ordered_dependencies.index(access.dfb)
+            except ValueError:
+                self._raise_error(
+                    kw_map["dfb_accesses"],
+                    "ttl.call_extern_func() DFB access references a DFB that "
+                    "is not a function argument, descriptor, or dependency",
+                )
+            access_attrs.append(
+                ttl.ir.DFBNonTransactionalAccessAttr.get(
+                    self.ctx,
+                    access.kind,
+                    dependency_index,
+                )
+            )
         template_args_attr = (
             ArrayAttr.get(template_arg_attrs) if template_arg_attrs else None
         )
@@ -3395,6 +3468,7 @@ class TTLGenericCompiler(TTCompilerBase):
             else None
         )
         effects_attr = ArrayAttr.get(effect_attrs) if effect_attrs else None
+        accesses_attr = ArrayAttr.get(access_attrs) if access_attrs else None
         unknown_dfb_access_attr = UnitAttr.get(self.ctx) if unknown_dfb_access else None
 
         opaque_call = ttl.opaque_call(
@@ -3408,6 +3482,7 @@ class TTLGenericCompiler(TTCompilerBase):
             unsigned_arg_indices=unsigned_arg_indices_attr,
             fabric_manager_effects=fabric_manager_effects_attr,
             dfb_effects=effects_attr,
+            dfb_accesses=accesses_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
             condition_result=condition_result_attr,
         )
