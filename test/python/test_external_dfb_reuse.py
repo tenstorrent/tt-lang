@@ -252,8 +252,6 @@ _external_bf16_multiply = _make_external_multiply_kernel("bf16")
 _external_f32_multiply = _make_external_multiply_kernel("float32")
 _external_bf16_reset_same_dfb = _make_external_reset_kernel("bf16", False)
 _external_f32_reset_same_dfb = _make_external_reset_kernel("float32", False)
-_external_bf16_reset_reuse = _make_external_reset_kernel("bf16", True)
-_external_f32_reset_reuse = _make_external_reset_kernel("float32", True)
 _external_bf16_composition = _make_external_composition_kernel("bf16", False)
 _external_f32_composition = _make_external_composition_kernel("float32", False)
 _tensor_backed_bf16_composition = _make_external_composition_kernel("bf16", True)
@@ -364,10 +362,10 @@ def test_external_multiply_with_dfb_allocation(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("data_format", "dtype"),
     [
-        (_external_bf16_reset_reuse, torch.bfloat16),
-        (_external_f32_reset_reuse, torch.float32),
+        ("bf16", torch.bfloat16),
+        ("float32", torch.float32),
     ],
     ids=["bf16", "f32"],
 )
@@ -377,11 +375,12 @@ def test_external_multiply_with_dfb_allocation(
     ids=["dram", "l1"],
 )
 def test_external_protocol_state_reset_allows_group_reuse(
-    device, operation, dtype, to_device, monkeypatch, tmp_path
+    device, data_format, dtype, to_device, monkeypatch, tmp_path
 ):
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole DFB reset support")
 
+    operation = _make_external_reset_kernel(data_format, True)
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     lhs_host = ((element_indices.remainder(41) - 20) / 16).to(dtype)
     rhs_host = (((3 * element_indices).remainder(37) - 18) / 16).to(dtype)

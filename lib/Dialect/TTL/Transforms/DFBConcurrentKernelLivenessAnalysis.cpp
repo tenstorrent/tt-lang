@@ -927,6 +927,30 @@ static SmallVector<unsigned> findMinimalEntryEvents(
   return minimal;
 }
 
+static void recordEntryFrontierEvidence(
+    DFBPerNodeLifetime &lifetime, DFBPerNodeLifetimeDiagnostics *diagnostics,
+    ArrayRef<const DFBAccessOccurrence *> accesses,
+    const DFBLogicalLifecycle &logicalDFB,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
+        &accessEvents) {
+  for (const DFBAccessOccurrence *access : accesses) {
+    std::optional<AccessEventSpan> events =
+        getAccessEventSpan(*access, operationEvents, accessEvents);
+    if (!events || !llvm::is_contained(lifetime.earliestEntryEvents,
+                                       events->first.entry)) {
+      continue;
+    }
+    if (!lifetime.entryEvidence) {
+      lifetime.entryEvidence = access->operation;
+    }
+    if (diagnostics) {
+      diagnostics->earliestAccessOccurrenceIndices.push_back(
+          static_cast<unsigned>(access - logicalDFB.accesses.data()));
+    }
+  }
+}
+
 // Retains every possible lifetime end so each one constrains storage reuse.
 static SmallVector<const DFBAccessOccurrence *> findMaximalCompletionAccesses(
     ArrayRef<const DFBAccessOccurrence *> accesses,
@@ -2951,30 +2975,17 @@ static DFBQuiescenceProof computeProtocolLifetime(
               (*unscopedOpaqueAccess)->operation};
     }
 
-    SmallVector<const DFBAccessOccurrence *> earliestAccesses =
-        findMinimalEntryAccesses(activeAccesses, graph, operationEvents,
-                                 accessEvents);
+    lifetime.earliestEntryEvents = findMinimalEntryEvents(
+        activeAccesses, graph, operationEvents, accessEvents);
     SmallVector<const DFBAccessOccurrence *> terminalAccesses =
         findMaximalCompletionAccesses(activeAccesses, graph, operationEvents,
                                       accessEvents);
-    if (earliestAccesses.empty() || terminalAccesses.empty()) {
+    if (lifetime.earliestEntryEvents.empty() || terminalAccesses.empty()) {
       return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
               activeAccesses.front()->operation};
     }
-    for (const DFBAccessOccurrence *earliestAccess : earliestAccesses) {
-      std::optional<AccessEventSpan> events =
-          getAccessEventSpan(*earliestAccess, operationEvents, accessEvents);
-      if (!events) {
-        return {DFBQuiescenceFailureReason::UnsupportedControlFlow,
-                earliestAccess->operation};
-      }
-      if (!llvm::is_contained(lifetime.earliestEntryEvents,
-                              events->first.entry)) {
-        lifetime.earliestEntryEvents.push_back(events->first.entry);
-      }
-      lifetime.earliestAccessOccurrenceIndices.push_back(
-          static_cast<unsigned>(earliestAccess - logicalDFB.accesses.data()));
-    }
+    recordEntryFrontierEvidence(lifetime, diagnostics, activeAccesses,
+                                logicalDFB, operationEvents, accessEvents);
     for (const DFBAccessOccurrence *terminalAccess : terminalAccesses) {
       std::optional<AccessEventSpan> events =
           getAccessEventSpan(*terminalAccess, operationEvents, accessEvents);
@@ -2986,8 +2997,10 @@ static DFBQuiescenceProof computeProtocolLifetime(
                               events->last.completion)) {
         lifetime.terminalCompletionEvents.push_back(events->last.completion);
       }
-      lifetime.terminalAccessOccurrenceIndices.push_back(
-          static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data()));
+      if (diagnostics) {
+        diagnostics->terminalAccessOccurrenceIndices.push_back(
+            static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data()));
+      }
     }
     lifetime.resetCanonicalizedOpaqueProtocol = true;
     return {};
@@ -3333,20 +3346,8 @@ static DFBQuiescenceProof computeProtocolLifetime(
   lifetime.earliestEntryEvents = findMinimalEntryEvents(
       activeAccesses, graph, operationEvents, accessEvents);
   lifetime.terminalCompletionEvents = {terminalEvents->last.completion};
-  for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
-    std::optional<AccessEventSpan> activeEvents =
-        getAccessEventSpan(*activeAccess, operationEvents, accessEvents);
-    if (activeEvents && llvm::is_contained(lifetime.earliestEntryEvents,
-                                           activeEvents->first.entry)) {
-      if (!lifetime.entryEvidence) {
-        lifetime.entryEvidence = activeAccess->operation;
-      }
-      if (diagnostics) {
-        diagnostics->earliestAccessOccurrenceIndices.push_back(
-            static_cast<unsigned>(activeAccess - logicalDFB.accesses.data()));
-      }
-    }
-  }
+  recordEntryFrontierEvidence(lifetime, diagnostics, activeAccesses, logicalDFB,
+                              operationEvents, accessEvents);
   if (diagnostics) {
     diagnostics->terminalAccessOccurrenceIndices = {
         static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data())};
