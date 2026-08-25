@@ -67,6 +67,11 @@ struct DFBPhysicalAllocationDescriptor {
   SmallVector<DFBConfigurationEpochDescriptor> epochConfigurations;
 };
 
+// Allocation descriptors exceed SmallVector's default inline-element size
+// limit and the planner reserves the complete runtime descriptor table.
+using DFBPhysicalAllocationDescriptors =
+    SmallVector<DFBPhysicalAllocationDescriptor, 0>;
+
 /// Final base CTA index for one kernel.
 struct DFBKernelBaseIndexAssignment {
   func::FuncOp kernel;
@@ -200,7 +205,7 @@ private:
   friend class DFBPhysicalAllocationPlanner;
 
   SmallVector<DFBPhysicalIndexAssignment> assignments;
-  SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
+  DFBPhysicalAllocationDescriptors descriptors;
   SmallVector<DFBKernelBaseIndexAssignment> kernelBaseIndices;
   SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
   SmallVector<int64_t> reconfigurationBoundaryOrdinals;

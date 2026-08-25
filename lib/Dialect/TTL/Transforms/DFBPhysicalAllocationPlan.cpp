@@ -1957,7 +1957,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
 }
 
 /// Builds the dense runtime descriptor table without modifying IR.
-static FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>>
+static FailureOr<DFBPhysicalAllocationDescriptors>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                  const DFBConcurrentKernelLivenessAnalysis &liveness,
                  DFBAnalysisFailure &analysisFailure) {
@@ -1983,7 +1983,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     return lhs.first < rhs.first;
   });
 
-  SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
+  DFBPhysicalAllocationDescriptors descriptors;
   descriptors.reserve(sorted.size());
   for (auto [expectedIndex, indexedAssignment] : llvm::enumerate(sorted)) {
     int32_t physicalIndex = indexedAssignment.first;
@@ -2354,7 +2354,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
 
-  FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>> descriptors =
+  FailureOr<DFBPhysicalAllocationDescriptors> descriptors =
       buildDescriptors(plan.assignments, liveness, analysisFailure);
   if (failed(descriptors)) {
     errorOperation = analysisFailure.operation;
