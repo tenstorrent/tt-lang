@@ -110,9 +110,9 @@ module attributes {
 // on node (0,0) while DFB 1 is active there. A zero-trip wait shares DFB 1's
 // projected producer event but cannot supply evidence.
 // CHECK: DFB logical_id=0 bounded=0 compiler_created=0 conditionally_bounded=1
-// CHECK: possible_nodes quiescence=none domain_assumption=unknown-possible
+// CHECK: possible_nodes lifecycle_completion=complete domain_assumption=unknown-possible
 // CHECK: DFB logical_id=1 bounded=0 compiler_created=0 conditionally_bounded=1
-// CHECK: possible_nodes quiescence=none domain_assumption=unknown-possible
+// CHECK: possible_nodes lifecycle_completion=complete domain_assumption=unknown-possible
 // CHECK: DFB conflict lhs=0 rhs=1 reason=reset-domain-write node=(0,0)
 // CHECK-SAME: lhs_operation=ttl.reset_dfbs
 // CHECK-SAME: rhs_operation=ttl.cb_reserve

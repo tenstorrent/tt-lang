@@ -46,7 +46,6 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "envelope_cursor">,
                   ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
                   ttl.crta_indices = []} {
-    // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<6> members=[11, 12] physical envelope of 3 tiles makes logical DFB 11 cross the ring boundary on launch node (0,0)}}
     %first = ttl.bind_cb {cb_index = 0, block_count = 2}
         {allocation_group = #ttl.dfb_allocation_group<6>, dfb_id = 11 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -57,6 +56,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
     scf.for %transaction = %lower to %upper step %step {
+      // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<6> members=[11, 12] physical envelope of 3 tiles makes logical DFB 11 epoch 0 cross the ring boundary on launch node (0,0)}}
       ttl.opaque_call "produce_two" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>, #ttl.dfb_protocol_effect<push, 0, 2>] () {header = "producer.hpp"} : () -> ()
     }
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "envelope_cursor">, <kind = data_movement, identity = "reader", operation = "envelope_cursor">, <kind = data_movement, identity = "writer", operation = "envelope_cursor">]>(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)

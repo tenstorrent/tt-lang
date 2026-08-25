@@ -1,7 +1,7 @@
 // Tests conservative rejection of unsupported cumulative DFB queue state.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s
 
-// CHECK: quiescence=mismatched-transaction {{.*}} kernel=@total_mismatch
+// CHECK: lifecycle_completion=mismatched-transaction {{.*}} kernel=@total_mismatch
 
 module {
   func.func @total_mismatch()
@@ -31,7 +31,7 @@ module {
 
 // -----
 
-// CHECK: quiescence=mismatched-transaction {{.*}} kernel=@pop_exceeds_wait
+// CHECK: lifecycle_completion=mismatched-transaction {{.*}} kernel=@pop_exceeds_wait
 
 module {
   func.func @pop_exceeds_wait()
@@ -61,7 +61,7 @@ module {
 
 // -----
 
-// CHECK: quiescence=mismatched-transaction {{.*}} kernel=@push_exceeds_reserve
+// CHECK: lifecycle_completion=mismatched-transaction {{.*}} kernel=@push_exceeds_reserve
 
 module {
   func.func @push_exceeds_reserve()
@@ -91,7 +91,7 @@ module {
 
 // -----
 
-// CHECK: quiescence=incomplete-use-order {{.*}} kernel=@unpublished_wait
+// CHECK: lifecycle_completion=incomplete-use-order {{.*}} kernel=@unpublished_wait
 
 module {
   func.func @unpublished_wait()
@@ -127,7 +127,7 @@ module {
 // Waiting for the second publication before the pop that enables its reserve
 // would introduce a cycle, so no synchronization relation is proved.
 
-// CHECK: quiescence=incomplete-use-order {{.*}} kernel=@cyclic_capacity_producer
+// CHECK: lifecycle_completion=incomplete-use-order {{.*}} kernel=@cyclic_capacity_producer
 
 module {
   func.func @cyclic_capacity_producer()
@@ -164,7 +164,7 @@ module {
 
 // -----
 
-// CHECK: quiescence=mismatched-transaction {{.*}} kernel=@cursor_crossing
+// CHECK: lifecycle_completion=mismatched-transaction {{.*}} kernel=@cursor_crossing
 
 module {
   func.func @cursor_crossing()

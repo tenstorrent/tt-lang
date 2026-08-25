@@ -4,14 +4,19 @@
 
 #include "ttlang/Dialect/TTL/Passes.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/DialectConversion.h"
+
+namespace ttk = mlir::tt::ttkernel;
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLLOWERDPRINTTOEMITC
@@ -24,10 +29,22 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 template <typename BuilderT>
-static void emitVerbatim(Location loc, StringRef value, BuilderT &builder) {
-  OperationState state(loc, "emitc.verbatim");
-  state.addAttribute("value", builder.getStringAttr(value));
-  builder.create(state);
+static void emitVerbatim(Location loc, StringRef value, BuilderT &builder,
+                         ValueRange operands = {}) {
+  emitc::VerbatimOp::create(builder, loc, value, operands);
+}
+
+/// Compile-time CB id as i32 so emitc.verbatim can take it as a format
+/// operand. The integer form is distinct from the !ttkernel.cb handle used
+/// by wait/reserve, so CSE will not merge a print-only get into a real use.
+///
+/// emitc.verbatim with operands treats `{}` as the next operand and `{{` as a
+/// literal `{`. A lone `}` is already a literal `}`; writing `}}` emits two
+/// closing braces. A DEVICE_PRINT `{}` placeholder is therefore written `{{}`.
+static Value createCBPrintOperand(int64_t cbIndex, Location loc,
+                                  ConversionPatternRewriter &rewriter) {
+  return ttk::GetCompileArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                         static_cast<int32_t>(cbIndex));
 }
 
 /// Resolve the CB index from a CB value. Handles:
@@ -270,9 +287,13 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
     auto loc = op.getLoc();
     StringRef mode = op.getMode();
     auto thread = op.getThread();
-    SmallVector<std::string> emittedLines;
-    auto recordLine = [&](std::string line) {
-      emittedLines.push_back(std::move(line));
+    struct VerbatimLine {
+      std::string text;
+      Value operand;
+    };
+    SmallVector<VerbatimLine> emittedLines;
+    auto recordLine = [&](std::string line, Value operand = Value()) {
+      emittedLines.push_back({std::move(line), operand});
     };
 
     // Thread conditioning: open a compute block-guard. tt-metal removed the
@@ -311,8 +332,8 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       if (failed(cbIdx)) {
         return failure();
       }
-      recordLine("ttmlir::dprint(ttmlir::CBPrinter(get_compile_time_arg_val(" +
-                 std::to_string(*cbIdx) + ")));");
+      Value cbOperand = createCBPrintOperand(*cbIdx, loc, rewriter);
+      recordLine("ttmlir::dprint(ttmlir::CBPrinter({}));", cbOperand);
       // ttmlir::print_cb_details_ emits no trailing newline. The host
       // DEVICE_PRINT server buffers each RISC's output until a newline, so a
       // CB print with no following newline-terminated print on the same thread
@@ -348,21 +369,23 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       if (failed(cbIdx)) {
         return failure();
       }
-      // Inline tile print using TileSlice/SliceRange from dprint.h.
-      std::string cbArg =
-          "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")";
-      recordLine("{");
-      recordLine("DPRINT(\"======\\n\");");
-      recordLine("for (uint16_t r = 0; r < " +
-                 std::to_string(tileType.getHeight()) + "; ++r) {");
-      recordLine("DPRINT(\"{} : {}\\n\", (uint)r, TSLICE(" + cbArg +
-                 ", 0, SliceRange{.h0=(uint8_t)r, .h1=(uint8_t)(r+1), "
-                 ".hs=1, .w0=0, .w1=" +
-                 std::to_string(tileType.getWidth()) +
-                 ", .ws=1}, true, false));");
-      recordLine("}");
-      recordLine("DPRINT(\"++++++\\n\");");
-      recordLine("}");
+      Value cbOperand = createCBPrintOperand(*cbIdx, loc, rewriter);
+      // One verbatim so every CB mention is an SSA operand. `{}` is the
+      // emitc operand; `{{` is a literal `{`. A lone `}` is a literal `}`.
+      recordLine("{{\n"
+                 "DPRINT(\"======\\n\");\n"
+                 "for (uint16_t r = 0; r < " +
+                     std::to_string(tileType.getHeight()) +
+                     "; ++r) {{\n"
+                     "DPRINT(\"{{} : {{}\\n\", (uint)r, TSLICE({}, 0, "
+                     "SliceRange{{.h0=(uint8_t)r, .h1=(uint8_t)(r+1), "
+                     ".hs=1, .w0=0, .w1=" +
+                     std::to_string(tileType.getWidth()) +
+                     ", .ws=1}, true, false));\n"
+                     "}\n"
+                     "DPRINT(\"++++++\\n\");\n"
+                     "}",
+                 cbOperand);
 
     } else if (mode == "tensor") {
       if (op.getArgv().size() != 1) {
@@ -388,23 +411,28 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
         if (failed(cbIdx)) {
           return failure();
         }
-        std::string l1Addr = "get_read_ptr(get_compile_time_arg_val(" +
-                             std::to_string(*cbIdx) + "))";
-        recordLine("{");
-        recordLine("volatile tt_l1_ptr " + info->cPtrType +
-                   "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
-                   info->cPtrType + "*>(" + l1Addr + ");");
-        recordLine("for (uint32_t page = 0; page < " +
-                   std::to_string(numPages) + "; ++page) {");
-        recordLine("DPRINT(\"{}: \", page);");
-        recordLine("for (uint32_t j = 0; j < " +
-                   std::to_string(info->eltsPerPage) + "; ++j, ++ptr) {");
-        recordLine("DPRINT(\"{} \", " + makeTensorPrintArg(*info, "*ptr") +
-                   ");");
-        recordLine("}");
-        recordLine("DPRINT(\"\\n\");");
-        recordLine("}");
-        recordLine("}");
+        Value cbOperand = createCBPrintOperand(*cbIdx, loc, rewriter);
+        recordLine("{{\n"
+                   "volatile tt_l1_ptr " +
+                       info->cPtrType +
+                       "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
+                       info->cPtrType +
+                       "*>(get_read_ptr({}));\n"
+                       "for (uint32_t page = 0; page < " +
+                       std::to_string(numPages) +
+                       "; ++page) {{\n"
+                       "DPRINT(\"{{}: \", page);\n"
+                       "for (uint32_t j = 0; j < " +
+                       std::to_string(info->eltsPerPage) +
+                       "; ++j, ++ptr) {{\n"
+                       "DPRINT(\"{{} \", " +
+                       makeTensorPrintArg(*info, "*ptr") +
+                       ");\n"
+                       "}\n"
+                       "DPRINT(\"\\n\");\n"
+                       "}\n"
+                       "}",
+                   cbOperand);
       } else {
         // Tensor accessor: buffer_address() is a bank-relative address,
         // not a directly dereferenceable L1 pointer. Use TensorAccessor
@@ -534,8 +562,12 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       recordLine("});");
     }
 
-    for (const std::string &line : emittedLines) {
-      emitVerbatim(loc, line, rewriter);
+    for (const VerbatimLine &line : emittedLines) {
+      if (line.operand) {
+        emitVerbatim(loc, line.text, rewriter, line.operand);
+      } else {
+        emitVerbatim(loc, line.text, rewriter);
+      }
     }
 
     rewriter.eraseOp(op);
