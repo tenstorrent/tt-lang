@@ -4,8 +4,8 @@
 
 // REPORT: DFB logical_id=0 bounded=0 compiler_created=0 conditionally_bounded=1
 // REPORT-SAME: domain=unknown
-// REPORT: possible_nodes quiescence=none domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(0,0)}
-// REPORT: possible_nodes quiescence=none domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(1,0)}
+// REPORT: possible_nodes lifecycle_completion=complete domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(0,0)}
+// REPORT: possible_nodes lifecycle_completion=complete domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(1,0)}
 // REPORT: DFB logical_id=1 bounded=0 compiler_created=0 conditionally_bounded=1
 // REPORT-SAME: domain=unknown
 // REPORT: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
@@ -158,7 +158,7 @@ module {
 
 // -----
 
-// A complete conditional transaction is quiescent before a later exact-count
+// A complete conditional transaction finishes before a later exact-count
 // transaction whether its condition is false or true.
 // CHECK-LABEL: func.func @conditional_and_exact_domains
 // CHECK-SAME: ttl.base_cta_index = 1 : i32
@@ -416,7 +416,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // Equal affine operands do not establish condition identity when the
 // immutable IntegerSets differ.
-// REPORT: possible_nodes quiescence=unsupported-control-flow {{.*}} kernel=@different_affine_predicates
+// REPORT: possible_nodes lifecycle_completion=unsupported-control-flow {{.*}} kernel=@different_affine_predicates
 // CHECK-LABEL: func.func @different_affine_predicates
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
 // CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}

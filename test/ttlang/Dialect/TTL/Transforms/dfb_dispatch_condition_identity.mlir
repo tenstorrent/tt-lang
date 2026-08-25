@@ -1,5 +1,6 @@
 // Tests typed dispatch-condition identity in conditional DFB lifecycles.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
 
 // Separately evaluated conditions in producer and consumer logical kernels
 // prove two complete lifecycles. The acknowledgment orders the second source
@@ -11,9 +12,15 @@
 // CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 // CHECK-LABEL: func.func @cross_kernel_consumer
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
+// REPORT: DFB logical_id=0 bounded=1
+// REPORT-SAME: access_completion_proven=1
+// REPORT: access 1 effect=none tiles=0 sequence=0 domain={(0,0)} operation=ttl.copy
+// REPORT: DFB logical_id=2 bounded=1
+// REPORT-SAME: access_completion_proven=1
+// REPORT: access 1 effect=none tiles=0 sequence=0 domain={(0,0)} operation=ttl.copy
 
 module {
-  func.func @cross_kernel_producer()
+  func.func @cross_kernel_producer(%input: tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.noc_index = 0 : i32, ttl.base_cta_index = 3 : i32,
                   ttl.crta_indices = []} {
@@ -25,6 +32,8 @@ module {
     %first_active = arith.cmpi ne, %first_value, %zero : i64
     scf.if %first_active {
       %slot = ttl.cb_reserve %first : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %copy = ttl.copy %input, %first : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+      ttl.wait %copy : !ttl.transfer_handle<read>
       ttl.cb_push %first : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
     %ack = ttl.cb_wait %acknowledgment : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -33,6 +42,8 @@ module {
     %second_active = arith.cmpi ne, %second_value, %zero : i64
     scf.if %second_active {
       %slot = ttl.cb_reserve %second : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %copy = ttl.copy %input, %second : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+      ttl.wait %copy : !ttl.transfer_handle<read>
       ttl.cb_push %second : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
     return

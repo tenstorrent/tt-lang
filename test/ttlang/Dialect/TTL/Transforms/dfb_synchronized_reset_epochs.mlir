@@ -54,7 +54,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A selected reset partitions tensor-backed interface state. Payload bytes
 // remain allocated, but reset occupancy makes pre-reset payload unavailable.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=missing-protocol-effect
+// CHECK: lifecycle_completion=missing-protocol-effect
 // CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1]
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -154,7 +154,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A fifth two-tile acquire would start at offset eight and cross the end of a
 // nine-tile DFB. A later reset cannot make that transaction contiguous.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=mismatched-transaction
+// CHECK: lifecycle_completion=mismatched-transaction
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @straddling_nondividing_run_producer()
@@ -204,9 +204,9 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A conditional reset cannot order unconditional accesses across logical
 // kernels because the synchronization does not execute on the disabled branch.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=unsupported-control-flow
+// CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: DFB logical_id=1 bounded=0
-// CHECK: quiescence=unsupported-control-flow
+// CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: Total DFB count: 2
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -364,7 +364,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A payload access after reset belongs to a new epoch and cannot consume the
 // preceding epoch's produced data.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=incomplete-use-order{{.*}}evidence=ttl.cb_push
+// CHECK: lifecycle_completion=incomplete-use-order{{.*}}evidence=ttl.cb_push
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @payload_crosses_reset()
@@ -405,7 +405,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // Access in a logical kernel outside the participant set is unordered with
 // the reset and leaves the complete lifecycle conservative.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=incomplete-use-order
+// CHECK: lifecycle_completion=incomplete-use-order
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @concurrent_access_producer()
@@ -651,7 +651,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // Opposite reset polarity cannot prove one dynamic reset instance.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=unsupported-control-flow
+// CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 2
 
