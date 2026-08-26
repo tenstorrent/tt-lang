@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),cse,canonicalize)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops{dst-accumulation=true},ttl-schedule-operations,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=TTKERNEL
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops{dst-accumulation=true},ttl-schedule-operations,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=TTKERNEL
 
 // Rank-4 sum over a leading dimension uses an elementwise DST accumulator.
 // CHECK: affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
