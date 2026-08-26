@@ -38,6 +38,7 @@ else:
         DispatchCondition,
         DFBReset,
         DFBAllocationGroup,
+        DFBReconfiguration,
         ScalarType,
         compute,
         datamovement,
@@ -58,6 +59,7 @@ else:
         raw_addr,
         reset_all_dfbs,
         reset_dfbs,
+        reconfigure_dfbs,
     )
 
     from ttl._generated_elementwise import *  # noqa: F401,F403
@@ -87,6 +89,7 @@ else:
         "DispatchCondition",
         "DFBReset",
         "DFBAllocationGroup",
+        "DFBReconfiguration",
         "ScalarType",
         "compute",
         "datamovement",
@@ -115,5 +118,6 @@ else:
         "raw_addr",
         "reset_dfbs",
         "reset_all_dfbs",
+        "reconfigure_dfbs",
         *_elementwise_all,
     ]

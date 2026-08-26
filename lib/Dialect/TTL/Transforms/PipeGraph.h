@@ -171,6 +171,7 @@ inline bool isCollectiveTransfer(PipeTransferContract contract) {
 struct ReceiverDFBInfo {
   int64_t dfbIndex;
   CircularBufferType dfbType;
+  bool isTensorBacked;
   bool hasStaticTileOffset;
   int64_t staticTileOffset;
   int64_t receiverSlotSpanBlocks;

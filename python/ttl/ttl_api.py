@@ -84,6 +84,8 @@ from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
+    DFBConfigurationEpoch,
+    DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
     get_cb_count,
@@ -103,6 +105,12 @@ from .dfb_reset import (
     _dfb_reset_binding_scope,
 )
 from .dfb_allocation_group import _dfb_allocation_group_binding_scope
+from .dfb_reconfiguration import (
+    DFBReconfiguration,
+    _BoundDFBReconfiguration,
+    _bind_current_dfb_reconfiguration,
+    _dfb_reconfiguration_binding_scope,
+)
 from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
@@ -115,6 +123,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    _detect_device_arch,
     _same_device,
     attach_runtime_resource_finalizer,
     KernelRuntimeResourceCache,
@@ -606,33 +615,6 @@ def _resolve_l1_budget(
         return 0
 
 
-def _detect_device_arch(device) -> Optional[str]:
-    """Return a normalized architecture string from a TTNN device if present."""
-    arch_attrs = (
-        "arch",
-        "architecture",
-        "chip_type",
-        "device_type",
-        "_arch",
-        "_architecture",
-    )
-    for attr in arch_attrs:
-        # Properties on device handles may raise for reasons other than
-        # AttributeError (e.g., closed handle); guard both attribute access
-        # and the optional method call.
-        try:
-            arch_value = getattr(device, attr)
-        except Exception:
-            continue
-        if callable(arch_value):
-            try:
-                arch_value = arch_value()
-            except Exception:
-                continue
-        return str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
-    return None
-
-
 def _device_target_arch(args) -> Optional[str]:
     """Return the common tensor device architecture, or None for host inputs."""
     target_arch = None
@@ -741,6 +723,7 @@ class CompiledTTNNKernel:
         kernel_tensor_indices,
         kernel_core_ranges=None,
         cb_configs=None,
+        dfb_reconfiguration_plan=None,
         program_hash=None,
         source_lines=None,
         all_source_lines=None,
@@ -775,6 +758,7 @@ class CompiledTTNNKernel:
                 each specialized clone is dispatched only to its own core; None
                 entries fall back to the whole-grid core_ranges.
             cb_configs: Final physical DFB configurations indexed by cb_index
+            dfb_reconfiguration_plan: Final boundary order and epoch configs.
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
@@ -804,6 +788,7 @@ class CompiledTTNNKernel:
         self.kernel_tensor_indices = kernel_tensor_indices
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
+        self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
         self.program_hash = program_hash
         self.source_lines = source_lines
         self.all_source_lines = all_source_lines or {}
@@ -900,6 +885,7 @@ class CompiledTTNNKernel:
             kernel_specs=kernel_specs,
             tensors=list(args),
             cb_configs=self.cb_configs,
+            dfb_reconfiguration_plan=self.dfb_reconfiguration_plan,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
@@ -1145,6 +1131,7 @@ def _compile_ttnn_kernel(
     num_outs,
     thread_tensor_indices,
     cb_configs=None,
+    dfb_reconfiguration_plan=None,
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
@@ -1422,6 +1409,7 @@ def _compile_ttnn_kernel(
         kernel_tensor_indices=kernel_tensor_indices,
         kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         program_hash=program_hash,
         source_lines=source_lines,
         all_source_lines=all_source_lines,
@@ -1484,6 +1472,7 @@ def _compile_ttnn_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         )
 
     return compiled_kernel
@@ -1550,6 +1539,7 @@ def _collect_captures(
     f: Callable,
     bound_dispatch_conditions: Optional[Mapping[str, _BoundDispatchCondition]] = None,
     bound_dfb_resets: Optional[Mapping[str, _BoundDFBReset]] = None,
+    bound_dfb_reconfigurations: Optional[Mapping[str, _BoundDFBReconfiguration]] = None,
 ) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
@@ -1606,6 +1596,18 @@ def _collect_captures(
             if bound_reset is not None and bound_reset.declaration is val:
                 return bound_reset
             return _bind_current_dfb_reset(val)
+        elif isinstance(val, DFBReconfiguration):
+            bound_reconfiguration = (
+                bound_dfb_reconfigurations.get(name)
+                if bound_dfb_reconfigurations is not None
+                else None
+            )
+            if (
+                bound_reconfiguration is not None
+                and bound_reconfiguration.declaration is val
+            ):
+                return bound_reconfiguration
+            return _bind_current_dfb_reconfiguration(val)
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 
@@ -1676,6 +1678,92 @@ def _parse_mlir_element_type(
     )
 
 
+def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
+    """Parse and validate one compiler-emitted physical DFB configuration."""
+    required_fields = ("num_tiles", "element_type", "block_count", "page_size")
+    for field in required_fields:
+        if field not in entry:
+            raise ValueError(f"{context} is missing '{field}'")
+    try:
+        num_tiles = int(entry["num_tiles"])
+        block_count = int(entry["block_count"])
+        page_size = int(entry["page_size"])
+        data_format, tile = _parse_mlir_element_type(entry["element_type"])
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid {context}: {error}") from None
+    for field, value in (
+        ("num_tiles", num_tiles),
+        ("block_count", block_count),
+        ("page_size", page_size),
+    ):
+        if value <= 0:
+            raise ValueError(f"{context}.{field} must be positive, got {value}")
+
+    storage_segments = []
+    seen_nodes = set()
+    storage_segment_entries = (
+        entry["storage_segments"] if "storage_segments" in entry else []
+    )
+    for segment_position, segment in enumerate(storage_segment_entries):
+        segment_context = f"{context}.storage_segments[{segment_position}]"
+        if "nodes" not in segment:
+            raise ValueError(f"{segment_context} is missing 'nodes'")
+        nodes = []
+        for node_position, node_attr in enumerate(segment["nodes"]):
+            node = ArrayAttr(node_attr)
+            if len(node) != 2:
+                raise ValueError(
+                    f"{segment_context}.nodes[{node_position}] must contain [x, y]"
+                )
+            coord = tuple(int(IntegerAttr(component).value) for component in node)
+            if coord[0] < 0 or coord[1] < 0:
+                raise ValueError(f"{context} contains negative launch node {coord}")
+            if coord in seen_nodes:
+                raise ValueError(
+                    f"{context} assigns launch node {coord} to multiple segments"
+                )
+            seen_nodes.add(coord)
+            nodes.append(coord)
+        if not nodes:
+            raise ValueError(f"{segment_context}.nodes must not be empty")
+
+        tensor_index = None
+        byte_offset = 0
+        byte_size = None
+        if "tensor_backing" in segment:
+            backing = ttl_dialect.TensorBackingAttr.maybe_downcast(
+                segment["tensor_backing"]
+            )
+            if backing is None:
+                raise ValueError(f"{segment_context}.tensor_backing has the wrong type")
+            tensor_index = backing.tensor_index
+            byte_offset = backing.byte_offset
+            byte_size = backing.byte_size
+            expected_size = num_tiles * block_count * page_size
+            if byte_size != expected_size:
+                raise ValueError(
+                    f"{context} tensor backing byte_size must equal "
+                    f"{expected_size}, got {byte_size}"
+                )
+        storage_segments.append(
+            DFBStorageSegment(
+                nodes=tuple(sorted(nodes)),
+                tensor_index=tensor_index,
+                byte_offset=byte_offset,
+                byte_size=byte_size,
+            )
+        )
+    return PhysicalDFBConfig(
+        dfb_index=dfb_index,
+        num_tiles=num_tiles,
+        data_format=data_format,
+        block_count=block_count,
+        page_size=page_size,
+        tile=tile,
+        storage_segments=tuple(storage_segments),
+    )
+
+
 def _extract_dfb_allocations(module):
     """Read `ttl.dfb_allocations` and require dense physical indices."""
     attribute_name = "ttl.dfb_allocations"
@@ -1685,134 +1773,20 @@ def _extract_dfb_allocations(module):
 
     configs = []
     seen_indices = set()
-    required_fields = (
-        "dfb_index",
-        "num_tiles",
-        "element_type",
-        "block_count",
-        "page_size",
-    )
     for position, entry in enumerate(attr):
-        for field in required_fields:
-            if field not in entry:
-                raise ValueError(f"{attribute_name}[{position}] is missing '{field}'")
-        values = {field: entry[field] for field in required_fields}
-
-        try:
-            dfb_index = int(values["dfb_index"])
-            num_tiles = int(values["num_tiles"])
-            block_count = int(values["block_count"])
-            page_size = int(values["page_size"])
-            data_format, tile = _parse_mlir_element_type(values["element_type"])
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"Invalid {attribute_name}[{position}]: {error}") from None
-
+        context = f"{attribute_name}[{position}]"
+        if "dfb_index" not in entry:
+            raise ValueError(f"{context} is missing 'dfb_index'")
+        dfb_index = int(entry["dfb_index"])
         if dfb_index < 0:
-            raise ValueError(
-                f"{attribute_name}[{position}].dfb_index must be non-negative, "
-                f"got {dfb_index}"
-            )
+            raise ValueError(f"{context}.dfb_index must be non-negative")
         if dfb_index in seen_indices:
             raise ValueError(
                 f"{attribute_name} contains duplicate dfb_index {dfb_index}"
             )
-        if num_tiles <= 0:
-            raise ValueError(
-                f"{attribute_name}[{position}].num_tiles must be positive, "
-                f"got {num_tiles}"
-            )
-        if block_count <= 0:
-            raise ValueError(
-                f"{attribute_name}[{position}].block_count must be positive, "
-                f"got {block_count}"
-            )
-        if page_size <= 0:
-            raise ValueError(
-                f"{attribute_name}[{position}].page_size must be positive, "
-                f"got {page_size}"
-            )
-
-        storage_segments = []
-        seen_nodes = set()
-        if "storage_segments" in entry:
-            for segment_position, segment in enumerate(entry["storage_segments"]):
-                if "nodes" not in segment:
-                    raise ValueError(
-                        f"{attribute_name}[{position}].storage_segments"
-                        f"[{segment_position}] is missing 'nodes'"
-                    )
-                nodes = []
-                for node_position, node_attr in enumerate(segment["nodes"]):
-                    node = ArrayAttr(node_attr)
-                    if len(node) != 2:
-                        raise ValueError(
-                            f"{attribute_name}[{position}].storage_segments"
-                            f"[{segment_position}].nodes[{node_position}] must "
-                            "contain [x, y]"
-                        )
-                    coord = tuple(
-                        int(IntegerAttr(component).value) for component in node
-                    )
-                    if coord[0] < 0 or coord[1] < 0:
-                        raise ValueError(
-                            f"{attribute_name}[{position}] contains negative "
-                            f"launch-node coordinate {coord}"
-                        )
-                    if coord in seen_nodes:
-                        raise ValueError(
-                            f"{attribute_name}[{position}] assigns launch node "
-                            f"{coord} to multiple storage segments"
-                        )
-                    seen_nodes.add(coord)
-                    nodes.append(coord)
-                if not nodes:
-                    raise ValueError(
-                        f"{attribute_name}[{position}].storage_segments"
-                        f"[{segment_position}].nodes must not be empty"
-                    )
-
-                tensor_index = None
-                byte_offset = 0
-                byte_size = None
-                if "tensor_backing" in segment:
-                    backing = ttl_dialect.TensorBackingAttr.maybe_downcast(
-                        segment["tensor_backing"]
-                    )
-                    if backing is None:
-                        raise ValueError(
-                            f"{attribute_name}[{position}].storage_segments"
-                            f"[{segment_position}].tensor_backing has the wrong type"
-                        )
-                    tensor_index = backing.tensor_index
-                    byte_offset = backing.byte_offset
-                    byte_size = backing.byte_size
-                    expected_size = num_tiles * block_count * page_size
-                    if byte_size != expected_size:
-                        raise ValueError(
-                            f"{attribute_name}[{position}] tensor backing "
-                            "byte_size "
-                            f"must equal {expected_size}, got {byte_size}"
-                        )
-                storage_segments.append(
-                    DFBStorageSegment(
-                        nodes=tuple(sorted(nodes)),
-                        tensor_index=tensor_index,
-                        byte_offset=byte_offset,
-                        byte_size=byte_size,
-                    )
-                )
-
         seen_indices.add(dfb_index)
         configs.append(
-            PhysicalDFBConfig(
-                dfb_index=dfb_index,
-                num_tiles=num_tiles,
-                data_format=data_format,
-                block_count=block_count,
-                page_size=page_size,
-                tile=tile,
-                storage_segments=tuple(storage_segments),
-            )
+            _parse_physical_dfb_config(entry, dfb_index=dfb_index, context=context)
         )
 
     configs.sort(key=lambda config: config.dfb_index)
@@ -1820,10 +1794,103 @@ def _extract_dfb_allocations(module):
     expected_indices = list(range(len(configs)))
     if indices != expected_indices:
         raise ValueError(
-            "ttl.dfb_allocations must contain a dense physical index range "
+            f"{attribute_name} must contain a dense physical index range "
             f"{expected_indices}, got {indices}"
         )
     return configs
+
+
+def _extract_dfb_reconfiguration_plan(module, physical_configs):
+    """Read finalized configuration epochs and boundary order."""
+    attribute_name = "ttl.dfb_reconfiguration_plan"
+    plan_attr = module.operation.attributes.get(attribute_name, None)
+    if plan_attr is None:
+        return None
+    for field in ("boundary_ordinals", "dfbs"):
+        if field not in plan_attr:
+            raise ValueError(f"{attribute_name} is missing '{field}'")
+    boundary_ordinals = tuple(int(value) for value in plan_attr["boundary_ordinals"])
+    if not boundary_ordinals or any(ordinal < 0 for ordinal in boundary_ordinals):
+        raise ValueError(f"{attribute_name}.boundary_ordinals must be non-empty")
+    if len(set(boundary_ordinals)) != len(boundary_ordinals):
+        raise ValueError(f"{attribute_name}.boundary_ordinals must be unique")
+
+    dfb_epochs_by_index = {}
+    for position, dfb_entry in enumerate(plan_attr["dfbs"]):
+        context = f"{attribute_name}.dfbs[{position}]"
+        for field in ("dfb_index", "configurations"):
+            if field not in dfb_entry:
+                raise ValueError(f"{context} is missing '{field}'")
+        dfb_index = int(dfb_entry["dfb_index"])
+        if dfb_index in dfb_epochs_by_index:
+            raise ValueError(f"{attribute_name} contains duplicate index {dfb_index}")
+        epochs = []
+        seen_entries = set()
+        for epoch_position, epoch_entry in enumerate(dfb_entry["configurations"]):
+            epoch_context = f"{context}.configurations[{epoch_position}]"
+            entry_ordinal = (
+                int(epoch_entry["entry_reconfiguration"])
+                if "entry_reconfiguration" in epoch_entry
+                else None
+            )
+            if entry_ordinal in seen_entries:
+                raise ValueError(f"{context} contains a duplicate configuration epoch")
+            if entry_ordinal is not None and entry_ordinal not in boundary_ordinals:
+                raise ValueError(
+                    f"{epoch_context}.entry_reconfiguration is not a boundary"
+                )
+            seen_entries.add(entry_ordinal)
+            epochs.append(
+                DFBConfigurationEpoch(
+                    entry_reconfiguration_ordinal=entry_ordinal,
+                    config=_parse_physical_dfb_config(
+                        epoch_entry, dfb_index=dfb_index, context=epoch_context
+                    ),
+                )
+            )
+        if not epochs:
+            raise ValueError(f"{context}.configurations must not be empty")
+        dfb_epochs_by_index[dfb_index] = tuple(epochs)
+
+    expected_indices = list(range(len(physical_configs)))
+    if sorted(dfb_epochs_by_index) != expected_indices:
+        raise ValueError(
+            f"{attribute_name}.dfbs must contain indices {expected_indices}"
+        )
+    for dfb_index, physical_config in enumerate(physical_configs):
+        epochs = dfb_epochs_by_index[dfb_index]
+        initial_epoch = next(
+            (epoch for epoch in epochs if epoch.entry_reconfiguration_ordinal is None),
+            epochs[0],
+        )
+        initial_config = initial_epoch.config
+        same_geometry = (
+            initial_config.dfb_index == physical_config.dfb_index
+            and initial_config.num_tiles == physical_config.num_tiles
+            and initial_config.data_format == physical_config.data_format
+            and initial_config.block_count == physical_config.block_count
+            and initial_config.page_size == physical_config.page_size
+            and initial_config.tile == physical_config.tile
+        )
+        initial_tensor_segments = tuple(
+            segment
+            for segment in initial_config.storage_segments
+            if segment.is_tensor_backed
+        )
+        physical_tensor_segments = tuple(
+            segment
+            for segment in physical_config.storage_segments
+            if segment.is_tensor_backed
+        )
+        if not same_geometry or initial_tensor_segments != physical_tensor_segments:
+            raise ValueError(
+                f"{attribute_name}.dfbs[{dfb_index}] initial configuration "
+                "does not match ttl.dfb_allocations"
+            )
+    return DFBReconfigurationPlan(
+        boundary_ordinals=boundary_ordinals,
+        dfb_epochs=tuple(dfb_epochs_by_index[index] for index in expected_indices),
+    )
 
 
 def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
@@ -1967,6 +2034,11 @@ def _compile(
             for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
             if isinstance(cell.cell_contents, DFBReset)
         }
+        bound_dfb_reconfigurations = {
+            name: _bind_current_dfb_reconfiguration(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DFBReconfiguration)
+        }
 
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
@@ -1987,7 +2059,12 @@ def _compile(
             return _run_thread_compiler(
                 f.__name__,
                 kernel_type,
-                _collect_captures(f, bound_dispatch_conditions, bound_dfb_resets),
+                _collect_captures(
+                    f,
+                    bound_dispatch_conditions,
+                    bound_dfb_resets,
+                    bound_dfb_reconfigurations,
+                ),
                 f.__globals__,
                 args,
                 kwargs,
@@ -2189,6 +2266,7 @@ def _compile_kernel(
         _dispatch_condition_binding_scope(),
         _dfb_allocation_group_binding_scope(),
         _dfb_reset_binding_scope(),
+        _dfb_reconfiguration_binding_scope(),
     ):
         f(*call_args, **call_kwargs)
     threads = _get_registered_threads()
@@ -2469,8 +2547,8 @@ def _lower_program_to_kernel(
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "
-            f"exact-coloring-search-limit={exact_coloring_search_limit}"
-            f" l1-budget-override={l1_budget_override}"
+            f"exact-coloring-search-limit={exact_coloring_search_limit} "
+            f"l1-budget-override={l1_budget_override}"
             "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
@@ -2617,6 +2695,7 @@ def _lower_program_to_kernel(
             profile_source_lines = all_source_lines[first_thread]
 
         cb_configs = _resolve_dfb_configs(module)
+        dfb_reconfiguration_plan = _extract_dfb_reconfiguration_plan(module, cb_configs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
             raise RuntimeError(
@@ -2637,6 +2716,7 @@ def _lower_program_to_kernel(
             num_outs,
             thread_tensor_indices,
             cb_configs,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,

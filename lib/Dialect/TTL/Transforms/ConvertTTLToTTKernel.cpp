@@ -235,11 +235,9 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   return static_cast<int32_t>(*dfbIndex);
 }
 
-/// Get the L1 buffer address from runtime args for a tensor function argument.
-/// Runtime args are indexed by the tensor's function argument position.
-static Value
-getBufferAddressFromRuntimeArg(unsigned argIdx, Location loc,
-                               ConversionPatternRewriter &rewriter) {
+/// Read one L1 address from the function's common runtime arguments.
+static Value getCommonRuntimeArg(unsigned argIdx, Location loc,
+                                 ConversionPatternRewriter &rewriter) {
   auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, argIdx);
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         idxConst)
@@ -1142,8 +1140,7 @@ static LogicalResult lowerTensorCBCopy(
   assert(transferShape.size() <= tensorRank &&
          "transfer tensor rank exceeds source tensor rank");
 
-  Value bankBase =
-      getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
+  Value bankBase = getCommonRuntimeArg(accessorInfo->argIdx, loc, rewriter);
   Value accessor =
       materializeTensorAccessor(tensor, bankBase, *accessorInfo, rewriter);
 
@@ -1561,8 +1558,7 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
       return rewriter.notifyMatchFailure(
           op, "raw_addr operand must be a function tensor argument");
     }
-    Value bankBase =
-        getBufferAddressFromRuntimeArg(*argIdx, op.getLoc(), rewriter);
+    Value bankBase = getCommonRuntimeArg(*argIdx, op.getLoc(), rewriter);
     rewriter.replaceOp(op, bankBase);
     return success();
   }
@@ -1696,6 +1692,66 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
+// DFB reconfiguration lowering
+//===----------------------------------------------------------------------===//
+
+struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(DFBReconfigurationOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    func::FuncOp function = op->getParentOfType<func::FuncOp>();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    if (!function || !module) {
+      return op.emitError("must be nested in a module kernel function");
+    }
+    auto plan =
+        module->getAttrOfType<DictionaryAttr>(kDFBReconfigurationPlanAttrName);
+    auto boundaryOrdinals =
+        plan ? plan.getAs<DenseI64ArrayAttr>("boundary_ordinals")
+             : DenseI64ArrayAttr();
+    auto dfbEntries = plan ? plan.getAs<ArrayAttr>("dfbs") : ArrayAttr();
+    if (!boundaryOrdinals || !dfbEntries) {
+      return op.emitError("requires finalized DFB reconfiguration metadata");
+    }
+    int64_t ordinal = op.getBoundary().getOrdinal();
+    auto ordinalIt = llvm::find(boundaryOrdinals.asArrayRef(), ordinal);
+    if (ordinalIt == boundaryOrdinals.asArrayRef().end()) {
+      return op.emitError("boundary ordinal is absent from finalized DFB "
+                          "reconfiguration metadata");
+    }
+
+    size_t boundaryRuntimeArgOffset = static_cast<size_t>(
+        std::distance(boundaryOrdinals.asArrayRef().begin(), ordinalIt));
+    if (dfbEntries.size() > std::numeric_limits<int32_t>::max() ||
+        boundaryRuntimeArgOffset > std::numeric_limits<int32_t>::max()) {
+      return op.emitError("runtime argument index is out of range");
+    }
+
+    Value callerRuntimeArgCount = ttk::GetCompileArgValOp::create(
+        rewriter, op.getLoc(), rewriter.getI32Type(),
+        static_cast<int32_t>(dfbEntries.size()));
+    Value boundaryOffset = arith::ConstantIntOp::create(
+        rewriter, op.getLoc(), static_cast<int32_t>(boundaryRuntimeArgOffset),
+        32);
+    Value runtimeArgIndex = arith::AddIOp::create(
+        rewriter, op.getLoc(), callerRuntimeArgCount, boundaryOffset);
+    Value configurationAddress = ttk::GetArgValOp::create(
+        rewriter, op.getLoc(),
+        IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),
+        runtimeArgIndex);
+    ttk::OpaqueCallOp::create(
+        rewriter, op.getLoc(), TypeRange{},
+        rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
+        rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
+        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Opaque call lowering
 //===----------------------------------------------------------------------===//
 
@@ -1793,8 +1849,8 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
       const auto &tensor = std::get<OpaqueTensorArgument>(argument);
-      Value bankBase = getBufferAddressFromRuntimeArg(
-          tensor.accessorInfo.argIdx, location, rewriter);
+      Value bankBase =
+          getCommonRuntimeArg(tensor.accessorInfo.argIdx, location, rewriter);
       convertedArgs.push_back(materializeTensorAccessor(
           tensor.tensor, bankBase, tensor.accessorInfo, rewriter));
     }
@@ -2452,7 +2508,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
       .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
            ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           OpaqueCallLowering, GetDfbIdLowering>(typeConverter, &ctx);
+           DFBReconfigurationLowering, OpaqueCallLowering, GetDfbIdLowering>(
+          typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);
@@ -2729,6 +2786,10 @@ struct TTLConvertTTLToTTKernelPass
     TTLToTTKernelTypeConverter typeConverter;
 
     if (failed(validateSynchronizedDFBResetTarget(mod))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(validateDFBReconfigurationTarget(mod))) {
       signalPassFailure();
       return;
     }

@@ -313,6 +313,22 @@ class DFBStorageSegment:
         return self.tensor_index is not None
 
 
+@dataclass(frozen=True)
+class DFBConfigurationEpoch:
+    """One physical DFB configuration installed for an execution epoch."""
+
+    entry_reconfiguration_ordinal: Optional[int]
+    config: PhysicalDFBConfig
+
+
+@dataclass(frozen=True)
+class DFBReconfigurationPlan:
+    """Finalized boundary order and per-physical-DFB epoch configurations."""
+
+    boundary_ordinals: Tuple[int, ...]
+    dfb_epochs: Tuple[Tuple[DFBConfigurationEpoch, ...], ...]
+
+
 def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],

@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Target/TargetInfo.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -32,6 +33,8 @@ namespace {
 
 constexpr uint64_t kFallbackUsableL1Bytes = static_cast<uint64_t>(1432 * 1024);
 constexpr uint64_t kGlobalSemaphorePayloadBytes = 4;
+constexpr uint64_t kDFBReconfigurationWordsPerCore = 264;
+constexpr uint64_t kDFBReconfigurationWordBytes = 4;
 
 std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
@@ -125,6 +128,71 @@ FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module) {
     return failure();
   }
   return *stateBytes;
+}
+
+LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
+  DFBReconfigurationOp firstBoundary;
+  module.walk([&](DFBReconfigurationOp boundary) -> WalkResult {
+    firstBoundary = boundary;
+    return WalkResult::interrupt();
+  });
+  if (!firstBoundary) {
+    return success();
+  }
+
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(module, failureReason);
+  if (failed(targetArch)) {
+    module.emitOpError(failureReason);
+    return failure();
+  }
+  if (!*targetArch || **targetArch == ttcore::Arch::Blackhole) {
+    return success();
+  }
+  firstBoundary.emitOpError()
+      << "is supported only for Blackhole; selected target is "
+      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
+  return failure();
+}
+
+FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
+  llvm::DenseSet<int64_t> boundaryOrdinals;
+  module.walk([&](DFBReconfigurationOp reconfiguration) {
+    boundaryOrdinals.insert(reconfiguration.getBoundary().getOrdinal());
+  });
+  std::optional<uint64_t> stateBytes = llvm::checkedMulUnsigned(
+      static_cast<uint64_t>(boundaryOrdinals.size()),
+      kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes);
+  if (!stateBytes) {
+    module.emitOpError("DFB reconfiguration state is not representable");
+    return failure();
+  }
+  return *stateBytes;
+}
+
+FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module) {
+  FailureOr<uint64_t> stateBytes = getDFBReconfigurationStateBytes(module);
+  if (failed(stateBytes) || *stateBytes == 0) {
+    return stateBytes;
+  }
+  constexpr uint64_t payloadBytesPerBoundary =
+      kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes;
+  FailureOr<uint64_t> allocationBytesPerBoundary =
+      getL1AllocationSizeBytes(module, payloadBytesPerBoundary);
+  if (failed(allocationBytesPerBoundary)) {
+    module.emitOpError(
+        "DFB reconfiguration scratch allocation is not representable");
+    return failure();
+  }
+  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
+      *stateBytes / payloadBytesPerBoundary, *allocationBytesPerBoundary);
+  if (!allocationBytes) {
+    module.emitOpError(
+        "DFB reconfiguration scratch allocation is not representable");
+    return failure();
+  }
+  return *allocationBytes;
 }
 
 FailureOr<uint64_t>
@@ -377,6 +445,8 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
       getL1AllocationSizeBytes(module, scratchBytes);
   FailureOr<uint64_t> globalSemaphoreBytes =
       getGlobalSemaphoreL1Bytes(module, globalSemaphoreCount);
+  FailureOr<uint64_t> reconfigurationStateBytes =
+      getDFBReconfigurationStateAllocationBytes(module);
   std::optional<uint64_t> requiredBytes =
       succeeded(dfbBytes) && succeeded(scratchAllocationBytes)
           ? llvm::checkedAddUnsigned(*dfbBytes, *scratchAllocationBytes)
@@ -385,6 +455,12 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
     requiredBytes =
         llvm::checkedAddUnsigned(*requiredBytes, *globalSemaphoreBytes);
   } else if (failed(globalSemaphoreBytes)) {
+    requiredBytes = std::nullopt;
+  }
+  if (requiredBytes && succeeded(reconfigurationStateBytes)) {
+    requiredBytes =
+        llvm::checkedAddUnsigned(*requiredBytes, *reconfigurationStateBytes);
+  } else if (failed(reconfigurationStateBytes)) {
     requiredBytes = std::nullopt;
   }
   if (!requiredBytes) {
@@ -400,7 +476,8 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
                        << budgetBytes << " (DFB=" << *dfbBytes
                        << ", scratch=" << *scratchAllocationBytes
                        << ", global semaphores=" << *globalSemaphoreBytes
-                       << ")";
+                       << ", reconfiguration state="
+                       << *reconfigurationStateBytes << ")";
   return failure();
 }
 
