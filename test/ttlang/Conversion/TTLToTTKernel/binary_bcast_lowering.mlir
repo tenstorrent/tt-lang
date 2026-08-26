@@ -5,7 +5,7 @@
 // materialized into DST.
 
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config, ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(ttl-set-compute-kernel-config, func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   --split-input-file | FileCheck %s
 
 // Row broadcast folded into an add: the (1, N) operand is unpacked with the
