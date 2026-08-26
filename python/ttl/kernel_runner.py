@@ -282,6 +282,13 @@ class _KernelDescriptorResourcePlan:
     defines: Tuple[Tuple[str, str], ...]
 
 
+@dataclass
+class _KernelDescriptorVariant:
+    core_ranges: Any
+    compile_time_args: List[int]
+    runtime_args: Any
+
+
 @dataclass(frozen=True)
 class ProgramResourcePlan:
     semaphore_descriptors: Tuple[object, ...]
@@ -1121,6 +1128,54 @@ def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     return args
 
 
+def _single_core_range_set(cores: Sequence[Any]) -> Any:
+    return ttnn.CoreRangeSet(tuple(ttnn.CoreRange(core, core) for core in cores))
+
+
+def _build_reconfiguration_descriptor_variants(
+    kernel_ranges: Any,
+    cb_indices: List[int],
+    tensor_accessor_args: List[int],
+    thread_type: str,
+    caller_runtime_args: Sequence[Tuple[Any, Sequence[int]]],
+    reconfiguration_args: Dict[Tuple[int, int], List[int]],
+) -> List[_KernelDescriptorVariant]:
+    caller_args_by_core = {
+        (int(core.x), int(core.y)): values for core, values in caller_runtime_args
+    }
+    variants_by_caller_arg_count: Dict[int, List[Tuple[Any, List[int]]]] = {}
+    for core in ttnn.corerange_to_cores(kernel_ranges, row_wise=True):
+        core_key = (int(core.x), int(core.y))
+        if core_key not in reconfiguration_args:
+            raise RuntimeError(
+                f"missing DFB reconfiguration runtime arguments for core {core_key}"
+            )
+        caller_args = list(caller_args_by_core.get(core_key, ()))
+        combined_args = caller_args + list(reconfiguration_args[core_key])
+        variants_by_caller_arg_count.setdefault(len(caller_args), []).append(
+            (core, combined_args)
+        )
+
+    descriptor_variants: List[_KernelDescriptorVariant] = []
+    for caller_arg_count, core_args in sorted(variants_by_caller_arg_count.items()):
+        variant_runtime_args = ttnn.RuntimeArgs()
+        variant_cores = []
+        for core, values in core_args:
+            variant_cores.append(core)
+            variant_runtime_args[core.x][core.y] = values
+        compile_time_args = cb_indices + [caller_arg_count]
+        if thread_type != "compute":
+            compile_time_args.extend(tensor_accessor_args)
+        descriptor_variants.append(
+            _KernelDescriptorVariant(
+                core_ranges=_single_core_range_set(variant_cores),
+                compile_time_args=compile_time_args,
+                runtime_args=variant_runtime_args,
+            )
+        )
+    return descriptor_variants
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -1209,14 +1264,6 @@ def build_kernel_descriptors(
         common_runtime_args.extend(computed_address_base_args)
         common_runtime_args.extend(extra_args)
 
-        # Compile-time args are DFB indices followed by TensorAccessorArgs for
-        # data-movement kernels. Allocation-dependent DFB bases remain runtime
-        # args so cached programs do not retain stale addresses.
-        if spec.thread_type == "compute":
-            kernel_compile_time_args = cb_indices
-        else:
-            kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
-
         # Prefer per-kernel core_ranges (specialize-cores clones); otherwise
         # fall back to the whole-grid core_ranges.
         kernel_ranges = (
@@ -1243,35 +1290,41 @@ def build_kernel_descriptors(
             ]
             defines = list(descriptor_resource_plan.defines)
 
-        if reconfiguration_args:
-            if runtime_args:
-                raise ValueError(
-                    "DFB reconfiguration and explicit per-core runtime arguments "
-                    f"cannot share kernel descriptor {kernel_spec_index}"
+        descriptor_variants: List[_KernelDescriptorVariant]
+        if not reconfiguration_args:
+            kernel_compile_time_args = list(cb_indices)
+            if spec.thread_type != "compute":
+                kernel_compile_time_args.extend(tensor_accessor_args)
+            descriptor_variants = [
+                _KernelDescriptorVariant(
+                    core_ranges=kernel_ranges,
+                    compile_time_args=kernel_compile_time_args,
+                    runtime_args=runtime_args,
                 )
-            runtime_args = ttnn.RuntimeArgs()
-            for core in ttnn.corerange_to_cores(kernel_ranges, row_wise=True):
-                core_key = (int(core.x), int(core.y))
-                if core_key not in reconfiguration_args:
-                    raise RuntimeError(
-                        "missing DFB reconfiguration runtime arguments for "
-                        f"core {core_key}"
-                    )
-                runtime_args[core.x][core.y] = list(reconfiguration_args[core_key])
+            ]
+        else:
+            descriptor_variants = _build_reconfiguration_descriptor_variants(
+                kernel_ranges,
+                cb_indices,
+                tensor_accessor_args,
+                spec.thread_type,
+                runtime_args,
+                reconfiguration_args,
+            )
 
-        kernel_descriptor_args = dict(
-            kernel_source=spec.path,
-            core_ranges=kernel_ranges,
-            compile_time_args=kernel_compile_time_args,
-            defines=defines,
-            common_runtime_args=common_runtime_args,
-            config=spec.config,
-            compiler_include_paths=spec.compiler_include_paths,
-        )
-        if runtime_args:
-            kernel_descriptor_args["runtime_args"] = runtime_args
-        kernel_desc = ttnn.KernelDescriptor(**kernel_descriptor_args)
-        kernel_descriptors.append(kernel_desc)
+        for descriptor_variant in descriptor_variants:
+            kernel_descriptor_args = dict(
+                kernel_source=spec.path,
+                core_ranges=descriptor_variant.core_ranges,
+                compile_time_args=descriptor_variant.compile_time_args,
+                defines=defines,
+                common_runtime_args=common_runtime_args,
+                config=spec.config,
+                compiler_include_paths=spec.compiler_include_paths,
+            )
+            if descriptor_variant.runtime_args:
+                kernel_descriptor_args["runtime_args"] = descriptor_variant.runtime_args
+            kernel_descriptors.append(ttnn.KernelDescriptor(**kernel_descriptor_args))
 
     return kernel_descriptors
 

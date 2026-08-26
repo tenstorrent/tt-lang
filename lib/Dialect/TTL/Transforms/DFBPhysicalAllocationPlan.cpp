@@ -2397,10 +2397,14 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   }
   plan.descriptors = std::move(*descriptors);
 
-  if (plan.physicalDFBCount > 0) {
+  int32_t kernelBaseIndex = plan.physicalDFBCount;
+  if (!liveness.getReconfigurationBoundaryOrdinals().empty()) {
+    ++kernelBaseIndex;
+  }
+  if (kernelBaseIndex > 0) {
     for (func::FuncOp kernel : moduleOp.getOps<func::FuncOp>()) {
       if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
-        plan.kernelBaseIndices.push_back({kernel, plan.physicalDFBCount});
+        plan.kernelBaseIndices.push_back({kernel, kernelBaseIndex});
       }
     }
   }

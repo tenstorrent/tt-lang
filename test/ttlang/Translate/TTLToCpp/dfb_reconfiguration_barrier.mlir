@@ -19,6 +19,7 @@
 // CHECK: while (!participantsHaveState(synchronizationState, exitComplete)) {
 // CHECK: dfb_reconfiguration_detail::enter(synchronizationState);
 // CHECK: dfb_reconfiguration_detail::exit(synchronizationState);
+// CHECK: get_arg_val<uint32_t>(get_compile_time_arg_val(0))
 // NO-ATOMICS-NOT: __atomic_
 
 module attributes {

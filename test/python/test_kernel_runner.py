@@ -1737,9 +1737,8 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
-def test_build_kernel_descriptors_rejects_overlapping_runtime_arg_contracts(
-    monkeypatch,
-):
+# Reconfiguration addresses follow caller runtime arguments without renumbering them.
+def test_build_kernel_descriptors_composes_reconfiguration_runtime_args(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     core_ranges = _FakeCoreRanges((((0, 0), (0, 0)),))
     spec = _kernel_spec(KernelKind.COMPUTE)
@@ -1756,24 +1755,66 @@ def test_build_kernel_descriptors_rejects_overlapping_runtime_arg_contracts(
         core_ranges,
     )
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            "DFB reconfiguration and explicit per-core runtime arguments "
-            "cannot share kernel descriptor 0"
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=2,
+        descriptor_resource_plans=plan.kernel_descriptors,
+        dfb_reconfiguration_runtime_args={(0, 0): [0x1000]},
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].compile_time_args == [0, 1, 1]
+    assert descriptors[0].runtime_args[0][0] == [4, 0x1000]
+
+
+# Cores with different caller argument counts receive distinct descriptors.
+def test_build_kernel_descriptors_specializes_reconfiguration_arg_offsets(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    spec = _kernel_spec(KernelKind.COMPUTE)
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(
+                        CoreRuntimeArgs(_FakeCoreCoord(0, 0), (4,)),
+                        CoreRuntimeArgs(_FakeCoreCoord(1, 0), (8, 9)),
+                    ),
+                ),
+            )
         ),
-    ):
-        kernel_runner.build_kernel_descriptors(
-            kernel_specs=[spec],
-            tensors=[],
-            tensor_accessor_args=[],
-            core_ranges=core_ranges,
-            grid_cols=1,
-            grid_rows=1,
-            num_cbs=0,
-            descriptor_resource_plans=plan.kernel_descriptors,
-            dfb_reconfiguration_runtime_args={(0, 0): [0x1000]},
-        )
+        [spec],
+        core_ranges,
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=1,
+        descriptor_resource_plans=plan.kernel_descriptors,
+        dfb_reconfiguration_runtime_args={
+            (0, 0): [0x1000],
+            (1, 0): [0x2000],
+        },
+    )
+
+    assert len(descriptors) == 2
+    assert descriptors[0].compile_time_args == [0, 1]
+    assert descriptors[0].runtime_args[0][0] == [4, 0x1000]
+    assert descriptors[1].compile_time_args == [0, 2]
+    assert descriptors[1].runtime_args[1][0] == [8, 9, 0x2000]
 
 
 def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatch):
@@ -2267,7 +2308,7 @@ def test_build_kernel_descriptors_binds_reconfiguration_args_by_core(monkeypatch
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
         path="/tmp/kernel.cpp",
-        thread_type="compute",
+        thread_type="noc",
         tensor_indices=[],
         config=object(),
     )
@@ -2275,14 +2316,15 @@ def test_build_kernel_descriptors_binds_reconfiguration_args_by_core(monkeypatch
     descriptors = kernel_runner.build_kernel_descriptors(
         kernel_specs=[spec],
         tensors=[],
-        tensor_accessor_args=[],
+        tensor_accessor_args=[0x44, 0x55],
         core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
         grid_cols=1,
         grid_rows=1,
-        num_cbs=0,
+        num_cbs=2,
         dfb_reconfiguration_runtime_args={(0, 0): [0x4000, 0x5000]},
     )
 
+    assert descriptors[0].compile_time_args == [0, 1, 0, 0x44, 0x55]
     assert descriptors[0].runtime_args[0][0] == [0x4000, 0x5000]
 
 

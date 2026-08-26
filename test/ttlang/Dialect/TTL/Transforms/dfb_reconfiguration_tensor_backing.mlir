@@ -20,9 +20,12 @@
 // CHECK-SAME: entry_reconfiguration = 0 : i64
 // CHECK-SAME: byte_offset = 2048
 // CHECK-SAME: byte_size = 2048
+// CHECK-LABEL: func.func @compute
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
 
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @compute() attributes {
+    ttl.base_cta_index = 2 : i32,
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute
   } {
@@ -40,6 +43,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
   }
 
   func.func @read() attributes {
+    ttl.base_cta_index = 2 : i32,
     ttl.kernel_thread = #ttkernel.thread<noc>,
     ttl.logical_kernel = #reader,
     ttl.noc_index = 0 : i32
@@ -49,6 +53,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
   }
 
   func.func @write() attributes {
+    ttl.base_cta_index = 2 : i32,
     ttl.kernel_thread = #ttkernel.thread<noc>,
     ttl.logical_kernel = #writer,
     ttl.noc_index = 1 : i32
