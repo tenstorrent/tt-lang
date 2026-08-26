@@ -65,7 +65,6 @@ from .dfb_reset import (
     DFBReset,
     _bind_dfb_resets,
     _dfb_reset_topology,
-    _transitive_participant_kernels,
 )
 from .dfb_reconfiguration import (
     DFBReconfiguration,
@@ -94,6 +93,7 @@ from .kernel import (
     _operation_identity,
     _selector_implicit_role,
     _selector_kind,
+    _transitive_participant_kernels,
 )
 from .operators import _set_current_grid
 from .pipe import PipeNet
@@ -359,12 +359,20 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
-    transitive_participant_kernels = _transitive_participant_kernels(
+    transitive_reset_kernels = _transitive_participant_kernels(
         dfb_resets,
         {**logical_kernels, **captured_logical_kernels},
         loaded_names,
+        resource_name="reset",
     )
-    captured_logical_kernels.update(transitive_participant_kernels)
+    captured_logical_kernels.update(transitive_reset_kernels)
+    transitive_reconfiguration_kernels = _transitive_participant_kernels(
+        dfb_reconfigurations,
+        {**logical_kernels, **captured_logical_kernels},
+        loaded_names,
+        resource_name="reconfiguration",
+    )
+    captured_logical_kernels.update(transitive_reconfiguration_kernels)
 
     operation_identity = _operation_identity(fn)
     allocation_group_topology = _dfb_allocation_group_topology(allocation_groups)

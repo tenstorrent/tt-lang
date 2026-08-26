@@ -423,6 +423,7 @@ def _expand_call(
         scope,
         reserved_names,
         dfb_reconfigurations,
+        selected_kernels,
         suffix,
     )
 
@@ -512,16 +513,26 @@ def _add_logical_kernel_bindings(
 ) -> Dict[int, Kernel]:
     loaded_names = _loaded_names(spec.fn_ast.body)
     selected_kernels: Dict[int, Kernel] = {}
-    reset_participant_ids = {
+    synchronization_participant_ids = {
         id(participant)
         for reset_name, reset in spec.dfb_resets.items()
         if reset_name in loaded_names
         for participant in reset.participants
     }
+    synchronization_participant_ids.update(
+        id(participant)
+        for boundary_name, boundary in spec.dfb_reconfigurations.items()
+        if boundary_name in loaded_names
+        for participant in boundary.participants
+        if isinstance(participant, Kernel)
+    )
     for name, kernel in spec.logical_kernels.items():
         if name in bindings:
             continue
-        if name not in loaded_names and id(kernel) not in reset_participant_ids:
+        if (
+            name not in loaded_names
+            and id(kernel) not in synchronization_participant_ids
+        ):
             continue
         existing_name = next(
             (
@@ -629,6 +640,7 @@ def _add_dfb_reconfiguration_bindings(
     scope: Dict[str, object],
     reserved_names: Set[str],
     dfb_reconfigurations: Dict[str, DFBReconfiguration],
+    selected_kernels: Dict[int, Kernel],
     suffix: str,
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
@@ -641,7 +653,14 @@ def _add_dfb_reconfiguration_bindings(
             # Each composed call declares a distinct boundary site. Aliases
             # within that call retain one identity across all participants.
             boundary_instance = DFBReconfiguration(
-                participants=boundary.participants,
+                participants=tuple(
+                    (
+                        selected_kernels[id(participant)]
+                        if isinstance(participant, Kernel)
+                        else participant
+                    )
+                    for participant in boundary.participants
+                ),
             )
             boundary_instances[id(boundary)] = boundary_instance
         fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)

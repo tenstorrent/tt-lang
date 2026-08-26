@@ -1422,6 +1422,35 @@ def test_dfb_reconfiguration_routes_to_every_participant():
         assert f"reconfigure_dfbs({boundary_name})" in source
 
 
+def test_dfb_reconfiguration_materializes_participant_only_kernels():
+    """A boundary retains participants with no other operation reference."""
+    compute_kernel = Kernel(KernelKind.COMPUTE)
+    reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation()
+    def reconfiguration_operation():
+        ttl.reconfigure_dfbs(boundary)
+
+    spec = reconfiguration_operation._spec
+    assert set(spec.logical_kernels.values()) == {
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    }
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in boundary.participants:
+        assert _kernel_src(result, participant).count("reconfigure_dfbs") == 1
+
+
 def test_composition_instantiates_reconfiguration_per_call_site():
     """Repeated helper calls declare distinct ordered boundary sites."""
     compute_kernel = Kernel(KernelKind.COMPUTE)
@@ -1433,11 +1462,6 @@ def test_composition_instantiates_reconfiguration_per_call_site():
 
     @ttl.operation()
     def reconfiguration_helper():
-        ttl.call_extern_func(
-            "boundary.hpp",
-            "before_boundary",
-            kernel=(compute_kernel, reader_kernel, writer_kernel),
-        )
         ttl.reconfigure_dfbs(boundary)
 
     @ttl.operation()
