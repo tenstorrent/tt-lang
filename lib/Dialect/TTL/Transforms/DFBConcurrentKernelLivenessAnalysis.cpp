@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -355,11 +356,6 @@ struct AccessDomain {
   Operation *unanalyzableOperation = nullptr;
 };
 
-// Retains access-domain results from the shared launch-domain analysis.
-struct LivenessDomainState : LaunchNodeDomainState {
-  DenseMap<Operation *, AccessDomain> accessDomains;
-};
-
 // One static occurrence of a typed synchronized reset before launch-node
 // participation is validated.
 struct SynchronizedResetOccurrence {
@@ -470,7 +466,7 @@ static bool executesRegionsAtMostOnce(Operation *operation) {
 
 static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
     Operation *operation, AccessDomain accessDomain,
-    const LivenessDomainState &domainState) {
+    const LaunchNodeDomainState &domainState) {
   if (accessDomain.domain.known) {
     return accessDomain;
   }
@@ -494,7 +490,7 @@ static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
 // enclosing-loop invocation.
 static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     Operation *operation, std::uint64_t executionCount, LaunchNodeCoord node,
-    const LivenessDomainState &domainState) {
+    const LaunchNodeDomainState &domainState) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
       !function.getBody().hasOneBlock()) {
@@ -1546,7 +1542,8 @@ collectAccessExecutionCounts(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
 
 static AccessRuns
 collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
-                  LaunchNodeCoord node, const LivenessDomainState &domainState,
+                  LaunchNodeCoord node,
+                  const LaunchNodeDomainState &domainState,
                   const AccessExecutionCounts &executionCounts,
                   bool includeUnknownDomains) {
   AccessRuns runs;
@@ -1797,7 +1794,7 @@ static LogicalResult validateDFBReconfigurationDeclarations(
 
 static LogicalResult validateDFBReconfigurationsAtNode(
     ArrayRef<DFBReconfigurationOccurrence> occurrences, LaunchNodeCoord node,
-    const LivenessDomainState &domainState,
+    const LaunchNodeDomainState &domainState,
     const StructuralOperationOrder &structuralOrder,
     SmallVectorImpl<ValidatedDFBReconfiguration> &validatedBoundaries,
     DFBAnalysisFailure &analysisFailure) {
@@ -1944,7 +1941,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
 
 static LogicalResult validateSynchronizedResetsAtNode(
     ArrayRef<SynchronizedResetOccurrence> occurrences, LaunchNodeCoord node,
-    const LivenessDomainState &domainState,
+    const LaunchNodeDomainState &domainState,
     SmallVectorImpl<ValidatedSynchronizedReset> &validatedResets,
     DFBAnalysisFailure &analysisFailure) {
   llvm::MapVector<SynchronizedDFBResetAttr,
@@ -5262,7 +5259,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
   }
 
-  LivenessDomainState domainState;
+  LaunchNodeDomainState domainState;
   domainState.initialize(module);
   exactLaunchGrid = domainState.hasLaunchGrid;
   if (!domainState.hasLaunchGrid) {
@@ -5284,12 +5281,6 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   LaunchNodeDomainAnalysisOptions options;
   options.narrowPipeNetScopes = true;
   options.emitInvalidPipeNetDiagnostics = false;
-  options.operationCallback = [&](Operation *accessOperation,
-                                  const LaunchNodeDomain &domain,
-                                  Operation *unanalyzableOperation) {
-    domainState.accessDomains[accessOperation] = {domain,
-                                                  unanalyzableOperation};
-  };
   solver.load<LaunchNodeDomainAnalysis>(domainState, options);
   if (failed(solver.initializeAndRun(module))) {
     errorOperation = module;
@@ -5309,11 +5300,25 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     if (refinedDomainIt != refinedAccessDomains.end()) {
       return refinedDomainIt->second;
     }
-    auto domainIt = domainState.accessDomains.find(accessOperation);
-    AccessDomain accessDomain =
-        domainIt == domainState.accessDomains.end()
-            ? AccessDomain{LaunchNodeDomain::unknown(), accessOperation}
-            : domainIt->second;
+    const LaunchNodeDomainLattice *domainLattice =
+        solver.lookupState<LaunchNodeDomainLattice>(
+            solver.getProgramPointBefore(accessOperation));
+    AccessDomain accessDomain;
+    if (domainLattice) {
+      accessDomain = {domainLattice->getDomain(),
+                      domainLattice->getUnanalyzableOp()};
+    } else {
+      // Dense analysis omits operation lattices in dead blocks. Dead-code
+      // state distinguishes an empty domain from a missing analysis fact.
+      ProgramPoint *blockStart =
+          solver.getProgramPointBefore(accessOperation->getBlock());
+      const auto *executable =
+          solver.lookupState<dataflow::Executable>(blockStart);
+      accessDomain = executable && !executable->isLive()
+                         ? AccessDomain{LaunchNodeDomain{}, nullptr}
+                         : AccessDomain{LaunchNodeDomain::unknown(),
+                                        accessOperation};
+    }
     return refinedAccessDomains
         .try_emplace(accessOperation,
                      refineUnknownAccessDomainFromExecutionCounts(
@@ -5416,6 +5421,10 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           std::make_unique<DFBLogicalLifecycleDiagnostics>();
     }
   }
+  std::optional<ProgramOrderTopologyInputs> cachedGraphTopologyInputs;
+  std::optional<ProgramOrderGraphState> cachedGraphTopologyState;
+  std::optional<ProgramOrderTopologyInputs> cachedPossibleGraphTopologyInputs;
+  std::optional<ProgramOrderGraphState> cachedPossibleGraphTopologyState;
   for (LaunchNodeCoord node : launchNodes) {
     SmallVector<ValidatedSynchronizedReset> validatedResets;
     if (failed(validateSynchronizedResetsAtNode(resetOccurrences, node,
@@ -5443,8 +5452,18 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
             logicalDFBs, validatedResets, validatedReconfigurations, node,
             executionCounts, accessRuns, structuralOrder,
             /*includeUnknownDomains=*/false);
-    ProgramOrderGraphState graphState = buildProgramOrderTopologyState(
-        module, graphTopologyInputs, structuralOrder);
+    ProgramOrderGraphState initialGraphState;
+    if (cachedGraphTopologyInputs &&
+        *cachedGraphTopologyInputs == graphTopologyInputs) {
+      assert(cachedGraphTopologyState &&
+             "cached topology inputs must have a graph state");
+      initialGraphState = *cachedGraphTopologyState;
+    } else {
+      initialGraphState = buildProgramOrderTopologyState(
+          module, graphTopologyInputs, structuralOrder);
+      cachedGraphTopologyInputs = graphTopologyInputs;
+      cachedGraphTopologyState = initialGraphState;
+    }
     std::optional<AccessRuns> possibleAccessRuns;
     std::optional<ProgramOrderGraphState> possibleGraphState;
     if (hasUnknownDFBLaunchDomain) {
@@ -5458,15 +5477,25 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
               /*includeUnknownDomains=*/true);
       bool graphTopologiesMatch =
           graphTopologyInputs == possibleGraphTopologyInputs;
-      possibleGraphState.emplace(
-          graphTopologiesMatch
-              ? graphState
-              : buildProgramOrderTopologyState(
-                    module, possibleGraphTopologyInputs, structuralOrder));
+      if (graphTopologiesMatch) {
+        possibleGraphState.emplace(initialGraphState);
+      } else if (cachedPossibleGraphTopologyInputs &&
+                 *cachedPossibleGraphTopologyInputs ==
+                     possibleGraphTopologyInputs) {
+        assert(cachedPossibleGraphTopologyState &&
+               "cached possible topology inputs must have a graph state");
+        possibleGraphState = *cachedPossibleGraphTopologyState;
+      } else {
+        possibleGraphState.emplace(buildProgramOrderTopologyState(
+            module, possibleGraphTopologyInputs, structuralOrder));
+        cachedPossibleGraphTopologyInputs = possibleGraphTopologyInputs;
+        cachedPossibleGraphTopologyState = *possibleGraphState;
+      }
 #ifndef NDEBUG
       // Small graphs retain an independent reconstruction oracle without
       // repeating model-scale graph construction in assertion-enabled builds.
-      if (graphTopologiesMatch && graphState.graph.getEventCount() <= 128) {
+      if (graphTopologiesMatch &&
+          initialGraphState.graph.getEventCount() <= 128) {
         ProgramOrderGraphState reconstructedPossibleGraphState =
             buildProgramOrderTopologyState(module, possibleGraphTopologyInputs,
                                            structuralOrder);
@@ -5475,6 +5504,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       }
 #endif
     }
+    ProgramOrderGraphState graphState = std::move(initialGraphState);
     HappensBeforeGraph &graph = graphState.graph;
     DenseMap<Operation *, EventPair> &operationEvents =
         graphState.operationEvents;
