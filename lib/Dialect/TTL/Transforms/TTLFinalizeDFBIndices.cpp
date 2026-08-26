@@ -104,7 +104,31 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
                               builder.getI32IntegerAttr(baseIndex.baseIndex));
   }
 
+  auto buildStorageSegmentAttributes =
+      [&](ArrayRef<DFBPhysicalStorageSegment> storageSegments) {
+        SmallVector<Attribute> storageSegmentAttributes;
+        for (const DFBPhysicalStorageSegment &segment : storageSegments) {
+          SmallVector<Attribute> nodeAttributes;
+          for (LaunchNodeCoord node : segment.launchDomain.nodes) {
+            nodeAttributes.push_back(
+                builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
+                                      builder.getI64IntegerAttr(node.y)}));
+          }
+          SmallVector<NamedAttribute> segmentAttributes;
+          segmentAttributes.push_back(builder.getNamedAttr(
+              "nodes", builder.getArrayAttr(nodeAttributes)));
+          if (segment.tensorBacking) {
+            segmentAttributes.push_back(
+                builder.getNamedAttr("tensor_backing", segment.tensorBacking));
+          }
+          storageSegmentAttributes.push_back(
+              builder.getDictionaryAttr(segmentAttributes));
+        }
+        return builder.getArrayAttr(storageSegmentAttributes);
+      };
+
   SmallVector<Attribute> descriptorAttributes;
+  SmallVector<Attribute> reconfigurationPlanAttributes;
   for (const DFBPhysicalAllocationDescriptor &descriptor :
        allocationPlan.getDescriptors()) {
     SmallVector<NamedAttribute> entryAttributes;
@@ -118,71 +142,102 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
         "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
-    SmallVector<Attribute> storageSegmentAttributes;
-    for (const DFBPhysicalStorageSegment &segment :
-         descriptor.storageSegments) {
-      SmallVector<Attribute> nodeAttributes;
-      for (LaunchNodeCoord node : segment.launchDomain.nodes) {
-        nodeAttributes.push_back(
-            builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
-                                  builder.getI64IntegerAttr(node.y)}));
-      }
-      SmallVector<NamedAttribute> segmentAttributes;
-      segmentAttributes.push_back(
-          builder.getNamedAttr("nodes", builder.getArrayAttr(nodeAttributes)));
-      if (segment.tensorBacking) {
-        segmentAttributes.push_back(
-            builder.getNamedAttr("tensor_backing", segment.tensorBacking));
-      }
-      storageSegmentAttributes.push_back(
-          builder.getDictionaryAttr(segmentAttributes));
-    }
-    if (!storageSegmentAttributes.empty()) {
+    if (!descriptor.storageSegments.empty()) {
       entryAttributes.push_back(builder.getNamedAttr(
-          "storage_segments", builder.getArrayAttr(storageSegmentAttributes)));
+          "storage_segments",
+          buildStorageSegmentAttributes(descriptor.storageSegments)));
     }
     descriptorAttributes.push_back(
         DictionaryAttr::get(context, entryAttributes));
+
+    SmallVector<Attribute> configurationAttributes;
+    for (const DFBConfigurationEpochDescriptor &configuration :
+         descriptor.epochConfigurations) {
+      SmallVector<NamedAttribute> configurationEntry;
+      if (configuration.entryReconfigurationOrdinal) {
+        configurationEntry.push_back(builder.getNamedAttr(
+            "entry_reconfiguration",
+            builder.getI64IntegerAttr(
+                *configuration.entryReconfigurationOrdinal)));
+      }
+      configurationEntry.push_back(builder.getNamedAttr(
+          "num_tiles", builder.getI32IntegerAttr(configuration.numTiles)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "element_type", TypeAttr::get(configuration.elementType)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "page_size", builder.getI32IntegerAttr(configuration.pageSize)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "block_count", builder.getI32IntegerAttr(configuration.blockCount)));
+      if (!configuration.storageSegments.empty()) {
+        configurationEntry.push_back(builder.getNamedAttr(
+            "storage_segments",
+            buildStorageSegmentAttributes(configuration.storageSegments)));
+      }
+      configurationAttributes.push_back(
+          builder.getDictionaryAttr(configurationEntry));
+    }
+    reconfigurationPlanAttributes.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr(
+            "dfb_index", builder.getI32IntegerAttr(descriptor.physicalIndex)),
+        builder.getNamedAttr("configurations",
+                             builder.getArrayAttr(configurationAttributes)),
+    }));
   }
   moduleOp->setAttr(kDFBAllocationsAttrName,
                     ArrayAttr::get(context, descriptorAttributes));
-
   ArrayRef<DFBAssumedAllocationGroup> assumedGroups =
       allocationPlan.getAssumedAllocationGroups();
   if (assumedGroups.empty()) {
     moduleOp->removeAttr(kAssumedDFBAllocationGroupsAttrName);
-    return;
-  }
-  SmallVector<Attribute> assumedGroupAttributes;
-  for (const DFBAssumedAllocationGroup &group : assumedGroups) {
-    SmallVector<Attribute> memberAttributes;
-    for (int64_t logicalId : group.logicalIds) {
-      memberAttributes.push_back(builder.getI64IntegerAttr(logicalId));
-    }
-    SmallVector<Attribute> assumptionAttributes;
-    for (const DFBAllocationGroupAssumption &assumption : group.assumptions) {
-      SmallVector<NamedAttribute> fields;
-      fields.push_back(builder.getNamedAttr(
-          "reason",
-          builder.getStringAttr(
-              getDFBAllocationGroupAssumptionReasonName(assumption.reason))));
-      fields.push_back(builder.getNamedAttr(
-          "lhs", builder.getI64IntegerAttr(assumption.lhsLogicalId)));
-      if (assumption.rhsLogicalId) {
-        fields.push_back(builder.getNamedAttr(
-            "rhs", builder.getI64IntegerAttr(*assumption.rhsLogicalId)));
+  } else {
+    SmallVector<Attribute> assumedGroupAttributes;
+    for (const DFBAssumedAllocationGroup &group : assumedGroups) {
+      SmallVector<Attribute> memberAttributes;
+      for (int64_t logicalId : group.logicalIds) {
+        memberAttributes.push_back(builder.getI64IntegerAttr(logicalId));
       }
-      assumptionAttributes.push_back(builder.getDictionaryAttr(fields));
+      SmallVector<Attribute> assumptionAttributes;
+      for (const DFBAllocationGroupAssumption &assumption : group.assumptions) {
+        SmallVector<NamedAttribute> fields;
+        fields.push_back(builder.getNamedAttr(
+            "reason",
+            builder.getStringAttr(
+                getDFBAllocationGroupAssumptionReasonName(assumption.reason))));
+        fields.push_back(builder.getNamedAttr(
+            "lhs", builder.getI64IntegerAttr(assumption.lhsLogicalId)));
+        if (assumption.rhsLogicalId) {
+          fields.push_back(builder.getNamedAttr(
+              "rhs", builder.getI64IntegerAttr(*assumption.rhsLogicalId)));
+        }
+        assumptionAttributes.push_back(builder.getDictionaryAttr(fields));
+      }
+      assumedGroupAttributes.push_back(builder.getDictionaryAttr({
+          builder.getNamedAttr("allocation_group", group.allocationGroup),
+          builder.getNamedAttr("members",
+                               builder.getArrayAttr(memberAttributes)),
+          builder.getNamedAttr("assumptions",
+                               builder.getArrayAttr(assumptionAttributes)),
+      }));
     }
-    assumedGroupAttributes.push_back(builder.getDictionaryAttr({
-        builder.getNamedAttr("allocation_group", group.allocationGroup),
-        builder.getNamedAttr("members", builder.getArrayAttr(memberAttributes)),
-        builder.getNamedAttr("assumptions",
-                             builder.getArrayAttr(assumptionAttributes)),
-    }));
+    moduleOp->setAttr(kAssumedDFBAllocationGroupsAttrName,
+                      builder.getArrayAttr(assumedGroupAttributes));
   }
-  moduleOp->setAttr(kAssumedDFBAllocationGroupsAttrName,
-                    builder.getArrayAttr(assumedGroupAttributes));
+
+  ArrayRef<int64_t> boundaryOrdinals =
+      allocationPlan.getReconfigurationBoundaryOrdinals();
+  if (!boundaryOrdinals.empty()) {
+    moduleOp->setAttr(
+        kDFBReconfigurationPlanAttrName,
+        builder.getDictionaryAttr({
+            builder.getNamedAttr(
+                "boundary_ordinals",
+                builder.getDenseI64ArrayAttr(boundaryOrdinals)),
+            builder.getNamedAttr(
+                "dfbs", builder.getArrayAttr(reconfigurationPlanAttributes)),
+        }));
+  } else {
+    moduleOp->removeAttr(kDFBReconfigurationPlanAttrName);
+  }
 }
 
 static void emitAssumedAllocationGroupWarnings(
@@ -217,6 +272,10 @@ struct TTLFinalizeDFBIndicesPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
     if (failed(validateSynchronizedDFBResetTarget(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(validateDFBReconfigurationTarget(moduleOp))) {
       signalPassFailure();
       return;
     }

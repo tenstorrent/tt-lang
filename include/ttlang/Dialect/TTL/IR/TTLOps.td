@@ -2031,6 +2031,37 @@ def TTL_ResetAllDFBsOp
 }
 
 //===----------------------------------------------------------------------===//
+// Dataflow-buffer reconfiguration boundary
+//===----------------------------------------------------------------------===//
+
+def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Enter the next worker-local DFB configuration epoch";
+  let description = [{
+    `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
+    by the logical kernels named by `boundary`. Every participant executes the
+    same zero-or-one dynamic boundary instance per dispatch and launch node and
+    executes boundary sites in the same order. Every boundary in one module
+    declares the same participant set. DFB-interface work ordered before the
+    boundary completes before the runtime installs the next epoch's
+    configuration. DFB-interface work ordered after the boundary begins after
+    installation. Independent math and SFPU work may overlap the boundary.
+
+    The source operation does not name physical DFB indices or enumerate the
+    interfaces that change. Allocation analysis derives the configuration for
+    each epoch from logical DFB lifetimes. Live protocol state retains its
+    physical index, storage, and interface configuration across the boundary;
+    reassignment requires a complete protocol and synchronization proof.
+
+    Runtime execution is currently supported only on Blackhole. Compilation
+    rejects a resolved non-Blackhole target. Shared-L1 synchronization state
+    coordinates interface changes across the participating kernels.
+  }];
+  let arguments = (ins TTL_DFBReconfigurationAttr:$boundary);
+  let assemblyFormat = "$boundary attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 

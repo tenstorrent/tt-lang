@@ -1368,6 +1368,167 @@ def test_synchronized_dfb_reset_is_replicated_to_every_participant():
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
 
 
+def test_dfb_reconfiguration_requires_complete_distinct_participants():
+    """A boundary names one compute kernel and both data-movement kernels."""
+    with pytest.raises(TypeError, match="nonempty tuple"):
+        ttl.DFBReconfiguration(participants=[ttl.KernelKind.COMPUTE])
+    with pytest.raises(ValueError, match="one compute and two data movement"):
+        ttl.DFBReconfiguration(
+            participants=(
+                ttl.KernelKind.COMPUTE,
+                ttl.KernelKind.DATA_MOVEMENT,
+            )
+        )
+    with pytest.raises(ValueError, match="participants must be distinct"):
+        ttl.DFBReconfiguration(
+            participants=(
+                ttl.KernelKind.COMPUTE,
+                ttl.KernelKind.DATA_MOVEMENT,
+                ttl.KernelKind.DATA_MOVEMENT,
+            )
+        )
+
+
+def test_dfb_reconfiguration_routes_to_every_participant():
+    """One boundary declaration is retained by all three kernel bodies."""
+    compute_kernel = Kernel(KernelKind.COMPUTE)
+    reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation()
+    def reconfiguration_operation():
+        ttl.call_extern_func(
+            "boundary.hpp",
+            "before_boundary",
+            kernel=(compute_kernel, reader_kernel, writer_kernel),
+        )
+        ttl.reconfigure_dfbs(boundary)
+
+    spec = reconfiguration_operation._spec
+    assert len(spec.dfb_reconfigurations) == 1
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    boundary_name = next(iter(spec.dfb_reconfigurations))
+    for participant in (compute_kernel, reader_kernel, writer_kernel):
+        source = _kernel_src(result, participant)
+        assert source.count("reconfigure_dfbs") == 1
+        assert f"reconfigure_dfbs({boundary_name})" in source
+
+
+def test_dfb_reconfiguration_materializes_participant_only_kernels():
+    """A boundary retains participants with no other operation reference."""
+    compute_kernel = Kernel(KernelKind.COMPUTE)
+    reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation()
+    def reconfiguration_operation():
+        ttl.reconfigure_dfbs(boundary)
+
+    spec = reconfiguration_operation._spec
+    assert set(spec.logical_kernels.values()) == {
+        compute_kernel,
+        reader_kernel,
+        writer_kernel,
+    }
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in boundary.participants:
+        assert _kernel_src(result, participant).count("reconfigure_dfbs") == 1
+
+
+def test_composition_instantiates_reconfiguration_per_call_site():
+    """Repeated helper calls declare distinct ordered boundary sites."""
+    compute_kernel = Kernel(KernelKind.COMPUTE)
+    reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation()
+    def reconfiguration_helper():
+        ttl.reconfigure_dfbs(boundary)
+
+    @ttl.operation()
+    def repeated_reconfiguration():
+        reconfiguration_helper()
+        reconfiguration_helper()
+
+    spec = repeated_reconfiguration._spec
+    boundary_instances = tuple(spec.dfb_reconfigurations.values())
+    assert len(boundary_instances) == 2
+    assert boundary_instances[0] is not boundary_instances[1]
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in (compute_kernel, reader_kernel, writer_kernel):
+        source = _kernel_src(result, participant)
+        for boundary_name in spec.dfb_reconfigurations:
+            assert f"reconfigure_dfbs({boundary_name})" in source
+
+
+def test_composition_remaps_equivalent_reconfiguration_participants():
+    """Equivalent composed kernels use the caller's selected handles."""
+
+    def make_reconfiguration_helper():
+        compute_kernel = Kernel(KernelKind.COMPUTE)
+        reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+        writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+        boundary = ttl.DFBReconfiguration(
+            participants=(compute_kernel, reader_kernel, writer_kernel)
+        )
+
+        @ttl.operation()
+        def reconfiguration_helper():
+            ttl.reconfigure_dfbs(boundary)
+
+        return reconfiguration_helper
+
+    first_helper = make_reconfiguration_helper()
+    second_helper = make_reconfiguration_helper()
+
+    @ttl.operation()
+    def composed_reconfiguration():
+        first_helper()
+        second_helper()
+
+    spec = composed_reconfiguration._spec
+    assert len(spec.logical_kernels) == 3
+    logical_kernels = tuple(spec.logical_kernels.values())
+    for boundary in spec.dfb_reconfigurations.values():
+        assert all(
+            any(participant is kernel for kernel in logical_kernels)
+            for participant in boundary.participants
+        )
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reconfigure_dfbs(") == 2
+
+
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
     """Control selection includes logical-kernel anchors in the condition."""
     writer = Kernel(KernelKind.DATA_MOVEMENT)
