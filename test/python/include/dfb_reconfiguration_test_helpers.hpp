@@ -7,11 +7,6 @@
 #include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
 
-template <typename... DFBDescriptors>
-inline void retain_dfb_liveness() {
-  ((void)DFBDescriptors::index, ...);
-}
-
 template <typename OutputDFB>
 inline void write_reconfiguration_runtime_value() {
   uint32_t firstValue = get_arg_val<uint32_t>(0);

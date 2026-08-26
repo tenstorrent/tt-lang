@@ -25,6 +25,9 @@ SCALAR_RESULT_HEADER = os.path.join(
 DFB_RECONFIGURATION_TEST_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "dfb_reconfiguration_test_helpers.hpp"
 )
+DFB_LIVENESS_TEST_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "dfb_liveness_test_helpers.hpp"
+)
 
 
 def _make_reconfiguration_operation(data_format, grid_cols):
@@ -306,7 +309,7 @@ def _make_high_index_reconfiguration_operation(data_format):
         @ttl.compute(kernel=compute_kernel)
         def compute():
             ttl.call_extern_func(
-                DFB_RECONFIGURATION_TEST_HEADER,
+                DFB_LIVENESS_TEST_HEADER,
                 "retain_dfb_liveness",
                 template_args=[
                     ttl.dfb_descriptor(padding_dfb_00),
