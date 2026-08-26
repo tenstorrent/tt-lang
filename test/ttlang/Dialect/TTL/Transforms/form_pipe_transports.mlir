@@ -4,7 +4,7 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4' | FileCheck %s --check-prefix=BOUND
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24832' | FileCheck %s --check-prefix=NOFIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57600' | FileCheck %s --check-prefix=EXACT-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57599' | FileCheck %s --check-prefix=BELOW-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
@@ -12,6 +12,8 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=PAGES
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4},convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=RESIDUAL
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4 l1-budget-override=98624},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=98624})' | FileCheck %s --check-prefix=RESIDUAL-EXACT
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4 l1-budget-override=98688},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=98688})' | FileCheck %s --check-prefix=RESIDUAL-UPPER
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=GROUPED-WRITE
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline | FileCheck %s --check-prefix=PIPELINE
 
@@ -101,6 +103,15 @@
 // RESIDUAL: ttkernel.cb_push_back
 // RESIDUAL: ttkernel.cb_wait_front
 // RESIDUAL: ttkernel.cb_pop_front
+
+// The exact R=4 plan fits 98624 bytes, but its conservative planning upper
+// bound does not. Selection uses the smaller exact-valid R=3 group.
+// RESIDUAL-EXACT: ttl.pipe_sram_scratch_bytes = 24608 : i64
+// RESIDUAL-EXACT: ttkernel.cb<6, !ttcore.tile<32x32, f32>>
+
+// The R=4 upper bound includes the residual transfer's additional counter.
+// RESIDUAL-UPPER: ttl.pipe_sram_scratch_bytes = 32800 : i64
+// RESIDUAL-UPPER: ttkernel.cb<8, !ttcore.tile<32x32, f32>>
 
 // Grouped receiver-post execution retains one contiguous write because it does
 // not satisfy the bounded-overlap protocol.

@@ -1,7 +1,7 @@
 // Verifies exact L1 validation includes target-aligned GlobalSemaphore storage.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-global-semaphores-only=true l1-budget-override=12479})'
 
-// expected-error @below {{combined DFB and runtime resources require 12480 L1 bytes but the budget is 12479 (DFB=12288, scratch=64, global semaphores=128)}}
+// expected-error @below {{combined DFB and runtime resources require 12480 L1 bytes but the budget is 12479 (DFB=12288, scratch=64, global semaphores=128, reconfiguration state=0)}}
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,
   ttl.target_arch = #ttcore.arch<blackhole>

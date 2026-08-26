@@ -1,3 +1,4 @@
+// Summary: Verifies record-selected callbacks coexist with static grouping.
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel)' | FileCheck %s
 // The grouping pass must not expand any record-selected callback transfer.

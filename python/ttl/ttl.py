@@ -33,6 +33,7 @@ from .runtime_resources import (
 from .condition import DispatchCondition
 from .dfb_reset import DFBReset
 from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
+from .dfb_reconfiguration import DFBReconfiguration
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -52,6 +53,7 @@ from .operators import (
     raw_addr,
     reset_all_dfbs,
     reset_dfbs,
+    reconfigure_dfbs,
 )
 
 # Math operations namespace
@@ -72,6 +74,7 @@ __all__ = [
     "DispatchCondition",
     "DFBReset",
     "DFBAllocationGroup",
+    "DFBReconfiguration",
     "ScalarType",
     "compute",
     "datamovement",
@@ -91,6 +94,7 @@ __all__ = [
     "raw_addr",
     "reset_dfbs",
     "reset_all_dfbs",
+    "reconfigure_dfbs",
     "math",
     "block",
 ]
