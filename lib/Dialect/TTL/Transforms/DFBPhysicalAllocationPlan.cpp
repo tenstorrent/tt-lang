@@ -2199,14 +2199,13 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         });
     assert(!descriptor.epochConfigurations.empty() &&
            "every physical DFB must have one configuration");
+    auto compareStorageSegments = [](const DFBPhysicalStorageSegment &lhs,
+                                     const DFBPhysicalStorageSegment &rhs) {
+      return *lhs.launchDomain.nodes.begin() < *rhs.launchDomain.nodes.begin();
+    };
     for (DFBConfigurationEpochDescriptor &configuration :
          descriptor.epochConfigurations) {
-      llvm::sort(configuration.storageSegments,
-                 [](const DFBPhysicalStorageSegment &lhs,
-                    const DFBPhysicalStorageSegment &rhs) {
-                   return *lhs.launchDomain.nodes.begin() <
-                          *rhs.launchDomain.nodes.begin();
-                 });
+      llvm::sort(configuration.storageSegments, compareStorageSegments);
     }
     const DFBConfigurationEpochDescriptor &initialConfiguration =
         descriptor.epochConfigurations.front();
@@ -2221,6 +2220,43 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                      });
     if (hasTensorBacking) {
       descriptor.storageSegments = initialConfiguration.storageSegments;
+      LaunchNodeDomain initiallyCovered;
+      for (const DFBPhysicalStorageSegment &segment :
+           initialConfiguration.storageSegments) {
+        initiallyCovered = initiallyCovered.unionWith(segment.launchDomain);
+      }
+      LaunchNodeDomain eventuallyUsed;
+      for (const DFBConfigurationEpochDescriptor &configuration :
+           descriptor.epochConfigurations) {
+        if (configuration.storageSegments.empty()) {
+          eventuallyUsed.nodes.insert(liveness.getLaunchNodes().begin(),
+                                      liveness.getLaunchNodes().end());
+          continue;
+        }
+        for (const DFBPhysicalStorageSegment &segment :
+             configuration.storageSegments) {
+          eventuallyUsed = eventuallyUsed.unionWith(segment.launchDomain);
+        }
+      }
+      // Static descriptors must define the index on later-active cores.
+      // Scratch placeholders avoid installing future tensor aliases early.
+      LaunchNodeDomain placeholderDomain =
+          eventuallyUsed.subtract(initiallyCovered);
+      if (!placeholderDomain.nodes.empty()) {
+        auto placeholderIt =
+            llvm::find_if(descriptor.storageSegments,
+                          [](const DFBPhysicalStorageSegment &segment) {
+                            return !segment.tensorBacking;
+                          });
+        if (placeholderIt == descriptor.storageSegments.end()) {
+          descriptor.storageSegments.push_back(
+              {std::move(placeholderDomain), {}});
+        } else {
+          placeholderIt->launchDomain =
+              placeholderIt->launchDomain.unionWith(placeholderDomain);
+        }
+      }
+      llvm::sort(descriptor.storageSegments, compareStorageSegments);
     }
     descriptors.push_back(std::move(descriptor));
   }

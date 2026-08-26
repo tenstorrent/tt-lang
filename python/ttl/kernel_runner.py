@@ -1101,10 +1101,14 @@ class DFBReconfigurationRuntimeResources:
     l1_buffer_addresses: frozenset[int] = frozenset()
 
 
-_DFB_RECONFIGURATION_WORDS_PER_CORE = 264
-_DFB_RECONFIGURATION_LOW_MASK_WORD = 256
-_DFB_RECONFIGURATION_HIGH_MASK_WORD = 257
 _DFB_RECONFIGURATION_MAX_INDICES = 64
+_DFB_RECONFIGURATION_WORDS_PER_DFB = 4
+_DFB_RECONFIGURATION_LOW_MASK_WORD = (
+    _DFB_RECONFIGURATION_MAX_INDICES * _DFB_RECONFIGURATION_WORDS_PER_DFB
+)
+_DFB_RECONFIGURATION_HIGH_MASK_WORD = _DFB_RECONFIGURATION_LOW_MASK_WORD + 1
+_DFB_RECONFIGURATION_SYNCHRONIZATION_WORD = _DFB_RECONFIGURATION_HIGH_MASK_WORD + 1
+_DFB_RECONFIGURATION_WORDS_PER_CORE = _DFB_RECONFIGURATION_SYNCHRONIZATION_WORD + 6
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -1128,8 +1132,16 @@ def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     return args
 
 
-def _single_core_range_set(cores: Sequence[Any]) -> Any:
-    return ttnn.CoreRangeSet(tuple(ttnn.CoreRange(core, core) for core in cores))
+def _make_singleton_core_ranges(coordinates: Iterable[Tuple[int, int]]) -> Any:
+    return ttnn.CoreRangeSet(
+        [
+            ttnn.CoreRange(
+                ttnn.CoreCoord(core_x, core_y),
+                ttnn.CoreCoord(core_x, core_y),
+            )
+            for core_x, core_y in coordinates
+        ]
+    )
 
 
 def _build_reconfiguration_descriptor_variants(
@@ -1168,7 +1180,9 @@ def _build_reconfiguration_descriptor_variants(
             compile_time_args.extend(tensor_accessor_args)
         descriptor_variants.append(
             _KernelDescriptorVariant(
-                core_ranges=_single_core_range_set(variant_cores),
+                core_ranges=_make_singleton_core_ranges(
+                    (int(core.x), int(core.y)) for core in variant_cores
+                ),
                 compile_time_args=compile_time_args,
                 runtime_args=variant_runtime_args,
             )
@@ -1535,7 +1549,7 @@ def build_pipe_computed_address_dfb_tensors(
                 )
             )
             if backing_cores:
-                backing_core_ranges = _make_node_core_ranges(backing_cores)
+                backing_core_ranges = _make_singleton_core_ranges(backing_cores)
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             backing_core_ranges, allocation_bytes_by_index[dfb_index], device
         )
@@ -1834,18 +1848,32 @@ def build_dfb_reconfiguration_runtime_resources(
             "existing DFB backing tensors and allocation sizes must use the "
             "same physical indices"
         )
+    all_cores = ttnn.corerange_to_cores(core_ranges, row_wise=True)
+    core_keys = [(int(core.x), int(core.y)) for core in all_cores]
     scratch_bytes_by_index = {}
+    scratch_nodes_by_index = {}
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
         scratch_bytes = 0
+        scratch_nodes = set()
         for epoch in epochs:
             config = epoch.config
             allocation = _get_dfb_allocation(config)
-            if not config.storage_segments or any(
-                not segment.is_tensor_backed for segment in config.storage_segments
-            ):
+            if not config.storage_segments:
                 scratch_bytes = max(scratch_bytes, allocation.total_size)
+                scratch_nodes.update(core_keys)
+                continue
+            scratch_segments = tuple(
+                segment
+                for segment in config.storage_segments
+                if not segment.is_tensor_backed
+            )
+            if scratch_segments:
+                scratch_bytes = max(scratch_bytes, allocation.total_size)
+                for segment in scratch_segments:
+                    scratch_nodes.update(segment.nodes)
         if scratch_bytes > 0:
             scratch_bytes_by_index[dfb_index] = scratch_bytes
+            scratch_nodes_by_index[dfb_index] = scratch_nodes
 
     scratch_tensors = {}
     for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
@@ -1860,14 +1888,20 @@ def build_dfb_reconfiguration_runtime_resources(
             scratch_tensors[dfb_index] = existing_tensor
             continue
 
-    all_cores = ttnn.corerange_to_cores(core_ranges, row_wise=True)
-    core_keys = [(int(core.x), int(core.y)) for core in all_cores]
     core_rows = {core: row for row, core in enumerate(core_keys)}
     if len(plan.dfb_epochs) > _DFB_RECONFIGURATION_MAX_INDICES:
         raise ValueError(
             "DFB reconfiguration supports at most "
             f"{_DFB_RECONFIGURATION_MAX_INDICES} physical indices"
         )
+    for dfb_index, scratch_nodes in scratch_nodes_by_index.items():
+        outside_nodes = scratch_nodes.difference(core_rows)
+        if outside_nodes:
+            outside_node = min(outside_nodes)
+            raise ValueError(
+                f"DFB[{dfb_index}] configuration references launch node "
+                f"{outside_node} outside the kernel grid"
+            )
 
     import torch
 
@@ -1883,7 +1917,9 @@ def build_dfb_reconfiguration_runtime_resources(
         if dfb_index in scratch_tensors:
             continue
         scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
-            core_ranges, scratch_bytes, resource_device
+            _make_singleton_core_ranges(sorted(scratch_nodes_by_index[dfb_index])),
+            scratch_bytes,
+            resource_device,
         )
 
     configuration_runtime_args = {core: [] for core in core_keys}
@@ -1966,7 +2002,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 else _DFB_RECONFIGURATION_HIGH_MASK_WORD
             )
             mask_bit = 1 << (dfb_index % 32)
-            configuration_offset = dfb_index * 4
+            configuration_offset = dfb_index * _DFB_RECONFIGURATION_WORDS_PER_DFB
             for core in core_keys:
                 record = records_by_core.get(core)
                 if record is None:
@@ -2073,19 +2109,6 @@ def combine_program_hash_with_runtime_resources(
             structural_fingerprint,
         ),
         _RESOURCE_HASH_PERSONALIZATION,
-    )
-
-
-def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
-    """Build an exact CoreRangeSet without including unselected nodes."""
-    return ttnn.CoreRangeSet(
-        [
-            ttnn.CoreRange(
-                ttnn.CoreCoord(node_x, node_y),
-                ttnn.CoreCoord(node_x, node_y),
-            )
-            for node_x, node_y in nodes
-        ]
     )
 
 
@@ -2400,7 +2423,7 @@ def _build_specialized_dfb_descriptors(
 
     descriptors = []
     for signature, partition_cores in cores_by_signature.items():
-        partition_ranges = _make_node_core_ranges(tuple(sorted(partition_cores)))
+        partition_ranges = _make_singleton_core_ranges(sorted(partition_cores))
         for dfb_index, source in enumerate(signature):
             if source is None:
                 continue
@@ -2475,6 +2498,11 @@ def _validate_dfb_reconfiguration_plan(
                 )
             seen_entries.add(entry_ordinal)
             config = epoch.config
+            if config.data_format in {"float16", "f16"}:
+                raise ValueError(
+                    "DFB reconfiguration does not support IEEE FP16 because "
+                    "TTNN has no native FP16 tensor representation"
+                )
             _get_dfb_allocation(config)
             _validate_physical_dfb_config(config, dfb_index)
             configurations_by_entry[entry_ordinal][dfb_index] = config
@@ -2670,7 +2698,7 @@ def build_cb_descriptors(
             continue
 
         for segment in config.storage_segments:
-            segment_core_ranges = _make_node_core_ranges(segment.nodes)
+            segment_core_ranges = _make_singleton_core_ranges(segment.nodes)
             if not segment.is_tensor_backed:
                 descriptor = ttnn.CBDescriptor(
                     total_size=allocation.total_size,

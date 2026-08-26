@@ -8,6 +8,8 @@ from collections import defaultdict
 from dataclasses import FrozenInstanceError
 import gc
 import os
+from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
@@ -34,6 +36,38 @@ from ttl.dataflow_buffer import (
     PhysicalDFBConfig,
 )
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
+
+
+def _extract_unsigned_constant(source, name):
+    match = re.search(rf"constexpr uint(?:32|64)_t {name} = (?P<value>[0-9]+);", source)
+    assert match is not None
+    return int(match.group("value"))
+
+
+# Compiler budgeting, host encoding, and device decoding share one fixed ABI.
+def test_dfb_reconfiguration_abi_constants_match_sources():
+    repository_root = Path(__file__).resolve().parents[2]
+    llk_source = (
+        repository_root
+        / "include/ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"
+    ).read_text()
+    allocation_source = (
+        repository_root / "lib/Dialect/TTL/Transforms/DFBAllocationLimits.cpp"
+    ).read_text()
+
+    low_mask_word = _extract_unsigned_constant(llk_source, "lowMaskWord")
+    high_mask_word = _extract_unsigned_constant(llk_source, "highMaskWord")
+    synchronization_word = _extract_unsigned_constant(llk_source, "synchronizationWord")
+    compiler_words_per_core = _extract_unsigned_constant(
+        allocation_source, "kDFBReconfigurationWordsPerCore"
+    )
+
+    assert low_mask_word == kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD
+    assert high_mask_word == kernel_runner._DFB_RECONFIGURATION_HIGH_MASK_WORD
+    assert (
+        synchronization_word == kernel_runner._DFB_RECONFIGURATION_SYNCHRONIZATION_WORD
+    )
+    assert compiler_words_per_core == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_CORE
 
 
 class _FakeTensor:
@@ -2232,6 +2266,91 @@ def test_pipe_computed_address_backing_uses_maximum_epoch_capacity(monkeypatch):
     assert allocation_calls[0][1:] == (6144, device)
     assert resources.computed_address_dfb_allocation_bytes == {0: 6144}
     assert resources.computed_address_base_addresses == {0: 0x8000}
+
+
+# IEEE FP16 must not be materialized through TTNN's BF16 compatibility alias.
+def test_reconfiguration_rejects_ieee_fp16_runtime_storage(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(0, 1, "float16", 1, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, config),
+                DFBConfigurationEpoch(7, config),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not support IEEE FP16"):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=[],
+            core_ranges=_FakeCoreRanges(),
+            plan=plan,
+            device=object(),
+        )
+
+
+# Reconfiguration scratch is allocated only on compiler-selected launch nodes.
+def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    scratch_allocations = []
+
+    def allocate_scratch(core_ranges, _num_bytes, allocation_device):
+        scratch_allocations.append(core_ranges)
+        return _FakeTensor(allocation_device, address=0x8000)
+
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+
+    def l1_addresses(tensor, _device):
+        if tensor.buffer_address() == 0x8000:
+            return {(1, 0): 0x8000}
+        return {(0, 0): 0x9000, (1, 0): 0xA000}
+
+    monkeypatch.setattr(kernel_runner, "_l1_buffer_addresses_by_core", l1_addresses)
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, config),
+                DFBConfigurationEpoch(7, config),
+            ),
+        ),
+    )
+
+    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+    )
+
+    assert len(scratch_allocations) == 1
+    assert {
+        (int(core.x), int(core.y))
+        for core in fake_ttnn.corerange_to_cores(scratch_allocations[0])
+    } == {(1, 0)}
 
 
 def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
