@@ -1,7 +1,7 @@
 // Verifies exact conversion rejects combined PipeNet, reset, and DFB overflow.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false l1-budget-override=8255})'
 
-// expected-error @below {{combined DFB and runtime resources require 8256 L1 bytes but the budget is 8255 (DFB=8192, scratch=64, global semaphores=0)}}
+// expected-error @below {{combined DFB and runtime resources require 8256 L1 bytes but the budget is 8255 (DFB=8192, scratch=64, global semaphores=0, reconfiguration state=0)}}
 module attributes {
   ttl.launch_grid = array<i64: 2, 2>,
   ttl.target_arch = #ttcore.arch<blackhole>
