@@ -20,9 +20,13 @@ from typing import Any, Callable, Iterator, Optional
 
 from .context import get_context
 
-_VALID_MODES = {"off", "auto", "required"}
-_VALID_TARGETS = {"blackhole", "wormhole_b0"}
+COMPILER_VALIDATION_MODES = ("off", "auto", "required")
+COMPILER_VALIDATION_TARGETS = ("blackhole", "wormhole_b0")
+
+_VALID_MODES = frozenset(COMPILER_VALIDATION_MODES)
+_VALID_TARGETS = frozenset(COMPILER_VALIDATION_TARGETS)
 _COMPILER_SCOPE_LOCK = threading.RLock()
+_EXPECTED_COMPILER_API_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,13 @@ def _load_backend() -> _BackendLoad:
         with _compiler_import_scope(compiler_package, compiler_python_root):
             compiler_package = importlib.reload(compiler_package)
             static_analysis = importlib.import_module("ttl.static_analysis")
+        api_version = getattr(static_analysis, "COMPILER_VALIDATION_API_VERSION", None)
+        if api_version != _EXPECTED_COMPILER_API_VERSION:
+            raise ImportError(
+                "incompatible compiler validation API: simulator requires version "
+                f"{_EXPECTED_COMPILER_API_VERSION}, compiler provides {api_version!r}. "
+                "Install matching tt-lang and tt-lang-sim revisions."
+            )
         return _BackendLoad(
             _CompilerBackend(
                 ttl_package=compiler_package,
@@ -147,9 +158,8 @@ def configure(mode: str, target_arch: str) -> None:
 
 
 def _is_sim_tensor(value: Any) -> bool:
-    return any(
-        base.__name__ == "Tensor" and base.__module__.endswith("sim.ttnnsim")
-        for base in type(value).__mro__
+    return not isinstance(value, type) and bool(
+        getattr(value, "_ttlang_sim_tensor", False)
     )
 
 
@@ -303,6 +313,11 @@ def _clone_for_compiler(
         if not hasattr(backend.ttl_package, name):
             continue
         simulator_value = getattr(simulator_ttl, name)
+        if isinstance(
+            simulator_value,
+            (str, bytes, int, float, complex, bool, tuple, frozenset, type(None)),
+        ):
+            continue
         replacements[id(simulator_value)] = getattr(backend.ttl_package, name)
 
     def convert_capture(value: Any):
@@ -357,6 +372,11 @@ def prepare_operation_validator(
 
     if simulator_ttl is None:
         simulator_ttl = sys.modules.get("ttl")
+    if simulator_ttl is None:
+        raise CompilerValidationUnavailable(
+            "TT-Lang compiler validation cannot identify the simulator TTL "
+            "namespace. Configure validation before defining operations."
+        )
     captured_tensor_memo: dict[int, Any] = {}
     compiler_function = _clone_for_compiler(
         function, backend, simulator_ttl, captured_tensor_memo
@@ -389,6 +409,8 @@ def prepare_operation_validator(
 
 
 __all__ = [
+    "COMPILER_VALIDATION_MODES",
+    "COMPILER_VALIDATION_TARGETS",
     "CompilerValidationUnavailable",
     "configure",
     "prepare_operation_validator",

@@ -47,6 +47,7 @@ class _FakeMemoryConfig:
 
 class _FakeSimTensor:
     __module__ = "sim.ttnnsim"
+    _ttlang_sim_tensor = True
 
     def __init__(self, shape=(32, 32), dtype="bfloat16"):
         self.shape = shape
@@ -475,6 +476,74 @@ def test_backend_loader_treats_broken_extension_as_unavailable(monkeypatch):
         assert str(load.error) == "dlopen failed"
     finally:
         compiler_validation._load_backend.cache_clear()
+
+
+def test_backend_loader_rejects_incompatible_validation_api(monkeypatch):
+    compiler_validation._load_backend.cache_clear()
+    compiler_package = types.ModuleType("ttl")
+    static_analysis = types.ModuleType("ttl.static_analysis")
+    static_analysis.COMPILER_VALIDATION_API_VERSION = 99
+    monkeypatch.setattr(
+        compiler_validation, "_initial_compiler_package", lambda: compiler_package
+    )
+    monkeypatch.setattr(
+        compiler_validation.importlib, "reload", lambda package: package
+    )
+    monkeypatch.setattr(
+        compiler_validation.importlib,
+        "import_module",
+        lambda name: (
+            static_analysis if name == "ttl.static_analysis" else compiler_package
+        ),
+    )
+
+    try:
+        load = compiler_validation._load_backend()
+        assert load.backend is None
+        assert isinstance(load.error, ImportError)
+        assert "requires version 1" in str(load.error)
+        assert "matching tt-lang and tt-lang-sim revisions" in str(load.error)
+    finally:
+        compiler_validation._load_backend.cache_clear()
+
+
+def test_clone_does_not_replace_equal_scalar_globals(validation_state):
+    backend, _ = validation_state
+    simulator_ttl = types.SimpleNamespace(marker="simulator")
+    backend.ttl_package.marker = "compiler"
+
+    def template():
+        return marker_alias
+
+    function = types.FunctionType(
+        template.__code__,
+        {"marker_alias": simulator_ttl.marker, "__name__": __name__},
+        "operation",
+    )
+
+    cloned = compiler_validation._clone_for_compiler(
+        function, backend, simulator_ttl, {}
+    )
+
+    assert cloned() == "simulator"
+
+
+def test_prepare_requires_identifiable_simulator_namespace(
+    monkeypatch, validation_state
+):
+    monkeypatch.delitem(sys.modules, "ttl", raising=False)
+
+    with pytest.raises(
+        compiler_validation.CompilerValidationUnavailable,
+        match="cannot identify the simulator TTL namespace",
+    ):
+        compiler_validation.prepare_operation_validator(
+            lambda tensor: tensor,
+            grid=(1, 1),
+            fp32_dest_acc_en=None,
+            dst_full_sync_en=None,
+            math_fidelity=None,
+        )
 
 
 @pytest.mark.parametrize("mode", ["sometimes", "yes", ""])

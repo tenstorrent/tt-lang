@@ -56,13 +56,15 @@ executing in the simulator.
 This feature requires a full `tt-lang` installation or compiler build,
 including the compiled MLIR Python extensions. It does not require or open a
 Tenstorrent device. Tensor arguments are represented by host-side shape and
-dtype descriptors, and validation stops before TTKernel and EmitC lowering,
-runtime artifact generation, and device execution. The standalone
-`tt-lang-sim` package remains independent of the compiler.
+configuration descriptors rather than device allocations. Validation stops
+before TTKernel and EmitC lowering, runtime artifact generation, and device
+execution. The standalone `tt-lang-sim` package remains independent of the
+compiler.
 
 ### Validation modes
 
-`--compiler-validation` requires one of the following mode values:
+Using `--compiler-validation` without a value enables required validation. An
+explicit mode may be supplied when optional fallback behavior is wanted:
 
 | Mode | Behavior |
 |---|---|
@@ -75,6 +77,12 @@ or kernel-acceptance contract:
 
 ```bash
 tt-lang-sim examples/eltwise_add.py --compiler-validation required
+```
+
+The equivalent shorter form is recommended for required validation:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation
 ```
 
 The `auto` mode supports development environments where the same command may
@@ -139,7 +147,10 @@ simulation and device testing.
 
 Diagnostics reflect the compiler revision installed alongside the simulator.
 For parity with a deployment compiler, both paths must use the same TT-Lang
-revision and target selection.
+revision and target selection. The simulator and compiler validate a versioned
+bridge contract when the feature is loaded. A mismatched installation is
+reported as unavailable rather than attempting to validate with an
+incompatible descriptor format.
 
 Run the simulator test suite:
 

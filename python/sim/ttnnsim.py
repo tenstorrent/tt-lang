@@ -1908,6 +1908,8 @@ class Tensor:
     ttnn's ``(64,)``.
     """
 
+    _ttlang_sim_tensor = True
+
     def __init__(
         self,
         tensor: torch.Tensor,

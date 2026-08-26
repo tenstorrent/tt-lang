@@ -16,7 +16,11 @@ from ttl.layouts import (
     TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED,
     detect_memory_layout,
 )
-from ttl.static_analysis import StaticTensorSpec, build_operation_validator
+from ttl.static_analysis import (
+    COMPILER_VALIDATION_API_VERSION,
+    StaticTensorSpec,
+    build_operation_validator,
+)
 
 
 def add_operation(lhs, rhs, out):
@@ -93,6 +97,110 @@ def copy_operation_with_unused_tensor(unused, input_tensor, output_tensor):
 
 def _spec(dtype=torch.bfloat16):
     return StaticTensorSpec((32, 32), dtype)
+
+
+def test_compiler_validation_api_has_explicit_compatibility_version():
+    assert COMPILER_VALIDATION_API_VERSION == 1
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"shape": (0, 32)}, "shape dimensions must be positive"),
+        (
+            {"shape": (32, 32), "padded_shape": (32,)},
+            "padded_shape must have the same rank",
+        ),
+        (
+            {"shape": (32, 32), "padded_shape": (16, 32)},
+            "padded_shape.*cannot be smaller",
+        ),
+        ({"shape": (32, 32), "layout": "TIEL"}, "layout must be one of"),
+        (
+            {"shape": (32, 32), "memory_space": "HOST"},
+            "memory_space must be one of",
+        ),
+        (
+            {"shape": (32, 32), "memory_layout": "MYSTERY"},
+            "memory_layout must be one of",
+        ),
+        (
+            {"shape": (32, 32), "layout": "ROW_MAJOR"},
+            "ROW_MAJOR layout must not include tile_shape or tile_size_bytes",
+        ),
+        (
+            {"shape": (32, 32), "tile_shape": (32,)},
+            "requires a two-dimensional tile_shape",
+        ),
+        (
+            {"shape": (32, 32), "tile_size_bytes": 0},
+            "tile_size_bytes must be positive",
+        ),
+        (
+            {"shape": (32, 32), "memory_layout": "HEIGHT_SHARDED"},
+            "requires regular shard_shape metadata",
+        ),
+        (
+            {"shape": (32, 32), "memory_layout": "ND_SHARDED"},
+            "requires nd_shard_shape metadata",
+        ),
+        (
+            {"shape": (32, 32), "shard_shape": (32, 32)},
+            "INTERLEAVED cannot include regular shard metadata",
+        ),
+        (
+            {"shape": (32, 32), "shard_orientation": "ROW_MAJOR"},
+            "INTERLEAVED cannot include regular shard metadata",
+        ),
+        (
+            {
+                "shape": (32, 32),
+                "memory_layout": "ND_SHARDED",
+                "nd_shard_shape": (32, 32),
+                "nd_shard_num_cores": 0,
+            },
+            "nd_shard_num_cores must be positive",
+        ),
+        (
+            {
+                "shape": (32, 32),
+                "memory_layout": "HEIGHT_SHARDED",
+                "shard_shape": (32, 32),
+                "shard_orientation": "DIAGONAL",
+            },
+            "shard_orientation must be one of",
+        ),
+        (
+            {
+                "shape": (32, 32),
+                "memory_layout": "ND_SHARDED",
+                "nd_shard_shape": (32, 32),
+                "nd_shard_distribution": "RANDOM",
+            },
+            "nd_shard_distribution must be one of",
+        ),
+        (
+            {
+                "shape": (32, 32),
+                "mesh_shape": (1, 2),
+                "mesh_dims": (0,),
+            },
+            "mesh_dims requires mesh_shape with the same rank",
+        ),
+        (
+            {
+                "shape": (32, 32),
+                "memory_layout": "HEIGHT_SHARDED",
+                "shard_shape": (32, 32),
+                "shard_core_ranges": ((1, 0, 0, 0),),
+            },
+            "invalid core range",
+        ),
+    ],
+)
+def test_static_tensor_descriptor_rejects_inconsistent_metadata(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        StaticTensorSpec(dtype=torch.bfloat16, **kwargs)
 
 
 def test_static_tensor_recognition_does_not_accept_torch_runtime_tensors():
