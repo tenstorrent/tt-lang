@@ -166,6 +166,38 @@ void populateTTLModule(nb::module_ &m) {
         return participants;
       });
 
+  tt_attribute_class<DFBReconfigurationAttr>(m, "DFBReconfigurationAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal,
+             const std::vector<MlirAttribute> &participants) {
+            MLIRContext *cppContext = unwrap(context);
+            SmallVector<LogicalKernelAttr> participantAttrs;
+            participantAttrs.reserve(participants.size());
+            for (MlirAttribute participant : participants) {
+              participantAttrs.push_back(
+                  cast<LogicalKernelAttr>(unwrap(participant)));
+            }
+            DFBReconfigurationAttr attribute =
+                DFBReconfigurationAttr::getCheckedInstance(
+                    UnknownLoc::get(cppContext), cppContext, ordinal,
+                    participantAttrs);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB reconfiguration");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("participants"))
+      .def_prop_ro("ordinal", &DFBReconfigurationAttr::getOrdinal)
+      .def_prop_ro("participants", [](DFBReconfigurationAttr attribute) {
+        std::vector<MlirAttribute> participants;
+        participants.reserve(attribute.getParticipants().size());
+        for (LogicalKernelAttr participant : attribute.getParticipants()) {
+          participants.push_back(wrap(participant));
+        }
+        return participants;
+      });
+
   nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
       .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
       .value("Boolean", ExternalTemplateArgKind::Boolean)

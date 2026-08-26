@@ -43,6 +43,16 @@ struct DFBPhysicalStorageSegment {
   TensorBackingAttr tensorBacking;
 };
 
+/// Runtime configuration for one physical DFB during one configuration epoch.
+struct DFBConfigurationEpochDescriptor {
+  std::optional<int64_t> entryReconfigurationOrdinal;
+  int32_t numTiles = 0;
+  Type elementType;
+  int32_t pageSize = 0;
+  int32_t blockCount = 0;
+  SmallVector<DFBPhysicalStorageSegment> storageSegments;
+};
+
 /// Runtime allocation descriptor for one physical DFB.
 struct DFBPhysicalAllocationDescriptor {
   int32_t physicalIndex = 0;
@@ -51,6 +61,7 @@ struct DFBPhysicalAllocationDescriptor {
   int32_t pageSize = 0;
   int32_t blockCount = 0;
   SmallVector<DFBPhysicalStorageSegment> storageSegments;
+  SmallVector<DFBConfigurationEpochDescriptor> epochConfigurations;
 };
 
 /// Final base CTA index for one kernel.
@@ -166,6 +177,11 @@ public:
   /// Returns the size of the dense physical-index range.
   int32_t getPhysicalDFBCount() const { return physicalDFBCount; }
 
+  /// Returns boundary identifiers in proved dynamic execution order.
+  ArrayRef<int64_t> getReconfigurationBoundaryOrdinals() const {
+    return reconfigurationBoundaryOrdinals;
+  }
+
   /// Returns the complete typed conflict relation used for allocation.
   const DFBPhysicalConflictModel &getConflictModel() const {
     return conflictModel;
@@ -184,6 +200,7 @@ private:
   SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
   SmallVector<DFBKernelBaseIndexAssignment> kernelBaseIndices;
   SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
+  SmallVector<int64_t> reconfigurationBoundaryOrdinals;
   DFBPhysicalConflictModel conflictModel;
   int32_t physicalDFBCount = 0;
 };

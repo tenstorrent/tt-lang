@@ -30,6 +30,13 @@ The callback executes once for every device execution and returns a
 fingerprint may select an existing cached TT-Metal program, while its current
 runtime-argument words are supplied for that dispatch.
 
+For an operation with synchronized DFB reconfiguration, caller-defined
+per-core runtime arguments retain their documented zero-based indices. The
+runtime appends compiler-owned configuration addresses and supplies the caller
+argument count through a compile-time argument. Different caller argument
+counts produce descriptors for disjoint core sets so each generated kernel uses
+the correct configuration-address offset.
+
 ## Typed Records
 
 All resource records are frozen, and all collection fields are tuples.

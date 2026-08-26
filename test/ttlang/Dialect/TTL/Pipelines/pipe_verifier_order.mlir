@@ -1,3 +1,4 @@
+// Summary: Verifies PipeNet and DFB passes occur in the required pipeline order.
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline --dump-pass-pipeline 2>&1 | FileCheck %s
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-verify-pipenet)' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=SUBPIPELINE
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=false})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-DISABLED

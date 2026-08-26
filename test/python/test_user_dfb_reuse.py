@@ -34,8 +34,8 @@ SCALAR_RESULT_HEADER = os.path.join(
 REPEATED_TRANSACTION_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "repeated_dfb_transactions.hpp"
 )
-DFB_RESET_TEST_HEADER = os.path.join(
-    os.path.dirname(__file__), "include", "dfb_reset_test_helpers.hpp"
+DFB_LIVENESS_TEST_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "dfb_liveness_test_helpers.hpp"
 )
 INSPECT_DFB_ACCESS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "inspect_dfb_access.hpp"
@@ -1063,7 +1063,7 @@ def _make_high_index_synchronized_reset_kernel(data_format):
         @ttl.compute(kernel=compute_kernel)
         def compute():
             ttl.call_extern_func(
-                DFB_RESET_TEST_HEADER,
+                DFB_LIVENESS_TEST_HEADER,
                 "retain_dfb_liveness",
                 template_args=[
                     ttl.dfb_descriptor(padding_dfb_00),
