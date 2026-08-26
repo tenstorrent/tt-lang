@@ -429,10 +429,10 @@ def _detach_cached_runtime_resources(
         portable_resource_lifetimes=cache.portable_resource_lifetimes,
         portable_resource_device=cache.portable_resource_device,
     )
-    if retained_cache.pipe_resources is not None or (
-        retained_cache.reconfiguration_resources is not None
-    ) or (
-        retained_cache.portable_resource_lifetimes
+    if (
+        retained_cache.pipe_resources is not None
+        or retained_cache.reconfiguration_resources is not None
+        or retained_cache.portable_resource_lifetimes
     ):
         _RETAINED_RUNTIME_RESOURCE_CACHES.append(retained_cache)
     cache.compatibility_key = None
@@ -2233,21 +2233,18 @@ def _specialized_dfb_placements(
     placements = []
     for dfb_index, config in enumerate(cb_configs):
         candidates: Dict[Tuple[int, int], Tuple[str, Optional[int]]] = {}
-        if dfb_index in backing_tensors:
-            if config.storage_segments:
-                raise ValueError(
-                    f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
-                    "storage with finalized storage segments"
-                )
-            candidates = {core: ("computed", None) for core in program_cores}
-        elif not config.storage_segments:
-            candidates = {core: ("static", None) for core in program_cores}
+        if not config.storage_segments:
+            storage_kind = "backing" if dfb_index in backing_tensors else "static"
+            candidates = {core: (storage_kind, None) for core in program_cores}
         else:
             for segment_index, segment in enumerate(config.storage_segments):
-                source = (
-                    "tensor" if segment.is_tensor_backed else "static",
-                    segment_index,
-                )
+                if segment.is_tensor_backed:
+                    storage_kind = "tensor"
+                elif dfb_index in backing_tensors:
+                    storage_kind = "backing"
+                else:
+                    storage_kind = "static"
+                source = (storage_kind, segment_index)
                 for core in segment.nodes:
                     if core not in program_cores:
                         raise ValueError(
@@ -2378,7 +2375,7 @@ def _build_specialized_dfb_descriptors(
                 core_ranges=partition_ranges,
                 format_descriptors=[cb_format],
             )
-            if kind == "computed":
+            if kind == "backing":
                 backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                     dfb_index,
                     backing_tensors[dfb_index],
@@ -2398,9 +2395,7 @@ def _validate_dfb_reconfiguration_plan(
     if not boundary_ordinals:
         raise ValueError("DFB reconfiguration plan must contain a boundary")
     if len(set(boundary_ordinals)) != len(boundary_ordinals):
-        raise ValueError(
-            "DFB reconfiguration boundary ordinals must be unique"
-        )
+        raise ValueError("DFB reconfiguration boundary ordinals must be unique")
 
     configurations_by_entry = {None: {}}
     configurations_by_entry.update({ordinal: {} for ordinal in boundary_ordinals})
@@ -2451,9 +2446,7 @@ def _validate_dfb_reconfiguration_plan(
 
     for config in configurations_by_entry[None].values():
         apply_configuration(config)
-    _validate_tensor_backing_aliases(
-        tensors, current_tensor_configurations.values()
-    )
+    _validate_tensor_backing_aliases(tensors, current_tensor_configurations.values())
     for boundary_ordinal in boundary_ordinals:
         for config in configurations_by_entry[boundary_ordinal].values():
             apply_configuration(config)
@@ -2493,7 +2486,16 @@ def build_cb_descriptors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    backing_tensors = dict(pipe_computed_address_backing_tensors or {})
+    pipe_backing_tensors = dict(pipe_computed_address_backing_tensors or {})
+    invalid_pipe_backing_indices = sorted(
+        set(pipe_backing_tensors).difference(range(len(cb_configs)))
+    )
+    if invalid_pipe_backing_indices:
+        raise ValueError(
+            "computed-address backing tensors reference invalid DFB indices "
+            f"{invalid_pipe_backing_indices}"
+        )
+    backing_tensors = dict(pipe_backing_tensors)
     for dfb_index, tensor in (dfb_reconfiguration_scratch_tensors or {}).items():
         if dfb_index < 0 or dfb_index >= len(cb_configs):
             raise ValueError(
@@ -2509,15 +2511,12 @@ def build_cb_descriptors(
         if existing is not None and existing is not tensor:
             raise ValueError(f"DFB[{dfb_index}] has conflicting hidden backing tensors")
         backing_tensors[dfb_index] = tensor
-    invalid_backing_indices = sorted(
-        set(backing_tensors).difference(range(len(cb_configs)))
-    )
-    if invalid_backing_indices:
-        raise ValueError(
-            "computed-address backing tensors reference invalid DFB indices "
-            f"{invalid_backing_indices}"
-        )
-
+    for dfb_index in pipe_backing_tensors:
+        if cb_configs[dfb_index].storage_segments:
+            raise ValueError(
+                f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
+                "storage with finalized storage segments"
+            )
     _validate_tensor_backing_aliases(tensors, cb_configs)
 
     device = None
@@ -2599,36 +2598,6 @@ def build_cb_descriptors(
     for cb_index, allocation in enumerate(allocations):
         config = cb_configs[cb_index]
         cb_format = _cb_format_descriptor(cb_index, allocation)
-        if cb_index in backing_tensors:
-            if any(segment.is_tensor_backed for segment in config.storage_segments):
-                raise ValueError(
-                    f"DFB[{cb_index}] cannot combine hidden scratch with "
-                    "tensor-backed storage"
-                )
-            scratch_core_ranges = (
-                [
-                    _make_node_core_ranges(segment.nodes)
-                    for segment in config.storage_segments
-                ]
-                if config.storage_segments
-                else [core_ranges]
-            )
-            for scratch_ranges in scratch_core_ranges:
-                cb_desc = ttnn.CBDescriptor(
-                    total_size=allocation.total_size,
-                    core_ranges=scratch_ranges,
-                    format_descriptors=[cb_format],
-                )
-                backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
-                    cb_index,
-                    backing_tensors[cb_index],
-                    total_size=allocation.total_size,
-                    core_ranges=scratch_ranges,
-                )
-                cb_desc.set_buffer_from_cb(backing_desc)
-                cb_descriptors.append(cb_desc)
-            continue
-
         if not config.storage_segments:
             descriptor = ttnn.CBDescriptor(
                 total_size=allocation.total_size,
@@ -2826,8 +2795,7 @@ def _run_kernel_on_device_impl(
             }
         )
     )
-    pipe_runtime_resources, reconfiguration_resources = (
-        get_cached_runtime_resources(
+    pipe_runtime_resources, reconfiguration_resources = get_cached_runtime_resources(
         runtime_resource_cache,
         tensors=tensors,
         core_ranges=core_ranges,
@@ -2839,7 +2807,6 @@ def _run_kernel_on_device_impl(
         device=device,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
-        )
     )
 
     # Build kernel descriptors.

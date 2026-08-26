@@ -353,11 +353,6 @@ class _FakeTTNN:
         return [_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(1, 0)]
 
     @staticmethod
-    def corerange_to_cores(_core_ranges, row_wise=True):
-        assert row_wise
-        return [_FakeTTNN.CoreCoord(0, 0)]
-
-    @staticmethod
     def generic_op(tensors, program):
         return {
             "tensors": tensors,
@@ -2281,7 +2276,7 @@ def test_build_kernel_descriptors_binds_reconfiguration_args_by_core(monkeypatch
         kernel_specs=[spec],
         tensors=[],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -2914,9 +2909,7 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
     fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0}
-    )
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
@@ -3138,9 +3131,7 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
     fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0}
-    )
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
@@ -3974,12 +3965,10 @@ def test_build_cb_descriptors_binds_mixed_tensor_and_reconfiguration_scratch(
     monkeypatch,
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
-    monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
-    )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
-    tensor = _FakeTensor(object(), dtype=expected_dtype)
+    tensor = _FakeTensor(None, dtype=expected_dtype)
     scratch_tensor = object()
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     config = PhysicalDFBConfig(
         0,
         1,
@@ -4001,14 +3990,15 @@ def test_build_cb_descriptors_binds_mixed_tensor_and_reconfiguration_scratch(
     descriptors = kernel_runner.build_cb_descriptors(
         tensors=[tensor],
         cb_configs=[config],
-        core_ranges=_FakeCoreRanges(),
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, [0])],
         dfb_reconfiguration_scratch_tensors={0: scratch_tensor},
     )
 
     assert len(descriptors) == 2
     assert descriptors[0]["tensor"] is tensor
     assert descriptors[1].backing_desc["tensor"] is scratch_tensor
-    scratch_range = descriptors[1].core_ranges.ranges[0]
+    scratch_range = descriptors[1].core_ranges.ranges()[0]
     assert (scratch_range.start.x, scratch_range.start.y) == (1, 0)
 
 
@@ -4110,22 +4100,14 @@ def test_reconfiguration_rejects_staggered_tensor_aliases(monkeypatch):
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
     ]
-    initial_second_config = PhysicalDFBConfig(
-        1, 1, "bfloat16", 1, 2048, (32, 32)
-    )
+    initial_second_config = PhysicalDFBConfig(1, 1, "bfloat16", 1, 2048, (32, 32))
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
         dfb_epochs=(
-            (
-                DFBConfigurationEpoch(
-                    None, _tensor_backing_config(0, nodes=((0, 0),))
-                ),
-            ),
+            (DFBConfigurationEpoch(None, _tensor_backing_config(0, nodes=((0, 0),))),),
             (
                 DFBConfigurationEpoch(None, initial_second_config),
-                DFBConfigurationEpoch(
-                    7, _tensor_backing_config(1, nodes=((0, 0),))
-                ),
+                DFBConfigurationEpoch(7, _tensor_backing_config(1, nodes=((0, 0),))),
             ),
         ),
     )
@@ -4145,25 +4127,17 @@ def test_reconfiguration_validates_aliases_in_execution_order(monkeypatch):
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
     ]
-    initial_first_config = PhysicalDFBConfig(
-        0, 1, "bfloat16", 1, 2048, (32, 32)
-    )
-    final_second_config = PhysicalDFBConfig(
-        1, 1, "bfloat16", 1, 2048, (32, 32)
-    )
+    initial_first_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    final_second_config = PhysicalDFBConfig(1, 1, "bfloat16", 1, 2048, (32, 32))
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(1, 0),
         dfb_epochs=(
             (
                 DFBConfigurationEpoch(None, initial_first_config),
-                DFBConfigurationEpoch(
-                    1, _tensor_backing_config(0, nodes=((0, 0),))
-                ),
+                DFBConfigurationEpoch(1, _tensor_backing_config(0, nodes=((0, 0),))),
             ),
             (
-                DFBConfigurationEpoch(
-                    None, _tensor_backing_config(1, nodes=((0, 0),))
-                ),
+                DFBConfigurationEpoch(None, _tensor_backing_config(1, nodes=((0, 0),))),
                 DFBConfigurationEpoch(0, final_second_config),
             ),
         ),
@@ -4184,9 +4158,7 @@ def test_reconfiguration_retains_unmodified_node_aliases(monkeypatch):
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
         _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
     ]
-    initial_second_config = PhysicalDFBConfig(
-        1, 1, "bfloat16", 1, 2048, (32, 32)
-    )
+    initial_second_config = PhysicalDFBConfig(1, 1, "bfloat16", 1, 2048, (32, 32))
     first_node_scratch_config = PhysicalDFBConfig(
         0,
         1,
@@ -4208,9 +4180,7 @@ def test_reconfiguration_retains_unmodified_node_aliases(monkeypatch):
             ),
             (
                 DFBConfigurationEpoch(None, initial_second_config),
-                DFBConfigurationEpoch(
-                    7, _tensor_backing_config(1, nodes=((1, 0),))
-                ),
+                DFBConfigurationEpoch(7, _tensor_backing_config(1, nodes=((1, 0),))),
             ),
         ),
     )
