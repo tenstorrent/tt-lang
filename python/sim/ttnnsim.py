@@ -1989,8 +1989,8 @@ class Tensor:
     def device(self) -> object:
         """Return the device handle this tensor was created on.
 
-        Mirrors ``ttnn.Tensor.device()``, which a kernel calls to route a
-        derived tensor to the same device as its input.  Only the creation
+        Mirrors the device method on ttnn.Tensor, which a kernel calls to route
+        a derived tensor to the same device as its input.  Only the creation
         entry points (``from_torch`` / ``rand`` / ``empty`` / ``zeros``) carry a
         handle; the simulator does not propagate residency through operations,
         so a tensor produced by arithmetic or slicing has none and this raises
