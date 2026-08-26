@@ -1486,6 +1486,49 @@ def test_composition_instantiates_reconfiguration_per_call_site():
             assert f"reconfigure_dfbs({boundary_name})" in source
 
 
+def test_composition_remaps_equivalent_reconfiguration_participants():
+    """Equivalent composed kernels use the caller's selected handles."""
+
+    def make_reconfiguration_helper():
+        compute_kernel = Kernel(KernelKind.COMPUTE)
+        reader_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+        writer_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+        boundary = ttl.DFBReconfiguration(
+            participants=(compute_kernel, reader_kernel, writer_kernel)
+        )
+
+        @ttl.operation()
+        def reconfiguration_helper():
+            ttl.reconfigure_dfbs(boundary)
+
+        return reconfiguration_helper
+
+    first_helper = make_reconfiguration_helper()
+    second_helper = make_reconfiguration_helper()
+
+    @ttl.operation()
+    def composed_reconfiguration():
+        first_helper()
+        second_helper()
+
+    spec = composed_reconfiguration._spec
+    assert len(spec.logical_kernels) == 3
+    logical_kernels = tuple(spec.logical_kernels.values())
+    for boundary in spec.dfb_reconfigurations.values():
+        assert all(
+            any(participant is kernel for kernel in logical_kernels)
+            for participant in boundary.participants
+        )
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reconfigure_dfbs(") == 2
+
+
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
     """Control selection includes logical-kernel anchors in the condition."""
     writer = Kernel(KernelKind.DATA_MOVEMENT)
