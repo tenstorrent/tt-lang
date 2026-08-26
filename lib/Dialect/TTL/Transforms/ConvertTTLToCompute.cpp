@@ -671,7 +671,7 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
           rewriter.getI64IntegerAttr(schedule.numTiles));
 
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+    emitTileStore(rewriter, loc, result, computeOp, store, creation);
   }
   YieldOp::create(rewriter, loc);
 
