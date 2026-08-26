@@ -146,6 +146,10 @@ constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 constexpr llvm::StringLiteral
     kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
 
+/// Module attribute containing physical DFB configuration-epoch metadata.
+constexpr llvm::StringLiteral
+    kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");

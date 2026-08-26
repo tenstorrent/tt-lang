@@ -116,7 +116,15 @@ struct TTLValidateCBBudgetPass
       signalPassFailure();
       return;
     }
-    if (footprint.empty() && *resetScratchBytes == 0) {
+    FailureOr<uint64_t> reconfigurationStateBytes =
+        getDFBReconfigurationStateAllocationBytes(moduleOp);
+    if (failed(reconfigurationStateBytes)) {
+      signalPassFailure();
+      return;
+    }
+
+    if (footprint.empty() && *resetScratchBytes == 0 &&
+        *reconfigurationStateBytes == 0) {
       return;
     }
 
@@ -127,11 +135,20 @@ struct TTLValidateCBBudgetPass
       signalPassFailure();
       return;
     }
-    std::optional<uint64_t> maybeCombinedBytes =
+    std::optional<uint64_t> maybeDFBAndResetBytes =
         llvm::checkedAddUnsigned(*maybeTotalBytes, *resetScratchBytes);
+    if (!maybeDFBAndResetBytes) {
+      moduleOp.emitOpError()
+          << "total DFB and fixed-state allocation size is not "
+             "representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    std::optional<uint64_t> maybeCombinedBytes = llvm::checkedAddUnsigned(
+        *maybeDFBAndResetBytes, *reconfigurationStateBytes);
     if (!maybeCombinedBytes) {
       moduleOp.emitOpError()
-          << "total DFB and synchronized-reset allocation size is not "
+          << "total DFB and fixed-state allocation size is not "
              "representable as uint64_t";
       signalPassFailure();
       return;
@@ -156,12 +173,19 @@ struct TTLValidateCBBudgetPass
         diag << "\n  synchronized-reset scratch: " << *resetScratchBytes
              << " bytes";
       }
+      if (*reconfigurationStateBytes > 0) {
+        diag << "\n  reconfiguration state: " << *reconfigurationStateBytes
+             << " bytes";
+      }
       std::string percentage =
           formatDFBUsagePercentage(totalBytes, budgetBytes);
       diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
            << percentage << " percent)";
-      diag << "\n  hint: reduce DFB block shapes or block_count, or reduce "
+      diag << "\n  hint: reduce DFB block shapes or block_count, reduce "
               "compiler-inserted buffers (fusion splits)";
+      if (*resetScratchBytes > 0 || *reconfigurationStateBytes > 0) {
+        diag << ", or reduce synchronized-reset or reconfiguration boundaries";
+      }
     };
 
     // Anchor diagnostics on the bind for the largest per-index allocation so
@@ -184,8 +208,8 @@ struct TTLValidateCBBudgetPass
       InFlightDiagnostic diag = sortedIndices.empty()
                                     ? moduleOp.emitOpError()
                                     : bindForLargestAllocation().emitOpError();
-      diag << (*resetScratchBytes > 0
-                   ? "total DFB and synchronized-reset allocation ("
+      diag << ((*resetScratchBytes > 0 || *reconfigurationStateBytes > 0)
+                   ? "total DFB and fixed-state allocation ("
                    : "total DFB allocation (")
            << totalBytes << " bytes) exceeds L1 budget (" << budgetBytes
            << " bytes)";

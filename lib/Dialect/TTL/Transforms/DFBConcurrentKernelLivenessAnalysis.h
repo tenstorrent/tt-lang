@@ -174,7 +174,7 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
                             std::uint64_t physicalTileCount,
                             std::uint64_t initialOffset = 0);
 
-/// Access lifetime and queue state proved between synchronized resets.
+/// Access lifetime and queue state proved between lifecycle boundaries.
 struct DFBLifecycleEpoch {
   std::uint64_t executionCount = 1;
   SmallVector<unsigned> accessOccurrenceIndices;
@@ -187,7 +187,11 @@ struct DFBLifecycleEpoch {
   std::optional<DFBPointerOwner> readPointerOwner;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  /// Configuration epochs in which storage retains this lifecycle's state.
+  SmallVector<std::optional<int64_t>> activeConfigurationEpochs;
+  std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
+  std::optional<int64_t> terminalReconfigurationOrdinal;
   bool inspectionOnly = false;
   bool terminalStateCanonical = false;
   DFBLifecycleCompletionProof completionProof;
@@ -234,7 +238,7 @@ struct DFBPerNodeLifetime {
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   bool inspectionOnly = false;
   bool terminalStateCanonical = false;
-  SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
+  SmallVector<DFBLifecycleEpoch, 0> epochs;
   DFBLifecycleCompletionProof completionProof;
 };
 
@@ -295,6 +299,11 @@ public:
     return resetAllocationConflicts;
   }
 
+  /// Returns reconfiguration boundary identifiers in proved execution order.
+  ArrayRef<int64_t> getReconfigurationBoundaryOrdinals() const {
+    return reconfigurationBoundaryOrdinals;
+  }
+
   /// Returns true when one indexed lifetime ends before another on `node`.
   bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
                        LaunchNodeCoord node) const;
@@ -311,7 +320,7 @@ public:
   bool hasConditionallyInconsistentOrder(unsigned lhsIndex, unsigned rhsIndex,
                                          LaunchNodeCoord node) const;
 
-  /// Returns true when one reset-delimited epoch ends before another.
+  /// Returns true when one lifecycle epoch ends before another.
   bool isEpochOrderedBefore(unsigned beforeIndex, unsigned beforeEpochIndex,
                             unsigned afterIndex, unsigned afterEpochIndex,
                             LaunchNodeCoord node) const;
@@ -352,6 +361,7 @@ private:
 
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
+  SmallVector<int64_t> reconfigurationBoundaryOrdinals;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;
   SmallVector<DFBResetAllocationConflict> resetAllocationConflicts;
