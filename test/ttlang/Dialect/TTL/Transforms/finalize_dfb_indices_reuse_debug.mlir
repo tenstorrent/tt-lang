@@ -16,8 +16,8 @@
 // REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch node=(0,0)
 // REPORT: DFB allocation liveness report end
 // REPORT-NEXT: DFB storage conflict report
-// REPORT-NEXT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch node=(0,0)
-// REPORT-NEXT: DFB conflict lhs=1 rhs=2 reason=pointer-owner-mismatch node=(0,0)
+// REPORT-NEXT: DFB conflict lhs=0 rhs=1 reason=concurrent-lifetime node=(0,0)
+// REPORT-NEXT: DFB conflict lhs=1 rhs=2 reason=concurrent-lifetime node=(0,0)
 // REPORT-NEXT: DFB storage conflict report end
 // REPORT-NEXT: Total DFB count: 2
 // REPORT-NEXT: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (bounded)

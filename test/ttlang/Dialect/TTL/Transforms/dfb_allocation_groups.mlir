@@ -59,10 +59,8 @@ module {
 // CHECK-NEXT: %[[THIRD:.*]] = ttl.bind_cb{cb_index = 0, block_count = 4} {allocation_group = #ttl.dfb_allocation_group<8>, dfb_id = 10 : index}
 // CHECK-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 4} {allocation_group = #ttl.dfb_allocation_group<8>, dfb_id = 9 : index}
 
-// REPORT: DFB allocation group #ttl.dfb_allocation_group<8> members=[8, 10, 9] envelope_bytes=8192 handoff=proven
-// REPORT: DFB conflict lhs=8 rhs=10 reason=transaction-mismatch node=(0,0)
-// REPORT-NEXT: DFB conflict lhs=8 rhs=9 reason=transaction-mismatch node=(0,0)
-// REPORT-NEXT: DFB conflict lhs=10 rhs=9 reason=transaction-mismatch node=(0,0)
+// REPORT: DFB allocation group #ttl.dfb_allocation_group<8> members=[8, 10, 9] envelope_bytes=8192 handoff=proven removed_conflicts=[descriptor-mismatch(8,10), descriptor-mismatch(8,9)]
+// REPORT-NOT: DFB conflict lhs=8 rhs=
 
 module {
   func.func @three_member_group()
