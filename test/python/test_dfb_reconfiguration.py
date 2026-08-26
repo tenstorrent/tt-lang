@@ -13,8 +13,9 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
 from ttl import ttl_api  # noqa: E402
+from ttl.dtype_utils import format_name_to_ttnn_dtype  # noqa: E402
 from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
-from utils.correctness import assert_allclose  # noqa: E402
+from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
 
@@ -446,6 +447,97 @@ def _make_tensor_backed_reconfiguration_operation(data_format):
     return tensor_backed_reconfiguration_operation
 
 
+def _make_native_format_reconfiguration_operation(
+    data_format, *, with_caller_runtime_args=False
+):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    runtime_resource_factory = None
+    if with_caller_runtime_args:
+
+        def runtime_resource_factory(**_kwargs):
+            core = ttnn.CoreCoord(0, 0)
+            return ttl.ProgramRuntimeResources(
+                kernel_resources=tuple(
+                    ttl.KernelRuntimeResources(
+                        kernel=kernel,
+                        runtime_args=(ttl.CoreRuntimeArgs(core, (17,)),),
+                    )
+                    for kernel in (compute_kernel, reader_kernel, writer_kernel)
+                )
+            )
+
+    @ttl.operation(grid=(1, 1), runtime_resource_factory=runtime_resource_factory)
+    def native_format_reconfiguration_operation(
+        first_input, first_output, second_input, second_output
+    ):
+        first_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_dfb = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.reconfigure_dfbs(boundary)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with first_dfb.reserve() as destination:
+                ttl.copy(first_input[0, 0], destination).wait()
+            ttl.reconfigure_dfbs(boundary)
+            with second_dfb.reserve() as destination:
+                ttl.copy(second_input[0:1, 0:2], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with first_dfb.wait() as source:
+                ttl.copy(source, first_output[0, 0]).wait()
+            ttl.reconfigure_dfbs(boundary)
+            with second_dfb.wait() as source:
+                ttl.copy(source, second_output[0:1, 0:2]).wait()
+
+    return native_format_reconfiguration_operation
+
+
+def _to_device_with_dtype(torch_tensor, device, ttnn_dtype, memory_config):
+    device_tensor = ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn_dtype,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    if memory_config == ttnn.DRAM_MEMORY_CONFIG:
+        return device_tensor
+    return ttnn.to_memory_config(device_tensor, memory_config=memory_config)
+
+
+_NATIVE_FORMAT_CASES = (
+    pytest.param("float16", torch.bfloat16, id="f16"),
+    pytest.param("bfloat16", torch.bfloat16, id="bf16"),
+    pytest.param("float32", torch.float32, id="f32"),
+    pytest.param("bfloat8_b", torch.float32, id="bfp8-b"),
+    pytest.param("bfloat4_b", torch.float32, id="bfp4-b"),
+    pytest.param("uint32", torch.uint32, id="u32"),
+    pytest.param("uint16", torch.uint16, id="u16"),
+    pytest.param("uint8", torch.uint8, id="u8"),
+    pytest.param("int32", torch.int32, id="i32"),
+)
+
+
+def _native_format_host_tensor(shape, torch_dtype, offset):
+    values = torch.arange(torch.tensor(shape).prod().item(), dtype=torch.int64)
+    values = values.reshape(shape)
+    if torch_dtype.is_floating_point:
+        return ((values.remainder(97) - 48).float() / 7 + offset).to(torch_dtype)
+    if torch_dtype == torch.int32:
+        return (values.remainder(97) - 48 + offset).to(torch_dtype)
+    return (values.remainder(97) + offset).to(torch_dtype)
+
+
 def _assert_output(actual, expected, dtype):
     tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
     assert_allclose(
@@ -453,6 +545,87 @@ def _assert_output(actual, expected, dtype):
         expected.float(),
         rtol=tolerance[0],
         atol=tolerance[1],
+    )
+
+
+# All public DFB formats preserve raw data across a physical reconfiguration.
+@pytest.mark.parametrize("data_format,torch_dtype", _NATIVE_FORMAT_CASES)
+@pytest.mark.parametrize(
+    "memory_config",
+    [ttnn.DRAM_MEMORY_CONFIG, ttnn.L1_MEMORY_CONFIG],
+    ids=["dram", "l1"],
+)
+def test_reconfiguration_supports_native_dfb_formats(
+    device, data_format, torch_dtype, memory_config, monkeypatch, tmp_path
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    operation = _make_native_format_reconfiguration_operation(data_format)
+    ttnn_dtype = format_name_to_ttnn_dtype(data_format, ttnn)
+    mlir_file = tmp_path / f"native_format_{data_format}.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
+    first_host = _native_format_host_tensor((32, 32), torch_dtype, 3)
+    second_host = _native_format_host_tensor((32, 64), torch_dtype, 11)
+    first_input = _to_device_with_dtype(first_host, device, ttnn_dtype, memory_config)
+    second_input = _to_device_with_dtype(second_host, device, ttnn_dtype, memory_config)
+    first_output = _to_device_with_dtype(
+        torch.zeros_like(first_host), device, ttnn_dtype, memory_config
+    )
+    second_output = _to_device_with_dtype(
+        torch.zeros_like(second_host), device, ttnn_dtype, memory_config
+    )
+    expected_first = ttnn.to_torch(first_input).float()
+    expected_second = ttnn.to_torch(second_input).float()
+
+    operation(
+        first_input,
+        first_output,
+        second_input,
+        second_output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    final_mlir = mlir_file.read_text()
+    allocation_metadata = final_mlir.partition("ttl.dfb_reconfiguration_plan")[0]
+    assert allocation_metadata.count("dfb_index = ") == 1
+    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
+    actual_first = ttnn.to_torch(first_output).float()
+    actual_second = ttnn.to_torch(second_output).float()
+    assert_pcc(expected_first.float(), actual_first.float(), 0.9999)
+    assert_pcc(expected_second.float(), actual_second.float(), 0.9999)
+    assert_allclose(actual_first, expected_first, rtol=0, atol=0)
+    assert_allclose(actual_second, expected_second, rtol=0, atol=0)
+
+
+# Caller runtime arguments retain their indices when reconfiguration is enabled.
+def test_reconfiguration_composes_caller_runtime_args(device):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    operation = _make_native_format_reconfiguration_operation(
+        "bfloat16", with_caller_runtime_args=True
+    )
+    first_host = _native_format_host_tensor((32, 32), torch.bfloat16, 3)
+    second_host = _native_format_host_tensor((32, 64), torch.bfloat16, 11)
+    first_input = to_dram(first_host, device)
+    second_input = to_dram(second_host, device)
+    first_output = to_dram(torch.zeros_like(first_host), device)
+    second_output = to_dram(torch.zeros_like(second_host), device)
+
+    operation(
+        first_input,
+        first_output,
+        second_input,
+        second_output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    assert_allclose(
+        ttnn.to_torch(first_output).float(), first_host.float(), rtol=0, atol=0
+    )
+    assert_allclose(
+        ttnn.to_torch(second_output).float(), second_host.float(), rtol=0, atol=0
     )
 
 
