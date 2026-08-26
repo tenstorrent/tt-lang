@@ -311,7 +311,7 @@ def sample_pcs(
     the signal is checked first and a core without one is reported rather than
     silently halted: a halt on Blackhole costs the device.
     """
-    from ttexalens._lib_helpers import convert_coordinate
+    from ttexalens.tt_exalens_lib import convert_coordinate
 
     pcs = {}
     for x, y in cores:
@@ -422,7 +422,6 @@ def symbolize(
             candidates,
             offsets,
             context=context,
-            extract_variables=False,
         )
         lines.extend(f"    {frame_text(frame)}" for frame in frames)
         if not frames:
