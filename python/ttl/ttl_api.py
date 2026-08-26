@@ -7,13 +7,15 @@
 from __future__ import annotations
 
 import ast
+import copy as _copy
 import functools
 import inspect
 import os
 import random
 import sys
 import threading
-from dataclasses import dataclass
+from collections.abc import Hashable, MutableMapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
@@ -160,6 +162,16 @@ _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
     "wormhole_b0": ttcore.Arch.WormholeB0,
 }
+
+_FACTORY_CACHE_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class _FactoryCacheEntryKey:
+    operation_code: object
+    factory_key: Hashable
+    compilation_key: tuple
+    requires_runtime_resources: bool
 
 
 @dataclass(frozen=True)
@@ -962,6 +974,20 @@ class CompiledTTNNKernel:
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
 
+    def _with_runtime_resources(
+        self,
+        runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]],
+        runtime_resource_cache: Optional[KernelRuntimeResourceCache],
+    ) -> CompiledTTNNKernel:
+        """Copy compiled artifacts and replace operation-owned runtime state."""
+        compiled_kernel = _copy.copy(self)
+        compiled_kernel.runtime_resource_factory = runtime_resource_factory
+        compiled_kernel._runtime_resource_cache = runtime_resource_cache
+        compiled_kernel._pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
+        compiled_kernel._fabric_route_cache = _FabricRouteCache()
+        compiled_kernel.__dict__.pop("_runtime_resource_finalizer", None)
+        return compiled_kernel
+
     def __call__(self, *args, _pipe_global_semaphore_cache=None):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
@@ -1030,6 +1056,51 @@ class CompiledTTNNKernel:
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
         )
+
+
+@dataclass(frozen=True)
+class _CompiledTTNNKernelTemplate:
+    compiled_kernel: CompiledTTNNKernel
+
+    @classmethod
+    def create(cls, compiled_kernel: CompiledTTNNKernel) -> _CompiledTTNNKernelTemplate:
+        if not isinstance(compiled_kernel, CompiledTTNNKernel):
+            raise TypeError(
+                "factory cache compilation must produce CompiledTTNNKernel, got "
+                f"{type(compiled_kernel).__name__}"
+            )
+        return cls(compiled_kernel._with_runtime_resources(None, None))
+
+    def instantiate(
+        self,
+        runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]],
+        runtime_resource_cache: KernelRuntimeResourceCache,
+    ) -> CompiledTTNNKernel:
+        return self.compiled_kernel._with_runtime_resources(
+            runtime_resource_factory, runtime_resource_cache
+        )
+
+
+@dataclass
+class _FactoryCacheSlot:
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    template: Optional[_CompiledTTNNKernelTemplate] = None
+
+
+def _get_factory_cache_slot(
+    factory_cache: MutableMapping, entry_key: _FactoryCacheEntryKey
+) -> _FactoryCacheSlot:
+    with _FACTORY_CACHE_LOCK:
+        slot = factory_cache.get(entry_key)
+        if slot is None:
+            slot = _FactoryCacheSlot()
+            factory_cache[entry_key] = slot
+        if not isinstance(slot, _FactoryCacheSlot):
+            raise TypeError(
+                "factory cache contains an invalid TT-Lang entry for "
+                f"{entry_key.factory_key!r}"
+            )
+        return slot
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -3087,6 +3158,26 @@ def _canonical_tensor_args(
     return runtime_args
 
 
+def _validate_factory_cache_options(
+    factory_cache: Optional[MutableMapping], factory_cache_key: Optional[Hashable]
+) -> None:
+    if (factory_cache is None) != (factory_cache_key is None):
+        raise ValueError(
+            "factory_cache and factory_cache_key must be supplied together"
+        )
+    if factory_cache is None:
+        return
+    if not isinstance(factory_cache, MutableMapping):
+        raise TypeError(
+            "factory_cache must be a mutable mapping, got "
+            f"{type(factory_cache).__name__}"
+        )
+    try:
+        hash(factory_cache_key)
+    except TypeError as error:
+        raise TypeError("factory_cache_key must be hashable") from error
+
+
 def _make_operation_wrapper(
     function: Callable,
     compile_callback: Callable,
@@ -3097,8 +3188,12 @@ def _make_operation_wrapper(
     math_fidelity: Optional[str],
     options: Optional[str],
     prepare_call: Optional[Callable] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Build the shared top-level operation cache and execution wrapper."""
+    _validate_factory_cache_options(factory_cache, factory_cache_key)
     kernel_id = random.getrandbits(64)
     cache: Dict[tuple, CompiledTTNNKernel] = {}
     cache_lock = threading.RLock()
@@ -3139,16 +3234,45 @@ def _make_operation_wrapper(
             )
             compiled_kernel = cache.get(cache_key)
             if compiled_kernel is None:
-                compiled_kernel = compile_callback(
-                    runtime_args,
-                    kwargs,
-                    resolved_grid,
-                    hash((kernel_id, cache_key)),
-                    target_arch,
-                    compiler_options,
-                    l1_budget_override,
-                    runtime_resource_cache,
-                )
+                if factory_cache is None:
+                    compiled_kernel = compile_callback(
+                        runtime_args,
+                        kwargs,
+                        resolved_grid,
+                        hash((kernel_id, cache_key)),
+                        target_arch,
+                        compiler_options,
+                        l1_budget_override,
+                        runtime_resource_cache,
+                    )
+                else:
+                    entry_key = _FactoryCacheEntryKey(
+                        function.__code__,
+                        factory_cache_key,
+                        cache_key,
+                        runtime_resource_factory is not None,
+                    )
+                    slot = _get_factory_cache_slot(factory_cache, entry_key)
+                    with slot.lock:
+                        if slot.template is None:
+                            compiled_kernel = compile_callback(
+                                runtime_args,
+                                kwargs,
+                                resolved_grid,
+                                hash((kernel_id, cache_key)),
+                                target_arch,
+                                compiler_options,
+                                l1_budget_override,
+                                runtime_resource_cache,
+                            )
+                            if compiled_kernel is not None:
+                                slot.template = _CompiledTTNNKernelTemplate.create(
+                                    compiled_kernel
+                                )
+                        else:
+                            compiled_kernel = slot.template.instantiate(
+                                runtime_resource_factory, runtime_resource_cache
+                            )
                 if compiled_kernel is not None:
                     cache[cache_key] = compiled_kernel
 
@@ -3222,6 +3346,8 @@ def pykernel_gen(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
     _prepare_call: Optional[Callable] = None,
     device_domain=None,
 ) -> Callable:
@@ -3245,6 +3371,10 @@ def pykernel_gen(
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
         device_domain: Optional logical device domain for mesh execution.
         runtime_resource_factory: Optional per-invocation resource callback
+        factory_cache: Mutable mapping that shares compiled artifacts between
+            separately constructed operations.
+        factory_cache_key: Hashable identity for compile-time captures. Must be
+            supplied with ``factory_cache``.
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -3327,6 +3457,9 @@ def pykernel_gen(
             math_fidelity=math_fidelity,
             options=options,
             prepare_call=_prepare_call,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+            runtime_resource_factory=runtime_resource_factory,
         )
 
     return _decorator
