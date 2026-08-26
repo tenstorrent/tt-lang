@@ -32,6 +32,9 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_SRAM_SCRATCH_BYTES_ATTR") =
       nb::str(kPipeSramScratchBytesAttrName.data(),
               kPipeSramScratchBytesAttrName.size());
+  m.attr("RESET_DATAFLOW_BUFFERS_SYNC_WORD_COUNT_ATTR") =
+      nb::str(kResetDataflowBuffersSyncWordCountAttrName.data(),
+              kResetDataflowBuffersSyncWordCountAttrName.size());
 
   //===--------------------------------------------------------------------===//
   // SliceAttr

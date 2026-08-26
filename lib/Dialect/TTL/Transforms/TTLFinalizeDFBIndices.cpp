@@ -35,6 +35,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -120,6 +121,8 @@ struct LogicalDFB {
 
   int64_t totalPages() const { return blockCount * elemsPerBlock; }
 };
+
+enum class ResetControlFlow { Linear, Cyclic };
 
 enum class HardwareDataFormat : int64_t {
   Float32 = 0,
@@ -288,8 +291,7 @@ void recordRole(func::FuncOp &role, func::FuncOp func, bool &eligible) {
 
 bool disjoint(ThreadOrder &order, const ThreadInterval &a,
               const ThreadInterval &b) {
-  Block *shared =
-      a.block == b.block ? a.block : commonBlock(a.block, b.block);
+  Block *shared = a.block == b.block ? a.block : commonBlock(a.block, b.block);
   if (!shared) {
     return false;
   }
@@ -342,6 +344,7 @@ struct TTLFinalizeDFBIndicesPass
 
     llvm::SmallDenseMap<Operation *, SmallVector<OpaqueCallOp, 4>, 4>
         resetCallsByFunction;
+    llvm::SmallDenseMap<Operation *, Operation *, 4> cyclicResetLoops;
     moduleOp->walk([&](OpaqueCallOp call) {
       if (call.getCallee() != kResetDataflowBuffersCallee) {
         return;
@@ -352,13 +355,59 @@ struct TTLFinalizeDFBIndicesPass
         invalidResetContract = true;
         return;
       }
-      if (call->getBlock() != &func.getBody().front()) {
-        call.emitError("must be a top-level operation");
-        invalidResetContract = true;
-        return;
-      }
       resetCallsByFunction[func.getOperation()].push_back(call);
     });
+
+    // Linear resets remain entry-block operations. A resident reset sequence
+    // is unconditional and has one static order in the outermost loop body.
+    std::optional<ResetControlFlow> resetControlFlow;
+    moduleOp->walk([&](func::FuncOp func) {
+      if (!func->hasAttr(kKernelThreadAttrName)) {
+        return;
+      }
+      auto callsIt = resetCallsByFunction.find(func.getOperation());
+      if (callsIt == resetCallsByFunction.end()) {
+        return;
+      }
+      auto &calls = callsIt->second;
+      Block *entry = &func.getBody().front();
+      const bool topLevel = calls.front()->getBlock() == entry;
+      Operation *residentLoop = nullptr;
+      if (!topLevel) {
+        auto loop = dyn_cast<scf::ForOp>(calls.front()->getParentOp());
+        if (loop && loop->getBlock() == entry) {
+          residentLoop = loop.getOperation();
+        }
+      }
+
+      for (OpaqueCallOp call : calls) {
+        bool valid = topLevel ? call->getBlock() == entry
+                              : call->getParentOp() == residentLoop;
+        if (!valid || (!topLevel && !residentLoop)) {
+          call.emitError("must be top-level or a direct child of one "
+                         "top-level resident scf.for loop");
+          invalidResetContract = true;
+        }
+      }
+      if (!topLevel && residentLoop && calls.size() < 2) {
+        func.emitError("a cyclic resident loop requires at least two "
+                       "reset_dataflow_buffers calls");
+        invalidResetContract = true;
+      }
+      if (!topLevel && residentLoop) {
+        cyclicResetLoops[func.getOperation()] = residentLoop;
+      }
+      ResetControlFlow controlFlow =
+          residentLoop ? ResetControlFlow::Cyclic : ResetControlFlow::Linear;
+      if (!resetControlFlow) {
+        resetControlFlow = controlFlow;
+      } else if (*resetControlFlow != controlFlow) {
+        func.emitError("must place reset_dataflow_buffers in the same control "
+                       "flow shape as every other kernel thread");
+        invalidResetContract = true;
+      }
+    });
+
     std::optional<size_t> resetCount;
     moduleOp->walk([&](func::FuncOp func) {
       if (!func->hasAttr(kKernelThreadAttrName)) {
@@ -379,14 +428,19 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
     const bool hasResetDataflowBuffers = !resetCallsByFunction.empty();
+    const bool hasCyclicResetDataflowBuffers = !cyclicResetLoops.empty();
 
     for (auto &[funcOperation, calls] : resetCallsByFunction) {
       auto func = cast<func::FuncOp>(funcOperation);
       auto &order = orders[funcOperation];
       order = std::make_unique<ThreadOrder>(func);
-      Block *entry = &func.getBody().front();
+      Block *scope = &func.getBody().front();
+      if (auto loopIt = cyclicResetLoops.find(funcOperation);
+          loopIt != cyclicResetLoops.end()) {
+        scope = &loopIt->second->getRegion(0).front();
+      }
       llvm::sort(calls, [&](OpaqueCallOp lhs, OpaqueCallOp rhs) {
-        return order->posIn(entry, lhs) < order->posIn(entry, rhs);
+        return order->posIn(scope, lhs) < order->posIn(scope, rhs);
       });
     }
 
@@ -396,16 +450,29 @@ struct TTLFinalizeDFBIndicesPass
       if (callsIt == resetCallsByFunction.end()) {
         return int64_t{0};
       }
-      Block *entry = &func.getBody().front();
-      int64_t opPosition = order.posIn(entry, op);
+      Block *scope = &func.getBody().front();
+      bool cyclic = false;
+      if (auto loopIt = cyclicResetLoops.find(func.getOperation());
+          loopIt != cyclicResetLoops.end()) {
+        scope = &loopIt->second->getRegion(0).front();
+        Operation *anchor =
+            op->getBlock() == scope ? op : scope->findAncestorOpInBlock(*op);
+        if (!anchor) {
+          return int64_t{0};
+        }
+        cyclic = true;
+      }
+      int64_t opPosition = order.posIn(scope, op);
       int64_t epoch = 0;
       for (OpaqueCallOp call : callsIt->second) {
-        if (order.posIn(entry, call) >= opPosition) {
+        if (order.posIn(scope, call) >= opPosition) {
           break;
         }
         ++epoch;
       }
-      return epoch;
+      // The final cyclic reset restores phase zero across the loop backedge.
+      return cyclic ? epoch % static_cast<int64_t>(callsIt->second.size())
+                    : epoch;
     };
 
     bool externReuse = std::getenv("TTL_DFB_REUSE_EXTERN") != nullptr;
@@ -603,7 +670,8 @@ struct TTLFinalizeDFBIndicesPass
     // consumer the predecessor's remaining pages before any of the
     // successor's. What is genuinely unsound is an unbalanced buffer, which
     // leaves a page held, and that is exactly what `balanced()` refuses.
-    bool crossThreadReuse = std::getenv("TTL_DFB_REUSE_CROSS_THREAD") != nullptr;
+    bool crossThreadReuse =
+        std::getenv("TTL_DFB_REUSE_CROSS_THREAD") != nullptr;
     bool externPaired = std::getenv("TTL_DFB_REUSE_EXTERN_PAIRED") != nullptr;
     for (auto &[idx, dfb] : dfbs) {
       if (dfb.firstUseEpoch == std::numeric_limits<int64_t>::max()) {
@@ -693,8 +761,8 @@ struct TTLFinalizeDFBIndicesPass
         // acquire into the final interval block and use the earliest one.
         int64_t first = interval.end;
         for (Operation *acquire : it->second) {
-          first = std::min(
-              first, orderIt->second->posIn(interval.block, acquire));
+          first =
+              std::min(first, orderIt->second->posIn(interval.block, acquire));
         }
         interval.start =
             std::min(std::max(interval.start, first), interval.end);
@@ -782,7 +850,8 @@ struct TTLFinalizeDFBIndicesPass
             pages = std::max(pages, member->totalPages());
           }
           auto wraps = [&](const LogicalDFB &member) {
-            return member.elemsPerBlock > 0 && pages % member.elemsPerBlock == 0;
+            return member.elemsPerBlock > 0 &&
+                   pages % member.elemsPerBlock == 0;
           };
           if (!wraps(*dfb) || !llvm::all_of(slots[s], [&](LogicalDFB *member) {
                 return wraps(*member);
@@ -869,10 +938,15 @@ struct TTLFinalizeDFBIndicesPass
 
     if (hasResetDataflowBuffers) {
       int64_t epochCount = 1;
-      for (const auto &[func, calls] : resetCallsByFunction) {
-        (void)func;
+      if (hasCyclicResetDataflowBuffers) {
         epochCount =
-            std::max(epochCount, static_cast<int64_t>(calls.size()) + 1);
+            static_cast<int64_t>(resetCallsByFunction.begin()->second.size());
+      } else {
+        for (const auto &[func, calls] : resetCallsByFunction) {
+          (void)func;
+          epochCount =
+              std::max(epochCount, static_cast<int64_t>(calls.size()) + 1);
+        }
       }
 
       SmallVector<llvm::MapVector<int64_t, LogicalDFB *>> configsByEpoch(
@@ -1037,8 +1111,15 @@ struct TTLFinalizeDFBIndicesPass
       };
 
       for (auto &[funcOperation, calls] : resetCallsByFunction) {
-        for (auto [ordinal, call] : llvm::enumerate(calls)) {
-          appendConfiguration(call, static_cast<int64_t>(ordinal) + 1);
+        if (hasCyclicResetDataflowBuffers) {
+          for (auto [ordinal, call] : llvm::enumerate(calls)) {
+            appendConfiguration(call, (static_cast<int64_t>(ordinal) + 1) %
+                                          epochCount);
+          }
+        } else {
+          for (auto [ordinal, call] : llvm::enumerate(calls)) {
+            appendConfiguration(call, static_cast<int64_t>(ordinal) + 1);
+          }
         }
 
         auto func = cast<func::FuncOp>(funcOperation);
@@ -1107,18 +1188,19 @@ struct TTLFinalizeDFBIndicesPass
         for (LogicalDFB *dfb : members) {
           placed.insert(dfb->finalIndex);
         }
-        llvm::errs() << "  class kind=" << kind << " prod="
-                     << cast<func::FuncOp>(prod).getName() << " cons="
-                     << cast<func::FuncOp>(cons).getName() << " members="
-                     << members.size() << " slots=" << placed.size()
-                     << " type=" << storage << "\n";
+        llvm::errs() << "  class kind=" << kind
+                     << " prod=" << cast<func::FuncOp>(prod).getName()
+                     << " cons=" << cast<func::FuncOp>(cons).getName()
+                     << " members=" << members.size()
+                     << " slots=" << placed.size() << " type=" << storage
+                     << "\n";
         for (LogicalDFB *dfb : members) {
-          llvm::errs() << "    cb" << dfb->origIndex << " -> " << dfb->finalIndex
-                       << " pages=" << dfb->totalPages();
+          llvm::errs() << "    cb" << dfb->origIndex << " -> "
+                       << dfb->finalIndex << " pages=" << dfb->totalPages();
           for (auto &[func, interval] : dfb->intervals) {
             llvm::errs() << " [" << cast<func::FuncOp>(func).getName() << " blk"
-                         << (const void *)interval.block << " " << interval.start
-                         << ".." << interval.end << "]";
+                         << (const void *)interval.block << " "
+                         << interval.start << ".." << interval.end << "]";
           }
           llvm::errs() << "\n";
         }

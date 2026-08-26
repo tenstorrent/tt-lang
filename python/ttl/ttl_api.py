@@ -570,6 +570,7 @@ class CompiledTTNNKernel:
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
+        num_reset_sync_words=0,
         opaque_include_paths=None,
         runtime_resource_factory=None,
         runtime_dfb_reconfiguration=False,
@@ -602,6 +603,8 @@ class CompiledTTNNKernel:
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
+            num_reset_sync_words: Number of GlobalSemaphore-backed initialized
+                per-core L1 words used by dataflow-buffer reset.
             runtime_dfb_reconfiguration: Whether compute descriptors need mutable
                 runtime DFB metadata for compiler-planned epochs.
         """
@@ -622,6 +625,7 @@ class CompiledTTNNKernel:
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.num_reset_sync_words = num_reset_sync_words
         self._pipe_global_semaphore_lifetime = []
         self.runtime_resource_factory = runtime_resource_factory
         self.runtime_dfb_reconfiguration = runtime_dfb_reconfiguration
@@ -677,6 +681,7 @@ class CompiledTTNNKernel:
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+            num_reset_sync_words=self.num_reset_sync_words,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
             runtime_resource_factory=self.runtime_resource_factory,
             runtime_resource_lifetime=self._runtime_resource_lifetime,
@@ -713,6 +718,7 @@ class _CompiledTTNNKernelTemplate:
         self.num_pipe_sync_semaphores = kernel.num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = kernel.pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = kernel.num_pipe_global_semaphores
+        self.num_reset_sync_words = kernel.num_reset_sync_words
         self.opaque_include_paths = list(kernel.opaque_include_paths)
         self.runtime_dfb_reconfiguration = kernel.runtime_dfb_reconfiguration
 
@@ -750,6 +756,7 @@ class _CompiledTTNNKernelTemplate:
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+            num_reset_sync_words=self.num_reset_sync_words,
             opaque_include_paths=list(self.opaque_include_paths),
             runtime_resource_factory=runtime_resource_factory,
             runtime_dfb_reconfiguration=self.runtime_dfb_reconfiguration,
@@ -1002,6 +1009,7 @@ def _compile_ttnn_kernel(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_reset_sync_words: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
     runtime_resource_factory=None,
     runtime_dfb_reconfiguration: bool = False,
@@ -1285,6 +1293,7 @@ def _compile_ttnn_kernel(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        num_reset_sync_words=num_reset_sync_words,
         opaque_include_paths=opaque_include_paths or [],
         runtime_resource_factory=runtime_resource_factory,
         runtime_dfb_reconfiguration=runtime_dfb_reconfiguration,
@@ -1337,6 +1346,7 @@ def _compile_ttnn_kernel(
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
+            num_reset_sync_words=num_reset_sync_words,
         )
 
     return compiled_kernel
@@ -1617,6 +1627,16 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     """Read the GlobalSemaphore count selected by pipe lowering."""
     attr = module.operation.attributes.get(
         _ttl_ir.PIPE_GLOBAL_SEMAPHORE_COUNT_ATTR, None
+    )
+    if attr is None:
+        return 0
+    return int(attr)
+
+
+def _extract_reset_sync_word_count(module) -> int:
+    """Read the initialized per-core words required by DFB reset."""
+    attr = module.operation.attributes.get(
+        _ttl_ir.RESET_DATAFLOW_BUFFERS_SYNC_WORD_COUNT_ATTR, None
     )
     if attr is None:
         return 0
@@ -2373,6 +2393,7 @@ def _lower_program_to_kernel(
             )
         pipe_sram_scratch_bytes = _extract_pipe_sram_scratch_bytes(module)
         pipe_global_semaphore_count = _extract_pipe_global_semaphore_count(module)
+        reset_sync_word_count = _extract_reset_sync_word_count(module)
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op.
         # `launch_grid` may be smaller than `grid` when grid="full" reduces
@@ -2396,6 +2417,7 @@ def _lower_program_to_kernel(
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
+            num_reset_sync_words=reset_sync_word_count,
             opaque_include_paths=opaque_include_paths,
             runtime_resource_factory=runtime_resource_factory,
             runtime_dfb_reconfiguration=epoch_physical_configs is not None,
@@ -2512,10 +2534,7 @@ def _make_operation_wrapper(
                         compiled_kernel
                     )
                     if os.environ.get("TTLANG_FACTORY_CACHE_DEBUG") == "1":
-                        print(
-                            "TT-Lang factory cache miss: "
-                            f"{factory_cache_key!r}"
-                        )
+                        print("TT-Lang factory cache miss: " f"{factory_cache_key!r}")
 
         if compiled_kernel is None or not _should_execute():
             return None

@@ -158,8 +158,11 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kResetDataflowBuffersCallee("ttlang::reset_dataflow_buffers");
 
-/// Hardware semaphores used by the four non-coordinator worker RISCs.
-constexpr int64_t kResetDataflowBuffersSemaphoreCount = 4;
+/// Compiler-owned, GlobalSemaphore-backed initialized per-core L1 words used
+/// by the four non-coordinator worker RISCs.
+constexpr int64_t kResetDataflowBuffersSyncWordCount = 4;
+constexpr llvm::StringLiteral kResetDataflowBuffersSyncWordCountAttrName(
+    "ttl.reset_dataflow_buffers_sync_word_count");
 
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral

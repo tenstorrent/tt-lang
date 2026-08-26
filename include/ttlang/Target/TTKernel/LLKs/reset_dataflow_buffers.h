@@ -77,44 +77,40 @@ storeSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord,
                : "memory");
 }
 
-template <uint32_t BaseSemaphore>
 FORCE_INLINE volatile uint32_t tt_l1_ptr *
-synchronizationWord(uint32_t participant) {
-  uint32_t semaphore = BaseSemaphore + participant;
-#if defined(TTLANG_DFB_UNPACK) || defined(TTLANG_DFB_MATH) ||                  \
-    defined(TTLANG_DFB_PACK)
-  auto *mailboxes = reinterpret_cast<tt_l1_ptr mailboxes_t *>(MEM_MAILBOX_BASE);
-  auto &kernelConfig =
-      mailboxes->launch[mailboxes->launch_msg_rd_ptr].kernel_config;
-  uintptr_t address =
-      kernelConfig.kernel_config_base[static_cast<int>(
-          ProgrammableCoreType::TENSIX)] +
-      kernelConfig.sem_offset[static_cast<int>(ProgrammableCoreType::TENSIX)] +
-      semaphore * L1_ALIGNMENT;
-#else
-  uintptr_t address = get_semaphore(semaphore);
-#endif
+synchronizationWord(uint32_t participant, uint32_t word0, uint32_t word1,
+                    uint32_t word2, uint32_t word3) {
+  uintptr_t address = word0;
+  if (participant == 1) {
+    address = word1;
+  } else if (participant == 2) {
+    address = word2;
+  } else if (participant == 3) {
+    address = word3;
+  }
   return reinterpret_cast<volatile uint32_t tt_l1_ptr *>(address);
 }
 
-template <uint32_t BaseSemaphore>
-FORCE_INLINE bool participantsHaveState(uint32_t state) {
+FORCE_INLINE bool participantsHaveState(uint32_t state, uint32_t word0,
+                                        uint32_t word1, uint32_t word2,
+                                        uint32_t word3) {
   for (uint32_t participant = 0; participant < kParticipantCount;
        ++participant) {
-    if (loadSynchronizationWord(
-            synchronizationWord<BaseSemaphore>(participant)) != state) {
+    if (loadSynchronizationWord(synchronizationWord(participant, word0, word1,
+                                                    word2, word3)) != state) {
       return false;
     }
   }
   return true;
 }
 
-template <uint32_t BaseSemaphore>
-FORCE_INLINE void setParticipantStates(uint32_t state) {
+FORCE_INLINE void setParticipantStates(uint32_t state, uint32_t word0,
+                                       uint32_t word1, uint32_t word2,
+                                       uint32_t word3) {
   for (uint32_t participant = 0; participant < kParticipantCount;
        ++participant) {
-    storeSynchronizationWord(synchronizationWord<BaseSemaphore>(participant),
-                             state);
+    storeSynchronizationWord(
+        synchronizationWord(participant, word0, word1, word2, word3), state);
   }
 }
 
@@ -149,35 +145,35 @@ FORCE_INLINE void drain() {
 #endif
 }
 
-template <uint32_t BaseSemaphore>
-FORCE_INLINE void enter() {
+FORCE_INLINE void enter(uint32_t word0, uint32_t word1, uint32_t word2,
+                        uint32_t word3) {
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_UNPACK) ||                   \
     defined(TTLANG_DFB_MATH) || defined(TTLANG_DFB_PACK)
   constexpr uint32_t word = participantWord();
-  auto *state = synchronizationWord<BaseSemaphore>(word);
+  auto *state = synchronizationWord(word, word0, word1, word2, word3);
   storeSynchronizationWord(state, kEntryArrived);
   while (loadSynchronizationWord(state) != kEntryReleased) {
   }
 #elif defined(TTLANG_DFB_DM1)
-  while (!participantsHaveState<BaseSemaphore>(kEntryArrived)) {
+  while (!participantsHaveState(kEntryArrived, word0, word1, word2, word3)) {
   }
-  setParticipantStates<BaseSemaphore>(kEntryReleased);
+  setParticipantStates(kEntryReleased, word0, word1, word2, word3);
 #endif
 }
 
-template <uint32_t BaseSemaphore>
-FORCE_INLINE void exit() {
+FORCE_INLINE void exit(uint32_t word0, uint32_t word1, uint32_t word2,
+                       uint32_t word3) {
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_UNPACK) ||                   \
     defined(TTLANG_DFB_MATH) || defined(TTLANG_DFB_PACK)
   constexpr uint32_t word = participantWord();
-  auto *state = synchronizationWord<BaseSemaphore>(word);
+  auto *state = synchronizationWord(word, word0, word1, word2, word3);
   storeSynchronizationWord(state, kExitArrived);
   while (loadSynchronizationWord(state) != kExitReleased) {
   }
 #elif defined(TTLANG_DFB_DM1)
-  while (!participantsHaveState<BaseSemaphore>(kExitArrived)) {
+  while (!participantsHaveState(kExitArrived, word0, word1, word2, word3)) {
   }
-  setParticipantStates<BaseSemaphore>(kExitReleased);
+  setParticipantStates(kExitReleased, word0, word1, word2, word3);
 #endif
 }
 
@@ -280,15 +276,16 @@ struct ApplyConfigurations<Id, TotalBytes, NumPages, PageBytes, L1Format,
 
 } // namespace detail
 
-template <uint32_t BaseSemaphore, uint32_t RecordCount, uint32_t... Config>
-FORCE_INLINE void reset_dataflow_buffers() {
+template <uint32_t RecordCount, uint32_t... Config>
+FORCE_INLINE void reset_dataflow_buffers(uint32_t word0, uint32_t word1,
+                                         uint32_t word2, uint32_t word3) {
   static_assert(sizeof...(Config) == RecordCount * detail::kConfigWords);
 
   detail::drain();
-  detail::enter<BaseSemaphore>();
+  detail::enter(word0, word1, word2, word3);
   detail::ApplyConfigurations<Config...>::run();
   asm volatile("" ::: "memory");
-  detail::exit<BaseSemaphore>();
+  detail::exit(word0, word1, word2, word3);
 }
 
 } // namespace ttlang

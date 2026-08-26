@@ -1211,6 +1211,36 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     SmallVector<Value> convertedArgs;
+    ArrayAttr templateArgs = op.getTemplateArgsAttr();
+
+    if (op.getCallee() == kResetDataflowBuffersCallee) {
+      if (!templateArgs || templateArgs.empty()) {
+        return rewriter.notifyMatchFailure(
+            op, "is missing the reset synchronization-word runtime-arg offset");
+      }
+      auto offsetAttr = mlir::dyn_cast<IntegerAttr>(templateArgs[0]);
+      if (!offsetAttr) {
+        return rewriter.notifyMatchFailure(
+            op,
+            "has a non-integer reset synchronization-word runtime-arg offset");
+      }
+      auto func = op->getParentOfType<func::FuncOp>();
+      auto tensorIndices =
+          func ? func->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr) : ArrayAttr();
+      if (!tensorIndices) {
+        return rewriter.notifyMatchFailure(
+            op, "requires kernel tensor runtime-argument metadata");
+      }
+      const int64_t firstRuntimeArg =
+          tensorIndices.size() + offsetAttr.getInt();
+      for (int64_t word = 0; word < kResetDataflowBuffersSyncWordCount;
+           ++word) {
+        convertedArgs.push_back(getBufferAddressFromRuntimeArg(
+            firstRuntimeArg + word, loc, rewriter));
+      }
+      templateArgs = ArrayAttr::get(rewriter.getContext(),
+                                    templateArgs.getValue().drop_front());
+    }
 
     for (auto [origArg, adaptedArg] :
          llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
@@ -1230,10 +1260,10 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       }
 
       // Tensor -> i32 DRAM buffer address via get_common_arg_val. The address
-      // is a per-invocation runtime arg (see kernel_runner common_runtime_args),
-      // so passing a tensor into func_args is cache-safe: a different tensor of
-      // the same shape/dtype reuses the compiled kernel but supplies its own
-      // address at runtime.
+      // is a per-invocation runtime arg (see kernel_runner
+      // common_runtime_args), so passing a tensor into func_args is cache-safe:
+      // a different tensor of the same shape/dtype reuses the compiled kernel
+      // but supplies its own address at runtime.
       if (mlir::isa<RankedTensorType>(origTy)) {
         auto argIdx = getTensorFuncArgIndex(origArg);
         if (failed(argIdx)) {
@@ -1256,15 +1286,14 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     for (Type resTy : op.getResultTypes()) {
       Type converted = getTypeConverter()->convertType(resTy);
       if (!converted) {
-        return rewriter.notifyMatchFailure(op,
-                                           "failed to convert result type");
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
       }
       resultTypes.push_back(converted);
     }
 
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
-        convertedArgs, op.getTemplateArgsAttr());
+        convertedArgs, templateArgs);
     rewriter.replaceOp(op, newOp.getResults());
     return success();
   }
@@ -1653,19 +1682,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     }
   });
   if (!resetDataflowBufferCalls.empty()) {
-    const int64_t firstResetSemaphore =
-        pipeResourceRequirements.syncSemaphoreCount;
-    if (firstResetSemaphore + kResetDataflowBuffersSemaphoreCount >
-        kMaxHardwareSemaphoreIds) {
-      mod.emitError() << "dataflow-buffer reset requires "
-                      << kResetDataflowBuffersSemaphoreCount
-                      << " local semaphore IDs after the "
-                      << pipeResourceRequirements.syncSemaphoreCount
-                      << " IDs reserved by pipes, exceeding the hardware "
-                         "limit of "
-                      << kMaxHardwareSemaphoreIds;
-      return failure();
-    }
+    const int64_t firstResetRuntimeArg =
+        (pipeResourceRequirements.sramScratchBytes > 0 ? 1 : 0) +
+        pipeResourceRequirements.globalSemaphoreCount;
     for (OpaqueCallOp op : resetDataflowBufferCalls) {
       ArrayAttr config = op.getTemplateArgsAttr();
       if (!config || config.size() < 2) {
@@ -1674,11 +1693,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       }
       SmallVector<Attribute> args(config.begin(), config.end());
       args[0] =
-          IntegerAttr::get(IntegerType::get(&ctx, 64), firstResetSemaphore);
+          IntegerAttr::get(IntegerType::get(&ctx, 64), firstResetRuntimeArg);
       op.setTemplateArgsAttr(ArrayAttr::get(&ctx, args));
     }
-    pipeResourceRequirements.syncSemaphoreCount +=
-        kResetDataflowBuffersSemaphoreCount;
+    mod->setAttr(kResetDataflowBuffersSyncWordCountAttrName,
+                 IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                  kResetDataflowBuffersSyncWordCount));
   }
   mod->setAttr(kPipeSyncSemaphoreCountAttrName,
                IntegerAttr::get(IntegerType::get(&ctx, 64),
@@ -1706,11 +1726,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       typeConverter, &ctx, pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
                                          pipeResourcePlan);
-  patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering,
-               OpaqueCallLowering>(typeConverter, &ctx);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, WaitLowering, CBReserveLowering,
+           CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
+           RawElementWriteLowering, OpaqueCallLowering>(typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

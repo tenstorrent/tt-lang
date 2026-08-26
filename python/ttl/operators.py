@@ -604,9 +604,10 @@ def copy(src, dst) -> CopyTransferHandler:
 def reset_dataflow_buffers():
     """Synchronously start a new physical dataflow-buffer allocation epoch.
 
-    Valid only at top level and in the same order on all five worker RISCs.
-    No dataflow buffer, acquired block, or pending buffer transaction crosses
-    the boundary.
+    Valid either at kernel top level or as an unconditional direct child of the
+    one top-level resident loop. Every worker RISC must use the same fixed reset
+    order, and a cyclic loop must have at least two reset calls. No dataflow
+    buffer, acquired block, or pending buffer transaction crosses a boundary.
     """
     ttl.opaque_call(
         [],
@@ -1025,12 +1026,14 @@ def matmul_f32(lhs: TensorBlock, rhs: TensorBlock) -> TensorBlock:
     in_tile = ttcore.ir.TileType.maybe_downcast(lhs_type.element_type)
     if in_tile is None:
         raise ValueError(
-            f"matmul_f32 expects tile-typed lhs, got {lhs_type.element_type}")
+            f"matmul_f32 expects tile-typed lhs, got {lhs_type.element_type}"
+        )
     f32_tile = ttcore.ir.TileType.get(
-        lhs_type.context, in_tile.shape[0], in_tile.shape[1],
-        ttcore.DataType.Float32)
+        lhs_type.context, in_tile.shape[0], in_tile.shape[1], ttcore.DataType.Float32
+    )
     result_type = RankedTensorType.get(
-        [lhs_type.shape[0], rhs_type.shape[1]], f32_tile, lhs_type.encoding)
+        [lhs_type.shape[0], rhs_type.shape[1]], f32_tile, lhs_type.encoding
+    )
     return ttl.matmul(result_type, lhs, rhs)
 
 

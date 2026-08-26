@@ -134,7 +134,7 @@ class KernelSpec:
 
 @dataclass
 class PipeRuntimeResources:
-    """Host allocations and runtime args for compiler-emitted pipe resources."""
+    """Host allocations and runtime args for compiler-emitted resources."""
 
     scratch_tensors: List[Any]
     global_semaphores: List[Any]
@@ -392,7 +392,7 @@ def build_pipe_global_semaphores(
     count: int,
     device: Optional[Any] = None,
 ) -> Tuple[List[Any], List[int]]:
-    """Allocate GlobalSemaphores used by PipeNet ready counters.
+    """Allocate initialized GlobalSemaphore-backed per-core L1 words.
 
     PipeNet coordinates are per-device core coordinates. When tensors live on
     a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
@@ -408,7 +408,7 @@ def build_pipe_global_semaphores(
         raise RuntimeError("ttnn is not available")
 
     device = device if device is not None else _first_device(tensors)
-    # [Device 2.0] Keep this allocation behind the pipe resource plan so future
+    # [Device 2.0] Keep this allocation behind the compiler resource plan so future
     # typed semaphore objects replace only this host/runtime binding.
     semaphores = [
         ttnn.create_global_semaphore(device, core_ranges, 0) for _ in range(count)
@@ -422,12 +422,15 @@ def build_pipe_runtime_resources(
     core_ranges: Any,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_reset_sync_words: int = 0,
     device: Optional[Any] = None,
 ) -> PipeRuntimeResources:
     """Allocate pipe resources and build their appended common runtime args."""
     resource_device = device
     if resource_device is None and (
-        pipe_sram_scratch_bytes > 0 or num_pipe_global_semaphores > 0
+        pipe_sram_scratch_bytes > 0
+        or num_pipe_global_semaphores > 0
+        or num_reset_sync_words > 0
     ):
         resource_device = _first_device(tensors)
 
@@ -443,18 +446,25 @@ def build_pipe_runtime_resources(
         count=num_pipe_global_semaphores,
         device=resource_device,
     )
-    # Keep this order in sync with PipeLowering.cpp: optional SRAM scratch base,
-    # then GlobalSemaphore ready-counter addresses.
+    reset_sync_words, reset_sync_word_addresses = build_pipe_global_semaphores(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        count=num_reset_sync_words,
+        device=resource_device,
+    )
+    # Keep this order in sync with lowering: optional PipeNet SRAM scratch,
+    # PipeNet ready counters, then DFB-reset synchronization words.
     # [Device 2.0] This is the current ABI for pipe resource records; future
     # typed resource handles should preserve the same compiler-selected order.
     extra_common_runtime_args = [tensor.buffer_address() for tensor in scratch_tensors]
     extra_common_runtime_args.extend(global_semaphore_addresses)
+    extra_common_runtime_args.extend(reset_sync_word_addresses)
     expected_extra_common_runtime_args = (
-        len(scratch_tensors) + num_pipe_global_semaphores
+        len(scratch_tensors) + num_pipe_global_semaphores + num_reset_sync_words
     )
     return PipeRuntimeResources(
         scratch_tensors=scratch_tensors,
-        global_semaphores=global_semaphores,
+        global_semaphores=global_semaphores + reset_sync_words,
         extra_common_runtime_args=extra_common_runtime_args,
         expected_extra_common_runtime_args=expected_extra_common_runtime_args,
     )
@@ -1067,6 +1077,7 @@ def run_kernel_on_device(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_reset_sync_words: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_lifetime: Optional[List[Any]] = None,
@@ -1093,6 +1104,8 @@ def run_kernel_on_device(
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             ready counters allocated by the compiler.
+        num_reset_sync_words: Number of GlobalSemaphore-backed initialized
+            per-core raw L1 words used by dataflow-buffer reset.
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.
@@ -1117,6 +1130,7 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        num_reset_sync_words=num_reset_sync_words,
     )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
@@ -1303,6 +1317,7 @@ def emit_runner_source(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    num_reset_sync_words: int = 0,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -1340,6 +1355,7 @@ def emit_runner_source(
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
+    lines.append(f"NUM_RESET_SYNC_WORDS = {num_reset_sync_words}")
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -1441,6 +1457,7 @@ def emit_runner_source(
     lines.append("        core_ranges=core_ranges,")
     lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
     lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
+    lines.append("        num_reset_sync_words=NUM_RESET_SYNC_WORDS,")
     lines.append("        device=device,")
     lines.append("    )")
     lines.append("")
@@ -1572,6 +1589,7 @@ def emit_runner_file(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    num_reset_sync_words: int = 0,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -1594,6 +1612,7 @@ def emit_runner_file(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        num_reset_sync_words=num_reset_sync_words,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

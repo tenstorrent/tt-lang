@@ -11,6 +11,8 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=USER
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=XTHREAD
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=EPOCH
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=CYCLIC2
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=CYCLIC3
 
 // -----
 
@@ -390,5 +392,89 @@ func.func @epoch_restart()
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  return
+}
+
+// -----
+
+// Two resets directly in a resident loop alternate between phase A and phase
+// B. The prologue configures A, the first reset configures B, and the second
+// reset restores A before the loop backedge.
+
+// CYCLIC2: ttl.dfb_epoch_physical_configs = [{dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, tile_height = 32 : i32, tile_width = 32 : i32, total_size = 8192 : i64}]
+// CYCLIC2: ttl.dfb_index_map = [{new_index = 0 : i32, old_index = 1 : i32}]
+// CYCLIC2-LABEL: func.func @two_phase_resident_loop
+// CYCLIC2-COUNT-2: ttl.bind_cb{cb_index = 0,
+// CYCLIC2: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 4096, 2, 2048, 5, 32, 32, 16, 4, 5, 5]}
+// CYCLIC2: scf.for
+// CYCLIC2: ttl.cb_reserve
+// CYCLIC2: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 8192, 2, 4096, 0, 32, 32, 16, 4, 5, 5]}
+// CYCLIC2: ttl.cb_reserve
+// CYCLIC2: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 4096, 2, 2048, 5, 32, 32, 16, 4, 5, 5]}
+// CYCLIC2: return
+func.func @two_phase_resident_loop()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32,
+                ttl.crta_indices = []} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
+    %r1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
+  }
+  return
+}
+
+// -----
+
+// Three resets support an additional terminal phase while retaining the same
+// cyclic contract. The emitted order is A prologue, B, terminal, then A.
+
+// CYCLIC3: ttl.dfb_epoch_physical_configs = [{dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, tile_height = 32 : i32, tile_width = 32 : i32, total_size = 8192 : i64}]
+// CYCLIC3: ttl.dfb_index_map = [{new_index = 0 : i32, old_index = 1 : i32}, {new_index = 0 : i32, old_index = 2 : i32}]
+// CYCLIC3-LABEL: func.func @three_phase_resident_loop
+// CYCLIC3-COUNT-3: ttl.bind_cb{cb_index = 0,
+// CYCLIC3: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 4096, 2, 2048, 5, 32, 32, 16, 4, 5, 5]}
+// CYCLIC3: scf.for
+// CYCLIC3: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 8192, 2, 4096, 0, 32, 32, 16, 4, 5, 5]}
+// CYCLIC3: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 2048, 2, 1024, 5, 16, 32, 16, 2, 5, 5]}
+// CYCLIC3: ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 1, 0, 4096, 2, 2048, 5, 32, 32, 16, 4, 5, 5]}
+// CYCLIC3: return
+func.func @three_phase_resident_loop()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
+                ttl.crta_indices = []} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 2>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
+    %r1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
+    %r2 = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<16x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+    ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<16x32, bf16>, 2>
+    %w2 = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<16x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+    ttl.cb_pop %cb2 : <[1, 1], !ttcore.tile<16x32, bf16>, 2>
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
+  }
   return
 }

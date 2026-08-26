@@ -102,6 +102,12 @@ class _FakeTTNN:
             self.semaphores = semaphores
             self.custom_program_hash = None
 
+    class SemaphoreDescriptor:
+        def __init__(self, sem_id, core_ranges, initial_value):
+            self.id = sem_id
+            self.core_ranges = core_ranges
+            self.initial_value = initial_value
+
     class CBFormatDescriptor:
         def __init__(self, buffer_index, data_format, page_size, tile=None):
             self.buffer_index = buffer_index
@@ -137,6 +143,9 @@ class _FakeTTNN:
 
     class WriterConfigDescriptor:
         pass
+
+    class BufferType:
+        L1 = object()
 
     class DataMovementProcessor(Enum):
         RISCV_0 = 0
@@ -385,6 +394,45 @@ def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch)
     assert resources.global_semaphores == fake_ttnn.create_calls
     assert resources.extra_common_runtime_args == [0x1000, 0x1020]
     assert resources.expected_extra_common_runtime_args == 2
+
+
+def test_reset_sync_words_do_not_consume_local_semaphore_ids(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=fake_ttnn.ReaderConfigDescriptor(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        num_pipe_sync_semaphores=16,
+        num_pipe_global_semaphores=2,
+        num_reset_sync_words=4,
+    )
+
+    assert [semaphore.id for semaphore in result["program"].semaphores] == list(
+        range(16)
+    )
+    assert len(fake_ttnn.create_calls) == 6
+    assert result["program"].kernels[0].common_runtime_args == [
+        0x2000,
+        0x1000,
+        0x1020,
+        0x1040,
+        0x1060,
+        0x1080,
+        0x10A0,
+    ]
 
 
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
@@ -1025,9 +1073,11 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
         num_tensors=1,
         program_hash=-2,
         num_pipe_global_semaphores=3,
+        num_reset_sync_words=4,
     )
 
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "NUM_RESET_SYNC_WORDS = 4" in source
     assert "PROGRAM_HASH = 18446744073709551614" in source
     assert "build_pipe_runtime_resources(" in source
     assert "build_kernel_descriptors(" in source
