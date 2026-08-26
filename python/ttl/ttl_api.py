@@ -3159,11 +3159,9 @@ def _make_operation_wrapper(
             CompilerOptions.from_argv()
         )
         target_arch = _device_target_arch(runtime_args)
-        with cache_lock:
-            l1_budget_override = _resolve_l1_budget(
-                runtime_args, compiler_options, runtime_resource_cache
-            )
-            cache_key = _make_cache_key(
+
+        def make_cache_key(effective_l1_budget):
+            return _make_cache_key(
                 runtime_args,
                 resolved_grid=resolved_grid,
                 fp32_dest_acc_en=fp32_dest_acc_en,
@@ -3171,8 +3169,14 @@ def _make_operation_wrapper(
                 math_fidelity=math_fidelity,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
-                l1_budget_override=l1_budget_override,
+                l1_budget_override=effective_l1_budget,
             )
+
+        with cache_lock:
+            l1_budget_override = _resolve_l1_budget(
+                runtime_args, compiler_options, runtime_resource_cache
+            )
+            cache_key = make_cache_key(l1_budget_override)
             compiled_kernel = cache.get(cache_key)
             if compiled_kernel is None:
                 if factory_cache is None:
@@ -3221,6 +3225,14 @@ def _make_operation_wrapper(
             return None
 
         result = compiled_kernel(*runtime_args)
+        if compiled_kernel.num_pipe_global_semaphores > 0:
+            post_allocation_budget = _resolve_l1_budget(
+                runtime_args, compiler_options, runtime_resource_cache
+            )
+            with cache_lock:
+                cache.setdefault(
+                    make_cache_key(post_allocation_budget), compiled_kernel
+                )
 
         if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
             _run_profiling_pipeline(
