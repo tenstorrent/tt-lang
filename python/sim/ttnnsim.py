@@ -1089,11 +1089,11 @@ class TensorSpec:
 # Maps torch attribute name -> original (pre-rebinding) dtype for every
 # narrow floating-point type that has a native torch representation and should
 # be promoted to float32 by default.  To add a new promotable type, add it
-# here; the rebinding loop, set_disable_float32_promotion, and _promote_dtype
+# here; the rebinding loop, set_disable_float32_promotion, and promote_dtype
 # all derive from this single definition.
 #
 # bfloat8_b is not in this dict because PyTorch has no native bfloat8_b dtype
-# and no torch.bfloat8_b attribute to rebind.  _promote_dtype handles it
+# and no torch.bfloat8_b attribute to rebind.  promote_dtype handles it
 # directly by mapping it to bfloat16 and then applying the normal logic.
 _PROMOTABLE_FLOAT_DTYPES: dict[str, torch.dtype] = {
     "bfloat16": torch.bfloat16,
@@ -1109,7 +1109,7 @@ for _attr in _PROMOTABLE_FLOAT_DTYPES:
 del _attr  # avoid leaking the loop variable into the module namespace
 
 # ttnn dtype aliases preserve the original (pre-rebinding) torch dtypes so
-# that element_size returns the correct hardware byte count and _promote_dtype
+# that element_size returns the correct hardware byte count and promote_dtype
 # can compare against them.
 bfloat16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["bfloat16"]
 float16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["float16"]
@@ -1122,7 +1122,7 @@ float32: torch.dtype = torch.float32
 _float32_promotion_enabled: bool = True
 
 
-def _promote_dtype(dtype: "DType") -> torch.dtype:
+def promote_dtype(dtype: "DType") -> torch.dtype:
     """Return the backing torch dtype to use when creating a tensor.
 
     All narrow floating-point types are promoted to float32 when promotion is
@@ -1160,7 +1160,7 @@ def set_disable_float32_promotion(value: bool) -> None:
 
     - bfloat16 and float16: the corresponding torch.* attributes are rebound to
       float32 so that native PyTorch code also uses float32.
-    - bfloat8_b: _promote_dtype maps it to bfloat16 and then promotes that to
+    - bfloat8_b: promote_dtype maps it to bfloat16 and then promotes that to
       float32; no torch attribute rebinding is needed.
 
     Passing True restores native dtypes throughout (bfloat16/float16 tensors use
@@ -1225,7 +1225,7 @@ DType = Union[torch.dtype, _BFloat8BDtype]
 
 # Maps custom dtype classes (those with no native torch representation) to the
 # torch.dtype that serves as their native backing before promotion is applied.
-# _promote_dtype looks up a dtype's class here so that custom types are handled
+# promote_dtype looks up a dtype's class here so that custom types are handled
 # with the same logic as native narrow floats, without requiring a match branch
 # for each one.  To add a new custom dtype, add it here.
 _CUSTOM_DTYPE_BACKING: dict[type, torch.dtype] = {
@@ -2877,7 +2877,7 @@ def rand(
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    raw = torch.rand(shape, dtype=_promote_dtype(dtype))
+    raw = torch.rand(shape, dtype=promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
@@ -2896,7 +2896,7 @@ def empty(
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    raw = torch.empty(shape, dtype=_promote_dtype(dtype))
+    raw = torch.empty(shape, dtype=promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
@@ -2915,7 +2915,7 @@ def zeros(
     memory_config: object = None,
 ) -> Tensor:
     """Create a zero-filled tensor with given shape, dtype, and layout."""
-    raw = torch.zeros(shape, dtype=_promote_dtype(dtype))
+    raw = torch.zeros(shape, dtype=promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
@@ -3025,7 +3025,7 @@ def from_torch(
 
     match eff_dtype:
         case _ if eff_dtype is not None:
-            backing = _promote_dtype(eff_dtype)
+            backing = promote_dtype(eff_dtype)
             converted = tensor if tensor.dtype == backing else tensor.to(backing)
             result = Tensor(
                 converted,
@@ -4026,7 +4026,7 @@ def _tensor_from_golden(
     dtype = asked.get("dtype")
     layout = asked.get("layout", TILE_LAYOUT)
     if dtype is not None:
-        result = result.to(_promote_dtype(dtype))
+        result = result.to(promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(result, layout) if pad else result,
         layout,
