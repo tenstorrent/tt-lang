@@ -1722,15 +1722,14 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
                           "reconfiguration metadata");
     }
 
-    int64_t boundaryRuntimeArgIndex =
-        std::distance(boundaryOrdinals.asArrayRef().begin(), ordinalIt);
-    if (boundaryRuntimeArgIndex < 0 ||
-        boundaryRuntimeArgIndex > std::numeric_limits<unsigned>::max()) {
+    size_t boundaryRuntimeArgIndex = static_cast<size_t>(
+        std::distance(boundaryOrdinals.asArrayRef().begin(), ordinalIt));
+    if (boundaryRuntimeArgIndex > std::numeric_limits<unsigned>::max()) {
       return op.emitError("runtime argument index is out of range");
     }
 
     Value runtimeArgIndex = arith::ConstantIndexOp::create(
-        rewriter, op.getLoc(), boundaryRuntimeArgIndex);
+        rewriter, op.getLoc(), static_cast<int64_t>(boundaryRuntimeArgIndex));
     Value configurationAddress = ttk::GetArgValOp::create(
         rewriter, op.getLoc(),
         IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),

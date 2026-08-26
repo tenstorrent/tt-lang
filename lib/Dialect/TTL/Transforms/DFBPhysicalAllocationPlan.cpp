@@ -312,6 +312,27 @@ static bool haveDisjointConfigurationEpochs(const DFBPerNodeLifetime &lhs,
          });
 }
 
+static bool haveIdenticalPageFormat(Type lhs, Type rhs) {
+  return cast<CircularBufferType>(lhs).getElementType() ==
+         cast<CircularBufferType>(rhs).getElementType();
+}
+
+static bool canUseCapacityEnvelope(const DFBLogicalLifecycle &lhs,
+                                   const DFBLogicalLifecycle &rhs) {
+  return lhs.allocationGroup && lhs.allocationGroup == rhs.allocationGroup &&
+         haveIdenticalPageFormat(lhs.type, rhs.type) &&
+         !lhs.hasOpaqueExternalAccess && !rhs.hasOpaqueExternalAccess &&
+         !lhs.tensorBacking && !rhs.tensorBacking;
+}
+
+static bool
+canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
+                                     const DFBLogicalLifecycle &rhs) {
+  return haveIdenticalPageFormat(lhs.type, rhs.type) &&
+         !lhs.hasOpaqueExternalAccess && !rhs.hasOpaqueExternalAccess &&
+         haveDisjointConfigurationEpochs(lhs, rhs);
+}
+
 } // namespace
 
 class DFBPhysicalConflictModelBuilder {
@@ -327,16 +348,10 @@ public:
     for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
       for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
            ++rhsIndex) {
-        DFBAllocationGroupAttr lhsGroup = logicalDFBs[lhsIndex].allocationGroup;
-        DFBAllocationGroupAttr rhsGroup = logicalDFBs[rhsIndex].allocationGroup;
-        bool sameAllocationGroup = lhsGroup && lhsGroup == rhsGroup;
-        bool opaqueAccessRequiresExactDescriptor =
-            logicalDFBs[lhsIndex].hasOpaqueExternalAccess ||
-            logicalDFBs[rhsIndex].hasOpaqueExternalAccess;
+        bool sameAllocationGroup = logicalDFBs[lhsIndex].allocationGroup &&
+                                   logicalDFBs[lhsIndex].allocationGroup ==
+                                       logicalDFBs[rhsIndex].allocationGroup;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                         /*requireExactDescriptor=*/
-                         !sameAllocationGroup ||
-                             opaqueAccessRequiresExactDescriptor,
                          /*requireMatchingTransactions=*/!sameAllocationGroup,
                          /*useAllocationGroupEpochs=*/sameAllocationGroup);
       }
@@ -382,8 +397,6 @@ public:
       return model;
     }
     addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                     /*requireExactDescriptor=*/lhs.hasOpaqueExternalAccess ||
-                         rhs.hasOpaqueExternalAccess,
                      /*requireMatchingTransactions=*/false,
                      /*useAllocationGroupEpochs=*/true);
     addResetAllocationConflicts(model, liveness,
@@ -441,19 +454,18 @@ private:
   addPairConflicts(DFBPhysicalConflictModel &model,
                    const DFBConcurrentKernelLivenessAnalysis &liveness,
                    unsigned lhsIndex, unsigned rhsIndex,
-                   bool requireExactDescriptor = true,
                    bool requireMatchingTransactions = true,
                    bool useAllocationGroupEpochs = false) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
     const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
-    auto lhsType = cast<CircularBufferType>(lhs.type);
-    auto rhsType = cast<CircularBufferType>(rhs.type);
-    if (lhsType.getElementType() != rhsType.getElementType() ||
-        (lhs.type != rhs.type &&
-         (requireExactDescriptor ||
-          !haveDisjointConfigurationEpochs(lhs, rhs)))) {
+    bool usesCapacityEnvelope = canUseCapacityEnvelope(lhs, rhs);
+    bool reconfiguresDescriptor =
+        canReconfigureDescriptorAcrossEpochs(lhs, rhs);
+    if (!haveIdenticalPageFormat(lhs.type, rhs.type) ||
+        (lhs.type != rhs.type && !usesCapacityEnvelope &&
+         !reconfiguresDescriptor)) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::DescriptorMismatch, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
@@ -517,6 +529,13 @@ private:
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
+      if (lhs.tensorBacking != rhs.tensorBacking &&
+          !haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime)) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::StorageMismatch, node,
+                    lhs.declarations.front(), rhs.declarations.front());
+        continue;
+      }
       if (useAllocationGroupEpochs &&
           (!lhsLifetime->epochs.empty() || !rhsLifetime->epochs.empty())) {
         SmallVector<AllocationGroupNodeEpoch> lhsEpochs;
@@ -575,15 +594,9 @@ private:
       if (haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime)) {
         continue;
       }
-      if (lhs.type != rhs.type) {
+      if (lhs.type != rhs.type && !usesCapacityEnvelope) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::DescriptorMismatch, node,
-                    lhs.declarations.front(), rhs.declarations.front());
-        continue;
-      }
-      if (lhs.tensorBacking != rhs.tensorBacking) {
-        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                    DFBConflictReason::StorageMismatch, node,
                     lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
@@ -1754,8 +1767,8 @@ computeReuseAllocation(ModuleOp moduleOp,
       computeConcurrentAssignments(
           moduleOp, logicalIndices, /*firstPhysicalIndex=*/0, conflictModel,
           logicalDFBs, targetMaxDFBIndices, exactColoringSearchStateLimit,
-          analysisFailure, allocationBytesByLogicalIndex,
-          allocationByteLimit, minimumSearchTriggerBytes);
+          analysisFailure, allocationBytesByLogicalIndex, allocationByteLimit,
+          minimumSearchTriggerBytes);
   if (failed(assignment)) {
     return failure();
   }
@@ -1858,8 +1871,8 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
                         "failed to compute DFB reconfiguration state size");
     return failure();
   }
-  std::optional<uint64_t> fixedStateBytes = llvm::checkedAddUnsigned(
-      *resetStateBytes, *reconfigurationStateBytes);
+  std::optional<uint64_t> fixedStateBytes =
+      llvm::checkedAddUnsigned(*resetStateBytes, *reconfigurationStateBytes);
   if (!fixedStateBytes) {
     analysisFailure.set(moduleOp,
                         "combined DFB fixed-state size is not representable");
@@ -1888,8 +1901,8 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     }
     uint64_t reservationBytes = reservation.getValue().getZExtValue();
     if (reservationBytes != 0) {
-      std::optional<uint64_t> fixedBytes = llvm::checkedAddUnsigned(
-          *fixedStateBytes, reservationBytes);
+      std::optional<uint64_t> fixedBytes =
+          llvm::checkedAddUnsigned(*fixedStateBytes, reservationBytes);
       minimumSearchTriggerBytes =
           !fixedBytes || *fixedBytes > l1BudgetBytes
               ? std::optional<uint64_t>(0)
@@ -1949,6 +1962,11 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
        llvm::enumerate(liveness.getReconfigurationBoundaryOrdinals())) {
     reconfigurationOrder[ordinal] = position;
   }
+  DenseMap<int64_t, const DFBLogicalLifecycle *> lifecycleByLogicalId;
+  for (const DFBLogicalLifecycle &logicalDFB :
+       liveness.getLogicalDFBLifecycles()) {
+    lifecycleByLogicalId.try_emplace(logicalDFB.logicalId, &logicalDFB);
+  }
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     auto [existingIt, inserted] =
@@ -1959,10 +1977,17 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     const DFBPhysicalIndexAssignment *existing = existingIt->second;
     auto existingType = cast<CircularBufferType>(existing->type);
     auto assignmentType = cast<CircularBufferType>(assignment.type);
-    if (!existing->allocationGroup ||
-        existing->allocationGroup != assignment.allocationGroup ||
-        existingType.getElementType() != assignmentType.getElementType() ||
-        existing->tensorBacking || assignment.tensorBacking) {
+    const DFBLogicalLifecycle *existingLifecycle =
+        lifecycleByLogicalId.lookup(existing->logicalId);
+    const DFBLogicalLifecycle *assignmentLifecycle =
+        lifecycleByLogicalId.lookup(assignment.logicalId);
+    assert(existingLifecycle && assignmentLifecycle &&
+           "every assignment must have a logical lifecycle");
+    bool usesCapacityEnvelope =
+        canUseCapacityEnvelope(*existingLifecycle, *assignmentLifecycle);
+    bool reconfiguresDescriptor = canReconfigureDescriptorAcrossEpochs(
+        *existingLifecycle, *assignmentLifecycle);
+    if (!usesCapacityEnvelope && !reconfiguresDescriptor) {
       BindCBOp declaration = assignment.declarations.front();
       std::string message;
       llvm::raw_string_ostream messageStream(message);
@@ -1971,6 +1996,9 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                     << existingIt->second->type << " and " << assignment.type;
       analysisFailure.set(declaration, messageStream.str());
       return failure();
+    }
+    if (!usesCapacityEnvelope) {
+      continue;
     }
     std::string failureReason;
     FailureOr<uint64_t> existingBytes =
@@ -1984,12 +2012,6 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     if (*assignmentBytes > *existingBytes) {
       existingIt->second = &assignment;
     }
-  }
-
-  DenseMap<int64_t, const DFBLogicalLifecycle *> lifecycleByLogicalId;
-  for (const DFBLogicalLifecycle &logicalDFB :
-       liveness.getLogicalDFBLifecycles()) {
-    lifecycleByLogicalId.try_emplace(logicalDFB.logicalId, &logicalDFB);
   }
 
   SmallVector<std::pair<int32_t, const DFBPhysicalIndexAssignment *>> sorted(
@@ -2014,6 +2036,8 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     }
     DFBPhysicalAllocationDescriptor descriptor;
     descriptor.physicalIndex = physicalIndex;
+    SmallVector<const DFBPhysicalIndexAssignment *>
+        configurationRepresentatives;
     auto addConfiguration =
         [&](const DFBPhysicalIndexAssignment &candidate,
             std::optional<int64_t> entryReconfigurationOrdinal,
@@ -2055,15 +2079,45 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                                                   pageSize,
                                                   blockCount,
                                                   {}});
+        configurationRepresentatives.push_back(&candidate);
         configurationIt = std::prev(descriptor.epochConfigurations.end());
       } else if (configurationIt->numTiles != numTiles ||
                  configurationIt->elementType != dfbType.getElementType() ||
                  configurationIt->pageSize != pageSize ||
                  configurationIt->blockCount != blockCount) {
-        analysisFailure.set(
-            candidate.declarations.front(),
-            "one physical DFB has inconsistent configurations in one epoch");
-        return failure();
+        unsigned configurationIndex = std::distance(
+            descriptor.epochConfigurations.begin(), configurationIt);
+        const DFBPhysicalIndexAssignment *representative =
+            configurationRepresentatives[configurationIndex];
+        const DFBLogicalLifecycle *representativeLifecycle =
+            lifecycleByLogicalId.lookup(representative->logicalId);
+        const DFBLogicalLifecycle *candidateLifecycle =
+            lifecycleByLogicalId.lookup(candidate.logicalId);
+        assert(representativeLifecycle && candidateLifecycle &&
+               "every assignment must have a logical lifecycle");
+        if (!canUseCapacityEnvelope(*representativeLifecycle,
+                                    *candidateLifecycle)) {
+          analysisFailure.set(
+              candidate.declarations.front(),
+              "one physical DFB has inconsistent configurations in one epoch");
+          return failure();
+        }
+        std::string failureReason;
+        FailureOr<uint64_t> representativeBytes = getDFBAllocationSizeBytes(
+            cast<CircularBufferType>(representative->type), failureReason);
+        FailureOr<uint64_t> candidateBytes =
+            getDFBAllocationSizeBytes(dfbType, failureReason);
+        if (failed(representativeBytes) || failed(candidateBytes)) {
+          analysisFailure.set(candidate.declarations.front(), failureReason);
+          return failure();
+        }
+        if (*candidateBytes > *representativeBytes) {
+          configurationIt->numTiles = numTiles;
+          configurationIt->elementType = dfbType.getElementType();
+          configurationIt->pageSize = pageSize;
+          configurationIt->blockCount = blockCount;
+          configurationRepresentatives[configurationIndex] = &candidate;
+        }
       }
 
       if (!activeDomain.known || activeDomain.nodes.empty()) {

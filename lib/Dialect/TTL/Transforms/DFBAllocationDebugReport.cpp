@@ -257,10 +257,9 @@ static bool resetCompletesOpaqueAccess(const DFBLogicalLifecycle &logicalDFB,
 static bool
 hasOpaqueAccessCompletedByReset(const DFBLogicalLifecycle &logicalDFB,
                                 const DFBPerNodeLifetime &lifetime) {
-  return llvm::any_of(lifetime.epochs,
-                      [&](const DFBLifecycleEpoch &epoch) {
-                        return resetCompletesOpaqueAccess(logicalDFB, epoch);
-                      });
+  return llvm::any_of(lifetime.epochs, [&](const DFBLifecycleEpoch &epoch) {
+    return resetCompletesOpaqueAccess(logicalDFB, epoch);
+  });
 }
 
 static void printLifecycleEpochs(llvm::raw_ostream &output,

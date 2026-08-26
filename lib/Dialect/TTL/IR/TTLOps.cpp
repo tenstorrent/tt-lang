@@ -45,6 +45,65 @@
 
 namespace mlir::tt::ttl {
 
+namespace {
+
+enum class LogicalKernelIdentityCategory {
+  Canonical,
+  CompilerOwnedRole,
+  Operation,
+};
+
+static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
+  LogicalKernelIdentityCategory identityCategory =
+      LogicalKernelIdentityCategory::Canonical;
+  if (participant.getIdentity()) {
+    identityCategory = participant.getRole()
+                           ? LogicalKernelIdentityCategory::CompilerOwnedRole
+                           : LogicalKernelIdentityCategory::Operation;
+  }
+  auto valueOrEmpty = [](StringAttr value) {
+    return value ? value.getValue() : StringRef();
+  };
+  return std::make_tuple(static_cast<unsigned>(participant.getKind()),
+                         identityCategory,
+                         valueOrEmpty(participant.getIdentity()),
+                         valueOrEmpty(participant.getOperation()),
+                         valueOrEmpty(participant.getRole()));
+}
+
+static bool hasRequiredDFBSynchronizationParticipants(
+    ArrayRef<LogicalKernelAttr> participants) {
+  unsigned computeParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::Compute;
+      });
+  unsigned dataMovementParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::DataMovement;
+      });
+  return participants.size() == 3 && computeParticipants == 1 &&
+         dataMovementParticipants == 2;
+}
+
+static bool hasDistinctDFBSynchronizationParticipants(
+    ArrayRef<LogicalKernelAttr> participants) {
+  llvm::DenseSet<Attribute> uniqueParticipants;
+  return llvm::all_of(participants, [&](LogicalKernelAttr participant) {
+    return uniqueParticipants.insert(participant).second;
+  });
+}
+
+static bool hasCanonicalDFBSynchronizationParticipantOrder(
+    ArrayRef<LogicalKernelAttr> participants) {
+  return std::is_sorted(participants.begin(), participants.end(),
+                        [](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
+                          return getLogicalKernelSortKey(lhs) <
+                                 getLogicalKernelSortKey(rhs);
+                        });
+}
+
+} // namespace
+
 llvm::LogicalResult LogicalKernelAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, LogicalKernelKind,
     StringAttr identity, StringAttr operation, StringAttr role) {
@@ -105,42 +164,15 @@ llvm::LogicalResult SynchronizedDFBResetAttr::verify(
     return emitError()
            << "synchronized DFB reset requires at least one participant";
   }
-  llvm::DenseSet<Attribute> uniqueParticipants;
-  unsigned computeCount = 0;
-  unsigned dataMovementCount = 0;
-  for (LogicalKernelAttr participant : participants) {
-    if (!uniqueParticipants.insert(participant).second) {
-      return emitError()
-             << "synchronized DFB reset participants must be distinct";
-    }
-    if (participant.getKind() == LogicalKernelKind::Compute) {
-      ++computeCount;
-    } else if (participant.getKind() == LogicalKernelKind::DataMovement) {
-      ++dataMovementCount;
-    }
+  if (!hasDistinctDFBSynchronizationParticipants(participants)) {
+    return emitError()
+           << "synchronized DFB reset participants must be distinct";
   }
-  if (computeCount != 1 || dataMovementCount != 2) {
+  if (!hasRequiredDFBSynchronizationParticipants(participants)) {
     return emitError() << "synchronized DFB reset participants must contain "
                           "one compute kernel and two data movement kernels";
   }
-  auto participantKey = [](LogicalKernelAttr participant) {
-    int identityKind = 0;
-    if (participant.getIdentity()) {
-      identityKind = participant.getRole() ? 1 : 2;
-    }
-    auto valueOrEmpty = [](StringAttr value) {
-      return value ? value.getValue() : StringRef();
-    };
-    return std::make_tuple(static_cast<unsigned>(participant.getKind()),
-                           identityKind,
-                           valueOrEmpty(participant.getIdentity()),
-                           valueOrEmpty(participant.getOperation()),
-                           valueOrEmpty(participant.getRole()));
-  };
-  if (!std::is_sorted(participants.begin(), participants.end(),
-                      [&](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
-                        return participantKey(lhs) < participantKey(rhs);
-                      })) {
+  if (!hasCanonicalDFBSynchronizationParticipantOrder(participants)) {
     return emitError()
            << "synchronized DFB reset participants must use canonical order";
   }
@@ -165,44 +197,15 @@ llvm::LogicalResult DFBReconfigurationAttr::verify(
     return emitError()
            << "DFB reconfiguration requires at least one participant";
   }
-  unsigned computeParticipants =
-      llvm::count_if(participants, [](LogicalKernelAttr participant) {
-        return participant.getKind() == LogicalKernelKind::Compute;
-      });
-  unsigned dataMovementParticipants =
-      llvm::count_if(participants, [](LogicalKernelAttr participant) {
-        return participant.getKind() == LogicalKernelKind::DataMovement;
-      });
-  if (computeParticipants != 1 || dataMovementParticipants != 2 ||
-      participants.size() != 3) {
+  if (!hasRequiredDFBSynchronizationParticipants(participants)) {
     return emitError()
            << "DFB reconfiguration requires one compute and two data "
               "movement participants";
   }
-  llvm::DenseSet<Attribute> uniqueParticipants;
-  for (LogicalKernelAttr participant : participants) {
-    if (!uniqueParticipants.insert(participant).second) {
-      return emitError() << "DFB reconfiguration participants must be distinct";
-    }
+  if (!hasDistinctDFBSynchronizationParticipants(participants)) {
+    return emitError() << "DFB reconfiguration participants must be distinct";
   }
-  auto participantKey = [](LogicalKernelAttr participant) {
-    int identityKind = 0;
-    if (participant.getIdentity()) {
-      identityKind = participant.getRole() ? 1 : 2;
-    }
-    auto valueOrEmpty = [](StringAttr value) {
-      return value ? value.getValue() : StringRef();
-    };
-    return std::make_tuple(static_cast<unsigned>(participant.getKind()),
-                           identityKind,
-                           valueOrEmpty(participant.getIdentity()),
-                           valueOrEmpty(participant.getOperation()),
-                           valueOrEmpty(participant.getRole()));
-  };
-  if (!std::is_sorted(participants.begin(), participants.end(),
-                      [&](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
-                        return participantKey(lhs) < participantKey(rhs);
-                      })) {
+  if (!hasCanonicalDFBSynchronizationParticipantOrder(participants)) {
     return emitError()
            << "DFB reconfiguration participants must use canonical order";
   }

@@ -196,7 +196,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // canonicalizes their safe nonzero terminal pointer offset.
 // CHECK: DFB logical_id=0 bounded=1
 // CHECK: transactions=[2, 2, 2, 2]
-// CHECK-SAME: terminal_reset=0,terminal_state=canonical
+// CHECK-SAME: terminal_reset=0,terminal_reconfiguration=none,terminal_state=canonical
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @safe_nondividing_run_producer()
@@ -601,7 +601,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // preceding payload effect executes in the same conditional reset instance.
 // CHECK: DFB logical_id=0 bounded=1
 // CHECK: conditional_execution=1
-// CHECK: terminal_reset=0,terminal_state=canonical
+// CHECK: terminal_reset=0,terminal_reconfiguration=none,terminal_state=canonical
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 
@@ -669,7 +669,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // structured conditional operation in each participant.
 // CHECK: DFB logical_id=0 bounded=1
 // CHECK: conditional_execution=1
-// CHECK: terminal_reset=0,terminal_state=canonical
+// CHECK: terminal_reset=0,terminal_reconfiguration=none,terminal_state=canonical
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
 

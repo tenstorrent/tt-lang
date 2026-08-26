@@ -1562,8 +1562,7 @@ struct ProgramOrderTopologyInputs {
       return false;
     }
     return std::tie(accesses, synchronizedResets, reconfigurations) ==
-           std::tie(rhs.accesses, rhs.synchronizedResets,
-                    rhs.reconfigurations);
+           std::tie(rhs.accesses, rhs.synchronizedResets, rhs.reconfigurations);
   }
 };
 
@@ -1727,6 +1726,7 @@ static LogicalResult validateDFBReconfigurationDeclarations(
 static LogicalResult validateDFBReconfigurationsAtNode(
     ArrayRef<DFBReconfigurationOccurrence> occurrences, LaunchNodeCoord node,
     const LivenessDomainState &domainState,
+    const StructuralOperationOrder &structuralOrder,
     SmallVectorImpl<ValidatedDFBReconfiguration> &validatedBoundaries,
     DFBAnalysisFailure &analysisFailure) {
   llvm::MapVector<DFBReconfigurationAttr,
@@ -1845,9 +1845,9 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       for (auto [lhsOperation, rhsOperation] : llvm::zip_equal(
                lhs.participantOperations, rhs.participantOperations)) {
         bool participantLhsPrecedes =
-            structurallyPrecedes(lhsOperation, rhsOperation);
+            structuralOrder.precedes(lhsOperation, rhsOperation);
         bool participantRhsPrecedes =
-            structurallyPrecedes(rhsOperation, lhsOperation);
+            structuralOrder.precedes(rhsOperation, lhsOperation);
         if (participantLhsPrecedes == participantRhsPrecedes) {
           analysisFailure.set(
               rhsOperation,
@@ -2036,8 +2036,7 @@ struct ProgramOrderGraphState {
     return std::tie(graph, operationEvents, accessEvents, resetBoundaryEvents,
                     reconfigurationBoundaryEvents) ==
            std::tie(rhs.graph, rhs.operationEvents, rhs.accessEvents,
-                    rhs.resetBoundaryEvents,
-                    rhs.reconfigurationBoundaryEvents);
+                    rhs.resetBoundaryEvents, rhs.reconfigurationBoundaryEvents);
   }
 };
 
@@ -2359,7 +2358,6 @@ static void addSynchronizedResetAccessEdges(
       }
     }
   }
-
 }
 
 static void addDFBReconfigurationAccessEdges(
@@ -4533,20 +4531,19 @@ static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
                                    SynchronizedDFBResetAttr reset,
                                    const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     return intervalIsOutsideReset(lifetime.earliestEntryEvents,
                                   lifetime.terminalCompletionEvents,
                                   resetEvents, graph);
   }
-  return llvm::all_of(
-      lifetime.resetEpochs, [&](const DFBLifecycleEpoch &epoch) {
-        if (epoch.terminalResetOrdinal == reset.getOrdinal()) {
-          return true;
-        }
-        return intervalIsOutsideReset(epoch.earliestEntryEvents,
-                                      epoch.terminalCompletionEvents,
-                                      resetEvents, graph);
-      });
+  return llvm::all_of(lifetime.epochs, [&](const DFBLifecycleEpoch &epoch) {
+    if (epoch.terminalResetOrdinal == reset.getOrdinal()) {
+      return true;
+    }
+    return intervalIsOutsideReset(epoch.earliestEntryEvents,
+                                  epoch.terminalCompletionEvents, resetEvents,
+                                  graph);
+  });
 }
 
 enum class ResetSide { Before, After };
@@ -4759,40 +4756,40 @@ static unsigned getLifecycleEpochCount(const DFBPerNodeLifetime *lifetime) {
   if (!lifetime || !lifetime->mayBeActive) {
     return 0;
   }
-  return std::max<unsigned>(1, lifetime->resetEpochs.size());
+  return std::max<unsigned>(1, lifetime->epochs.size());
 }
 
 static ArrayRef<unsigned>
 getEpochEarliestEntryEvents(const DFBPerNodeLifetime &lifetime,
                             unsigned epochIndex) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     assert(epochIndex == 0 && "complete lifetime has one epoch");
     return lifetime.earliestEntryEvents;
   }
-  assert(epochIndex < lifetime.resetEpochs.size());
-  return lifetime.resetEpochs[epochIndex].earliestEntryEvents;
+  assert(epochIndex < lifetime.epochs.size());
+  return lifetime.epochs[epochIndex].earliestEntryEvents;
 }
 
 static ArrayRef<unsigned>
 getEpochTerminalCompletionEvents(const DFBPerNodeLifetime &lifetime,
                                  unsigned epochIndex) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     assert(epochIndex == 0 && "complete lifetime has one epoch");
     return lifetime.terminalCompletionEvents;
   }
-  assert(epochIndex < lifetime.resetEpochs.size());
-  return lifetime.resetEpochs[epochIndex].terminalCompletionEvents;
+  assert(epochIndex < lifetime.epochs.size());
+  return lifetime.epochs[epochIndex].terminalCompletionEvents;
 }
 
 static const DFBLifecycleCompletionProof &
 getEpochCompletionProof(const DFBPerNodeLifetime &lifetime,
                         unsigned epochIndex) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     assert(epochIndex == 0 && "complete lifetime has one epoch");
     return lifetime.completionProof;
   }
-  assert(epochIndex < lifetime.resetEpochs.size());
-  return lifetime.resetEpochs[epochIndex].completionProof;
+  assert(epochIndex < lifetime.epochs.size());
+  return lifetime.epochs[epochIndex].completionProof;
 }
 
 static bool proveEpochOrderedBefore(const DFBPerNodeLifetime &before,
@@ -4837,10 +4834,10 @@ static void appendInconsistentEpochAccessEvents(
     }
   };
 
-  if (!lifetime.resetEpochs.empty()) {
-    assert(epochIndex < lifetime.resetEpochs.size());
+  if (!lifetime.epochs.empty()) {
+    assert(epochIndex < lifetime.epochs.size());
     for (unsigned accessIndex :
-         lifetime.resetEpochs[epochIndex].accessOccurrenceIndices) {
+         lifetime.epochs[epochIndex].accessOccurrenceIndices) {
       assert(accessIndex < logicalDFB.accesses.size());
       appendAccess(logicalDFB.accesses[accessIndex]);
     }
@@ -5161,7 +5158,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
     SmallVector<ValidatedDFBReconfiguration> validatedReconfigurations;
     if (failed(validateDFBReconfigurationsAtNode(
-            reconfigurationOccurrences, node, domainState,
+            reconfigurationOccurrences, node, domainState, structuralOrder,
             validatedReconfigurations, analysisFailure))) {
       errorOperation = analysisFailure.operation;
       errorMessage = std::move(analysisFailure.message);
@@ -5286,7 +5283,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
               : nullptr,
           validatedResets, resetBoundaryEvents, validatedReconfigurations,
           reconfigurationBoundaryEvents, graph, structuralOrder,
-          operationEvents, accessEvents, executionCounts, accessRuns, domainState);
+          operationEvents, accessEvents, executionCounts, accessRuns,
+          domainState);
       logicalDFB.nodeLifetimes.back().completionProof = proof;
       nodeLifetimes[logicalIndex] = &logicalDFB.nodeLifetimes.back();
     }

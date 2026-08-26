@@ -1,7 +1,7 @@
 // Summary: Verify PipeTransport grouping retains scalar execution when tensor
 // slice progression is not proven contiguous.
 // RUN: ttlang-opt %s --ttl-form-pipe-transports | FileCheck %s
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=2 l1-budget-override=17024' | FileCheck %s --check-prefix=CALLBACK-BUDGET
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=2 l1-budget-override=29760' | FileCheck %s --check-prefix=CALLBACK-BUDGET
 
 #layout = #ttl.layout<
     shape = [32, 256], element_type = !ttcore.tile<32x32, f32>,
@@ -29,8 +29,8 @@
 // CHECK-LABEL: func.func @callback_budget_static
 // CHECK: ttl.pipe_transfer.create {{.*}}block_span = 2 : i64
 
-// The old callback estimate fits exactly at 17024 bytes; capacity
-// synchronization for both callback transfers makes the corrected bound fail.
+// The scalar module fits exactly at 29760 bytes; capacity synchronization for
+// both callback transfers makes the grouped candidate exceed the budget.
 // CALLBACK-BUDGET-LABEL: func.func @callback_budget_static
 // CALLBACK-BUDGET-NOT: block_span
 // CALLBACK-BUDGET: scf.for

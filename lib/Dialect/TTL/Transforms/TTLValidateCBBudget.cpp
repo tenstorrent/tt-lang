@@ -144,9 +144,8 @@ struct TTLValidateCBBudgetPass
       signalPassFailure();
       return;
     }
-    std::optional<uint64_t> maybeCombinedBytes =
-        llvm::checkedAddUnsigned(*maybeDFBAndResetBytes,
-                                 *reconfigurationStateBytes);
+    std::optional<uint64_t> maybeCombinedBytes = llvm::checkedAddUnsigned(
+        *maybeDFBAndResetBytes, *reconfigurationStateBytes);
     if (!maybeCombinedBytes) {
       moduleOp.emitOpError()
           << "total DFB and fixed-state allocation size is not "

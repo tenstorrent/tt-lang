@@ -11,7 +11,7 @@ module {
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute
   } {
-    // expected-error @below {{'ttl.bind_cb' op total DFB allocation and reconfiguration state (3136 bytes) exceeds L1 budget (3000 bytes)}}
+    // expected-error @below {{'ttl.bind_cb' op total DFB and fixed-state allocation (3136 bytes) exceeds L1 budget (3000 bytes)}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.dfb_reconfiguration #boundary

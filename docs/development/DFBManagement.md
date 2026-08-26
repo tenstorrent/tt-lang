@@ -1922,8 +1922,11 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       declarations and identity-preserving casts
 
   for each logical DFB pair A, B:
-    add descriptor mismatch if A.type != B.type, except for members of one
-        explicit allocation group without opaque external access
+    add descriptor mismatch unless A.type == B.type, or both types have an
+        identical page format and either:
+          A and B belong to one scratch allocation group without opaque access
+          A and B occupy disjoint synchronized configuration epochs without
+              opaque access
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
@@ -1934,6 +1937,8 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       else:
         add access-completion-not-proven conflict unless both node lifetimes
             are proven
+        if the node lifetimes occupy disjoint configuration epochs:
+          continue
         add transaction conflict unless their transaction tile-count sequences
             match
         add pointer-owner conflict unless read and write owners match
@@ -1979,6 +1984,7 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
 
   aggregate L1 bytes once per unique physical index
   authoritativeDFBBudget = L1 limit - synchronized-reset scratch
+      - reconfiguration state
   minimumSearchTrigger = authoritativeDFBBudget
       - provisional conservative PipeNet reservation
   if assignment exceeds minimumSearchTrigger and is not known minimum:
@@ -1991,8 +1997,9 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       assignment = minimumResult.assignment
     aggregate L1 bytes once per unique physical index
   reject if the assignment exceeds authoritativeDFBBudget
-  build one runtime descriptor for every physical index
-  reject conflicting descriptors at one physical index
+  build one initial runtime descriptor and its ordered epoch configurations
+      for every physical index
+  reject conflicting descriptors within one configuration epoch
   reject if the internal assignment is not a dense zero-based range
   record every existing kernel base-index attribute
   return immutable {
@@ -2054,16 +2061,18 @@ the earliest-event antichain and completes no later than the terminal pop.
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
 
-1. A and B either have identical descriptors or belong to one validated
-   scratch allocation group with the same element type and a physical capacity
-   at least as large as both logical capacities.
-2. Ordinary reuse requires the same normalized transaction-run sequence.
-   Allocation groups instead prove that the cumulative member sequence never
-   crosses the shared physical envelope.
-3. On every shared launched node, their write effects have the same hardware
-   pointer owner and their read effects have the same hardware pointer owner.
-4. On every shared launched node, A's terminal pop completes before every
-   earliest use of B. Disjoint launch-node domains need no temporal relation.
+1. A and B have identical descriptors, use one validated scratch capacity
+   envelope, or occupy disjoint synchronized configuration epochs with an
+   identical page format.
+2. Within one configuration epoch, ordinary reuse requires the same normalized
+   transaction-run sequence. Allocation groups instead prove that the
+   cumulative member sequence never crosses the shared physical envelope.
+3. Within one configuration epoch, their write effects have the same hardware
+   pointer owner and their read effects have the same hardware pointer owner on
+   every shared launched node.
+4. A's terminal pop completes before every earliest use of B, or their complete
+   lifecycles occupy different configuration epochs separated by a synchronized
+   boundary. Disjoint launch-node domains need no temporal relation.
 
 Therefore A has zero occupancy and no remaining access before any producer or
 consumer can begin B. An early B wait cannot consume A's data because its entry
@@ -2128,28 +2137,30 @@ dimensions affect the physical allocation without requiring runtime device
 initialization.
 
 ```text
-buildRuntimeDescriptors(assignments):
-  for assignment in assignments:
-    if assignment.physicalIndex is new:
-      allocationByIndex.insert(assignment.physicalIndex, assignment.type)
-    else if assignment.type differs from the selected type:
-      require both assignments belong to one allocation group
-      require identical element types and scratch storage
-      retain the type with the largest byte capacity
-
-  for (index, type) in allocationByIndex sorted by index:
-    emit {dfb_index = index,
-          num_tiles = type.elementsPerBlock,
-          element_type = type.elementType,
-          page_size = byteSize(type.elementType),
-          block_count = type.blockCount}
+buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
+  for physicalIndex in assignments grouped by index:
+    for assignment in physicalIndex.assignments:
+      for active lifecycle epoch, or the initial epoch when none is recorded:
+        configuration = configurations[epoch.entryBoundary]
+        if configuration is new:
+          initialize it from assignment.type
+        else if configuration differs from assignment.type:
+          require both assignments belong to one scratch allocation group
+          require one page format and no opaque external access
+          retain the type with the largest byte capacity
+        merge assignment.storage into configuration.activeDomain
+    sort configurations by the proved boundary order
+    copy the initial configuration into the physical descriptor fields
+    emit the physical descriptor and its ordered epoch configurations
 ```
 
 Every finalized declaration contributes to the table. Exact-type reuse keeps
-one unchanged descriptor. A validated allocation group retains one element
-type and selects a descriptor with the maximum required scratch bytes.
-Deriving the page size from the same element type used by lowering keeps
-compiler and runtime page formats equal.
+one unchanged descriptor. A validated allocation group selects the maximum
+scratch capacity required within one epoch. A synchronized reconfiguration may
+select a different geometry, block count, or storage segment in a later epoch.
+The page format remains identical across all epochs. Deriving every page size
+from the same element type used by lowering keeps compiler and runtime formats
+equal.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
@@ -2258,13 +2269,13 @@ with releases before finalization.
   pointer state between NOC0, NOC1, Pack, and Unpack. Reuse across different
   hardware pointer owners requires an explicit state transfer or reset.
 
-- **Storage compatibility.** Automatic reuse still requires exact
-  `CircularBufferType` equality. Typed allocation groups support a
-  scratch-only capacity envelope across different block shapes and block counts
-  with one exact page format. Different element types, tile formats,
-  tensor-backed capacities, or statically incompatible compute configurations
-  remain invalid. General page-format reconfiguration would require a typed
-  synchronized epoch transition and runtime descriptor updates.
+- **Storage compatibility.** Automatic reuse within one configuration epoch
+  requires exact `CircularBufferType` equality. Typed allocation groups support
+  a scratch-only capacity envelope across different block shapes and block
+  counts with one exact page format. Synchronized reconfiguration supports
+  different outer geometry, block counts, and storage in disjoint epochs.
+  Different element types, tile formats, or statically incompatible compute
+  configurations remain invalid.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One

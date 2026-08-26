@@ -12,7 +12,7 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
     ttl.logical_kernel = #compute
   } {
     // Each 24-byte payload occupies 64 bytes; boundary state occupies 1088.
-    // expected-error @below {{total DFB allocation and reconfiguration state (1216 bytes) exceeds L1 budget (1215 bytes)}}
+    // expected-error @below {{total DFB and fixed-state allocation (1216 bytes) exceeds L1 budget (1215 bytes)}}
     %first = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<1x16, bfp_bf4>, 1>
     %second = ttl.bind_cb {cb_index = 1, block_count = 1}
