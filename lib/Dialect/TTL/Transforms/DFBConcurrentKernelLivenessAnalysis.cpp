@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -355,11 +356,6 @@ struct AccessDomain {
   Operation *unanalyzableOperation = nullptr;
 };
 
-// Retains access-domain results from the shared launch-domain analysis.
-struct LivenessDomainState : LaunchNodeDomainState {
-  DenseMap<Operation *, AccessDomain> accessDomains;
-};
-
 // One static occurrence of a typed synchronized reset before launch-node
 // participation is validated.
 struct SynchronizedResetOccurrence {
@@ -470,7 +466,7 @@ static bool executesRegionsAtMostOnce(Operation *operation) {
 
 static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
     Operation *operation, AccessDomain accessDomain,
-    const LivenessDomainState &domainState) {
+    const LaunchNodeDomainState &domainState) {
   if (accessDomain.domain.known) {
     return accessDomain;
   }
@@ -494,7 +490,7 @@ static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
 // enclosing-loop invocation.
 static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
     Operation *operation, std::uint64_t executionCount, LaunchNodeCoord node,
-    const LivenessDomainState &domainState) {
+    const LaunchNodeDomainState &domainState) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
       !function.getBody().hasOneBlock()) {
@@ -1500,11 +1496,10 @@ collectAccessExecutionCounts(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
   return executionCounts;
 }
 
-static AccessRuns
-collectAccessRuns(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
-                  LaunchNodeCoord node, const LivenessDomainState &domainState,
-                  const AccessExecutionCounts &executionCounts,
-                  bool includeUnknownDomains) {
+static AccessRuns collectAccessRuns(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs, LaunchNodeCoord node,
+    const LaunchNodeDomainState &domainState,
+    const AccessExecutionCounts &executionCounts, bool includeUnknownDomains) {
   AccessRuns runs;
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
@@ -1727,7 +1722,7 @@ static LogicalResult validateDFBReconfigurationDeclarations(
 
 static LogicalResult validateDFBReconfigurationsAtNode(
     ArrayRef<DFBReconfigurationOccurrence> occurrences, LaunchNodeCoord node,
-    const LivenessDomainState &domainState,
+    const LaunchNodeDomainState &domainState,
     const StructuralOperationOrder &structuralOrder,
     SmallVectorImpl<ValidatedDFBReconfiguration> &validatedBoundaries,
     DFBAnalysisFailure &analysisFailure) {
@@ -1874,7 +1869,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
 
 static LogicalResult validateSynchronizedResetsAtNode(
     ArrayRef<SynchronizedResetOccurrence> occurrences, LaunchNodeCoord node,
-    const LivenessDomainState &domainState,
+    const LaunchNodeDomainState &domainState,
     SmallVectorImpl<ValidatedSynchronizedReset> &validatedResets,
     DFBAnalysisFailure &analysisFailure) {
   llvm::MapVector<SynchronizedDFBResetAttr,
@@ -4997,7 +4992,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     }
   }
 
-  LivenessDomainState domainState;
+  LaunchNodeDomainState domainState;
   domainState.initialize(module);
   exactLaunchGridAvailable = domainState.hasLaunchGrid;
   if (!domainState.hasLaunchGrid) {
@@ -5019,12 +5014,6 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   LaunchNodeDomainAnalysisOptions options;
   options.narrowPipeNetScopes = true;
   options.emitInvalidPipeNetDiagnostics = false;
-  options.operationCallback = [&](Operation *accessOperation,
-                                  const LaunchNodeDomain &domain,
-                                  Operation *unanalyzableOperation) {
-    domainState.accessDomains[accessOperation] = {domain,
-                                                  unanalyzableOperation};
-  };
   solver.load<LaunchNodeDomainAnalysis>(domainState, options);
   if (failed(solver.initializeAndRun(module))) {
     errorOperation = module;
@@ -5044,11 +5033,25 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     if (refinedDomainIt != refinedAccessDomains.end()) {
       return refinedDomainIt->second;
     }
-    auto domainIt = domainState.accessDomains.find(accessOperation);
-    AccessDomain accessDomain =
-        domainIt == domainState.accessDomains.end()
-            ? AccessDomain{LaunchNodeDomain::unknown(), accessOperation}
-            : domainIt->second;
+    const LaunchNodeDomainLattice *domainLattice =
+        solver.lookupState<LaunchNodeDomainLattice>(
+            solver.getProgramPointBefore(accessOperation));
+    AccessDomain accessDomain;
+    if (domainLattice) {
+      accessDomain = {domainLattice->getDomain(),
+                      domainLattice->getUnanalyzableOp()};
+    } else {
+      // Dense analysis omits operation lattices in dead blocks. Dead-code
+      // state distinguishes an empty domain from a missing analysis fact.
+      ProgramPoint *blockStart =
+          solver.getProgramPointBefore(accessOperation->getBlock());
+      const auto *executable =
+          solver.lookupState<dataflow::Executable>(blockStart);
+      accessDomain =
+          executable && !executable->isLive()
+              ? AccessDomain{LaunchNodeDomain{}, nullptr}
+              : AccessDomain{LaunchNodeDomain::unknown(), accessOperation};
+    }
     return refinedAccessDomains
         .try_emplace(accessOperation,
                      refineUnknownAccessDomainFromExecutionCounts(
@@ -5084,14 +5087,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
   for (DFBReconfigurationOccurrence &reconfiguration :
        reconfigurationOccurrences) {
-    auto domainIt = domainState.accessDomains.find(reconfiguration.operation);
-    AccessDomain boundaryDomain =
-        domainIt == domainState.accessDomains.end()
-            ? AccessDomain{LaunchNodeDomain::unknown(),
-                           reconfiguration.operation}
-            : domainIt->second;
-    boundaryDomain = refineUnknownAccessDomainFromExecutionCounts(
-        reconfiguration.operation, boundaryDomain, domainState);
+    const AccessDomain &boundaryDomain =
+        getRefinedAccessDomain(reconfiguration.operation);
     reconfiguration.launchDomain = boundaryDomain.domain;
   }
   if (failed(validateSynchronizedResetDeclarations(resetOccurrences,
