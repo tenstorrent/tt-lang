@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith, ttl
@@ -1051,6 +1052,16 @@ def unsqueeze(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     return _block_shape_view(input, result_shape)
 
 
+def _warn_if_reduce_shape_omitted(shape) -> None:
+    if shape is not None:
+        return
+    warnings.warn(
+        "Omitting the reduce shape argument is deprecated; pass shape explicitly",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 def _reduce_impl(
     input: TensorBlock,
     dims: List[int],
@@ -1116,10 +1127,12 @@ def reduce_sum(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBloc
 
     ``shape`` is the result shape required by the language specification. It
     must be 1 in reduced dimensions and match the input in all other
-    dimensions. When omitted, it is inferred for backward compatibility.
+    dimensions. Omitting it is deprecated; it is currently inferred for
+    backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_sum(x, dims=...)`.
     """
+    _warn_if_reduce_shape_omitted(shape)
     return _reduce_impl(input, dims, reduce_type=0, shape=shape)
 
 
@@ -1129,10 +1142,12 @@ def reduce_max(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBloc
 
     ``shape`` is the result shape required by the language specification. It
     must be 1 in reduced dimensions and match the input in all other
-    dimensions. When omitted, it is inferred for backward compatibility.
+    dimensions. Omitting it is deprecated; it is currently inferred for
+    backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_max(x, dims=...)`.
     """
+    _warn_if_reduce_shape_omitted(shape)
     return _reduce_impl(input, dims, reduce_type=1, shape=shape)
 
 

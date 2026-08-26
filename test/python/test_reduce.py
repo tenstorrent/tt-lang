@@ -13,6 +13,7 @@ import atexit
 import importlib
 import os
 import tempfile
+import warnings
 from typing import Callable, List, Tuple
 
 import pytest
@@ -23,8 +24,26 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, assert_pcc, to_l1, to_dram
 
 import ttl
+from ttl import operators
 
 TILE = 32
+
+
+@pytest.mark.parametrize("reduce_fn", [operators.reduce_sum, operators.reduce_max])
+def test_omitted_reduce_shape_is_deprecated(monkeypatch, reduce_fn):
+    result = object()
+    monkeypatch.setattr(operators, "_reduce_impl", lambda *args, **kwargs: result)
+
+    with pytest.warns(
+        DeprecationWarning, match="Omitting the reduce shape argument is deprecated"
+    ) as recorded:
+        assert reduce_fn(object(), dims=[0]) is result
+    assert recorded[0].filename == __file__
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        assert reduce_fn(object(), dims=[0], shape=(1, 1)) is result
+
 
 # =============================================================================
 # Kernel generation from templates
