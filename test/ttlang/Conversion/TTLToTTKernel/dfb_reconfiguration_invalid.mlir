@@ -1,4 +1,4 @@
-// Verifies that conversion rejects reconfiguration on unsupported targets.
+// Verifies DFB reconfiguration conversion precondition diagnostics.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --convert-ttl-to-ttkernel
 
 module attributes {

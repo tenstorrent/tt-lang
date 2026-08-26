@@ -2234,7 +2234,7 @@ equal.
 Reconfiguration supports BF16, FP32, BFP8_B, BFP4_B, U32, U16, U8, and I32
 DFB formats. Pack and unpack reconfiguration is qualified for every listed
 format except U8, whose compute passthrough is unsupported; U8 is qualified for
-the NOC interfaces. IEEE FP16 is rejected because TTNN does not expose a native
+the NoC interfaces. IEEE FP16 is rejected because TTNN does not expose a native
 FP16 tensor representation; its `float16` compatibility name resolves to BF16
 and does not represent IEEE FP16 storage.
 
