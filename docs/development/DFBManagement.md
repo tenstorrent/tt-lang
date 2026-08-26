@@ -264,6 +264,13 @@ handshake prevents any interface owner from beginning following DFB work until
 all masked updates complete. Independent math and SFPU work may overlap the
 boundary.
 
+Caller-defined per-core runtime arguments precede the compiler-owned
+configuration addresses. The compiler reserves one compile-time argument for
+the caller argument count, so generated kernels locate the configuration
+addresses without changing caller-visible indices. When caller argument counts
+differ by core, the runtime emits descriptors for disjoint core sets with one
+count per descriptor.
+
 Configuration tensors, PipeNet scratch, computed-address backing, and
 GlobalSemaphore objects remain owned by the operation's serialized
 runtime-resource cache. Compatible calls reuse one generation. Incompatible
@@ -2034,12 +2041,12 @@ diagnostic-producing validation before `TTLFinalizeDFBIndices` changes any
 materializes the validated plan.
 
 Transport formation may record a conservative PipeNet L1 reservation before
-finalization. That reservation lowers the threshold that triggers minimum-index
-search, so finalization can select a smaller DFB assignment before exact PipeNet
-planning. It is not an authoritative rejection condition: finalization rejects
-only when DFB storage plus synchronized-reset scratch exceeds L1. Conversion
-then validates finalized DFB storage against the exact PipeNet scratch and
-GlobalSemaphore requirements.
+finalization. That reservation lowers the threshold that triggers
+weighted-allocation search, so finalization can select a fitting DFB assignment
+before exact PipeNet planning. It is not an authoritative rejection condition:
+finalization rejects only when DFB storage plus synchronized-reset and
+reconfiguration state exceeds L1. Conversion then validates that allocation
+against the exact PipeNet scratch and GlobalSemaphore requirements.
 
 Finalization is idempotent on unchanged finalized IR. Reanalysis reconstructs
 the same logical identities, typed conflicts, physical indices, descriptors,
@@ -2126,8 +2133,9 @@ B0, Quasar, and absent target metadata.
 
 The allocation planner records the final `ttl.base_cta_index` for every kernel
 that has the attribute. Compile-time arguments to each kernel reserve
-`[0, base_cta_index)` for physical DFB indices; `base_cta_index` is the first
-non-DFB argument index.
+`[0, physical_dfb_count)` for physical DFB indices. Reconfiguration reserves
+the next argument for the caller runtime-argument count. `base_cta_index` is
+the first tensor-accessor argument index after these compiler-defined entries.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
 Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
@@ -2280,15 +2288,15 @@ with releases before finalization.
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One
   fixed-limit exhaustive query runs when first-fit exceeds the physical-index
-  limit. Minimum physical-index-count search also runs when a valid assignment
-  exceeds the DFB-plus-reset L1 budget or a provisional threshold that reserves
-  conservative PipeNet resources. Only the DFB-plus-reset budget is
-  authoritative during finalization; exact combined resources are validated
-  during conversion. Each query is limited to 1,000,000 deterministic states by
-  default so difficult graphs cannot make compile time unbounded. Limit
-  exhaustion reports an inconclusive allocation only when acceptance requires
-  the search result; proven infeasibility reports a capacity failure. DRAM
-  spilling is tracked by
+  limit. Weighted-allocation search runs when a valid assignment exceeds the
+  DFB-plus-fixed-state L1 budget or a provisional threshold that reserves
+  conservative PipeNet resources. The authoritative finalizer budget includes
+  synchronized-reset and reconfiguration state; exact combined PipeNet and
+  GlobalSemaphore resources are validated during conversion. Each query is
+  limited to 1,000,000 deterministic states by default so difficult graphs
+  cannot make compile time unbounded. Limit exhaustion reports an inconclusive
+  allocation only when acceptance requires the search result; proven
+  infeasibility reports a capacity failure. DRAM spilling is tracked by
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
 
 - **Reachability cost.** Each launch node runs one graph traversal from every
