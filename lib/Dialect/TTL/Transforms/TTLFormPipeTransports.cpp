@@ -1015,8 +1015,14 @@ struct TTLFormPipeTransportsPass
         module.emitOpError("combined L1 allocation size is not representable");
         return failure();
       }
+      FailureOr<uint64_t> allocationBytes =
+          allocationFootprint->getTotalBytes();
+      if (failed(allocationBytes)) {
+        module.emitOpError("combined L1 allocation size is not representable");
+        return failure();
+      }
       return validateCombinedDFBResourceL1Bytes(
-          module, *allocationFootprint, *scratchBytes,
+          module, *allocationBytes, *scratchBytes,
           resources.globalSemaphoreCount, overrideBytes);
     };
     if (groupSize == 1) {

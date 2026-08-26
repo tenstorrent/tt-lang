@@ -1075,6 +1075,17 @@ def TTLFinalizeDFBIndices
     reconfiguration unchanged and remains active in every epoch it spans, so
     its physical index cannot be reassigned at those boundaries.
 
+    Physical-index coloring and storage coloring enforce different contracts.
+    A physical index identifies one active hardware descriptor and therefore
+    requires compatible page format and protocol state. After selecting the
+    physical indices, the pass may assign distinct physical descriptors to one
+    `storage_index` when their byte-storage lifetimes are strictly ordered on
+    every shared launch node. The descriptors may use different element types,
+    page sizes, or capacities because each retains its own runtime descriptor.
+    The shared backing allocation uses the maximum required byte capacity with
+    an alignment divisible by every member page size. Tensor-backed descriptors
+    and descriptors without a proven storage-lifetime order remain separate.
+
     One unresolved structured condition is supported when every active DFB
     access belongs to one reserve, push, wait, and pop transaction controlled
     by equivalent `scf.if` or `affine.if` frames. Branch polarity, nesting, and
@@ -1139,8 +1150,9 @@ def TTLFinalizeDFBIndices
     DFB-plus-fixed-state L1 budget, or the provisional threshold after a
     conservative PipeNet reservation, weighted search asks whether another
     assignment fits using the sum of the maximum allocation assigned to each
-    physical index. The reservation triggers search but cannot make finalization
-    reject an assignment that satisfies the authoritative budget. Conversion
+    compiler-selected storage index. The reservation triggers search but cannot
+    make finalization reject an assignment that satisfies the authoritative
+    budget. Conversion
     validates the finalized allocation against exact PipeNet resources.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
@@ -1197,12 +1209,18 @@ def TTLFinalizeDFBIndices
     missing compiler-created logical IDs, and builds `ttl.dfb_allocations` for
     the Python runtime. The attribute contains one descriptor per physical
     index, including user-declared and compiler-created DFBs, and records the
-    page size computed from the finalized element type. A descriptor also
-    records the exact union of launch nodes that access its physical index when
-    that domain is known. An exact empty domain causes the runtime to install no
-    DFB descriptor; omitted domain metadata requires conservative whole-grid
-    allocation. See
+    page size computed from the finalized element type. Its `storage_index`
+    identifies the byte allocation used by that descriptor; multiple distinct
+    descriptors may share one storage index only when their storage lifetimes
+    are proven disjoint. A descriptor also records the exact union of launch
+    nodes that access its physical index when that domain is known. An exact
+    empty domain causes the runtime to install no DFB descriptor; omitted domain
+    metadata requires conservative whole-grid allocation. See
     docs/development/DFBManagement.md.
+
+    Storage selection minimizes the maximum target-rounded allocation over
+    launch nodes. A descriptor contributes only on nodes in its known
+    allocation domain; an unknown domain contributes on every launch node.
   }];
 
   let options = [
@@ -1229,19 +1247,23 @@ def TTLValidateCBBudget
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
     `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
-    static backing-store size per physical DFB index, allocator-rounded
-    synchronized-reset state, and one target-aligned configuration tensor per
-    synchronized reconfiguration boundary, then compares the result against a
-    per-core L1 budget. Tensor-backed DFB storage is excluded because the tensor
-    allocator owns that allocation.
+    static backing-store size per compiler-selected DFB storage index on each
+    launch node, allocator-rounded synchronized-reset state, and one
+    target-aligned configuration tensor per synchronized reconfiguration
+    boundary, then compares the maximum node result against a per-core L1
+    budget. Tensor-backed DFB storage is excluded because the tensor allocator
+    owns that allocation. Unknown allocation domains conservatively contribute
+    to every launch node; missing residency metadata uses the global descriptor
+    sum.
 
     For each `BindCBOp`, the pass computes:
       dfb_payload_bytes = total_elements * tile_size_bytes
       dfb_allocation_bytes = align_to_target_quantum(dfb_payload_bytes)
 
-    When the same `cb_index` appears in multiple functions (e.g. compute
-    and data-movement kernels sharing a DFB slot), only the largest allocation
-    for that index is counted.
+    When multiple physical `cb_index` descriptors use the same `storage_index`,
+    the pass computes one compatible byte capacity and alignment for that
+    storage allocation. Repeated declarations of one physical index contribute
+    only their largest allocation.
 
     On overflow the pass emits an error with a per-DFB breakdown and a
     hint to reduce block shapes or block counts.
@@ -1253,10 +1275,10 @@ def TTLValidateCBBudget
     (total L1 minus reserved kernel space).
 
     This is a static DFB and fixed-state check. After exact PipeNet planning,
-    `convert-ttl-to-ttkernel` validates the same finalized DFB, reset, and
-    reconfiguration footprint together with target-aligned PipeNet scratch and
-    one target allocation quantum per GlobalSemaphore. Neither check models
-    kernel binaries, stacks, or unrelated runtime allocations.
+    `convert-ttl-to-ttkernel` validates the same maximum finalized per-node DFB,
+    reset, and reconfiguration footprint together with target-aligned PipeNet
+    scratch and one target allocation quantum per GlobalSemaphore. Neither
+    check models kernel binaries, stacks, or unrelated runtime allocations.
   }];
 
   let options = [
