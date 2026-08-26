@@ -94,6 +94,9 @@ enum class ComputeOpCreationRejectionKind {
 enum class ComputeOpCreationWarningKind {
   /// Instrumentation prevents combining a matmul and its accumulator add.
   InstrumentationPreventsMatmulAccumulator,
+
+  /// Instrumentation prevents folding a broadcast into its binary consumer.
+  InstrumentationPreventsBinaryBroadcast,
 };
 
 /// Warning emitted before applying a legal `ComputeOp` creation plan.

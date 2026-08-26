@@ -28,6 +28,11 @@ getComputeOpCreationWarningMessage(ComputeOpCreationWarningKind kind) {
            "folding is disabled because the combined hardware operation "
            "cannot preserve the observation point between ttl.matmul and "
            "ttl.add; the instrumented program uses separate tile operations";
+  case ComputeOpCreationWarningKind::InstrumentationPreventsBinaryBroadcast:
+    return "instrumentation changes code generation: binary-broadcast folding "
+           "is disabled because the combined hardware operation never "
+           "materializes the broadcast result being observed; the instrumented "
+           "program uses separate tile operations";
   }
   llvm_unreachable("unknown ComputeOp creation warning kind");
 }
@@ -532,6 +537,23 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
                       : user->getOperand(0);
     if (!plan.trace.rootInputs.contains(broadcast.getInput()) ||
         !plan.trace.rootInputs.contains(other)) {
+      continue;
+    }
+
+    // The fused operation never materializes the broadcast result, so any
+    // observation point between the pair would lose the value it observes.
+    Operation *interveningInstrumentation = nullptr;
+    for (Operation *between = broadcast->getNextNode();
+         between && between != user; between = between->getNextNode()) {
+      if (isRelocatableComputeInstrumentation(between)) {
+        interveningInstrumentation = between;
+        break;
+      }
+    }
+    if (interveningInstrumentation) {
+      plan.warnings.push_back({interveningInstrumentation,
+                               ComputeOpCreationWarningKind::
+                                   InstrumentationPreventsBinaryBroadcast});
       continue;
     }
 
