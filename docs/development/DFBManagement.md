@@ -226,11 +226,63 @@ participant executes the same boundary instances in the same dynamic order.
 Structured conditional execution is supported only when the participant
 conditions are equivalent. Runtime execution is restricted to Blackhole.
 
+The declaration captures the participating logical kernels. Each participant
+calls `ttl.reconfigure_dfbs` at the corresponding point between two DFB
+lifecycles:
+
+```python
+reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+boundary = ttl.DFBReconfiguration(
+    participants=(ttl.KernelKind.COMPUTE, reader_kernel, writer_kernel)
+)
+
+
+@ttl.operation(grid=(1, 1))
+def two_stage_copy(first_input, first_output, second_input, second_output):
+    first_source = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+    first_result = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+    second_source = ttl.make_dfb("bf16", shape=(1, 2), block_count=2)
+    second_result = ttl.make_dfb("bf16", shape=(1, 2), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with first_source.wait() as source:
+            with first_result.reserve() as result:
+                result.store(source)
+        ttl.reconfigure_dfbs(boundary)
+        with second_source.wait() as source:
+            with second_result.reserve() as result:
+                result.store(source)
+
+    @ttl.datamovement(kernel=reader_kernel)
+    def read():
+        with first_source.reserve() as destination:
+            ttl.copy(first_input[0, 0], destination).wait()
+        ttl.reconfigure_dfbs(boundary)
+        with second_source.reserve() as destination:
+            ttl.copy(second_input[0:1, 0:2], destination).wait()
+
+    @ttl.datamovement(kernel=writer_kernel)
+    def write():
+        with first_result.wait() as source:
+            ttl.copy(source, first_output[0, 0]).wait()
+        ttl.reconfigure_dfbs(boundary)
+        with second_result.wait() as source:
+            ttl.copy(source, second_output[0:1, 0:2]).wait()
+```
+
+The first and second DFBs may receive the same physical indices because their
+lifecycles are ordered by the boundary. The compiler derives and installs the
+second descriptors; the declaration does not supply descriptor values.
+
 Concurrent-kernel liveness builds a happens-before graph for each launch node
 and orders reconfiguration boundaries independently of their numeric ordinals.
 An ordinal identifies a boundary; it does not define execution order. Every
-launch node must prove the same strict boundary order. Unknown execution or
-ordering remains conservative.
+boundary pair that co-occurs on a launch node must have a strict local order,
+and the union of those local orders must be acyclic. Disjoint boundary domains
+need not contain the same boundary sequence. Unknown execution or ordering
+remains conservative.
 
 A complete reserve/push/wait/pop lifecycle can end before a boundary and a new
 lifecycle can begin afterward. An incomplete transaction, unread payload, or
@@ -1937,7 +1989,8 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
-      if A and B share an allocation group and either lifetime has reset epochs:
+      if A and B share an allocation group and either lifetime has explicit
+          lifecycle epochs:
         add access-completion-not-proven conflict unless every epoch completes
         add concurrent-lifetime conflict unless every cross-member epoch pair
             has exactly one proven order
@@ -1992,18 +2045,21 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
   aggregate L1 bytes once per unique physical index
   authoritativeDFBBudget = L1 limit - synchronized-reset scratch
       - reconfiguration state
-  minimumSearchTrigger = authoritativeDFBBudget
+  minimumWeightSearchTrigger = authoritativeDFBBudget
       - provisional conservative PipeNet reservation
-  if assignment exceeds minimumSearchTrigger and is not known minimum:
-    minimumResult = exactMinimumIndexSearch(
-        conflicts, pairwiseConflictLowerBound, searchStateLimit)
+  if allocationBytes exceeds minimumWeightSearchTrigger and
+      is not known minimum:
+    minimumResult = exactMinimumWeightSearch(
+        conflicts, per-DFB allocation bytes, physicalIndexLimit,
+        searchStateLimit)
     if minimumResult is SearchLimitReached and
-        assignment exceeds authoritativeDFBBudget:
+        allocationBytes exceeds authoritativeDFBBudget:
       reject with an inconclusive-search diagnostic
     if minimumResult found an assignment:
       assignment = minimumResult.assignment
+      allocationBytes = minimumResult.minimumBytes
     aggregate L1 bytes once per unique physical index
-  reject if the assignment exceeds authoritativeDFBBudget
+  reject if allocationBytes exceeds authoritativeDFBBudget
   build one initial runtime descriptor and its ordered epoch configurations
       for every physical index
   reject conflicting descriptors within one configuration epoch
@@ -2169,6 +2225,13 @@ select a different geometry, block count, or storage segment in a later epoch.
 The page format remains identical across all epochs. Deriving every page size
 from the same element type used by lowering keeps compiler and runtime formats
 equal.
+
+Reconfiguration supports BF16, FP32, BFP8_B, BFP4_B, U32, U16, U8, and I32
+DFB formats. Pack and unpack reconfiguration is qualified for every listed
+format except U8, whose compute passthrough is unsupported; U8 is qualified for
+the NOC interfaces. IEEE FP16 is rejected because TTNN does not expose a native
+FP16 tensor representation; its `float16` compatibility name resolves to BF16
+and does not represent IEEE FP16 storage.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It

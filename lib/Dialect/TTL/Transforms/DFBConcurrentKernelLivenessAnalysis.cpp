@@ -3657,8 +3657,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     SmallVector<Operation *> nativeReserves;
     SmallVector<Operation *> nativeWaits;
     // Acquire ownership ends at the next same-kind acquire in the complete
-    // kernel. Restricting these boundaries to one reset epoch makes an earlier
-    // acquisition incorrectly own direct DFB uses in subsequent epochs.
+    // kernel. Restricting these boundaries to one lifecycle epoch makes an
+    // earlier acquisition incorrectly own direct DFB uses in subsequent epochs.
     for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
       if (!mayContainLaunchNode(access.launchDomain, node,
                                 includeUnknownDomains)) {

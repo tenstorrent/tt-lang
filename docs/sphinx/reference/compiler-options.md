@@ -168,7 +168,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
 - `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-core L1 budget
-- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, and synchronized-reset operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
+- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
@@ -294,7 +294,8 @@ ttlang-opt input.mlir --ttl-form-pipe-transports='group-size=8'
 
 #### `convert-ttl-to-ttkernel`
 
-Lower TTL data movement and PipeNet operations to TTKernel.
+Lower TTL data movement, PipeNet, synchronized-reset, and DFB reconfiguration
+operations to TTKernel.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

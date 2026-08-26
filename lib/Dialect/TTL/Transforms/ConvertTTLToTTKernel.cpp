@@ -1692,7 +1692,7 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
-// Opaque call lowering
+// DFB reconfiguration lowering
 //===----------------------------------------------------------------------===//
 
 struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
@@ -1750,6 +1750,10 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
     return success();
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Opaque call lowering
+//===----------------------------------------------------------------------===//
 
 struct OpaqueScalarArgument {
   Value value;

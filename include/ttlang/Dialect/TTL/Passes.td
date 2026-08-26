@@ -277,10 +277,11 @@ def TTLMaterializeLoopState
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
+  let summary = "Lower TTL data movement, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel";
   let description = [{
-    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
-    and semaphore operations. PipeNet lowering selects receiver-published or
+    Converts TTL DFB, copy, wait, PipeNet, synchronized-reset, and DFB
+    reconfiguration operations to TTKernel DFB, NoC, semaphore, and external
+    interface operations. PipeNet lowering selects receiver-published or
     computed destination addresses and receiver-post or capacity-counter
     synchronization according to the pass options and transfer eligibility.
     PipeNet counters use local semaphore ids before GlobalSemaphore storage by
@@ -288,8 +289,8 @@ def TTLConvertTTLToTTKernel
     application use.
 
     The pass validates finalized DFB backing plus the exact PipeNet and
-    synchronized-reset scratch allocation against the selected per-core L1
-    budget before lowering the operations.
+    synchronized-reset scratch and DFB reconfiguration state against the
+    selected per-core L1 budget before lowering the operations.
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,

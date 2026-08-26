@@ -320,7 +320,7 @@ public:
   bool hasConditionallyInconsistentOrder(unsigned lhsIndex, unsigned rhsIndex,
                                          LaunchNodeCoord node) const;
 
-  /// Returns true when one reset-delimited epoch ends before another.
+  /// Returns true when one lifecycle epoch ends before another.
   bool isEpochOrderedBefore(unsigned beforeIndex, unsigned beforeEpochIndex,
                             unsigned afterIndex, unsigned afterEpochIndex,
                             LaunchNodeCoord node) const;
