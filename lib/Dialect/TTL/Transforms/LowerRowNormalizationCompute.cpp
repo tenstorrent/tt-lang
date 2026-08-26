@@ -120,7 +120,7 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     reason = "cannot determine effective DST capacity";
     return failure();
   }
-  analysis.dstCapacity = std::min<std::uint32_t>(8, *capacity);
+  analysis.dstCapacity = *capacity;
   if (analysis.numTiles < 1 || analysis.numTiles > analysis.dstCapacity) {
     reason =
         (Twine("row requires ") + Twine(analysis.numTiles) +
