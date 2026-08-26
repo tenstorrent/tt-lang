@@ -349,11 +349,6 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif isinstance(value, DFBReset):
             dfb_resets[capture_name] = value
         elif isinstance(value, DFBReconfiguration):
-            if capture_name in closure_values.globals:
-                raise ValueError(
-                    f"@ttl.operation {name!r}: DFBReconfiguration "
-                    f"{capture_name!r} must be created by an enclosing factory"
-                )
             dfb_reconfigurations[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)

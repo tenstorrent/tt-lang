@@ -309,7 +309,6 @@ class _KernelSelectorResolver:
                 )
         return frozenset(participants)
 
-
     def resolve_release(self, call: ast.Call) -> Optional[KernelSelector]:
         selector = _kernel_keyword(call)
         if selector is None:

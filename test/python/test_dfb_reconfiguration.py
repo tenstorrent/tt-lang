@@ -27,14 +27,13 @@ DFB_RECONFIGURATION_TEST_HEADER = os.path.join(
 
 
 def _make_reconfiguration_operation(data_format, grid_cols):
-    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     first_boundary = ttl.DFBReconfiguration(
-        participants=(compute_kernel, reader_kernel, writer_kernel)
+        participants=(ttl.KernelKind.COMPUTE, reader_kernel, writer_kernel)
     )
     second_boundary = ttl.DFBReconfiguration(
-        participants=(compute_kernel, reader_kernel, writer_kernel)
+        participants=(ttl.KernelKind.COMPUTE, reader_kernel, writer_kernel)
     )
 
     @ttl.operation(grid=(grid_cols, 1))
@@ -53,7 +52,7 @@ def _make_reconfiguration_operation(data_format, grid_cols):
         third_source = ttl.make_dfb(data_format, shape=(2, 1), block_count=4)
         third_result = ttl.make_dfb(data_format, shape=(2, 1), block_count=4)
 
-        @ttl.compute(kernel=compute_kernel)
+        @ttl.compute()
         def compute():
             with first_source.wait() as source:
                 with first_result.reserve() as result:
@@ -700,7 +699,7 @@ def test_reconfiguration_executes_with_physical_indices_above_31(
     operation(
         to_device(input_host, device),
         output,
-        options="--ttl-reuse-user-dfbs",
+        options="--no-ttl-reuse-user-dfbs",
     )
 
     final_mlir = mlir_file.read_text()

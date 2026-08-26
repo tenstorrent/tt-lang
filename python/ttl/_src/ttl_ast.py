@@ -33,6 +33,8 @@ from ..kernel import (
     Kernel,
     KernelKind,
     _DFB_RELEASE_METHODS,
+    _selector_implicit_role,
+    _selector_kind,
     _selector_sort_key,
 )
 from ..scalar import ScalarType
@@ -2059,11 +2061,20 @@ class TTLGenericCompiler(TTCompilerBase):
         return ttl.dfb_reconfiguration(boundary_attr)
 
     def _logical_kernel_attr(self, participant):
+        participant_kind = _selector_kind(participant)
         ir_kind = {
             KernelKind.COMPUTE: ttl.ir.LogicalKernelKind.Compute,
             KernelKind.DATA_MOVEMENT: ttl.ir.LogicalKernelKind.DataMovement,
-        }[participant.kind]
-        if not isinstance(participant, Kernel) or participant._identity is None:
+        }[participant_kind]
+        if isinstance(participant, KernelKind):
+            return ttl.ir.LogicalKernelAttr.get(
+                self.ctx,
+                ir_kind,
+                None,
+                None,
+                None,
+            )
+        if participant._identity is None:
             raise TypeError(
                 "DFB synchronization participant Kernel must be captured by the enclosing "
                 "@ttl.operation"
@@ -2073,7 +2084,7 @@ class TTLGenericCompiler(TTCompilerBase):
             ir_kind,
             participant.identity,
             participant._operation_identity,
-            participant._implicit_role,
+            _selector_implicit_role(participant),
         )
 
     def _resolve_dfb_value(self, node, param_name, api_name="call_extern_func"):
