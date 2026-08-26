@@ -1,7 +1,7 @@
 // Verifies final allocation rejects reset scratch above the L1 budget.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=2111})'
 
-// expected-error @below {{DFB and synchronized-reset allocation requires 2112 L1 bytes but the budget is 2111 (DFB=2048, reset scratch=64)}}
+// expected-error @below {{DFB and fixed-state allocation requires 2112 L1 bytes but the budget is 2111 (DFB=2048, reset scratch=64, reconfiguration state=0)}}
 module attributes {
   ttl.launch_grid = [1, 1],
   ttl.target_arch = #ttcore.arch<blackhole>

@@ -46,6 +46,50 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Tensor-backed receiver storage uses the runtime address published by the
+// receiver instead of a separately allocated computed-address base.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  // COMPUTED-LABEL: func.func @tensor_backed_receiver_uses_published_address
+  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
+  // COMPUTED: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.noc_async_write
+
+  // PUBLISHED-LABEL: func.func @tensor_backed_receiver_uses_published_address
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED: ttkernel.load_from_l1
+  // PUBLISHED: ttkernel.noc_async_write
+  func.func @tensor_backed_receiver_uses_published_address(
+      %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %reserved = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %receive = ttl.copy %pipe, %reserved
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    %send = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %receive : !ttl.transfer_handle
+    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    func.return
+  }
+}
+
+// -----
+
 // Two two-block reservations exactly fill a four-block receiver DFB. The
 // second reservation reaches the physical end without advancing past it.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {

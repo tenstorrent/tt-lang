@@ -65,7 +65,11 @@ from .dfb_reset import (
     DFBReset,
     _bind_dfb_resets,
     _dfb_reset_topology,
-    _transitive_participant_kernels,
+)
+from .dfb_reconfiguration import (
+    DFBReconfiguration,
+    _bind_dfb_reconfigurations,
+    _dfb_reconfiguration_topology,
 )
 from .dfb_allocation_group import (
     DFBAllocationGroup,
@@ -89,6 +93,7 @@ from .kernel import (
     _operation_identity,
     _selector_implicit_role,
     _selector_kind,
+    _transitive_participant_kernels,
 )
 from .operators import _set_current_grid
 from .pipe import PipeNet
@@ -218,6 +223,7 @@ class _AtomSpec:
     dispatch_conditions: Dict[str, DispatchCondition]
     allocation_groups: Dict[str, DFBAllocationGroup]
     dfb_resets: Dict[str, DFBReset]
+    dfb_reconfigurations: Dict[str, DFBReconfiguration]
 
 
 def _has_explicit_kernels(fn: Callable) -> bool:
@@ -293,6 +299,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         inlined_dispatch_conditions,
         inlined_allocation_groups,
         inlined_dfb_resets,
+        inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
@@ -311,6 +318,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     )
     allocation_groups: Dict[str, DFBAllocationGroup] = dict(inlined_allocation_groups)
     dfb_resets: Dict[str, DFBReset] = dict(inlined_dfb_resets)
+    dfb_reconfigurations: Dict[str, DFBReconfiguration] = dict(
+        inlined_dfb_reconfigurations
+    )
     captured_logical_kernels: Dict[str, Kernel] = {}
     captured_names = sorted(loaded_names & captured_values.keys())
     for capture_name in captured_names:
@@ -338,6 +348,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             allocation_groups[capture_name] = value
         elif isinstance(value, DFBReset):
             dfb_resets[capture_name] = value
+        elif isinstance(value, DFBReconfiguration):
+            dfb_reconfigurations[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -347,12 +359,20 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
-    transitive_participant_kernels = _transitive_participant_kernels(
+    transitive_reset_kernels = _transitive_participant_kernels(
         dfb_resets,
         {**logical_kernels, **captured_logical_kernels},
         loaded_names,
+        resource_name="reset",
     )
-    captured_logical_kernels.update(transitive_participant_kernels)
+    captured_logical_kernels.update(transitive_reset_kernels)
+    transitive_reconfiguration_kernels = _transitive_participant_kernels(
+        dfb_reconfigurations,
+        {**logical_kernels, **captured_logical_kernels},
+        loaded_names,
+        resource_name="reconfiguration",
+    )
+    captured_logical_kernels.update(transitive_reconfiguration_kernels)
 
     operation_identity = _operation_identity(fn)
     allocation_group_topology = _dfb_allocation_group_topology(allocation_groups)
@@ -377,9 +397,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         operation_identity = (
             f"{operation_identity}[dispatch_conditions={topology_digest}]"
         )
-    reset_kernels = dict(logical_kernels)
-    reset_kernels.update(captured_logical_kernels)
-    reset_topology = _dfb_reset_topology(dfb_resets, reset_kernels)
+    synchronization_kernels = dict(logical_kernels)
+    synchronization_kernels.update(captured_logical_kernels)
+    reset_topology = _dfb_reset_topology(dfb_resets, synchronization_kernels)
     if reset_topology:
         encoded_reset_topology = ";".join(
             f"{ordinal}:"
@@ -393,6 +413,25 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             encoded_reset_topology.encode("utf-8")
         ).hexdigest()[:16]
         operation_identity = f"{operation_identity}[dfb_resets={reset_topology_digest}]"
+    reconfiguration_topology = _dfb_reconfiguration_topology(
+        dfb_reconfigurations, synchronization_kernels
+    )
+    if reconfiguration_topology:
+        encoded_reconfiguration_topology = ";".join(
+            f"{ordinal}:"
+            + ",".join(
+                f"{participant_kind}:{participant_identity}"
+                for participant_kind, participant_identity in participants
+            )
+            for ordinal, participants in reconfiguration_topology
+        )
+        reconfiguration_topology_digest = hashlib.sha256(
+            encoded_reconfiguration_topology.encode("utf-8")
+        ).hexdigest()[:16]
+        operation_identity = (
+            f"{operation_identity}"
+            f"[dfb_reconfigurations={reconfiguration_topology_digest}]"
+        )
     _bind_logical_kernels(captured_logical_kernels, operation_identity)
     logical_kernels.update(captured_logical_kernels)
 
@@ -402,6 +441,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     frozen_scope.update(dispatch_conditions)
     frozen_scope.update(allocation_groups)
     frozen_scope.update(dfb_resets)
+    frozen_scope.update(dfb_reconfigurations)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
@@ -422,6 +462,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         dispatch_conditions=dispatch_conditions,
         allocation_groups=allocation_groups,
         dfb_resets=dfb_resets,
+        dfb_reconfigurations=dfb_reconfigurations,
     )
 
 
@@ -673,11 +714,13 @@ def _compile_atom(
     bound_dispatch_conditions = _bind_dispatch_conditions(spec.dispatch_conditions)
     bound_allocation_groups = _bind_dfb_allocation_groups(spec.allocation_groups)
     bound_dfb_resets = _bind_dfb_resets(spec.dfb_resets)
+    bound_dfb_reconfigurations = _bind_dfb_reconfigurations(spec.dfb_reconfigurations)
     eval_scope = dict(spec.frozen_scope)
     eval_scope.update(logical_kernels)
     eval_scope.update(bound_dispatch_conditions)
     eval_scope.update(bound_allocation_groups)
     eval_scope.update(bound_dfb_resets)
+    eval_scope.update(bound_dfb_reconfigurations)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -749,6 +792,7 @@ def _compile_atom(
     captures.update(spec.external_pipenets)
     captures.update(bound_dispatch_conditions)
     captures.update(bound_dfb_resets)
+    captures.update(bound_dfb_reconfigurations)
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.
@@ -826,7 +870,7 @@ def _compile_unified_operation(
         target_arch=target_arch,
         compiler_options=compiler_options,
         l1_budget_override=l1_budget_override,
-        runtime_resource_factory=decorator_options["runtime_resource_factory"],
+        runtime_resource_factory=decorator_options.get("runtime_resource_factory"),
         runtime_resource_cache=runtime_resource_cache,
     )
 
@@ -936,7 +980,15 @@ def operation(
         validate_operation_interface(fn)
         global_captures = inspect.getclosurevars(fn).globals
         for name, value in sorted(global_captures.items()):
-            if isinstance(value, (DispatchCondition, DFBAllocationGroup, DFBReset)):
+            if isinstance(
+                value,
+                (
+                    DispatchCondition,
+                    DFBAllocationGroup,
+                    DFBReset,
+                    DFBReconfiguration,
+                ),
+            ):
                 raise ValueError(
                     f"@ttl.operation {fn.__name__!r}: "
                     f"{type(value).__name__} {name!r} must be created by an "

@@ -1,4 +1,4 @@
-// Verifies BFP page sizes contribute their exact byte counts to the DFB budget.
+// Summary: Verifies BFP page sizes contribute exact bytes to the DFB budget.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=3968})'
 
 // Double-buffering the final 320-byte page raises the total to 4288 bytes.
