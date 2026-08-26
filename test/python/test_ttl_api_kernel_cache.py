@@ -70,6 +70,7 @@ class _FakeTensor:
 
 class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
     execution_kernels = []
+    execution_records = []
 
     def __init__(
         self,
@@ -98,12 +99,14 @@ class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
         self.runtime_args.append(runtime_args)
         self.pipe_global_semaphore_caches.append(_pipe_global_semaphore_cache)
         self.execution_kernels.append(self)
+        self.execution_records.append((self, _pipe_global_semaphore_cache))
         return self.program_hash
 
 
 def _install_recording_compile(monkeypatch, num_pipe_global_semaphores=0):
     compile_calls = []
     _RecordingCompiledKernel.execution_kernels.clear()
+    _RecordingCompiledKernel.execution_records.clear()
     kernel_id_counter = itertools.count(1)
     hash_values = {}
 
@@ -216,9 +219,11 @@ def test_factory_cache_reuses_artifacts_with_independent_runtime_resources(
     assert first_result == repeated_result
     assert different_result != first_result
 
-    first_kernel, repeated_kernel, different_kernel = (
-        _RecordingCompiledKernel.execution_kernels
-    )
+    (
+        (first_kernel, first_semaphore_cache),
+        (repeated_kernel, repeated_semaphore_cache),
+        (different_kernel, _different_semaphore_cache),
+    ) = _RecordingCompiledKernel.execution_records
     assert first_kernel is not repeated_kernel
     assert (
         first_kernel._runtime_resource_cache
@@ -229,10 +234,7 @@ def test_factory_cache_reuses_artifacts_with_independent_runtime_resources(
         is not repeated_kernel._pipe_global_semaphore_cache
     )
     assert first_kernel._fabric_route_cache is not repeated_kernel._fabric_route_cache
-    assert (
-        first_kernel.pipe_global_semaphore_caches[0]
-        is not repeated_kernel.pipe_global_semaphore_caches[0]
-    )
+    assert first_semaphore_cache is not repeated_semaphore_cache
     assert first_kernel.runtime_resource_factory is first_resource_factory
     assert repeated_kernel.runtime_resource_factory is second_resource_factory
     assert different_kernel.runtime_resource_factory is second_resource_factory
@@ -521,11 +523,12 @@ def test_operation_cache_compilation_is_single_flight(monkeypatch):
 
     class SerializedCompiledKernel:
         all_source_lines = {}
+        num_pipe_global_semaphores = 0
 
         def __init__(self, runtime_resource_cache):
             self.runtime_resource_cache = runtime_resource_cache
 
-        def __call__(self, *runtime_args):
+        def __call__(self, *runtime_args, _pipe_global_semaphore_cache=None):
             with self.runtime_resource_cache.lock:
                 dispatches.append(runtime_args)
                 if len(dispatches) == 1:
@@ -583,11 +586,12 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
 
     class ResourceCompiledKernel:
         all_source_lines = {}
+        num_pipe_global_semaphores = 0
 
         def __init__(self, runtime_resource_cache):
             self.runtime_resource_cache = runtime_resource_cache
 
-        def __call__(self, *_runtime_args):
+        def __call__(self, *_runtime_args, _pipe_global_semaphore_cache=None):
             self.runtime_resource_cache.compatibility_key = ("resources",)
             self.runtime_resource_cache.device = "device"
             self.runtime_resource_cache.pipe_resources = LifetimeOwner("pipe")
@@ -902,10 +906,8 @@ def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
         compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches[0]
         is compile_calls[1]["compiled_kernel"].pipe_global_semaphore_caches[0]
     )
-    assert (
-        compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches[0]
-        is compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches[1]
-    )
+    assert len(compile_calls[0]["compiled_kernel"].pipe_global_semaphore_caches) == 1
+    assert len(compile_calls[1]["compiled_kernel"].pipe_global_semaphore_caches) == 1
 
 
 def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
