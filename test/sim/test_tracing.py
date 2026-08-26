@@ -215,6 +215,20 @@ class TestTraceEventTypes:
                 assert "src" in ev, f"Missing 'src' in {ev}"
                 assert "dst" in ev, f"Missing 'dst' in {ev}"
 
+    def test_compute_events_emitted(self) -> None:
+        """compute_op events are emitted for the compute kernel's eltwise add."""
+        events = _run_simple_kernel_with_tracing(frozenset({"compute"}))
+        assert any(e["event"] == "compute_op" for e in events)
+
+    def test_compute_events_carry_op_fields(self) -> None:
+        """compute_op carries op_type, a positive tile count, and a dtype name."""
+        events = _run_simple_kernel_with_tracing(frozenset({"compute"}))
+        for ev in events:
+            if ev["event"] == "compute_op":
+                assert "op_type" in ev, f"Missing 'op_type' in {ev}"
+                assert ev["tiles"] > 0, f"Expected tiles > 0 in {ev}"
+                assert "dtype" in ev, f"Missing 'dtype' in {ev}"
+
     def test_ticks_are_non_negative_integers(self) -> None:
         """Every event has a tick >= 0."""
         events = _run_simple_kernel_with_tracing()
@@ -303,6 +317,16 @@ class TestFiltering:
         for ev in events:
             assert ev["event"] not in dfb_events, f"Unexpected dfb event: {ev['event']}"
 
+    def test_exclusive_filter_suppresses_compute(self) -> None:
+        """With ALL_CATEGORIES minus 'compute', no compute_op events appear."""
+        events = _run_simple_kernel_with_tracing(
+            ALL_CATEGORIES - frozenset({"compute"})
+        )
+        for ev in events:
+            assert (
+                ev["event"] != "compute_op"
+            ), f"Unexpected compute event: {ev['event']}"
+
     def test_no_filter_returns_all_categories(self) -> None:
         """With no filter, all event categories appear."""
         events = _run_simple_kernel_with_tracing()
@@ -311,6 +335,7 @@ class TestFiltering:
         assert names & {"kernel_start", "kernel_end"}
         assert names & {"dfb_reserve_begin", "dfb_push"}
         assert names & {"copy_start", "copy_end"}
+        assert "compute_op" in names
 
 
 class TestCLITracing:

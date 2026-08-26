@@ -126,7 +126,7 @@ def eltwise_broadcast_reduce(
             )
 
             # Zero-initialize z accumulator
-            z = ttl.block.fill(0, shape=(1, M_TILES))
+            z = ttl.block.fill(0, shape=(1, M_TILES), dtype=z_blk.dtype)
 
             for _ in range(N_BLOCKS):
                 with (

@@ -23,7 +23,7 @@ from .copyhandlers import (
 from .dfb import Block
 from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
-from .trace import TRACE, trace
+from .trace import TRACE, dtype_name, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .pipe import Pipe, SrcPipeIdentity
 
@@ -36,9 +36,14 @@ def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
     """
     match (src, dst):
         case (Tensor(), Block()):
-            tensor, direction, tiles = src, "read", tile_count_from_tensor(src)
+            tensor, block, direction, tiles = (
+                src,
+                dst,
+                "read",
+                tile_count_from_tensor(src),
+            )
         case (Block(), Tensor()):
-            tensor, direction, tiles = dst, "write", math.prod(src.shape)
+            tensor, block, direction, tiles = dst, src, "write", math.prod(src.shape)
         case _:
             return {}
 
@@ -46,6 +51,9 @@ def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
         "tensor": getattr(tensor, "_name", None) or type(tensor).__name__,
         "tiles": tiles,
         "direction": direction,
+        # Read dtype from the Block endpoint: it preserves the declared dtype,
+        # whereas a Tensor *slice* loses it (exposes float32-promotion storage).
+        "dtype": dtype_name(block.dtype),
     }
     locality = try_count_locality(tensor)
     if locality is not None:

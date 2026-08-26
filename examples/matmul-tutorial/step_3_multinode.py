@@ -157,7 +157,9 @@ def __tutorial_operation(
         for _ in range(m_blocks_per_node):
             for _ in range(n_blocks_per_node):
                 with acc_dfb.reserve() as acc_blk:
-                    acc_blk.store(ttl.block.fill(0, shape=acc_blk.shape))
+                    acc_blk.store(
+                        ttl.block.fill(0, shape=acc_blk.shape, dtype=acc_blk.dtype)
+                    )
 
                 for _ in range(k_blocks):
                     with (
