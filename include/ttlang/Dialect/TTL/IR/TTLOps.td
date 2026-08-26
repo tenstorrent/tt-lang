@@ -1459,7 +1459,7 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", "Broadcast",
 
 def TTL_TileBinaryBcastOp : TTL_TileOp<"tile_binary_bcast", "Broadcast",
     [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait,
-     AllTypesMatch<["lhs", "output", "result"]>]> {
+     AllTypesMatch<["lhs", "result"]>]> {
   let summary = "Fused tile-level binary operation with a broadcast operand";
   let description = [{
     Computes `lhs <eltwise_binary_type> broadcast(rhs)` in a single FPU pass.
@@ -1471,9 +1471,10 @@ def TTL_TileBinaryBcastOp : TTL_TileOp<"tile_binary_bcast", "Broadcast",
     always the broadcast operand. Commutative operations (add, mul) may swap
     their operands to satisfy this; sub only supports `lhs - broadcast(rhs)`.
 
-    `rhs` is unconstrained relative to the other operands because its tile
-    geometry is what the target consults to decide whether the device can
-    broadcast along `bcast_type`.
+    Only `lhs` and `result` are required to match. `rhs` carries the tile
+    geometry the target consults to decide whether the device can broadcast
+    along `bcast_type`, and `output` carries the output CB for init-time PACK
+    configuration, whose data type may differ when a typecast follows.
 
     Example:
     ```mlir
