@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 
 namespace mlir::tt::ttl {
 
@@ -48,8 +49,8 @@ struct DFBPointerOwner {
   bool operator!=(const DFBPointerOwner &rhs) const { return !(*this == rhs); }
 };
 
-/// Reason that a per-node lifetime did not prove a quiescent handoff.
-enum class DFBQuiescenceFailureReason {
+/// Reason DFB lifecycle completion was not proven for one launch node.
+enum class DFBLifecycleCompletionFailureReason {
   None,
   MissingProtocolEffect,
   UnsupportedControlFlow,
@@ -58,12 +59,15 @@ enum class DFBQuiescenceFailureReason {
   UnknownPointerOwner,
 };
 
-/// Typed quiescence result retained for conflict evidence.
-struct DFBQuiescenceProof {
-  DFBQuiescenceFailureReason failure = DFBQuiescenceFailureReason::None;
+/// Result of proving lifecycle completion, with evidence for a failed proof.
+struct DFBLifecycleCompletionProof {
+  DFBLifecycleCompletionFailureReason failure =
+      DFBLifecycleCompletionFailureReason::None;
   Operation *evidence = nullptr;
 
-  bool proven() const { return failure == DFBQuiescenceFailureReason::None; }
+  bool proven() const {
+    return failure == DFBLifecycleCompletionFailureReason::None;
+  }
 };
 
 /// One access event consumed by concurrent-liveness analysis.
@@ -71,18 +75,41 @@ struct DFBQuiescenceProof {
 /// A concrete lifecycle operation contributes one occurrence. An operation
 /// with a protocol summary contributes one occurrence per effect, preserving
 /// actions on different DFBs as distinct events. A dependency occurrence with
-/// no effect contributes an opaque call-duration access.
+/// no access summary contributes an opaque access whose completion may require
+/// a synchronized reset.
 struct DFBAccessOccurrence {
   /// Operation that performs the access; several occurrences may share it.
   Operation *operation = nullptr;
 
-  /// Null for an opaque call-duration storage access.
-  std::optional<DFBProtocolEffectKind> protocolEffect;
+  using Kind = std::variant<std::monostate, DFBProtocolEffectKind,
+                            DFBNonTransactionalAccessKind>;
 
-  /// Positive for protocol effects and zero for opaque accesses.
+  /// Access semantics; `std::monostate` denotes an opaque access.
+  Kind kind;
+
+  const DFBProtocolEffectKind *getProtocolEffect() const {
+    return std::get_if<DFBProtocolEffectKind>(&kind);
+  }
+
+  bool isProtocolEffect(DFBProtocolEffectKind effect) const {
+    const DFBProtocolEffectKind *protocolEffect = getProtocolEffect();
+    return protocolEffect && *protocolEffect == effect;
+  }
+
+  const DFBNonTransactionalAccessKind *getNonTransactionalAccess() const {
+    return std::get_if<DFBNonTransactionalAccessKind>(&kind);
+  }
+
+  bool isNonTransactionalAccess(DFBNonTransactionalAccessKind access) const {
+    const DFBNonTransactionalAccessKind *nonTransactionalAccess =
+        getNonTransactionalAccess();
+    return nonTransactionalAccess && *nonTransactionalAccess == access;
+  }
+
+  /// Positive for protocol effects and zero otherwise.
   int64_t numTiles = 0;
 
-  /// Execution position among all protocol effects exposed by `operation`.
+  /// Position within the operation's protocol or non-transactional summary.
   unsigned sequenceIndex = 0;
 
   /// Launched nodes where this occurrence may execute.
@@ -90,6 +117,9 @@ struct DFBAccessOccurrence {
 
   /// Operation that prevented a precise launch domain, or null when precise.
   Operation *unanalyzableDomainOperation = nullptr;
+
+  /// Whether this occurrence is a named opaque external DFB dependency.
+  bool opaqueExternalAccess = false;
 };
 
 /// Execution count retained for one access in the allocation report.
@@ -144,8 +174,9 @@ advanceDFBTransactionCursor(ArrayRef<DFBTransactionRun> transactionRuns,
                             std::uint64_t physicalTileCount,
                             std::uint64_t initialOffset = 0);
 
-/// Protocol state proved for one access interval between synchronized resets.
+/// Access lifetime and queue state proved between synchronized resets.
 struct DFBLifecycleEpoch {
+  std::uint64_t executionCount = 1;
   SmallVector<unsigned> accessOccurrenceIndices;
   SmallVector<unsigned> earliestEntryEvents;
   SmallVector<unsigned> terminalCompletionEvents;
@@ -154,9 +185,12 @@ struct DFBLifecycleEpoch {
   SmallVector<DFBTransactionRun> readCursorRuns;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
+  std::optional<DFBPointerOwner> terminalWritePointerOwner;
+  std::optional<DFBPointerOwner> terminalReadPointerOwner;
   std::optional<int64_t> terminalResetOrdinal;
+  bool inspectionOnly = false;
   bool terminalStateCanonical = false;
-  DFBQuiescenceProof quiescence;
+  DFBLifecycleCompletionProof completionProof;
 };
 
 /// A selected reset write that overlaps a non-target logical DFB lifecycle.
@@ -182,7 +216,10 @@ struct DFBPerNodeLifetime {
   /// Minimal access-entry event IDs under the proved happens-before relation.
   SmallVector<unsigned> earliestEntryEvents;
 
-  /// Completion event IDs after which the DFB is quiescent.
+  /// First active access on the minimal entry frontier, retained as evidence.
+  Operation *entryEvidence = nullptr;
+
+  /// Event IDs after which every access in the DFB lifecycle has completed.
   SmallVector<unsigned> terminalCompletionEvents;
   /// Normalized transaction runs in occurrence order.
   SmallVector<DFBTransactionRun> transactionRuns;
@@ -195,9 +232,10 @@ struct DFBPerNodeLifetime {
   SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
+  bool inspectionOnly = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> resetEpochs;
-  DFBQuiescenceProof quiescence;
+  DFBLifecycleCompletionProof completionProof;
 };
 
 /// Allocation-report data omitted from normal liveness analysis.
@@ -215,6 +253,8 @@ struct DFBLogicalLifecycle {
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;
+  bool hasOpaqueExternalAccess = false;
+  bool accessCompletionProven = true;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;
@@ -230,7 +270,7 @@ struct DFBLogicalLifecycle {
   findPossibleNodeLifetime(LaunchNodeCoord node) const;
 };
 
-/// Builds per-node cross-kernel happens-before and DFB quiescence facts.
+/// Builds per-node cross-kernel happens-before and lifecycle completion facts.
 class DFBConcurrentKernelLivenessAnalysis {
 public:
   DFBConcurrentKernelLivenessAnalysis(Operation *operation,
@@ -271,7 +311,42 @@ public:
   bool hasConditionallyInconsistentOrder(unsigned lhsIndex, unsigned rhsIndex,
                                          LaunchNodeCoord node) const;
 
+  /// Returns true when one reset-delimited epoch ends before another.
+  bool isEpochOrderedBefore(unsigned beforeIndex, unsigned beforeEpochIndex,
+                            unsigned afterIndex, unsigned afterEpochIndex,
+                            LaunchNodeCoord node) const;
+
+  /// Returns epoch ordering while treating unknown domains as possible.
+  bool isConditionallyEpochOrderedBefore(unsigned beforeIndex,
+                                         unsigned beforeEpochIndex,
+                                         unsigned afterIndex,
+                                         unsigned afterEpochIndex,
+                                         LaunchNodeCoord node) const;
+
+  /// Returns true when two epochs contain mutually reachable access events.
+  bool hasInconsistentEpochOrder(unsigned lhsIndex, unsigned lhsEpochIndex,
+                                 unsigned rhsIndex, unsigned rhsEpochIndex,
+                                 LaunchNodeCoord node) const;
+
+  /// Returns inconsistent epoch order with unknown domains included.
+  bool hasConditionallyInconsistentEpochOrder(unsigned lhsIndex,
+                                              unsigned lhsEpochIndex,
+                                              unsigned rhsIndex,
+                                              unsigned rhsEpochIndex,
+                                              LaunchNodeCoord node) const;
+
 private:
+  struct EpochOrdering {
+    SmallVector<unsigned> logicalOffsets;
+    SmallVector<llvm::BitVector> orderedBefore;
+    SmallVector<llvm::BitVector> inconsistent;
+  };
+
+  bool queryEpochRelation(ArrayRef<EpochOrdering> orderings, unsigned lhsIndex,
+                          unsigned lhsEpochIndex, unsigned rhsIndex,
+                          unsigned rhsEpochIndex, LaunchNodeCoord node,
+                          bool inconsistent) const;
+
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
@@ -283,6 +358,8 @@ private:
   SmallVector<SmallVector<llvm::BitVector>> inconsistentOrderByNode;
   SmallVector<SmallVector<llvm::BitVector>>
       conditionallyInconsistentOrderByNode;
+  SmallVector<EpochOrdering> epochOrderedBeforeByNode;
+  SmallVector<EpochOrdering> conditionallyEpochOrderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

@@ -102,6 +102,21 @@ def test_dataflow_buffer_basic() -> None:
     print("Basic DataflowBuffer test passed!")
 
 
+@pytest.mark.parametrize("source_shape", [(1, 2, 2), (1, 4)])
+def test_store_requires_exact_shape(source_shape: tuple[int, ...]) -> None:
+    """Store rejects rank and extent mismatches with equal tile counts."""
+    destination_shape = (2, 2)
+    destination = DataflowBuffer(
+        likeness_tensor=make_element_for_buffer_shape(destination_shape),
+        shape=destination_shape,
+        block_count=2,
+    ).reserve()
+    source = Block.from_list([make_ones_tile() for _ in range(4)], shape=source_shape)
+
+    with pytest.raises(ValueError, match="must exactly match destination shape"):
+        destination.store(source)
+
+
 def test_logical_kernel_release_selectors_are_inert() -> None:
     """Simulator releases accept both public selector forms."""
     dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1)

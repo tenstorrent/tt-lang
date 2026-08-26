@@ -685,14 +685,23 @@ class Block:
         """Store data into this block.
 
         Args:
-            items: A Block whose tile count matches this block.
+            items: A Block whose shape exactly matches this block.
 
         Raises:
-            ValueError: If the source tile count does not match this block's.
+            ValueError: If the source shape does not match this block's.
         """
         # Check write access before touching items so state-machine errors are
         # always surfaced first.
         self._check_can_write()
+
+        src_shape = tuple(items._shape)
+        dst_shape = tuple(self._shape)
+        if src_shape != dst_shape:
+            raise ValueError(
+                f"Shape mismatch in store(): source shape {src_shape} must exactly "
+                f"match destination shape {dst_shape}; store() does not reshape its "
+                "source."
+            )
 
         src_tensor = items._buf
         source_blocks_to_mark: List["Block"] = []
@@ -709,19 +718,6 @@ class Block:
                 for blk in items._source_blocks
                 if ExpectedOp.STORE_SRC in blk._sm.expected_ops
                 or blk._store_confirmation_pending
-            )
-
-        # Validate that tile counts match (allows different dimensionality)
-        src_shape = items._shape
-        dst_shape = self._shape
-        src_tiles = math.prod(src_shape)
-        dst_tiles = math.prod(dst_shape)
-        if src_tiles != dst_tiles:
-            raise ValueError(
-                f"Shape mismatch in store(): "
-                f"source shape {src_shape} ({src_tiles} tiles) does not match "
-                f"destination shape {dst_shape} ({dst_tiles} tiles). "
-                f"Use broadcast() to expand the source before store()."
             )
 
         # Mark source wait() blocks as consumed

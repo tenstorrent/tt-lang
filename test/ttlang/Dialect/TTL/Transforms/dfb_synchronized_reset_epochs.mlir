@@ -51,10 +51,102 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
+// One selected reset declaration may execute once per iteration of equivalent
+// immutable sequential loops in all three participants.
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @repeated_selected_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_selected">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_selected">, <kind = data_movement, identity = "reader", operation = "repeated_selected">, <kind = data_movement, identity = "writer", operation = "repeated_selected">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+
+  func.func @repeated_selected_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_selected">,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    affine.for %iteration = 0 to 4 {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_selected">, <kind = data_movement, identity = "reader", operation = "repeated_selected">, <kind = data_movement, identity = "writer", operation = "repeated_selected">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+
+  func.func @repeated_selected_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_selected">,
+                  ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_selected">, <kind = data_movement, identity = "reader", operation = "repeated_selected">, <kind = data_movement, identity = "writer", operation = "repeated_selected">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+}
+
+// -----
+
+// Repeated all-interface resets use the same participant-loop contract.
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @repeated_all_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_all">} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_all">, <kind = data_movement, identity = "reader", operation = "repeated_all">, <kind = data_movement, identity = "writer", operation = "repeated_all">]>
+    }
+    return
+  }
+
+  func.func @repeated_all_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_all">,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_all">, <kind = data_movement, identity = "reader", operation = "repeated_all">, <kind = data_movement, identity = "writer", operation = "repeated_all">]>
+    }
+    return
+  }
+
+  func.func @repeated_all_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_all">,
+                  ttl.noc_index = 1 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_all">, <kind = data_movement, identity = "reader", operation = "repeated_all">, <kind = data_movement, identity = "writer", operation = "repeated_all">]>
+    }
+    return
+  }
+}
+
+// -----
+
 // A selected reset partitions tensor-backed interface state. Payload bytes
 // remain allocated, but reset occupancy makes pre-reset payload unavailable.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=missing-protocol-effect
+// CHECK: lifecycle_completion=missing-protocol-effect
 // CHECK: reset_epochs=[{accesses=[0, 1],transactions=[1]
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -154,7 +246,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A fifth two-tile acquire would start at offset eight and cross the end of a
 // nine-tile DFB. A later reset cannot make that transaction contiguous.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=mismatched-transaction
+// CHECK: lifecycle_completion=mismatched-transaction
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @straddling_nondividing_run_producer()
@@ -204,9 +296,9 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A conditional reset cannot order unconditional accesses across logical
 // kernels because the synchronization does not execute on the disabled branch.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=unsupported-control-flow
+// CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: DFB logical_id=1 bounded=0
-// CHECK: quiescence=unsupported-control-flow
+// CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: Total DFB count: 2
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -364,7 +456,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // A payload access after reset belongs to a new epoch and cannot consume the
 // preceding epoch's produced data.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=incomplete-use-order{{.*}}evidence=ttl.cb_push
+// CHECK: lifecycle_completion=incomplete-use-order{{.*}}evidence=ttl.cb_push
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @payload_crosses_reset()
@@ -405,7 +497,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // Access in a logical kernel outside the participant set is unordered with
 // the reset and leaves the complete lifecycle conservative.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=incomplete-use-order
+// CHECK: lifecycle_completion=incomplete-use-order
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @concurrent_access_producer()
@@ -651,7 +743,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // Opposite reset polarity cannot prove one dynamic reset instance.
 // CHECK: DFB logical_id=0 bounded=0
-// CHECK: quiescence=unsupported-control-flow
+// CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 2
 
@@ -708,6 +800,85 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %reset_inactive = arith.cmpi eq, %reset_value, %zero : i64
     scf.if %reset_inactive {
       ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%old : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>)
+    }
+    return
+  }
+}
+
+// -----
+
+// Each iteration completes one two-tile transaction before the same reset.
+// Per-iteration cursor normalization permits the allocation group to reuse one
+// three-tile physical allocation.
+// CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=6144 handoff=proven
+// CHECK: DFB logical_id=0 bounded=1
+// CHECK: reset_epochs=[{executions=4,accesses=[0, 1, 2, 3],transactions=[2]
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: Total DFB count: 1
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @repeated_reset_lifetime_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_lifetime">,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 3}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      %old_block = ttl.cb_wait %old : <[1, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %old : <[1, 2], !ttcore.tile<32x32, bf16>, 1>
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_lifetime">, <kind = data_movement, identity = "reader", operation = "repeated_lifetime">, <kind = data_movement, identity = "writer", operation = "repeated_lifetime">]>(%old : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    %current_block = ttl.cb_wait %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @repeated_reset_lifetime_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_lifetime">,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    %current = ttl.bind_cb {cb_index = 1, block_count = 3}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      %old_block = ttl.cb_reserve %old : <[1, 2], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %old : <[1, 2], !ttcore.tile<32x32, bf16>, 1>
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_lifetime">, <kind = data_movement, identity = "reader", operation = "repeated_lifetime">, <kind = data_movement, identity = "writer", operation = "repeated_lifetime">]>(%old : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    %current_block = ttl.cb_reserve %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %current : <[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    return
+  }
+
+  func.func @repeated_reset_lifetime_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_lifetime">,
+                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %old = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "repeated_lifetime">, <kind = data_movement, identity = "reader", operation = "repeated_lifetime">, <kind = data_movement, identity = "writer", operation = "repeated_lifetime">]>(%old : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>)
     }
     return
   }

@@ -50,6 +50,73 @@ module attributes {
 
 // -----
 
+// An unmatched reserve repeated before each reset overlaps the interval from
+// the first reset through the last reset and cannot be assumed safe.
+
+module attributes {
+  ttl.launch_grid = array<i64: 1, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @repeated_overlap_reader()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "repeated_unproven_overlap">,
+                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %selected = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 8 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %overlapping = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 9 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      // expected-error @below {{DFB allocation group #ttl.dfb_allocation_group<4> members=[8, 9] cannot alias logical DFBs 8 and 9: reset-domain-write}}
+      %overlapping_slot = ttl.cb_reserve %overlapping
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.reset_dfbs <4, participants[<kind = compute, identity = "compute", operation = "repeated_unproven_overlap">, <kind = data_movement, identity = "reader", operation = "repeated_unproven_overlap">, <kind = data_movement, identity = "writer", operation = "repeated_unproven_overlap">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    }
+    return
+  }
+
+  func.func @repeated_overlap_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "repeated_unproven_overlap">,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %selected = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 8 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <4, participants[<kind = compute, identity = "compute", operation = "repeated_unproven_overlap">, <kind = data_movement, identity = "reader", operation = "repeated_unproven_overlap">, <kind = data_movement, identity = "writer", operation = "repeated_unproven_overlap">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    }
+    return
+  }
+
+  func.func @repeated_overlap_writer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "repeated_unproven_overlap">,
+                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
+                  ttl.crta_indices = []} {
+    %selected = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {allocation_group = #ttl.dfb_allocation_group<4>, dfb_id = 8 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.reset_dfbs <4, participants[<kind = compute, identity = "compute", operation = "repeated_unproven_overlap">, <kind = data_movement, identity = "reader", operation = "repeated_unproven_overlap">, <kind = data_movement, identity = "writer", operation = "repeated_unproven_overlap">]>(%selected : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    }
+    return
+  }
+}
+
+// -----
+
 // A reserve cannot be separated from its matching push by a reset.
 
 module attributes {

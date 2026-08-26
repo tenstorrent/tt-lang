@@ -40,6 +40,7 @@ def call_extern_func(
     func_args=None,
     dfb_dependencies=None,
     dfb_effects=None,
+    dfb_accesses=None,
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
@@ -53,14 +54,18 @@ def call_extern_func(
         callee: External C++ function name.
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
-        func_args: Values emitted as C++ function arguments.
+        func_args: Values emitted as C++ function arguments. Repeated opaque
+            DFBs are valid. Summarized occurrences must use distinct parameters
+            of a composed operation.
         dfb_dependencies: DFBs accessed by external C++ without adding C++
-            arguments. Entries must be mutually distinct and must not duplicate
-            automatic dependencies in ``func_args`` or DFB descriptor template
-            arguments.
+            arguments. Entries must identify distinct source occurrences and
+            must not repeat an automatic dependency source in ``func_args`` or
+            DFB descriptor template arguments.
         dfb_effects: Optional call-wide sequence of synchronous DFB protocol
             actions performed on every call execution. A complete summary can
             permit physical-index reuse and does not emit protocol calls.
+        dfb_accesses: Optional synchronous DFB inspections performed by the
+            call without publishing, consuming, or changing DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
             user-managed DFBs, conservatively restricting physical-index reuse.
         include_paths: Compile-time directories added to external header
@@ -137,6 +142,15 @@ class DFBEffect:
     def pop(dfb, *, tiles: int):
         """Declare that the external call returns consumed DFB capacity."""
         raise RuntimeError("ttl.DFBEffect.pop() is valid only in a compiled kernel")
+
+
+class DFBAccess:
+    """Typed synchronous DFB access by an external call."""
+
+    @staticmethod
+    def inspect(dfb):
+        """Read a DFB without changing its contents or queue position."""
+        raise RuntimeError("ttl.DFBAccess.inspect() is valid only in a compiled kernel")
 
 
 def dfb_descriptor(dfb):
@@ -1398,6 +1412,7 @@ __all__ = [
     "read_index",
     "call_extern_func",
     "DFBEffect",
+    "DFBAccess",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
