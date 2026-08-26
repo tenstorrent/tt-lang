@@ -85,6 +85,7 @@ class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
     def __init__(
         self,
         program_hash,
+        num_pipe_global_semaphores=0,
         runtime_resource_factory=None,
         runtime_resource_cache=None,
     ):
@@ -96,6 +97,7 @@ class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
             core_ranges=None,
             kernel_tensor_indices=[],
             program_hash=program_hash,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
             runtime_resource_factory=runtime_resource_factory,
             runtime_resource_cache=runtime_resource_cache,
         )
@@ -108,7 +110,7 @@ class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
         return self.program_hash
 
 
-def _install_recording_compile(monkeypatch):
+def _install_recording_compile(monkeypatch, num_pipe_global_semaphores=0):
     compile_calls = []
     _RecordingCompiledKernel.execution_kernels.clear()
     kernel_id_counter = itertools.count(1)
@@ -139,6 +141,7 @@ def _install_recording_compile(monkeypatch):
     ):
         compiled_kernel = _RecordingCompiledKernel(
             program_hash,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
             runtime_resource_factory=compile_options.get("runtime_resource_factory"),
             runtime_resource_cache=compile_options.get("runtime_resource_cache"),
         )
@@ -575,6 +578,7 @@ def test_operation_cache_compilation_is_single_flight(monkeypatch):
 
     class SerializedCompiledKernel:
         all_source_lines = {}
+        num_pipe_global_semaphores = 0
 
         def __init__(self, runtime_resource_cache):
             self.runtime_resource_cache = runtime_resource_cache
@@ -637,6 +641,7 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
 
     class ResourceCompiledKernel:
         all_source_lines = {}
+        num_pipe_global_semaphores = 0
 
         def __init__(self, runtime_resource_cache):
             self.runtime_resource_cache = runtime_resource_cache
@@ -974,6 +979,30 @@ def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
     assert len(compile_calls) == 2
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
     assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+
+
+def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 73760))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 1
+    assert first_result == second_result
 
 
 def _make_scaled_kernel(scale):
