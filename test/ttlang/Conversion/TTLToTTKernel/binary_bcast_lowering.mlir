@@ -1,8 +1,8 @@
 // Summary: ttl.tile_binary_bcast lowers to a single ttkernel.binary_bcast
 // reading both operands from CBs, plus a binary_bcast_init carrying the
-// elementwise op, the broadcast dimension and the output CB. Neither
-// unary_bcast nor copy_tile should appear: the broadcast is applied during
-// unpack rather than materialized into DST.
+// elementwise op and the broadcast dimension. Neither unary_bcast nor
+// copy_tile should appear: the broadcast is applied during unpack rather than
+// materialized into DST.
 
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config, ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
@@ -14,7 +14,8 @@
 // CHECK: %[[DATA_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: %[[BCAST_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK: ttkernel.binary_bcast_init(%[[DATA_CB]], %[[BCAST_CB]], %[[OUT_CB]], <add>, <row>)
+// CHECK: ttkernel.binary_op_init_common(%[[DATA_CB]], %[[BCAST_CB]], %[[OUT_CB]])
+// CHECK: ttkernel.binary_bcast_init(%[[DATA_CB]], %[[BCAST_CB]], <add>, <row>)
 // CHECK: ttkernel.binary_bcast(%[[DATA_CB]], %[[BCAST_CB]],
 // CHECK-NOT: ttkernel.unary_bcast
 // CHECK-NOT: ttkernel.copy_tile
