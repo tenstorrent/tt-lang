@@ -36,8 +36,9 @@ from ttl.dialects import ttcore
 
 def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
-    if isinstance(tensor, torch.Tensor) or bool(
-        getattr(tensor, "_ttlang_static_tensor", False)
+    if (
+        isinstance(tensor, torch.Tensor)
+        or getattr(tensor, "_ttlang_static_tensor", False) is True
     ):
         return False
     _ensure_ttnn()
@@ -48,7 +49,7 @@ def is_ttnn_tensor(tensor) -> bool:
 
 def is_tensor_value(tensor) -> bool:
     """Return whether ``tensor`` can describe a compiler tensor argument."""
-    return bool(getattr(tensor, "_ttlang_static_tensor", False)) or is_ttnn_tensor(
+    return getattr(tensor, "_ttlang_static_tensor", False) is True or is_ttnn_tensor(
         tensor
     )
 

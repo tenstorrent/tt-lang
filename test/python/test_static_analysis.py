@@ -4,6 +4,8 @@
 
 """Host-only tests for the compiler static-analysis entry point."""
 
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 
@@ -206,6 +208,10 @@ def test_static_tensor_descriptor_rejects_inconsistent_metadata(kwargs, match):
 def test_static_tensor_recognition_does_not_accept_torch_runtime_tensors():
     assert is_tensor_value(_spec())
     assert not is_tensor_value(torch.empty((32, 32)))
+
+
+def test_static_tensor_recognition_requires_an_explicit_marker():
+    assert not is_tensor_value(MagicMock())
 
 
 def test_valid_operation_passes_without_runtime_compilation(monkeypatch):
