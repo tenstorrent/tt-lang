@@ -53,6 +53,17 @@ FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
                                                 CircularBufferType type,
                                                 std::string &failureReason);
 
+/// Returns the logical per-node payload bytes for all unique reconfiguration
+/// boundaries, before L1 allocator rounding, or failure when the total is not
+/// representable.
+FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module);
+
+/// Returns the target-aligned L1 allocations for all reconfiguration records.
+FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module);
+
+/// Verifies that the selected target implements DFB reconfiguration.
+LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
+
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:

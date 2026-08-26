@@ -4,6 +4,7 @@
 
 """Unit tests for @ttl.operation cache and program-hash behavior."""
 
+import functools
 import gc
 import itertools
 import threading
@@ -11,6 +12,7 @@ import weakref
 
 import pytest
 
+import ttl.atom as atom_module
 import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
 
@@ -178,6 +180,53 @@ def test_explicit_operation_propagates_runtime_resource_factory(monkeypatch):
     )
 
 
+def test_unified_operation_cache_forwards_runtime_resources(monkeypatch):
+    compile_calls = []
+
+    def compile_atom(*args, **kwargs):
+        compile_calls.append((args, kwargs))
+        return _RecordingCompiledKernel(kwargs["runtime_resource_cache"])
+
+    monkeypatch.setattr(atom_module, "_compile_atom", compile_atom)
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    decorator_options = {
+        "num_outs": 1,
+        "memory_space": "L1",
+        "tiled": True,
+        "fp32_dest_acc_en": None,
+        "dst_full_sync_en": None,
+        "math_fidelity": None,
+        "runtime_resource_factory": None,
+    }
+
+    def operation(input_tensor, output_tensor):
+        pass
+
+    compile_callback = functools.partial(
+        atom_module._compile_unified_operation, object(), decorator_options
+    )
+    wrapper = ttl_api._make_operation_wrapper(
+        operation,
+        compile_callback,
+        grid=(1, 1),
+        fp32_dest_acc_en=None,
+        dst_full_sync_en=None,
+        math_fidelity=None,
+        options=None,
+    )
+    first_result = wrapper(_FakeTensor(), _FakeTensor())
+    second_result = wrapper(_FakeTensor(), _FakeTensor())
+
+    assert first_result is second_result
+    assert len(compile_calls) == 1
+    assert isinstance(
+        compile_calls[0][1]["runtime_resource_cache"],
+        kernel_runner.KernelRuntimeResourceCache,
+    )
+
+
 def test_cache_key_separates_math_fidelity(monkeypatch):
     monkeypatch.setattr(
         ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
@@ -333,8 +382,11 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     events = []
 
     class LifetimeOwner:
+        def __init__(self, name):
+            self.name = name
+
         def __del__(self):
-            events.append("release")
+            events.append(f"release:{self.name}")
 
     class ResourceCompiledKernel:
         all_source_lines = {}
@@ -345,7 +397,10 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
         def __call__(self, *_runtime_args):
             self.runtime_resource_cache.compatibility_key = ("resources",)
             self.runtime_resource_cache.device = "device"
-            self.runtime_resource_cache.pipe_resources = LifetimeOwner()
+            self.runtime_resource_cache.pipe_resources = LifetimeOwner("pipe")
+            self.runtime_resource_cache.reconfiguration_resources = LifetimeOwner(
+                "reconfiguration"
+            )
             return None
 
     def compile_kernel(
@@ -397,7 +452,11 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     gc.collect()
 
     assert wrapper_reference() is None
-    assert events == ["synchronize:device", "release"]
+    assert events == [
+        "synchronize:device",
+        "release:pipe",
+        "release:reconfiguration",
+    ]
 
 
 def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypatch):
@@ -451,8 +510,11 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
     events = []
 
     class LifetimeOwner:
+        def __init__(self, name):
+            self.name = name
+
         def __del__(self):
-            events.append("release")
+            events.append(f"release:{self.name}")
 
     def fail_synchronization(_device):
         events.append("synchronize")
@@ -465,7 +527,8 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
     runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
         compatibility_key=("resources",),
         device="device",
-        pipe_resources=LifetimeOwner(),
+        pipe_resources=LifetimeOwner("pipe"),
+        reconfiguration_resources=LifetimeOwner("reconfiguration"),
     )
 
     with pytest.warns(RuntimeWarning, match="failed to synchronize"):
@@ -474,11 +537,44 @@ def test_runtime_resource_finalizer_retains_owners_when_sync_fails(
     assert events == ["synchronize"]
     assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
     assert runtime_resource_cache.pipe_resources is not None
+    assert runtime_resource_cache.reconfiguration_resources is not None
 
     fake_ttnn.synchronize_device = lambda _device: events.append("cleanup-sync")
     kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
     kernel_runner.release_cached_runtime_resources(runtime_resource_cache)
-    assert events == ["synchronize", "cleanup-sync", "release"]
+    assert events == [
+        "synchronize",
+        "cleanup-sync",
+        "release:pipe",
+        "release:reconfiguration",
+    ]
+
+
+def test_runtime_resource_finalizer_retains_owners_when_warning_fails(monkeypatch):
+    runtime_resource_cache = kernel_runner.KernelRuntimeResourceCache(
+        compatibility_key=("resources",), device="device", pipe_resources=object()
+    )
+
+    def interrupt_synchronization(_device):
+        raise KeyboardInterrupt()
+
+    def fail_warning(*_args, **_kwargs):
+        raise RuntimeError("warning")
+
+    fake_ttnn = type(
+        "FakeTTNN",
+        (),
+        {"synchronize_device": staticmethod(interrupt_synchronization)},
+    )()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(kernel_runner.warnings, "warn", fail_warning)
+
+    kernel_runner.finalize_runtime_resource_cache(runtime_resource_cache)
+
+    assert runtime_resource_cache in kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES
+    kernel_runner._RETAINED_RUNTIME_RESOURCE_CACHES.remove(runtime_resource_cache)
+    fake_ttnn.synchronize_device = lambda _device: None
+    kernel_runner.release_cached_runtime_resources(runtime_resource_cache)
 
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):

@@ -10,7 +10,7 @@
 // CHECK: DFB allocation group #ttl.dfb_allocation_group<0> members=[0, 1] envelope_bytes=6144 handoff=proven
 // CHECK: DFB logical_id=0 bounded=1{{.*}}opaque_external_access=1
 // CHECK: opaque_protocol_reset=1
-// CHECK: reset_epochs=[{accesses=[0, 1],transactions=[],write_owner=unknown,read_owner=unknown,terminal_reset=0,opaque_protocol_reset=1,terminal_state=canonical}]
+// CHECK: epochs=[{accesses=[0, 1],transactions=[],write_owner=unknown,read_owner=unknown,entry_reconfiguration=initial,active_configurations=[initial],terminal_reset=0,opaque_protocol_reset=1,terminal_reconfiguration=none,terminal_state=canonical}]
 // CHECK: DFB logical_id=1 bounded=1{{.*}}allocation_group=#ttl.dfb_allocation_group<0>
 // CHECK: Total DFB count: 1
 
