@@ -13,7 +13,7 @@ transpose.
 """
 
 import operator
-from typing import Any, Callable, List, Tuple
+from typing import Callable, List, Tuple
 
 import torch
 
@@ -28,7 +28,7 @@ from .dfb import (
 )
 from .blockstate import BlockAcquisition
 from .kernel import KernelKind
-from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor, bfloat16, _promote_dtype
+from .ttnnsim import DType, ROW_MAJOR_LAYOUT, Tensor, bfloat16, promote_dtype
 
 
 def _is_dry_run() -> bool:
@@ -247,7 +247,7 @@ def broadcast(
 def fill(
     value: float,
     shape: Tuple[int, ...],
-    dtype: Any = None,
+    dtype: DType = bfloat16,
     tile: Tuple[int, int] = TILE_SHAPE,
 ) -> Block:
     """Return a temporary tiled block of the specified shape filled with value.
@@ -283,14 +283,13 @@ def fill(
     batch = shape[:-2]
     TM, TK = shape[-2], shape[-1]
 
-    declared_dtype = bfloat16 if dtype is None else dtype
     elem = torch.full(
         (*batch, TM * tile_h, TK * tile_w),
         value,
-        dtype=_promote_dtype(declared_dtype),
+        dtype=promote_dtype(dtype),
     )
     return Block(
-        tensor=Tensor(elem, dtype=declared_dtype),
+        tensor=Tensor(elem, dtype=dtype),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
         kernel_type=KernelKind.COMPUTE,

@@ -871,11 +871,7 @@ class Block:
 
         Tracks wait() Compute blocks that contribute to the result.
         """
-        # Reject a non-Block operand here rather than letting it reach the
-        # layout check, which would surface as an attribute error naming
-        # neither the operand nor the operation.  The compiler accepts a
-        # compile-time scalar for `*` via ttl.mul_unary_const; until that
-        # form is specified and implemented here, say so. See issue #869.
+        # TODO(#869): Add support for non-Block operands.
         if not isinstance(other, Block):
             raise TypeError(
                 f"unsupported operand for block {op.__name__}: "
