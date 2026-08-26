@@ -675,20 +675,20 @@ def TTKernel_BinaryBcastInitOp : TTKernel_InitOp<"binary_bcast_init"> {
     let summary = "Init function for the fused binary broadcast op";
     let description = [{
       Must be run before binary_bcast. Configures the MATH pipeline for the
-      requested elementwise binary operation and broadcast dimension, the
-      UNPACK pipeline for both input CBs, and the PACK pipeline from out_cb.
-      Lowers to the metal `init_bcast<EltwiseBinaryType, BroadcastType>` API.
+      requested elementwise binary operation and broadcast dimension, and the
+      UNPACK pipeline for both input CBs. The one-time hardware configuration,
+      including PACK, comes from the region-level binary_op_init_common.
+      Lowers to the metal `bcast_init<EltwiseBinaryType, BroadcastType>` API.
     }];
 
     let arguments = (ins TTKernel_CB:$in0_cb,
                          TTKernel_CB:$in1_cb,
-                         TTKernel_CB:$out_cb,
                          TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
                          TTKernel_BcastTypeAttr:$bcast_type
                         );
 
     let assemblyFormat = [{
-      `(` $in0_cb `,` $in1_cb `,` $out_cb `,` $eltwise_binary_type `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+      `(` $in0_cb `,` $in1_cb `,` $eltwise_binary_type `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 

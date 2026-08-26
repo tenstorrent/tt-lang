@@ -3228,9 +3228,9 @@ public:
         typeConverter, context, "pack_tile");
 
     // The fused binary broadcast ops keep dialect-level names while metal
-    // exposes them as init_bcast/any_tiles_bcast, so the callee is overridden.
+    // exposes them as bcast_init/any_tiles_bcast, so the callee is overridden.
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryBcastInitOp>>(
-        typeConverter, context, "init_bcast");
+        typeConverter, context, "bcast_init");
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryBcastTileOp>>(
         typeConverter, context, "any_tiles_bcast");
 

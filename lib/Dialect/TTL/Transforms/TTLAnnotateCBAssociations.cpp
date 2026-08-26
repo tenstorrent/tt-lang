@@ -111,10 +111,6 @@ struct TTLAnnotateCBAssociationsPass
       annotateOutputCB(transpose, transpose.getOutput(),
                        kTransposeOutputCBIndexAttrName);
     });
-
-    func.walk([&](TileBinaryBcastOp bcast) {
-      annotateOutputCB(bcast, bcast.getOutput(), kBcastOutputCBIndexAttrName);
-    });
   }
 };
 

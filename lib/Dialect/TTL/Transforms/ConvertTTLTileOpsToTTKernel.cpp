@@ -850,12 +850,6 @@ struct TTLTileBinaryBcastToTTKernel : OpConversionPattern<TileBinaryBcastOp> {
       return rewriter.notifyMatchFailure(op, "cannot find/convert input CBs");
     }
 
-    auto outCB = lookupBcastOutputCB(op, op.getOutput(), funcOp, typeConverter,
-                                     rewriter, loc);
-    if (failed(outCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
-    }
-
     // Each operand has its own CB, so the tile indices are computed
     // independently rather than shared as in the non-broadcast FPU binary.
     auto lhsCBIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
@@ -868,16 +862,12 @@ struct TTLTileBinaryBcastToTTKernel : OpConversionPattern<TileBinaryBcastOp> {
     // DST index from the SSA operand (assigned by TTLAssignDST).
     Value dstIdx = adaptor.getDstIndex();
 
-    auto bcastOp = ttk::BinaryBcastTileOp::create(
+    // bcast_init needs no output CB, so unlike the unary broadcast this op
+    // carries no output CB index for the init inserter to read back.
+    ttk::BinaryBcastTileOp::create(
         rewriter, loc, *lhsCB, *rhsCB, *lhsCBIdx, *rhsCBIdx, dstIdx,
         convertEltwiseBinaryType(op.getEltwiseBinaryType()),
         convertBcastType(op.getBcastType()));
-
-    // Propagate output CB index for per-op init insertion.
-    if (auto cbIdxAttr =
-            op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
-      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
-    }
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
