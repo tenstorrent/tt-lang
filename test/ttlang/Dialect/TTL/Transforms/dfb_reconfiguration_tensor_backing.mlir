@@ -78,6 +78,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK-SAME: nodes = {{\[\[0, 0\]\]}}
 // CHECK-SAME: tensor_backing = #ttl.tensor_backing<tensor_index = 0
 // CHECK-SAME: nodes = {{\[\[1, 0\]\]}}
+// CHECK-NOT: tensor_backing
 // CHECK-SAME: ttl.dfb_reconfiguration_plan = {
 // CHECK-SAME: entry_reconfiguration = 0 : i64
 // CHECK-SAME: nodes = {{\[\[1, 0\]\]}}

@@ -2215,6 +2215,8 @@ buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
         merge assignment.storage into configuration.activeDomain
     sort configurations by the proved boundary order
     copy the initial configuration into the physical descriptor fields
+    if the initial configuration is tensor-backed:
+      add scratch placeholder segments for cores first active in later epochs
     emit the physical descriptor and its ordered epoch configurations
 ```
 
@@ -2222,6 +2224,9 @@ Every finalized declaration contributes to the table. Exact-type reuse keeps
 one unchanged descriptor. A validated allocation group selects the maximum
 scratch capacity required within one epoch. A synchronized reconfiguration may
 select a different geometry, block count, or storage segment in a later epoch.
+For a tensor-backed initial configuration, static scratch placeholders define
+the physical index on cores that first use it later without installing a future
+tensor address before its lifecycle begins.
 The page format remains identical across all epochs. Deriving every page size
 from the same element type used by lowering keeps compiler and runtime formats
 equal.
