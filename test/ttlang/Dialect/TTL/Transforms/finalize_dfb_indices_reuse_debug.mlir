@@ -78,7 +78,7 @@ module {
 
 // -----
 
-module {
+module attributes {ttl.launch_grid = [1, 1]} {
   func.func @different_tensor_backing()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {

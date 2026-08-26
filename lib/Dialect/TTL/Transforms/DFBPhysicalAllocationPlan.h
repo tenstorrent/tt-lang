@@ -60,9 +60,15 @@ struct DFBPhysicalAllocationDescriptor {
   Type elementType;
   int32_t pageSize = 0;
   int32_t blockCount = 0;
+  /// Exact union of nodes that access this index. An unknown domain requires
+  /// conservative whole-grid runtime allocation.
+  LaunchNodeDomain allocationDomain = LaunchNodeDomain::unknown();
   SmallVector<DFBPhysicalStorageSegment> storageSegments;
   SmallVector<DFBConfigurationEpochDescriptor> epochConfigurations;
 };
+
+using DFBPhysicalAllocationDescriptorList =
+    SmallVector<DFBPhysicalAllocationDescriptor, 0>;
 
 /// Final base CTA index for one kernel.
 struct DFBKernelBaseIndexAssignment {
@@ -197,7 +203,7 @@ private:
   friend class DFBPhysicalAllocationPlanner;
 
   SmallVector<DFBPhysicalIndexAssignment> assignments;
-  SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
+  DFBPhysicalAllocationDescriptorList descriptors;
   SmallVector<DFBKernelBaseIndexAssignment> kernelBaseIndices;
   SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
   SmallVector<int64_t> reconfigurationBoundaryOrdinals;
