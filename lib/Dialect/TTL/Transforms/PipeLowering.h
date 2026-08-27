@@ -45,10 +45,13 @@ struct FunctionFabricRoutePlan {
   SmallVector<FabricRoute> routes;
 };
 
-/// One generated interval that owns routing-plane connections.
+/// One generated routing-plane connection lifetime.
+/// Multiple logical manager intervals may share it when no ownership handoff
+/// separates them.
 struct FabricRuntimeIntervalPlan {
-  std::size_t managerIntervalIndex = 0;
-  Operation *scope;
+  SmallVector<std::size_t, 1> managerIntervalIndices;
+  Operation *acquireBoundary;
+  Operation *releaseBoundary;
   SmallVector<Operation *> protocolOperations;
   std::optional<int64_t> ownershipSemaphoreIndex;
   /// Repeated or multi-interval ownership sequences derive generations from a

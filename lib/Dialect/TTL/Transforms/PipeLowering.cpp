@@ -306,6 +306,14 @@ executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
          });
 }
 
+static bool
+executionLocationsOverlap(ArrayRef<FabricManagerExecutionLocation> lhs,
+                          ArrayRef<FabricManagerExecutionLocation> rhs) {
+  return llvm::any_of(lhs, [&](FabricManagerExecutionLocation lhsLocation) {
+    return llvm::is_contained(rhs, lhsLocation);
+  });
+}
+
 static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
     const FabricRuntimeIntervalPlan &interval,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
@@ -437,6 +445,134 @@ externalManagerIntervalsAreSequential(const FabricManagerIntervalPlan &lhs,
   return lhs.releaseBoundary->isBeforeInBlock(rhs.acquireBoundary);
 }
 
+static Operation *getFunctionLevelBoundary(Operation *operation,
+                                           FuncOp function) {
+  while (operation->getParentOp() != function) {
+    operation = operation->getParentOp();
+    assert(operation && "fabric runtime boundary must be inside its function");
+  }
+  return operation;
+}
+
+struct FabricRuntimeCoalescingCandidate {
+  std::size_t intervalIndex;
+  Operation *acquireBoundary;
+  Operation *releaseBoundary;
+  SmallVector<FabricManagerExecutionLocation> executionLocations;
+};
+
+static void coalesceFabricRuntimeCandidates(
+    ArrayRef<FabricRuntimeCoalescingCandidate> candidates,
+    FabricRoutePlan &plan, SmallVectorImpl<bool> &removed) {
+  const FabricRuntimeCoalescingCandidate &representative = candidates.front();
+  FabricRuntimeIntervalPlan &coalesced =
+      plan.runtimeIntervals[representative.intervalIndex];
+  Operation *acquireBoundary = representative.acquireBoundary;
+  Operation *releaseBoundary = representative.releaseBoundary;
+  for (const FabricRuntimeCoalescingCandidate &candidate :
+       candidates.drop_front()) {
+    if (candidate.acquireBoundary != acquireBoundary &&
+        candidate.acquireBoundary->isBeforeInBlock(acquireBoundary)) {
+      acquireBoundary = candidate.acquireBoundary;
+    }
+    if (candidate.releaseBoundary != releaseBoundary &&
+        releaseBoundary->isBeforeInBlock(candidate.releaseBoundary)) {
+      releaseBoundary = candidate.releaseBoundary;
+    }
+    FabricRuntimeIntervalPlan &merged =
+        plan.runtimeIntervals[candidate.intervalIndex];
+    coalesced.managerIntervalIndices.append(merged.managerIntervalIndices);
+    coalesced.protocolOperations.append(merged.protocolOperations);
+    removed[candidate.intervalIndex] = true;
+  }
+  coalesced.acquireBoundary = acquireBoundary;
+  coalesced.releaseBoundary = releaseBoundary;
+}
+
+static void
+coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan,
+                                           const PipeGraph &pipeGraph) {
+  // Unserialized intervals reuse one function-scoped connection record set.
+  // Reopening those records after close prevents mesh-workload completion.
+  llvm::MapVector<Block *, SmallVector<FabricRuntimeCoalescingCandidate>>
+      candidatesByBlock;
+  for (auto [intervalIndex, interval] :
+       llvm::enumerate(plan.runtimeIntervals)) {
+    if (interval.ownershipSemaphoreIndex) {
+      continue;
+    }
+    assert(interval.managerIntervalIndices.size() == 1 &&
+           "runtime intervals must be coalesced once");
+    const FabricManagerIntervalPlan &managerInterval =
+        plan.managerIntervals[interval.managerIntervalIndices.front()];
+    FuncOp function = interval.acquireBoundary->getParentOfType<FuncOp>();
+    assert(function && "fabric runtime interval must be inside a function");
+    Operation *acquireBoundary =
+        getFunctionLevelBoundary(interval.acquireBoundary, function);
+    Operation *releaseBoundary =
+        getFunctionLevelBoundary(interval.releaseBoundary, function);
+    if (acquireBoundary->getBlock() != releaseBoundary->getBlock()) {
+      continue;
+    }
+    SmallVector<FabricManagerExecutionLocation> executionLocations =
+        getIntervalExecutionLocations(managerInterval, pipeGraph);
+    assert(!executionLocations.empty() &&
+           "generated fabric interval must have an execution location");
+    candidatesByBlock[acquireBoundary->getBlock()].push_back(
+        {intervalIndex, acquireBoundary, releaseBoundary,
+         std::move(executionLocations)});
+  }
+
+  SmallVector<bool> removed(plan.runtimeIntervals.size());
+  for (const auto &entry : candidatesByBlock) {
+    ArrayRef<FabricRuntimeCoalescingCandidate> candidates = entry.second;
+    SmallVector<bool> visited(candidates.size());
+    for (std::size_t rootIndex = 0; rootIndex < candidates.size();
+         ++rootIndex) {
+      if (visited[rootIndex]) {
+        continue;
+      }
+      visited[rootIndex] = true;
+      SmallVector<std::size_t> worklist{rootIndex};
+      SmallVector<FabricRuntimeCoalescingCandidate> component;
+      while (!worklist.empty()) {
+        std::size_t candidateIndex = worklist.pop_back_val();
+        component.push_back(candidates[candidateIndex]);
+        for (std::size_t otherIndex = 0; otherIndex < candidates.size();
+             ++otherIndex) {
+          if (visited[otherIndex] ||
+              !executionLocationsOverlap(
+                  candidates[candidateIndex].executionLocations,
+                  candidates[otherIndex].executionLocations)) {
+            continue;
+          }
+          visited[otherIndex] = true;
+          worklist.push_back(otherIndex);
+        }
+      }
+      if (component.size() > 1) {
+        llvm::sort(component, [](const FabricRuntimeCoalescingCandidate &lhs,
+                                 const FabricRuntimeCoalescingCandidate &rhs) {
+          return lhs.intervalIndex < rhs.intervalIndex;
+        });
+        coalesceFabricRuntimeCandidates(component, plan, removed);
+      }
+    }
+  }
+
+  SmallVector<FabricRuntimeIntervalPlan> coalescedIntervals;
+  coalescedIntervals.reserve(plan.runtimeIntervals.size());
+  for (std::size_t intervalIndex = 0;
+       intervalIndex < plan.runtimeIntervals.size(); ++intervalIndex) {
+    if (removed[intervalIndex]) {
+      continue;
+    }
+    coalescedIntervals.push_back(
+        std::move(plan.runtimeIntervals[intervalIndex]));
+  }
+  plan.runtimeIntervals = std::move(coalescedIntervals);
+}
+
 static void planFabricManagerOwnership(
     FabricRoutePlan &plan, const PipeGraph &pipeGraph,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps,
@@ -444,8 +580,10 @@ static void planFabricManagerOwnership(
   llvm::MapVector<FuncOp, SmallVector<std::size_t>> intervalsByFunction;
   for (auto [runtimeIntervalIndex, runtimeInterval] :
        llvm::enumerate(plan.runtimeIntervals)) {
+    assert(runtimeInterval.managerIntervalIndices.size() == 1 &&
+           "runtime intervals must be coalesced after ownership planning");
     const FabricManagerIntervalPlan &managerInterval =
-        plan.managerIntervals[runtimeInterval.managerIntervalIndex];
+        plan.managerIntervals[runtimeInterval.managerIntervalIndices.front()];
     intervalsByFunction[managerInterval.function].push_back(
         runtimeIntervalIndex);
   }
@@ -461,7 +599,7 @@ static void planFabricManagerOwnership(
                        [&](std::size_t runtimeIntervalIndex) {
                          return plan.managerIntervals
                                     [plan.runtimeIntervals[runtimeIntervalIndex]
-                                         .managerIntervalIndex]
+                                         .managerIntervalIndices.front()]
                                         .kind !=
                                 FabricManagerIntervalKind::GeneratedReceiver;
                        })) {
@@ -485,9 +623,11 @@ static void planFabricManagerOwnership(
           const FabricRuntimeIntervalPlan &senderRuntime =
               plan.runtimeIntervals[senderRuntimeIndex];
           const FabricManagerIntervalPlan &receiverInterval =
-              plan.managerIntervals[receiverRuntime.managerIntervalIndex];
+              plan.managerIntervals[receiverRuntime.managerIntervalIndices
+                                        .front()];
           const FabricManagerIntervalPlan &senderInterval =
-              plan.managerIntervals[senderRuntime.managerIntervalIndex];
+              plan.managerIntervals[senderRuntime.managerIntervalIndices
+                                        .front()];
           SmallVector<FabricManagerExecutionLocation> receiverLocations =
               getIntervalExecutionLocations(receiverInterval, pipeGraph);
           SmallVector<FabricManagerExecutionLocation> senderLocations =
@@ -540,16 +680,23 @@ static void planFabricManagerOwnership(
             plan.runtimeIntervals[receiverRuntimeIndex];
         FabricRuntimeIntervalPlan &senderRuntime =
             plan.runtimeIntervals[senderRuntimeIndex];
-        receiverRuntime.scope = receiverRuntime.protocolOperations.front();
-        senderRuntime.scope = senderRuntime.protocolOperations.front();
+        receiverRuntime.acquireBoundary =
+            receiverRuntime.protocolOperations.front();
+        receiverRuntime.releaseBoundary =
+            receiverRuntime.protocolOperations.front();
+        senderRuntime.acquireBoundary =
+            senderRuntime.protocolOperations.front();
+        senderRuntime.releaseBoundary =
+            senderRuntime.protocolOperations.front();
         FabricManagerIntervalPlan &receiverManager =
-            plan.managerIntervals[receiverRuntime.managerIntervalIndex];
+            plan.managerIntervals[receiverRuntime.managerIntervalIndices
+                                      .front()];
         FabricManagerIntervalPlan &senderManager =
-            plan.managerIntervals[senderRuntime.managerIntervalIndex];
-        receiverManager.acquireBoundary = receiverRuntime.scope;
-        receiverManager.releaseBoundary = receiverRuntime.scope;
-        senderManager.acquireBoundary = senderRuntime.scope;
-        senderManager.releaseBoundary = senderRuntime.scope;
+            plan.managerIntervals[senderRuntime.managerIntervalIndices.front()];
+        receiverManager.acquireBoundary = receiverRuntime.acquireBoundary;
+        receiverManager.releaseBoundary = receiverRuntime.releaseBoundary;
+        senderManager.acquireBoundary = senderRuntime.acquireBoundary;
+        senderManager.releaseBoundary = senderRuntime.releaseBoundary;
         receiverRuntime.ownershipSemaphoreIndex = semaphoreIndex;
         receiverRuntime.useInvocationCounter = useInvocationCounter;
         receiverRuntime.acquireGeneration =
@@ -562,9 +709,9 @@ static void planFabricManagerOwnership(
             useInvocationCounter ? 1 : 2 * intervalPosition + 1;
         senderRuntime.releaseGeneration =
             useInvocationCounter ? 2 : 2 * intervalPosition + 2;
-        ownershipGroupByManager[receiverRuntime.managerIntervalIndex] =
-            semaphoreIndex;
-        ownershipGroupByManager[senderRuntime.managerIntervalIndex] =
+        ownershipGroupByManager[receiverRuntime.managerIntervalIndices
+                                    .front()] = semaphoreIndex;
+        ownershipGroupByManager[senderRuntime.managerIntervalIndices.front()] =
             semaphoreIndex;
       }
     }
@@ -591,6 +738,7 @@ static void planFabricManagerOwnership(
       plan.managerIntervals[rhsIndex].interferingIntervals.push_back(lhsIndex);
     }
   }
+  coalesceUnserializedFabricRuntimeIntervals(plan, pipeGraph);
 }
 
 LogicalResult buildFabricRoutePlan(
@@ -726,9 +874,15 @@ LogicalResult buildFabricRoutePlan(
         scope,
         {},
         std::nullopt});
-    plan.runtimeIntervals.push_back(FabricRuntimeIntervalPlan{
-        managerIntervalIndex, scope, std::move(operations), std::nullopt, false,
-        0, 0});
+    plan.runtimeIntervals.push_back(
+        FabricRuntimeIntervalPlan{{managerIntervalIndex},
+                                  scope,
+                                  scope,
+                                  std::move(operations),
+                                  std::nullopt,
+                                  false,
+                                  0,
+                                  0});
   }
 
   for (ExternalFabricManagerInterval externalInterval :
@@ -843,7 +997,7 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
     if (!interval.ownershipSemaphoreIndex || !interval.useInvocationCounter) {
       continue;
     }
-    FuncOp func = interval.scope->getParentOfType<FuncOp>();
+    FuncOp func = interval.acquireBoundary->getParentOfType<FuncOp>();
     assert(func && "fabric connection interval must be inside a function");
     auto counterKey =
         std::make_pair(func.getOperation(), *interval.ownershipSemaphoreIndex);
@@ -863,15 +1017,15 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
   }
 
   for (const FabricRuntimeIntervalPlan &interval : plan.runtimeIntervals) {
-    FuncOp func = interval.scope->getParentOfType<FuncOp>();
+    FuncOp func = interval.acquireBoundary->getParentOfType<FuncOp>();
     assert(func && "fabric connection interval must be inside a function");
     auto functionPlanIt = plan.routesByFunction.find(func);
     assert(functionPlanIt != plan.routesByFunction.end() &&
            "fabric connection interval is missing its route plan");
     const SmallVector<FabricRoute> &routes = functionPlanIt->second.routes;
     std::size_t routeCount = getFabricRouteCount(routes);
-    OpBuilder builder(interval.scope);
-    Location loc = interval.scope->getLoc();
+    OpBuilder builder(interval.acquireBoundary);
+    Location loc = interval.acquireBoundary->getLoc();
     Value ownershipSemaphorePtr;
     Value ownershipInvocationCounter;
     Value ownershipInvocation;
@@ -936,7 +1090,7 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
              "fabric protocol operation has multiple connection intervals");
     }
 
-    builder.setInsertionPointAfter(interval.scope);
+    builder.setInsertionPointAfter(interval.releaseBoundary);
     ttk::CloseRoutingPlaneConnectionsOp close =
         ttk::CloseRoutingPlaneConnectionsOp::create(builder, loc, manager,
                                                     connectionCount);

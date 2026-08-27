@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true})' | FileCheck %s --check-prefix=COALESCED
 
-// Summary: Verify ordered manager intervals in two functions share one
-// ownership semaphore and a runtime invocation ordinal.
+// Summary: Verify repeated logical manager intervals use either serialized
+// ownership lifetimes or one function-scoped connection lifetime.
 
 // A runtime ordinal is required even though each interval is single-shot: a
 // conditional may skip an interval, so static generation numbers could leave
@@ -32,6 +33,31 @@
 // CHECK: memref.store {{.*}}, %[[RECEIVER_COUNTER]]
 // CHECK: memref.load %[[RECEIVER_COUNTER]]
 // CHECK: memref.store {{.*}}, %[[RECEIVER_COUNTER]]
+
+// Without local ownership, each function opens its connection records once,
+// uses the manager for both logical intervals, and closes it after both.
+// COALESCED-LABEL: func.func @sender_node
+// COALESCED: %[[SENDER_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// COALESCED: %[[SENDER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[SENDER_MANAGER]],
+// COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
+// COALESCED-NOT: ttkernel.routing_plane.open_connections
+// COALESCED: ttkernel.routing_plane.fused_write_atomic_inc(%[[SENDER_MANAGER]], %[[SENDER_ROUTE_ID]],
+// COALESCED-NOT: ttkernel.routing_plane.close_connections
+// COALESCED: ttkernel.routing_plane.fused_write_atomic_inc(%[[SENDER_MANAGER]], %[[SENDER_ROUTE_ID]],
+// COALESCED-NOT: ttkernel.routing_plane.open_connections
+// COALESCED: ttkernel.routing_plane.close_connections(%[[SENDER_MANAGER]],
+// COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
+// COALESCED-LABEL: func.func @receiver_node
+// COALESCED: %[[RECEIVER_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// COALESCED: %[[RECEIVER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_MANAGER]],
+// COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
+// COALESCED-NOT: ttkernel.routing_plane.open_connections
+// COALESCED: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER]], %[[RECEIVER_ROUTE_ID]],
+// COALESCED-NOT: ttkernel.routing_plane.close_connections
+// COALESCED: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER]], %[[RECEIVER_ROUTE_ID]],
+// COALESCED-NOT: ttkernel.routing_plane.open_connections
+// COALESCED: ttkernel.routing_plane.close_connections(%[[RECEIVER_MANAGER]],
+// COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @idle_compute() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {
