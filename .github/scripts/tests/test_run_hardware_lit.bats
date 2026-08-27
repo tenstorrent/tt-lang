@@ -17,6 +17,17 @@ setup() {
     unset TT_VISIBLE_DEVICES
     unset TT_METAL_CACHE
     unset HW_TEST_WORKERS
+    write_fake_group_probe 1
+}
+
+write_fake_group_probe() {
+    local minimum_group_size="$1"
+    cat > "$BIN/python3" <<EOF
+#!/usr/bin/env bash
+[ "\${1:-}" = "-c" ] || exit 2
+[ "\${3:-0}" -ge "$minimum_group_size" ]
+EOF
+    chmod +x "$BIN/python3"
 }
 
 write_fake_lit() {
@@ -40,7 +51,7 @@ EOF
         build/test/python build/test/python-lit-report
 
     assert_success
-    assert_output --partial "Detected 4 chips: 2 Python lit shards in parallel"
+    assert_output --partial "Detected 4 chips as 4 valid device groups: 2 Python lit shards in parallel"
     run cat "$CALLS"
     assert_line --partial "env:0"
     assert_line --partial "--num-shards 2 --run-shard 1"
@@ -64,6 +75,42 @@ EOF
     assert_line --partial "python-lit-report-shard-1.xml"
     assert_line --partial "python-lit-report-multidevice.xml"
     [ "${#lines[@]}" -eq 4 ]
+}
+
+@test "multi-chip: paired-chip topology runs one shard per valid device group" {
+    write_fake_lit 0
+    write_fake_group_probe 2
+
+    HW_LIT_CHIPS=4 run "$SCRIPT" \
+        build/test/python build/test/python-lit-report
+
+    assert_success
+    assert_output --partial "Detected 4 chips as 2 valid device groups: 2 Python lit shards in parallel"
+    run cat "$CALLS"
+    assert_line --partial "env:0,1"
+    assert_line --partial "--num-shards 2 --run-shard 1"
+    assert_line --partial "env:2,3"
+    assert_line --partial "--num-shards 2 --run-shard 2"
+    assert_line --partial "env: cache:"
+    assert_line --partial "python-lit-report-multidevice.xml"
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: no valid device grouping runs once with full topology visibility" {
+    write_fake_lit 0
+    write_fake_group_probe 5
+
+    TT_VISIBLE_DEVICES=2 HW_LIT_CHIPS=4 run "$SCRIPT" \
+        build/test/python build/test/python-lit-report
+
+    assert_success
+    assert_output --partial "No valid device grouping found"
+    run cat "$CALLS"
+    assert_output --partial "env:"
+    assert_output --partial "python-lit-report.xml"
+    refute_output --partial "env:2"
+    refute_output --partial "--num-shards"
+    [ "${#lines[@]}" -eq 1 ]
 }
 
 @test "single chip: one serial lit run over the whole suite" {
