@@ -309,6 +309,45 @@ def _make_exact_execution_domain_kernel(data_format):
     return exact_execution_domain_kernel
 
 
+def _make_node_scoped_allocation_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(2, 1))
+    def node_scoped_allocation_kernel(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_node_scratch_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, _node_y = ttl.node(dims=2)
+            with input_dfb.wait() as input_block:
+                with output_dfb.reserve() as output_block:
+                    if node_x == 0:
+                        with first_node_scratch_dfb.reserve() as scratch_output:
+                            scratch_output.store(input_block)
+                        with first_node_scratch_dfb.wait() as scratch_input:
+                            output_block.store(scratch_input)
+                    else:
+                        output_block.store(input_block)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, node_x], input_block).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _node_y = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, node_x]).wait()
+
+    return node_scoped_allocation_kernel
+
+
 @ttl.operation(grid=(2, 1))
 def _incompatible_static_configuration_kernel(input_tensor, output_tensor):
     first_input_dfb = ttl.make_dfb("float32", shape=(1, 1), block_count=2)
@@ -1476,6 +1515,8 @@ _in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
 _in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _capacity_test_bf16_atom_kernel = _make_capacity_test_atom_kernel("bf16")
 _capacity_test_f32_atom_kernel = _make_capacity_test_atom_kernel("float32")
+_node_scoped_bf16_allocation_kernel = _make_node_scoped_allocation_kernel("bf16")
+_node_scoped_f32_allocation_kernel = _make_node_scoped_allocation_kernel("float32")
 _waited_mutation_bf16_store_kernel = _make_waited_block_store_kernel("bf16")
 _waited_mutation_f32_store_kernel = _make_waited_block_store_kernel("float32")
 _waited_mutation_bf16_two_tile_store_kernel = _make_waited_block_store_kernel(
@@ -1729,6 +1770,45 @@ def test_exact_disjoint_execution_domains_reuse_dfb(
     # scratch DFBs. The scratch DFBs share because their exact node domains are
     # disjoint, without requiring a local lifetime-order proof.
     assert _count_final_dfb_allocations(final_mlir_path) == 3
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+# Exact allocation domains execute correctly without kernel specialization.
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_node_scoped_bf16_allocation_kernel, torch.bfloat16),
+        (_node_scoped_f32_allocation_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_node_scoped_dfb_allocation_without_kernel_specialization(
+    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(2 * TILE * TILE, dtype=torch.float32).reshape(
+        TILE, 2 * TILE
+    )
+    input_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    final_mlir_file = tmp_path / "node_scoped_allocation.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_file))
+    operation(input_tensor, output_tensor, options="--no-ttl-specialize-cores")
+
+    final_mlir = final_mlir_file.read_text()
+    assert re.search(r"\{allocation_nodes = \[\[0, 0\]\], block_count", final_mlir)
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
