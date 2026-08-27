@@ -8,11 +8,11 @@ on:
         required: false
         type: string
         default: 'n150'
-      runner_label:
-        description: 'GitHub Actions runner label.'
+      runner_labels_json:
+        description: 'JSON array of GitHub Actions runner labels.'
         required: false
         type: string
-        default: 'tt-ubuntu-2204-n150-stable'
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -29,11 +29,11 @@ on:
         required: false
         type: string
         default: 'n150'
-      runner_label:
-        description: 'GitHub Actions runner label.'
+      runner_labels_json:
+        description: 'JSON array of GitHub Actions runner labels.'
         required: false
         type: string
-        default: 'tt-ubuntu-2204-n150-stable'
+        default: '["tt-ubuntu-2204-n150-stable"]'
       defer_result_check:
         description: 'Allow the calling workflow to check the aggregate hardware result.'
         required: false
@@ -56,7 +56,7 @@ permissions:
 jobs:
   test-hardware:
     name: "Hardware Tests (${{ inputs.hardware }})"
-    runs-on: ${{ inputs.runner_label }}
+    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
     continue-on-error: ${{ inputs.defer_result_check }}
 

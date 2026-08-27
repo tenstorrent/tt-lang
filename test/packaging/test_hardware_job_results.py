@@ -136,7 +136,7 @@ def test_both_setup_failures_fail() -> None:
     assert "No hardware runner completed the test suite" in result.stdout
 
 
-@pytest.mark.parametrize("failed_runner", ["n150", "galaxy-bh", "bh-loudbox"])
+@pytest.mark.parametrize("failed_runner", ["n150", "galaxy-bh", "BH-Quietbox-2"])
 def test_post_setup_failure_fails(failed_runner: str) -> None:
     other_runner = "galaxy-bh" if failed_runner == "n150" else "n150"
     result = _run_check(

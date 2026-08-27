@@ -106,7 +106,7 @@ def is_hardware_available() -> bool:
 
 
 def pin_xdist_worker_to_device() -> None:
-    """Restrict a pytest-xdist worker to one chip and cache directory."""
+    """Restrict a pytest-xdist worker to its device group and cache directory."""
     if os.environ.get("TTLANG_PIN_XDIST_WORKERS_TO_DEVICES") != "1":
         return
     worker_name = os.environ.get("PYTEST_XDIST_WORKER")
@@ -117,8 +117,20 @@ def pin_xdist_worker_to_device() -> None:
     )
     if not worker_index:
         return
+    visible_device_groups = os.environ.get("TTLANG_XDIST_VISIBLE_DEVICE_GROUPS")
+    if visible_device_groups:
+        device_groups = [group for group in visible_device_groups.split(";") if group]
+        worker_number = int(worker_index)
+        if worker_number >= len(device_groups):
+            raise RuntimeError(
+                "TTLANG_XDIST_VISIBLE_DEVICE_GROUPS does not define a group "
+                f"for xdist worker {worker_name}: {visible_device_groups!r}"
+            )
+        visible_devices = device_groups[worker_number]
+    else:
+        visible_devices = worker_index
     if "TT_VISIBLE_DEVICES" not in os.environ:
-        os.environ["TT_VISIBLE_DEVICES"] = worker_index
+        os.environ["TT_VISIBLE_DEVICES"] = visible_devices
     cache_root = os.environ.get("TTLANG_XDIST_TT_METAL_CACHE_ROOT")
     if cache_root:
         cache_root = os.path.abspath(cache_root)
