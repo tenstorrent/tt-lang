@@ -16,6 +16,10 @@ from ttl.ir import *
 from ..constants import DEFAULT_TILE_SIZE
 from ..condition import DispatchCondition, _BoundDispatchCondition
 from ..dfb_reset import DFBReset, _BoundDFBReset
+from ..dfb_reconfiguration import (
+    DFBReconfiguration,
+    _BoundDFBReconfiguration,
+)
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import (
@@ -32,6 +36,8 @@ from ..kernel import (
     Kernel,
     KernelKind,
     _DFB_RELEASE_METHODS,
+    _selector_implicit_role,
+    _selector_kind,
     _selector_sort_key,
 )
 from ..scalar import ScalarType
@@ -484,6 +490,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 if self._is_ttl_api_call(node, "reset_all_dfbs"):
                     return self._visit_reset_dfbs(node, reset_all=True)
+
+                if self._is_ttl_api_call(node, "reconfigure_dfbs"):
+                    return self._visit_dfb_reconfiguration(node)
 
                 if self._is_ttl_api_call(node, "raw_addr"):
                     return self._visit_raw_addr(node)
@@ -1236,6 +1245,10 @@ class TTLGenericCompiler(TTCompilerBase):
                     self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
                     self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
+                elif isinstance(val, (tuple, list)):
+                    # Shape and axis lists are consumed by the Python-level API,
+                    # exactly as an inline literal would be.
+                    self._set_var(name, val)
                 elif isinstance(val, DataflowBuffer):
                     self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):
@@ -1252,6 +1265,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     or isinstance(val, ScalarType)
                     or isinstance(val, _BoundDispatchCondition)
                     or isinstance(val, _BoundDFBReset)
+                    or isinstance(val, _BoundDFBReconfiguration)
                 ):
                     continue
                 elif is_ttnn_global_semaphore(val):
@@ -2022,14 +2036,62 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return reset
 
+    def _resolve_dfb_reconfiguration(self, node):
+        """Resolve an operation-local DFB reconfiguration declaration."""
+        boundary = self._resolve_static_reference(node)
+        if isinstance(boundary, DFBReconfiguration):
+            self._raise_error(
+                node,
+                "ttl.reconfigure_dfbs() boundary must be captured by an "
+                "enclosing @ttl.operation factory",
+            )
+        if not isinstance(boundary, _BoundDFBReconfiguration):
+            type_detail = (
+                ""
+                if boundary is _MISSING_STATIC_VALUE
+                else f", got {type(boundary).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.reconfigure_dfbs() boundary must be a "
+                "ttl.DFBReconfiguration" + type_detail,
+            )
+        return boundary
+
+    def _visit_dfb_reconfiguration(self, node):
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node,
+                "ttl.reconfigure_dfbs() requires exactly one positional "
+                "DFBReconfiguration argument",
+            )
+        boundary = self._resolve_dfb_reconfiguration(node.args[0])
+        participant_attrs = [
+            self._logical_kernel_attr(participant)
+            for participant in sorted(boundary.participants, key=_selector_sort_key)
+        ]
+        boundary_attr = ttl.ir.DFBReconfigurationAttr.get(
+            self.ctx, boundary.ordinal, participant_attrs
+        )
+        return ttl.dfb_reconfiguration(boundary_attr)
+
     def _logical_kernel_attr(self, participant):
+        participant_kind = _selector_kind(participant)
         ir_kind = {
             KernelKind.COMPUTE: ttl.ir.LogicalKernelKind.Compute,
             KernelKind.DATA_MOVEMENT: ttl.ir.LogicalKernelKind.DataMovement,
-        }[participant.kind]
-        if not isinstance(participant, Kernel) or participant._identity is None:
+        }[participant_kind]
+        if isinstance(participant, KernelKind):
+            return ttl.ir.LogicalKernelAttr.get(
+                self.ctx,
+                ir_kind,
+                None,
+                None,
+                None,
+            )
+        if participant._identity is None:
             raise TypeError(
-                "DFBReset participant Kernel must be captured by the enclosing "
+                "DFB synchronization participant Kernel must be captured by the enclosing "
                 "@ttl.operation"
             )
         return ttl.ir.LogicalKernelAttr.get(
@@ -2037,7 +2099,7 @@ class TTLGenericCompiler(TTCompilerBase):
             ir_kind,
             participant.identity,
             participant._operation_identity,
-            participant._implicit_role,
+            _selector_implicit_role(participant),
         )
 
     def _resolve_dfb_value(self, node, param_name, api_name="call_extern_func"):

@@ -435,8 +435,8 @@ def test_validation_pipeline_excludes_runtime_lowering():
     assert not any("ttl-validate-cb-budget" in item for item in runtime_passes)
 
 
-def test_grid_size_one_dimensional_is_rejected():
-    def invalid_grid_size(lhs, rhs, out):
+def test_grid_size_one_dimensional_is_accepted():
+    def one_dimensional_grid_size(lhs, rhs, out):
         ttl.grid_size(dims=1)
 
         @ttl.compute()
@@ -444,14 +444,13 @@ def test_grid_size_one_dimensional_is_rejected():
             pass
 
     validator = build_operation_validator(
-        invalid_grid_size, grid=(1, 1), target_arch="blackhole"
+        one_dimensional_grid_size, grid=(1, 1), target_arch="blackhole"
     )
 
-    with pytest.raises(ValueError, match=r"grid_size\(\).*dims=1"):
-        validator(_spec(), _spec(), _spec())
+    assert validator(_spec(), _spec(), _spec()) is None
 
 
-def test_unsupported_tuple_capture_is_rejected():
+def test_captured_tuple_subscript_is_rejected():
     capture = (1, 2)
 
     def invalid_capture(lhs, rhs, out):
@@ -466,7 +465,7 @@ def test_unsupported_tuple_capture_is_rejected():
         invalid_capture, grid=(1, 1), target_arch="blackhole"
     )
 
-    with pytest.raises(TypeError, match="Unhandled capture.*tuple"):
+    with pytest.raises(TTLangCompileError, match="only supports subscripting tensors"):
         validator(_spec(), _spec(), _spec())
 
 

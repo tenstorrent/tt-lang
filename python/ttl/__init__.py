@@ -38,6 +38,7 @@ else:
         DispatchCondition,
         DFBReset,
         DFBAllocationGroup,
+        DFBReconfiguration,
         ScalarType,
         compute,
         datamovement,
@@ -49,6 +50,7 @@ else:
         node,
         grid_size,
         math,
+        block,
         DFBAccess,
         DFBEffect,
         call_extern_func,
@@ -57,6 +59,7 @@ else:
         raw_addr,
         reset_all_dfbs,
         reset_dfbs,
+        reconfigure_dfbs,
     )
 
     from ttl._generated_elementwise import *  # noqa: F401,F403
@@ -86,6 +89,7 @@ else:
         "DispatchCondition",
         "DFBReset",
         "DFBAllocationGroup",
+        "DFBReconfiguration",
         "ScalarType",
         "compute",
         "datamovement",
@@ -104,6 +108,7 @@ else:
         "node",
         "grid_size",
         "math",
+        "block",
         "signpost",
         "DFBEffect",
         "DFBAccess",
@@ -113,5 +118,6 @@ else:
         "raw_addr",
         "reset_dfbs",
         "reset_all_dfbs",
+        "reconfigure_dfbs",
         *_elementwise_all,
     ]

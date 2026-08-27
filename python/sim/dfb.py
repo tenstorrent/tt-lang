@@ -474,16 +474,30 @@ class Block:
         tensors each of shape (N,).
         """
         buf = self._buf.to_torch()
-        shape = self._shape
+        shape = tuple(self._shape)
 
         if self.layout == ROW_MAJOR_LAYOUT:
             if len(shape) == 1:
                 # 1-D: the entire buffer is a single row.
-                return [Tensor(buf, ROW_MAJOR_LAYOUT)]
+                return [
+                    Tensor(
+                        buf,
+                        ROW_MAJOR_LAYOUT,
+                        self._buf.memory_config,
+                        dtype=self._buf.dtype,
+                    )
+                ]
             # ND: iterate over all leading dimensions, yield one row per combination.
             rows: List[Tensor] = []
             for coords in _product(*[range(d) for d in shape[:-1]]):
-                rows.append(Tensor(buf[coords], ROW_MAJOR_LAYOUT))
+                rows.append(
+                    Tensor(
+                        buf[coords],
+                        ROW_MAJOR_LAYOUT,
+                        self._buf.memory_config,
+                        dtype=self._buf.dtype,
+                    )
+                )
             return rows
 
         # TILE_LAYOUT path
@@ -492,7 +506,28 @@ class Block:
             tk = shape[0]
             w = buf.shape[-1]
             tile_w = w // tk if tk > 0 else 1
-            return [Tensor(buf[slice(c * tile_w, (c + 1) * tile_w)]) for c in range(tk)]
+            return [
+                Tensor(
+                    buf[slice(c * tile_w, (c + 1) * tile_w)],
+                    TILE_LAYOUT,
+                    self._buf.memory_config,
+                    dtype=self._buf.dtype,
+                )
+                for c in range(tk)
+            ]
+
+        # The tile grid addresses the last two buffer axes, preceded by one
+        # axis per batch dimension.  A buffer may carry extra leading axes
+        # when it was allocated with a higher rank than the block; those
+        # carry no data while they are singleton, and dropping them keeps the
+        # grid aligned with the axes ``tile_h``/``tile_w`` are measured from.
+        while buf.ndim > len(shape) and buf.shape[0] == 1:
+            buf = buf[0]
+        if buf.ndim > len(shape):
+            raise ValueError(
+                f"block shape {tuple(shape)} cannot address a buffer of shape "
+                f"{tuple(buf.shape)}: leading dimension is not 1"
+            )
 
         nb = len(shape) - 2
         tm, tk = shape[nb], shape[nb + 1]
@@ -509,7 +544,14 @@ class Block:
                 slice(r * tile_h, (r + 1) * tile_h),
                 slice(c * tile_w, (c + 1) * tile_w),
             )
-            tiles.append(Tensor(buf[slices]))
+            tiles.append(
+                Tensor(
+                    buf[slices],
+                    TILE_LAYOUT,
+                    self._buf.memory_config,
+                    dtype=self._buf.dtype,
+                )
+            )
         return tiles
 
     def to_tensor(self) -> Tensor:
@@ -533,7 +575,11 @@ class Block:
         (N,) expects a single tensor of shape (N,); an ND shape (A, B, N)
         expects A*B tensors each of shape (N,).
         """
-        layout = tensors[0].layout if tensors else TILE_LAYOUT
+        shape = tuple(shape)
+        if not tensors:
+            raise ValueError("Block.from_list requires at least one tensor")
+        first = tensors[0]
+        layout = first.layout
 
         if layout == ROW_MAJOR_LAYOUT:
             if len(shape) == 1:
@@ -545,7 +591,12 @@ class Block:
                     *shape
                 )
             block = cls(
-                tensor=Tensor(elem_tensor, ROW_MAJOR_LAYOUT),
+                tensor=Tensor(
+                    elem_tensor,
+                    ROW_MAJOR_LAYOUT,
+                    first.memory_config,
+                    dtype=first.dtype,
+                ),
                 shape=shape,
                 acquisition=BlockAcquisition.RESERVE,
                 kernel_type=KernelKind.COMPUTE,
@@ -573,7 +624,12 @@ class Block:
 
         # Create block with derived element shape
         block = cls(
-            tensor=Tensor(elem_tensor),
+            tensor=Tensor(
+                elem_tensor,
+                TILE_LAYOUT,
+                first.memory_config,
+                dtype=first.dtype,
+            ),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
             kernel_type=KernelKind.COMPUTE,
@@ -814,6 +870,14 @@ class Block:
 
         Tracks wait() Compute blocks that contribute to the result.
         """
+        # TODO(#869): Add support for non-Block operands.
+        if not isinstance(other, Block):
+            raise TypeError(
+                f"unsupported operand for block {op.__name__}: "
+                f"{type(other).__name__}. Both operands must be blocks; "
+                f"materialize a scalar with ttl.block.fill() first."
+            )
+
         # Layout consistency is checked before shape so a mismatched-layout
         # error wins over a shape error: pairing the underlying buffers is
         # only meaningful when both operands agree on layout, regardless of
@@ -1054,34 +1118,39 @@ class DataflowBuffer:
             # Tiled: validate tile alignment and derive element shape.  Tile
             # geometry is a property of the physical (padded) extent, so
             # validate against padded_shape rather than the logical shape.
-            likeness_elem_shape = likeness_tensor.padded_shape
-            if len(likeness_elem_shape) != len(shape):
+            likeness_elem_shape = tuple(likeness_tensor.padded_shape)
+            ndims = len(shape)
+            # The likeness tensor supplies dtype and shape unit; a block may
+            # cover a trailing sub-slab of it, so its rank only has to fit
+            # within the tensor rank (e.g. a (1, k) block of a (B, H, S, D)
+            # tensor).  Validate against the innermost len(shape) dimensions.
+            if ndims > len(likeness_elem_shape):
                 raise ValueError(
-                    f"Element shape dimensionality {len(likeness_elem_shape)} does not match "
-                    f"tile shape dimensionality {len(shape)}. Element shape: {likeness_elem_shape}, "
-                    f"tile shape: {shape}"
+                    f"Tile shape dimensionality {ndims} exceeds element shape "
+                    f"dimensionality {len(likeness_elem_shape)}. Element shape: "
+                    f"{likeness_elem_shape}, tile shape: {shape}"
                 )
+            base = len(likeness_elem_shape) - ndims
 
             TILE_SIZE = TILE_SHAPE[0]  # 32
-            ndims = len(shape)
-            for i, (edim, tdim) in enumerate(zip(likeness_elem_shape, shape)):
+            for i, (edim, tdim) in enumerate(zip(likeness_elem_shape[base:], shape)):
                 if i == ndims - 1 or i == ndims - 2:
                     # Last two dimensions are tile dimensions: must be a
                     # multiple of TILE_SIZE per spec (every tile is 32x32).
                     if edim % TILE_SIZE != 0:
                         raise ValueError(
-                            f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
+                            f"Element shape dimension {base + i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
                             f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
                     if edim // TILE_SIZE < tdim:
                         raise ValueError(
-                            f"Element shape dimension {i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
+                            f"Element shape dimension {base + i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
                             f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
                 else:
                     if edim < tdim:
                         raise ValueError(
-                            f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
+                            f"Element shape dimension {base + i} has size {edim}, but tile shape requires at least {tdim}. "
                             f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
 

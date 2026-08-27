@@ -405,9 +405,33 @@ struct ValidatedSynchronizedReset {
   bool isModeledLifetimeBoundary() const { return executionCount == 1; }
 };
 
+// One static occurrence of a DFB configuration-epoch boundary before
+// launch-node participation is validated.
+struct DFBReconfigurationOccurrence {
+  Operation *operation = nullptr;
+  DFBReconfigurationAttr boundary;
+  LogicalKernelAttr participant;
+  LaunchNodeDomain launchDomain = LaunchNodeDomain::unknown();
+};
+
+// One proved dynamic DFB configuration-epoch boundary on one launch node.
+struct ValidatedDFBReconfiguration {
+  DFBReconfigurationAttr boundary;
+  SmallVector<Operation *> participantOperations;
+  bool conditionalExecution = false;
+
+  bool operator==(const ValidatedDFBReconfiguration &rhs) const {
+    return std::tie(boundary, participantOperations, conditionalExecution) ==
+           std::tie(rhs.boundary, rhs.participantOperations,
+                    rhs.conditionalExecution);
+  }
+};
+
 // First and last collective instances of one reset declaration. Equal events
 // represent a single reset instance.
 using ResetBoundaryEvents = DenseMap<SynchronizedDFBResetAttr, AccessEventSpan>;
+using ReconfigurationBoundaryEvents =
+    DenseMap<DFBReconfigurationAttr, EventPair>;
 
 using AccessExecutionCounts =
     DenseMap<const DFBAccessOccurrence *, std::optional<std::uint64_t>>;
@@ -1149,6 +1173,7 @@ static LogicalResult collectLogicalDFBs(
     SmallVectorImpl<DFBLogicalLifecycle> &logicalDFBs,
     SmallVectorImpl<Operation *> &unknownAccessOperations,
     SmallVectorImpl<SynchronizedResetOccurrence> &resetOccurrences,
+    SmallVectorImpl<DFBReconfigurationOccurrence> &reconfigurationOccurrences,
     DFBAnalysisFailure &analysisFailure, bool &dependsOnLaunchNode) {
   llvm::MapVector<int64_t, unsigned> logicalIndexById;
   for (const DFBLogicalIdentityAssignment &assignment :
@@ -1261,6 +1286,26 @@ static LogicalResult collectLogicalDFBs(
       }
       llvm::sort(occurrence.targetLogicalIndices);
       resetOccurrences.push_back(std::move(occurrence));
+      return WalkResult::advance();
+    }
+    if (auto reconfiguration = dyn_cast<DFBReconfigurationOp>(operation)) {
+      func::FuncOp kernel = reconfiguration->getParentOfType<func::FuncOp>();
+      auto logicalKernel =
+          kernel
+              ? kernel->getAttrOfType<LogicalKernelAttr>(kLogicalKernelAttrName)
+              : LogicalKernelAttr();
+      DFBReconfigurationAttr boundary = reconfiguration.getBoundaryAttr();
+      if (!logicalKernel ||
+          !llvm::is_contained(boundary.getParticipants(), logicalKernel)) {
+        analysisFailure.set(
+            reconfiguration,
+            "DFB reconfiguration must execute in one of its declared "
+            "logical-kernel participants");
+        return WalkResult::interrupt();
+      }
+      reconfigurationOccurrences.push_back({reconfiguration, boundary,
+                                            logicalKernel,
+                                            LaunchNodeDomain::unknown()});
       return WalkResult::advance();
     }
     if (!mayAccessDFBStorage(operation)) {
@@ -1507,6 +1552,7 @@ struct ProgramOrderTopologyInputs {
   DenseSet<Operation *> modeledOperations;
   SmallVector<ProgramOrderTopologyAccess> accesses;
   SmallVector<ValidatedSynchronizedReset> synchronizedResets;
+  SmallVector<ValidatedDFBReconfiguration> reconfigurations;
 
   bool operator==(const ProgramOrderTopologyInputs &rhs) const {
     if (modeledOperations.size() != rhs.modeledOperations.size() ||
@@ -1515,14 +1561,15 @@ struct ProgramOrderTopologyInputs {
         })) {
       return false;
     }
-    return std::tie(accesses, synchronizedResets) ==
-           std::tie(rhs.accesses, rhs.synchronizedResets);
+    return std::tie(accesses, synchronizedResets, reconfigurations) ==
+           std::tie(rhs.accesses, rhs.synchronizedResets, rhs.reconfigurations);
   }
 };
 
 static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
     LaunchNodeCoord node, const AccessExecutionCounts &executionCounts,
     const AccessRuns &accessRuns,
     const StructuralOperationOrder &structuralOrder,
@@ -1530,6 +1577,14 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
   ProgramOrderTopologyInputs inputs;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
     for (Operation *operation : reset.participantOperations) {
+      if (Operation *projected =
+              structuralOrder.getTopLevelOperation(operation)) {
+        inputs.modeledOperations.insert(projected);
+      }
+    }
+  }
+  for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
+    for (Operation *operation : reconfiguration.participantOperations) {
       if (Operation *projected =
               structuralOrder.getTopLevelOperation(operation)) {
         inputs.modeledOperations.insert(projected);
@@ -1566,6 +1621,8 @@ static ProgramOrderTopologyInputs collectProgramOrderTopologyInputs(
   }
   inputs.synchronizedResets.append(synchronizedResets.begin(),
                                    synchronizedResets.end());
+  inputs.reconfigurations.append(reconfigurations.begin(),
+                                 reconfigurations.end());
   return inputs;
 }
 
@@ -1609,6 +1666,204 @@ static LogicalResult validateSynchronizedResetDeclarations(
             "synchronized DFB reset is missing a declared logical-kernel "
             "participant");
         return failure();
+      }
+    }
+  }
+  return success();
+}
+
+static LogicalResult validateDFBReconfigurationDeclarations(
+    ArrayRef<DFBReconfigurationOccurrence> occurrences,
+    DFBAnalysisFailure &analysisFailure) {
+  llvm::MapVector<int64_t, DFBReconfigurationAttr> boundaryByOrdinal;
+  DFBReconfigurationAttr referenceBoundary;
+  for (const DFBReconfigurationOccurrence &occurrence : occurrences) {
+    int64_t ordinal = occurrence.boundary.getOrdinal();
+    auto [boundaryIt, inserted] =
+        boundaryByOrdinal.try_emplace(ordinal, occurrence.boundary);
+    if (!inserted && boundaryIt->second != occurrence.boundary) {
+      analysisFailure.set(
+          occurrence.operation,
+          "DFB reconfiguration ordinal identifies an inconsistent "
+          "participant set");
+      return failure();
+    }
+    if (!referenceBoundary) {
+      referenceBoundary = occurrence.boundary;
+    } else if (referenceBoundary.getParticipants() !=
+               occurrence.boundary.getParticipants()) {
+      analysisFailure.set(
+          occurrence.operation,
+          "all DFB reconfiguration boundaries must declare the same "
+          "participant set");
+      return failure();
+    }
+  }
+  for (const auto &boundaryEntry : boundaryByOrdinal) {
+    DFBReconfigurationAttr boundary = boundaryEntry.second;
+    for (LogicalKernelAttr participant : boundary.getParticipants()) {
+      if (llvm::none_of(occurrences, [&](const auto &occurrence) {
+            return occurrence.boundary == boundary &&
+                   occurrence.participant == participant;
+          })) {
+        auto evidenceIt =
+            llvm::find_if(occurrences, [&](const auto &occurrence) {
+              return occurrence.boundary == boundary;
+            });
+        assert(evidenceIt != occurrences.end() &&
+               "validated boundary must have one occurrence");
+        analysisFailure.set(
+            evidenceIt->operation,
+            "DFB reconfiguration is missing a declared logical-kernel "
+            "participant");
+        return failure();
+      }
+    }
+  }
+  return success();
+}
+
+static LogicalResult validateDFBReconfigurationsAtNode(
+    ArrayRef<DFBReconfigurationOccurrence> occurrences, LaunchNodeCoord node,
+    const LivenessDomainState &domainState,
+    const StructuralOperationOrder &structuralOrder,
+    SmallVectorImpl<ValidatedDFBReconfiguration> &validatedBoundaries,
+    DFBAnalysisFailure &analysisFailure) {
+  llvm::MapVector<DFBReconfigurationAttr,
+                  SmallVector<const DFBReconfigurationOccurrence *>>
+      occurrencesByBoundary;
+  for (const DFBReconfigurationOccurrence &occurrence : occurrences) {
+    occurrencesByBoundary[occurrence.boundary].push_back(&occurrence);
+  }
+
+  for (auto &[boundary, groupedOccurrences] : occurrencesByBoundary) {
+    ValidatedDFBReconfiguration validated;
+    validated.boundary = boundary;
+    bool anyParticipantActive = false;
+    bool allParticipantsExact = true;
+    bool allParticipantsConditional = true;
+    Operation *referenceConditionalOperation = nullptr;
+    for (LogicalKernelAttr participant : boundary.getParticipants()) {
+      SmallVector<const DFBReconfigurationOccurrence *> activeOccurrences;
+      bool participantMayBeActive = false;
+      for (const DFBReconfigurationOccurrence *occurrence :
+           groupedOccurrences) {
+        if (occurrence->participant != participant ||
+            !mayContainLaunchNode(occurrence->launchDomain, node,
+                                  /*includeUnknownDomains=*/true)) {
+          continue;
+        }
+        std::optional<std::uint64_t> executionCount =
+            getExactExecutionCountAtLaunchNode(occurrence->operation, node,
+                                               domainState);
+        if (executionCount && *executionCount == 0) {
+          continue;
+        }
+        participantMayBeActive = true;
+        if (executionCount && *executionCount != 1) {
+          analysisFailure.set(
+              occurrence->operation,
+              "DFB reconfiguration must execute at most once per dispatch "
+              "and launch node");
+          return failure();
+        }
+        if (!executionCount &&
+            !structurallyExecutesAtMostOnce(occurrence->operation)) {
+          analysisFailure.set(
+              occurrence->operation,
+              "DFB reconfiguration requires an exact zero-or-one dynamic "
+              "instance count");
+          return failure();
+        }
+        activeOccurrences.push_back(occurrence);
+        allParticipantsExact &= executionCount.has_value();
+        allParticipantsConditional &= !executionCount.has_value();
+      }
+      anyParticipantActive |= participantMayBeActive;
+      if (activeOccurrences.size() > 1) {
+        analysisFailure.set(
+            activeOccurrences.back()->operation,
+            "DFB reconfiguration has multiple dynamic instance candidates "
+            "for one logical-kernel participant");
+        return failure();
+      }
+      if (activeOccurrences.empty()) {
+        validated.participantOperations.push_back(nullptr);
+        continue;
+      }
+      Operation *participantOperation = activeOccurrences.front()->operation;
+      validated.participantOperations.push_back(participantOperation);
+      std::optional<std::uint64_t> executionCount =
+          getExactExecutionCountAtLaunchNode(participantOperation, node,
+                                             domainState);
+      if (!executionCount) {
+        if (referenceConditionalOperation &&
+            !proveEquivalentConditionalExecutionAtLaunchNodes(
+                referenceConditionalOperation, node, participantOperation, node,
+                domainState)) {
+          analysisFailure.set(
+              participantOperation,
+              "DFB reconfiguration participants execute under different "
+              "structured conditions");
+          return failure();
+        }
+        referenceConditionalOperation = participantOperation;
+      }
+    }
+    if (!anyParticipantActive) {
+      continue;
+    }
+    if (llvm::is_contained(validated.participantOperations, nullptr)) {
+      Operation *evidence = *llvm::find_if(
+          validated.participantOperations, [](Operation *participantOperation) {
+            return participantOperation != nullptr;
+          });
+      analysisFailure.set(
+          evidence,
+          "DFB reconfiguration has inconsistent participant execution at "
+          "one launch node");
+      return failure();
+    }
+    if (!allParticipantsExact && !allParticipantsConditional) {
+      analysisFailure.set(
+          validated.participantOperations.front(),
+          "DFB reconfiguration participants have inconsistent dynamic "
+          "instance counts");
+      return failure();
+    }
+    validated.conditionalExecution = allParticipantsConditional;
+    validatedBoundaries.push_back(std::move(validated));
+  }
+
+  for (unsigned beforeIndex = 0; beforeIndex < validatedBoundaries.size();
+       ++beforeIndex) {
+    for (unsigned afterIndex = beforeIndex + 1;
+         afterIndex < validatedBoundaries.size(); ++afterIndex) {
+      const ValidatedDFBReconfiguration &lhs = validatedBoundaries[beforeIndex];
+      const ValidatedDFBReconfiguration &rhs = validatedBoundaries[afterIndex];
+      std::optional<bool> lhsPrecedes;
+      for (auto [lhsOperation, rhsOperation] : llvm::zip_equal(
+               lhs.participantOperations, rhs.participantOperations)) {
+        bool participantLhsPrecedes =
+            structuralOrder.precedes(lhsOperation, rhsOperation);
+        bool participantRhsPrecedes =
+            structuralOrder.precedes(rhsOperation, lhsOperation);
+        if (participantLhsPrecedes == participantRhsPrecedes) {
+          analysisFailure.set(
+              rhsOperation,
+              "DFB reconfiguration boundaries must have a strict structured "
+              "order in every participant");
+          return failure();
+        }
+        if (!lhsPrecedes) {
+          lhsPrecedes = participantLhsPrecedes;
+        } else if (*lhsPrecedes != participantLhsPrecedes) {
+          analysisFailure.set(
+              rhsOperation,
+              "DFB reconfiguration participants execute boundaries in "
+              "different orders");
+          return failure();
+        }
       }
     }
   }
@@ -1775,12 +2030,13 @@ struct ProgramOrderGraphState {
   DenseMap<Operation *, EventPair> operationEvents;
   DenseMap<const DFBAccessOccurrence *, AccessEventSpan> accessEvents;
   ResetBoundaryEvents resetBoundaryEvents;
+  ReconfigurationBoundaryEvents reconfigurationBoundaryEvents;
 
   bool operator==(const ProgramOrderGraphState &rhs) const {
-    return std::tie(graph, operationEvents, accessEvents,
-                    resetBoundaryEvents) ==
+    return std::tie(graph, operationEvents, accessEvents, resetBoundaryEvents,
+                    reconfigurationBoundaryEvents) ==
            std::tie(rhs.graph, rhs.operationEvents, rhs.accessEvents,
-                    rhs.resetBoundaryEvents);
+                    rhs.resetBoundaryEvents, rhs.reconfigurationBoundaryEvents);
   }
 };
 
@@ -1792,7 +2048,8 @@ static void buildProgramOrderTopology(
     const StructuralOperationOrder &structuralOrder, HappensBeforeGraph &graph,
     DenseMap<Operation *, EventPair> &operationEvents,
     DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
-    ResetBoundaryEvents &resetBoundaryEvents) {
+    ResetBoundaryEvents &resetBoundaryEvents,
+    ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents) {
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
       directProtocolAccesses;
   DenseMap<Operation *, SmallVector<const DFBAccessOccurrence *>>
@@ -1812,6 +2069,8 @@ static void buildProgramOrderTopology(
   }
   ArrayRef<ValidatedSynchronizedReset> synchronizedResets =
       inputs.synchronizedResets;
+  ArrayRef<ValidatedDFBReconfiguration> reconfigurations =
+      inputs.reconfigurations;
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
     if (function.getBody().empty() || !function.getBody().hasOneBlock()) {
       continue;
@@ -1973,6 +2232,55 @@ static void buildProgramOrderTopology(
       }
     }
   }
+
+  for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
+    SmallVector<EventPair> participantEvents;
+    for (Operation *operation : reconfiguration.participantOperations) {
+      std::optional<EventPair> events =
+          getProjectedEvents(operation, operationEvents);
+      if (!events) {
+        participantEvents.clear();
+        break;
+      }
+      participantEvents.push_back(*events);
+    }
+    if (participantEvents.size() !=
+        reconfiguration.participantOperations.size()) {
+      continue;
+    }
+    EventPair boundaryEvents = graph.addOperation();
+    reconfigurationBoundaryEvents.try_emplace(reconfiguration.boundary,
+                                              boundaryEvents);
+    for (const EventPair &participant : participantEvents) {
+      graph.addEdge(participant.entry, boundaryEvents.entry);
+      graph.addEdge(boundaryEvents.completion, participant.completion);
+    }
+  }
+
+  for (const ValidatedDFBReconfiguration &before : reconfigurations) {
+    for (const ValidatedDFBReconfiguration &after : reconfigurations) {
+      if (before.boundary == after.boundary) {
+        continue;
+      }
+      bool everyParticipantOrdered =
+          llvm::all_of(llvm::zip_equal(before.participantOperations,
+                                       after.participantOperations),
+                       [&](auto pair) {
+                         return structuralOrder.precedes(std::get<0>(pair),
+                                                         std::get<1>(pair));
+                       });
+      if (!everyParticipantOrdered) {
+        continue;
+      }
+      auto beforeEvents = reconfigurationBoundaryEvents.find(before.boundary);
+      auto afterEvents = reconfigurationBoundaryEvents.find(after.boundary);
+      if (beforeEvents != reconfigurationBoundaryEvents.end() &&
+          afterEvents != reconfigurationBoundaryEvents.end()) {
+        graph.addEdge(beforeEvents->second.completion,
+                      afterEvents->second.entry);
+      }
+    }
+  }
 }
 
 static void addSynchronizedResetAccessEdges(
@@ -2052,13 +2360,64 @@ static void addSynchronizedResetAccessEdges(
   }
 }
 
+static void addDFBReconfigurationAccessEdges(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
+    LaunchNodeCoord node, HappensBeforeGraph &graph,
+    const DenseMap<Operation *, EventPair> &operationEvents,
+    const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
+    const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
+    const AccessExecutionCounts &executionCounts,
+    const StructuralOperationOrder &structuralOrder,
+    bool includeUnknownDomains) {
+  for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
+    auto boundaryIt =
+        reconfigurationBoundaryEvents.find(reconfiguration.boundary);
+    if (boundaryIt == reconfigurationBoundaryEvents.end()) {
+      continue;
+    }
+    EventPair boundaryEvents = boundaryIt->second;
+    for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+      for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+        if (!mayAccessLaunchNode(access, node, executionCounts,
+                                 includeUnknownDomains)) {
+          continue;
+        }
+        std::optional<AccessEventSpan> events =
+            getAccessEventSpan(access, operationEvents, accessEvents);
+        if (!events) {
+          continue;
+        }
+        Operation *accessFunction =
+            structuralOrder.getFunction(access.operation);
+        Operation *localBoundary = nullptr;
+        for (Operation *participant : reconfiguration.participantOperations) {
+          if (structuralOrder.getFunction(participant) == accessFunction) {
+            localBoundary = participant;
+            break;
+          }
+        }
+        if (!localBoundary) {
+          continue;
+        }
+        if (structuralOrder.precedes(access.operation, localBoundary)) {
+          graph.addEdge(events->last.completion, boundaryEvents.entry);
+        } else if (structuralOrder.precedes(localBoundary, access.operation)) {
+          graph.addEdge(boundaryEvents.completion, events->first.entry);
+        }
+      }
+    }
+  }
+}
+
 static ProgramOrderGraphState buildProgramOrderTopologyState(
     ModuleOp module, const ProgramOrderTopologyInputs &inputs,
     const StructuralOperationOrder &structuralOrder) {
   ProgramOrderGraphState state;
   buildProgramOrderTopology(module, inputs, structuralOrder, state.graph,
                             state.operationEvents, state.accessEvents,
-                            state.resetBoundaryEvents);
+                            state.resetBoundaryEvents,
+                            state.reconfigurationBoundaryEvents);
   return state;
 }
 
@@ -3298,8 +3657,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     SmallVector<Operation *> nativeReserves;
     SmallVector<Operation *> nativeWaits;
     // Acquire ownership ends at the next same-kind acquire in the complete
-    // kernel. Restricting these boundaries to one reset epoch makes an earlier
-    // acquisition incorrectly own direct DFB uses in subsequent epochs.
+    // kernel. Restricting these boundaries to one lifecycle epoch makes an
+    // earlier acquisition incorrectly own direct DFB uses in subsequent epochs.
     for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
       if (!mayContainLaunchNode(access.launchDomain, node,
                                 includeUnknownDomains)) {
@@ -3553,6 +3912,8 @@ tryComputeRepeatedResetLifetime(
     SmallVectorImpl<DFBPerNodeLifetimeDiagnostics> *lifetimeDiagnostics,
     ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
     const ResetBoundaryEvents &resetBoundaryEvents,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
+    const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
     const HappensBeforeGraph &graph,
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
@@ -3642,6 +4003,82 @@ tryComputeRepeatedResetLifetime(
     return std::nullopt;
   }
 
+  const AccessEventSpan &terminatorEvents =
+      resetBoundaryEvents.at(terminator->reset);
+  SmallVector<AccessEventSpan> activeEventSpans;
+  activeEventSpans.reserve(activeAccesses.size());
+  for (const DFBAccessOccurrence *access : activeAccesses) {
+    std::optional<AccessEventSpan> events =
+        getAccessEventSpan(*access, operationEvents, accessEvents);
+    if (!events) {
+      return std::nullopt;
+    }
+    activeEventSpans.push_back(*events);
+  }
+  auto boundaryPrecedesRepeatedInterval = [&](const EventPair &boundary) {
+    return graph.strictlyPrecedes(boundary.completion,
+                                  terminatorEvents.first.entry) &&
+           llvm::all_of(activeEventSpans, [&](const AccessEventSpan &events) {
+             return graph.strictlyPrecedes(boundary.completion,
+                                           events.first.entry);
+           });
+  };
+  auto boundaryFollowsRepeatedInterval = [&](const EventPair &boundary) {
+    return graph.strictlyPrecedes(terminatorEvents.last.completion,
+                                  boundary.entry) &&
+           llvm::all_of(activeEventSpans, [&](const AccessEventSpan &events) {
+             return graph.strictlyPrecedes(events.last.completion,
+                                           boundary.entry);
+           });
+  };
+
+  for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
+    if (!reset.isModeledLifetimeBoundary() ||
+        !llvm::is_contained(reset.targetLogicalIndices, logicalIndex)) {
+      continue;
+    }
+    auto eventsIt = resetBoundaryEvents.find(reset.reset);
+    if (eventsIt == resetBoundaryEvents.end() ||
+        (!boundaryPrecedesRepeatedInterval(eventsIt->second.first) &&
+         !boundaryFollowsRepeatedInterval(eventsIt->second.last))) {
+      return std::nullopt;
+    }
+  }
+
+  const ValidatedDFBReconfiguration *entryReconfiguration = nullptr;
+  std::optional<EventPair> entryReconfigurationEvents;
+  for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
+    auto eventsIt =
+        reconfigurationBoundaryEvents.find(reconfiguration.boundary);
+    if (eventsIt == reconfigurationBoundaryEvents.end()) {
+      return std::nullopt;
+    }
+    bool precedes = boundaryPrecedesRepeatedInterval(eventsIt->second);
+    bool follows = boundaryFollowsRepeatedInterval(eventsIt->second);
+    if (precedes == follows) {
+      return std::nullopt;
+    }
+    if (precedes &&
+        (!entryReconfigurationEvents ||
+         graph.strictlyPrecedes(entryReconfigurationEvents->completion,
+                                eventsIt->second.entry))) {
+      entryReconfiguration = &reconfiguration;
+      entryReconfigurationEvents = eventsIt->second;
+    }
+  }
+  if (entryReconfiguration && entryReconfiguration->conditionalExecution) {
+    for (const DFBAccessOccurrence *access : activeAccesses) {
+      auto runIt = accessRuns.find(access);
+      if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
+          !proveEquivalentConditionalExecutionAtLaunchNodes(
+              access->operation, node,
+              entryReconfiguration->participantOperations.front(), node,
+              domainState)) {
+        return std::nullopt;
+      }
+    }
+  }
+
   SmallVector<DFBPerNodeLifetime, 0> intervalLifetimes;
   SmallVector<DFBPerNodeLifetimeDiagnostics, 0> intervalDiagnostics;
   DFBLifecycleCompletionProof proof = computeProtocolLifetime(
@@ -3665,8 +4102,6 @@ tryComputeRepeatedResetLifetime(
     return proof;
   }
 
-  const AccessEventSpan &terminatorEvents =
-      resetBoundaryEvents.at(terminator->reset);
   lifetime.terminalCompletionEvents = {terminatorEvents.last.completion};
   lifetime.terminalStateCanonical = true;
 
@@ -3685,28 +4120,64 @@ tryComputeRepeatedResetLifetime(
   epoch.readPointerOwner = lifetime.readPointerOwner;
   epoch.terminalWritePointerOwner = lifetime.terminalWritePointerOwner;
   epoch.terminalReadPointerOwner = lifetime.terminalReadPointerOwner;
+  if (entryReconfiguration) {
+    epoch.entryReconfigurationOrdinal =
+        entryReconfiguration->boundary.getOrdinal();
+  }
   epoch.terminalResetOrdinal = terminator->reset.getOrdinal();
   epoch.inspectionOnly = lifetime.inspectionOnly;
   epoch.terminalStateCanonical = true;
   epoch.completionProof = proof;
-  lifetime.resetEpochs.push_back(std::move(epoch));
+  lifetime.epochs.push_back(std::move(epoch));
   return proof;
 }
 
-struct OrderedResetBoundary {
+struct OrderedLifecycleBoundary {
   const ValidatedSynchronizedReset *reset = nullptr;
+  const ValidatedDFBReconfiguration *reconfiguration = nullptr;
   EventPair events;
+
+  bool isConditional() const {
+    return reset ? reset->conditionalExecution
+                 : reconfiguration->conditionalExecution;
+  }
+
+  Operation *getEvidenceOperation() const {
+    return reset ? reset->participantOperations.front()
+                 : reconfiguration->participantOperations.front();
+  }
 };
 
-// Partitions accesses by collective reset boundaries and proves every resulting
-// epoch independently. A reset restores canonical hardware state; it does not
-// make an otherwise blocking consumer epoch executable.
+static Operation *findConditionalExecutionMismatch(
+    const OrderedLifecycleBoundary &boundary,
+    ArrayRef<const DFBAccessOccurrence *> accesses, LaunchNodeCoord node,
+    const AccessRuns &accessRuns, const LaunchNodeDomainState &domainState) {
+  if (!boundary.isConditional()) {
+    return nullptr;
+  }
+  for (const DFBAccessOccurrence *access : accesses) {
+    auto runIt = accessRuns.find(access);
+    if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
+        !proveEquivalentConditionalExecutionAtLaunchNodes(
+            access->operation, node, boundary.getEvidenceOperation(), node,
+            domainState)) {
+      return access->operation;
+    }
+  }
+  return nullptr;
+}
+
+// Proves complete protocol intervals between lifecycle boundaries. A reset may
+// discard unread blocks. An incomplete protocol crosses reconfiguration
+// unchanged and remains active in every configuration epoch that it spans.
 static DFBLifecycleCompletionProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, unsigned logicalIndex,
     LaunchNodeCoord node, SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
     SmallVectorImpl<DFBPerNodeLifetimeDiagnostics> *lifetimeDiagnostics,
     ArrayRef<ValidatedSynchronizedReset> synchronizedResets,
     const ResetBoundaryEvents &resetBoundaryEvents,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
+    const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
     const HappensBeforeGraph &graph,
     const StructuralOperationOrder &structuralOrder,
     const DenseMap<Operation *, EventPair> &operationEvents,
@@ -3717,13 +4188,14 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   if (std::optional<DFBLifecycleCompletionProof> repeatedResetProof =
           tryComputeRepeatedResetLifetime(
               logicalDFB, logicalIndex, node, lifetimes, lifetimeDiagnostics,
-              synchronizedResets, resetBoundaryEvents, graph, operationEvents,
+              synchronizedResets, resetBoundaryEvents, reconfigurations,
+              reconfigurationBoundaryEvents, graph, operationEvents,
               accessEvents, executionCounts, accessRuns, domainState,
               structuralOrder, includeUnknownDomains)) {
     return *repeatedResetProof;
   }
 
-  SmallVector<OrderedResetBoundary> boundaries;
+  SmallVector<OrderedLifecycleBoundary> boundaries;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
     if (!reset.isModeledLifetimeBoundary()) {
       continue;
@@ -3743,7 +4215,21 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     }
     assert(eventsIt->second.first.entry == eventsIt->second.last.entry &&
            "single reset instance must use one boundary event");
-    boundaries.push_back({&reset, eventsIt->second.first});
+    boundaries.push_back({&reset, nullptr, eventsIt->second.first});
+  }
+  for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
+    auto eventsIt =
+        reconfigurationBoundaryEvents.find(reconfiguration.boundary);
+    if (eventsIt == reconfigurationBoundaryEvents.end()) {
+      DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
+      lifetime.node = node;
+      if (lifetimeDiagnostics) {
+        lifetimeDiagnostics->emplace_back();
+      }
+      return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+              reconfiguration.participantOperations.front()};
+    }
+    boundaries.push_back({nullptr, &reconfiguration, eventsIt->second});
   }
   if (boundaries.empty()) {
     return computeProtocolLifetime(
@@ -3768,12 +4254,12 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
           lifetimeDiagnostics->emplace_back();
         }
         return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-                rhs.reset->participantOperations.front()};
+                rhs.getEvidenceOperation()};
       }
     }
   }
-  llvm::sort(boundaries, [&](const OrderedResetBoundary &lhs,
-                             const OrderedResetBoundary &rhs) {
+  llvm::sort(boundaries, [&](const OrderedLifecycleBoundary &lhs,
+                             const OrderedLifecycleBoundary &rhs) {
     return graph.strictlyPrecedes(lhs.events.completion, rhs.events.entry);
   });
 
@@ -3808,44 +4294,61 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
               access.operation};
     }
     unsigned epochIndex = 0;
-    for (const OrderedResetBoundary &boundary : boundaries) {
-      bool beforeReset = graph.strictlyPrecedes(events->last.completion,
-                                                boundary.events.entry);
-      bool afterReset = graph.strictlyPrecedes(boundary.events.completion,
-                                               events->first.entry);
-      if (beforeReset == afterReset) {
+    for (const OrderedLifecycleBoundary &boundary : boundaries) {
+      bool beforeBoundary = graph.strictlyPrecedes(events->last.completion,
+                                                   boundary.events.entry);
+      bool afterBoundary = graph.strictlyPrecedes(boundary.events.completion,
+                                                  events->first.entry);
+      if (beforeBoundary == afterBoundary) {
         return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
                 access.operation};
       }
-      if (boundary.reset->conditionalExecution) {
-        auto runIt = accessRuns.find(&access);
-        if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
-            !proveEquivalentConditionalExecutionAtLaunchNodes(
-                access.operation, node,
-                boundary.reset->participantOperations.front(), node,
-                domainState)) {
-          return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-                  access.operation};
-        }
-      }
-      epochIndex += afterReset;
+      epochIndex += afterBoundary;
     }
     epochAccesses[epochIndex].push_back(&access);
   }
 
-  bool hasActiveEpoch = false;
-  for (auto [epochIndex, accesses] : llvm::enumerate(epochAccesses)) {
-    if (accesses.empty()) {
+  for (const OrderedLifecycleBoundary &boundary : boundaries) {
+    if (!boundary.reset) {
       continue;
     }
-    bool resetTerminated = epochIndex < boundaries.size();
+    Operation *conditionalMismatch = nullptr;
+    for (ArrayRef<const DFBAccessOccurrence *> accesses : epochAccesses) {
+      conditionalMismatch = findConditionalExecutionMismatch(
+          boundary, accesses, node, accessRuns, domainState);
+      if (conditionalMismatch) {
+        break;
+      }
+    }
+    if (conditionalMismatch) {
+      return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+              conditionalMismatch};
+    }
+  }
+
+  bool hasActiveEpoch = false;
+  SmallVector<const DFBAccessOccurrence *> lifecycleAccesses;
+  std::optional<unsigned> firstBoundaryInterval;
+  for (auto [boundaryInterval, intervalAccesses] :
+       llvm::enumerate(epochAccesses)) {
+    if (!intervalAccesses.empty() && !firstBoundaryInterval) {
+      firstBoundaryInterval = boundaryInterval;
+    }
+    llvm::append_range(lifecycleAccesses, intervalAccesses);
+    if (lifecycleAccesses.empty()) {
+      continue;
+    }
+    const OrderedLifecycleBoundary *terminalBoundary =
+        boundaryInterval < boundaries.size() ? &boundaries[boundaryInterval]
+                                             : nullptr;
+    bool resetTerminated = terminalBoundary && terminalBoundary->reset;
     SmallVector<DFBPerNodeLifetime, 0> epochLifetimes;
     SmallVector<DFBPerNodeLifetimeDiagnostics, 0> epochDiagnostics;
     DFBLifecycleCompletionProof proof = computeProtocolLifetime(
         logicalDFB, node, epochLifetimes,
         diagnostics ? &epochDiagnostics : nullptr, graph, structuralOrder,
         operationEvents, accessEvents, executionCounts, accessRuns, domainState,
-        includeUnknownDomains, accesses,
+        includeUnknownDomains, lifecycleAccesses,
         /*hasCanonicalResetTerminator=*/resetTerminated);
     assert(epochLifetimes.size() == 1 &&
            "one selected epoch must produce one protocol lifetime");
@@ -3855,12 +4358,15 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const DFBPerNodeLifetimeDiagnostics *epochDiagnostic =
         diagnostics ? &epochDiagnostics.front() : nullptr;
     epochLifetime.completionProof = proof;
+    if (terminalBoundary && terminalBoundary->reconfiguration &&
+        !proof.proven()) {
+      continue;
+    }
     if (!proof.proven()) {
       return proof;
     }
-
     DFBLifecycleEpoch epoch;
-    for (const DFBAccessOccurrence *access : accesses) {
+    for (const DFBAccessOccurrence *access : lifecycleAccesses) {
       epoch.accessOccurrenceIndices.push_back(
           static_cast<unsigned>(access - logicalDFB.accesses.data()));
     }
@@ -3871,21 +4377,56 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
     epoch.completionProof = proof;
     epoch.inspectionOnly = epochLifetime.inspectionOnly;
-    if (resetTerminated) {
-      const OrderedResetBoundary &boundary = boundaries[epochIndex];
-      if (boundary.reset->conditionalExecution) {
-        epochLifetime.conditionalExecutionProven = true;
+    assert(firstBoundaryInterval &&
+           "active lifecycle must have a first boundary interval");
+    const OrderedLifecycleBoundary *entryBoundary = nullptr;
+    for (unsigned boundaryIndex = 0; boundaryIndex < *firstBoundaryInterval;
+         ++boundaryIndex) {
+      if (const ValidatedDFBReconfiguration *entryReconfiguration =
+              boundaries[boundaryIndex].reconfiguration) {
+        epoch.entryReconfigurationOrdinal =
+            entryReconfiguration->boundary.getOrdinal();
+        entryBoundary = &boundaries[boundaryIndex];
       }
-      epoch.terminalResetOrdinal = boundary.reset->reset.getOrdinal();
+    }
+    if (entryBoundary) {
+      if (Operation *conditionalMismatch = findConditionalExecutionMismatch(
+              *entryBoundary, lifecycleAccesses, node, accessRuns,
+              domainState)) {
+        return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+                conditionalMismatch};
+      }
+    }
+    epoch.activeConfigurationEpochs.push_back(
+        epoch.entryReconfigurationOrdinal);
+    for (unsigned boundaryIndex = *firstBoundaryInterval;
+         boundaryIndex < boundaryInterval; ++boundaryIndex) {
+      assert(!boundaries[boundaryIndex].reset &&
+             "a DFB lifecycle cannot cross a synchronized reset");
+      epoch.activeConfigurationEpochs.push_back(
+          boundaries[boundaryIndex].reconfiguration->boundary.getOrdinal());
+    }
+    if (terminalBoundary) {
+      if (terminalBoundary->reset) {
+        if (terminalBoundary->reset->conditionalExecution) {
+          epochLifetime.conditionalExecutionProven = true;
+        }
+        epoch.terminalResetOrdinal =
+            terminalBoundary->reset->reset.getOrdinal();
+      } else {
+        epoch.terminalReconfigurationOrdinal =
+            terminalBoundary->reconfiguration->boundary.getOrdinal();
+      }
       epoch.terminalStateCanonical = true;
-      epochLifetime.terminalCompletionEvents = {boundary.events.completion};
+      epochLifetime.terminalCompletionEvents = {
+          terminalBoundary->events.completion};
       epochLifetime.terminalStateCanonical = true;
     }
     epoch.earliestEntryEvents = epochLifetime.earliestEntryEvents;
     epoch.terminalCompletionEvents = epochLifetime.terminalCompletionEvents;
     epoch.terminalWritePointerOwner = epochLifetime.terminalWritePointerOwner;
     epoch.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
-    lifetime.resetEpochs.push_back(std::move(epoch));
+    lifetime.epochs.push_back(std::move(epoch));
 
     if (!hasActiveEpoch) {
       lifetime.earliestEntryEvents = epochLifetime.earliestEntryEvents;
@@ -3918,6 +4459,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     lifetime.inspectionOnly =
         lifetime.inspectionOnly && epochLifetime.inspectionOnly;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
+    lifecycleAccesses.clear();
+    firstBoundaryInterval.reset();
   }
 
   if (!hasActiveEpoch) {
@@ -3988,20 +4531,19 @@ static bool lifetimeIsOutsideReset(const DFBPerNodeLifetime &lifetime,
                                    SynchronizedDFBResetAttr reset,
                                    const AccessEventSpan &resetEvents,
                                    const HappensBeforeGraph &graph) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     return intervalIsOutsideReset(lifetime.earliestEntryEvents,
                                   lifetime.terminalCompletionEvents,
                                   resetEvents, graph);
   }
-  return llvm::all_of(
-      lifetime.resetEpochs, [&](const DFBLifecycleEpoch &epoch) {
-        if (epoch.terminalResetOrdinal == reset.getOrdinal()) {
-          return true;
-        }
-        return intervalIsOutsideReset(epoch.earliestEntryEvents,
-                                      epoch.terminalCompletionEvents,
-                                      resetEvents, graph);
-      });
+  return llvm::all_of(lifetime.epochs, [&](const DFBLifecycleEpoch &epoch) {
+    if (epoch.terminalResetOrdinal == reset.getOrdinal()) {
+      return true;
+    }
+    return intervalIsOutsideReset(epoch.earliestEntryEvents,
+                                  epoch.terminalCompletionEvents, resetEvents,
+                                  graph);
+  });
 }
 
 enum class ResetSide { Before, After };
@@ -4214,40 +4756,40 @@ static unsigned getLifecycleEpochCount(const DFBPerNodeLifetime *lifetime) {
   if (!lifetime || !lifetime->mayBeActive) {
     return 0;
   }
-  return std::max<unsigned>(1, lifetime->resetEpochs.size());
+  return std::max<unsigned>(1, lifetime->epochs.size());
 }
 
 static ArrayRef<unsigned>
 getEpochEarliestEntryEvents(const DFBPerNodeLifetime &lifetime,
                             unsigned epochIndex) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     assert(epochIndex == 0 && "complete lifetime has one epoch");
     return lifetime.earliestEntryEvents;
   }
-  assert(epochIndex < lifetime.resetEpochs.size());
-  return lifetime.resetEpochs[epochIndex].earliestEntryEvents;
+  assert(epochIndex < lifetime.epochs.size());
+  return lifetime.epochs[epochIndex].earliestEntryEvents;
 }
 
 static ArrayRef<unsigned>
 getEpochTerminalCompletionEvents(const DFBPerNodeLifetime &lifetime,
                                  unsigned epochIndex) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     assert(epochIndex == 0 && "complete lifetime has one epoch");
     return lifetime.terminalCompletionEvents;
   }
-  assert(epochIndex < lifetime.resetEpochs.size());
-  return lifetime.resetEpochs[epochIndex].terminalCompletionEvents;
+  assert(epochIndex < lifetime.epochs.size());
+  return lifetime.epochs[epochIndex].terminalCompletionEvents;
 }
 
 static const DFBLifecycleCompletionProof &
 getEpochCompletionProof(const DFBPerNodeLifetime &lifetime,
                         unsigned epochIndex) {
-  if (lifetime.resetEpochs.empty()) {
+  if (lifetime.epochs.empty()) {
     assert(epochIndex == 0 && "complete lifetime has one epoch");
     return lifetime.completionProof;
   }
-  assert(epochIndex < lifetime.resetEpochs.size());
-  return lifetime.resetEpochs[epochIndex].completionProof;
+  assert(epochIndex < lifetime.epochs.size());
+  return lifetime.epochs[epochIndex].completionProof;
 }
 
 static bool proveEpochOrderedBefore(const DFBPerNodeLifetime &before,
@@ -4292,10 +4834,10 @@ static void appendInconsistentEpochAccessEvents(
     }
   };
 
-  if (!lifetime.resetEpochs.empty()) {
-    assert(epochIndex < lifetime.resetEpochs.size());
+  if (!lifetime.epochs.empty()) {
+    assert(epochIndex < lifetime.epochs.size());
     for (unsigned accessIndex :
-         lifetime.resetEpochs[epochIndex].accessOccurrenceIndices) {
+         lifetime.epochs[epochIndex].accessOccurrenceIndices) {
       assert(accessIndex < logicalDFB.accesses.size());
       appendAccess(logicalDFB.accesses[accessIndex]);
     }
@@ -4432,9 +4974,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   bool dependsOnLaunchNode = false;
   SmallVector<Operation *> unknownAccessOperations;
   SmallVector<SynchronizedResetOccurrence> resetOccurrences;
+  SmallVector<DFBReconfigurationOccurrence> reconfigurationOccurrences;
   if (failed(collectLogicalDFBs(module, identityAnalysis, logicalDFBs,
                                 unknownAccessOperations, resetOccurrences,
-                                analysisFailure, dependsOnLaunchNode))) {
+                                reconfigurationOccurrences, analysisFailure,
+                                dependsOnLaunchNode))) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
     return;
@@ -4444,8 +4988,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       errorOperation = resetOccurrences.front().operation;
       errorMessage =
           "synchronized DFB reset requires at least one DFB allocation";
+      return;
     }
-    return;
+    if (reconfigurationOccurrences.empty()) {
+      return;
+    }
   }
 
   LivenessDomainState domainState;
@@ -4524,8 +5071,26 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     const AccessDomain &resetDomain = getRefinedAccessDomain(reset.operation);
     reset.launchDomain = resetDomain.domain;
   }
+  for (DFBReconfigurationOccurrence &reconfiguration :
+       reconfigurationOccurrences) {
+    auto domainIt = domainState.accessDomains.find(reconfiguration.operation);
+    AccessDomain boundaryDomain =
+        domainIt == domainState.accessDomains.end()
+            ? AccessDomain{LaunchNodeDomain::unknown(),
+                           reconfiguration.operation}
+            : domainIt->second;
+    boundaryDomain = refineUnknownAccessDomainFromExecutionCounts(
+        reconfiguration.operation, boundaryDomain, domainState);
+    reconfiguration.launchDomain = boundaryDomain.domain;
+  }
   if (failed(validateSynchronizedResetDeclarations(resetOccurrences,
                                                    analysisFailure))) {
+    errorOperation = analysisFailure.operation;
+    errorMessage = std::move(analysisFailure.message);
+    return;
+  }
+  if (failed(validateDFBReconfigurationDeclarations(reconfigurationOccurrences,
+                                                    analysisFailure))) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
     return;
@@ -4554,6 +5119,20 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   StructuralOperationOrder structuralOrder(module);
   launchNodes.append(domainState.baseDomain.nodes.begin(),
                      domainState.baseDomain.nodes.end());
+  SmallVector<int64_t> declaredReconfigurationOrdinals;
+  DenseMap<int64_t, unsigned> reconfigurationDeclarationOrder;
+  DenseMap<int64_t, DenseSet<int64_t>> reconfigurationSuccessors;
+  DenseMap<int64_t, Operation *> reconfigurationEvidence;
+  for (const DFBReconfigurationOccurrence &occurrence :
+       reconfigurationOccurrences) {
+    int64_t ordinal = occurrence.boundary.getOrdinal();
+    if (!reconfigurationDeclarationOrder.contains(ordinal)) {
+      reconfigurationDeclarationOrder[ordinal] =
+          declaredReconfigurationOrdinals.size();
+      declaredReconfigurationOrdinals.push_back(ordinal);
+      reconfigurationEvidence[ordinal] = occurrence.operation;
+    }
+  }
   orderedBeforeByNode.reserve(launchNodes.size());
   conditionallyOrderedBeforeByNode.reserve(launchNodes.size());
   inconsistentOrderByNode.reserve(launchNodes.size());
@@ -4577,16 +5156,24 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       errorMessage = std::move(analysisFailure.message);
       return;
     }
+    SmallVector<ValidatedDFBReconfiguration> validatedReconfigurations;
+    if (failed(validateDFBReconfigurationsAtNode(
+            reconfigurationOccurrences, node, domainState, structuralOrder,
+            validatedReconfigurations, analysisFailure))) {
+      errorOperation = analysisFailure.operation;
+      errorMessage = std::move(analysisFailure.message);
+      return;
+    }
     AccessExecutionCounts executionCounts =
         collectAccessExecutionCounts(logicalDFBs, node, domainState);
     AccessRuns accessRuns =
         collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
                           /*includeUnknownDomains=*/false);
     ProgramOrderTopologyInputs graphTopologyInputs =
-        collectProgramOrderTopologyInputs(logicalDFBs, validatedResets, node,
-                                          executionCounts, accessRuns,
-                                          structuralOrder,
-                                          /*includeUnknownDomains=*/false);
+        collectProgramOrderTopologyInputs(
+            logicalDFBs, validatedResets, validatedReconfigurations, node,
+            executionCounts, accessRuns, structuralOrder,
+            /*includeUnknownDomains=*/false);
     ProgramOrderGraphState graphState = buildProgramOrderTopologyState(
         module, graphTopologyInputs, structuralOrder);
     std::optional<AccessRuns> possibleAccessRuns;
@@ -4597,8 +5184,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                             /*includeUnknownDomains=*/true));
       ProgramOrderTopologyInputs possibleGraphTopologyInputs =
           collectProgramOrderTopologyInputs(
-              logicalDFBs, validatedResets, node, executionCounts,
-              *possibleAccessRuns, structuralOrder,
+              logicalDFBs, validatedResets, validatedReconfigurations, node,
+              executionCounts, *possibleAccessRuns, structuralOrder,
               /*includeUnknownDomains=*/true);
       bool graphTopologiesMatch =
           graphTopologyInputs == possibleGraphTopologyInputs;
@@ -4625,15 +5212,62 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents =
         graphState.accessEvents;
     ResetBoundaryEvents &resetBoundaryEvents = graphState.resetBoundaryEvents;
+    ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents =
+        graphState.reconfigurationBoundaryEvents;
     addSynchronizedResetAccessEdges(logicalDFBs, validatedResets, node, graph,
                                     operationEvents, accessEvents,
                                     resetBoundaryEvents, executionCounts,
                                     accessRuns, structuralOrder,
                                     /*includeUnknownDomains=*/false);
+    addDFBReconfigurationAccessEdges(
+        logicalDFBs, validatedReconfigurations, node, graph, operationEvents,
+        accessEvents, reconfigurationBoundaryEvents, executionCounts,
+        structuralOrder, /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(logicalDFBs, graph, operationEvents,
                                     accessEvents, executionCounts, accessRuns,
                                     node, domainState, structuralOrder,
                                     /*includeUnknownDomains=*/false);
+
+    SmallVector<const ValidatedDFBReconfiguration *> orderedReconfigurations;
+    orderedReconfigurations.reserve(validatedReconfigurations.size());
+    for (const ValidatedDFBReconfiguration &reconfiguration :
+         validatedReconfigurations) {
+      orderedReconfigurations.push_back(&reconfiguration);
+    }
+    for (auto [lhsIndex, lhs] : llvm::enumerate(orderedReconfigurations)) {
+      for (auto [rhsIndex, rhs] : llvm::enumerate(orderedReconfigurations)) {
+        if (lhsIndex >= rhsIndex) {
+          continue;
+        }
+        const EventPair &lhsEvents =
+            reconfigurationBoundaryEvents.lookup(lhs->boundary);
+        const EventPair &rhsEvents =
+            reconfigurationBoundaryEvents.lookup(rhs->boundary);
+        bool lhsBeforeRhs =
+            graph.strictlyPrecedes(lhsEvents.completion, rhsEvents.entry);
+        bool rhsBeforeLhs =
+            graph.strictlyPrecedes(rhsEvents.completion, lhsEvents.entry);
+        if (lhsBeforeRhs == rhsBeforeLhs) {
+          errorOperation = rhs->participantOperations.front();
+          errorMessage =
+              "DFB reconfiguration boundary execution order is not proved";
+          return;
+        }
+      }
+    }
+    llvm::sort(orderedReconfigurations, [&](const auto *lhs, const auto *rhs) {
+      const EventPair &lhsEvents =
+          reconfigurationBoundaryEvents.lookup(lhs->boundary);
+      const EventPair &rhsEvents =
+          reconfigurationBoundaryEvents.lookup(rhs->boundary);
+      return graph.strictlyPrecedes(lhsEvents.completion, rhsEvents.entry);
+    });
+    for (auto adjacent : llvm::zip(orderedReconfigurations,
+                                   llvm::drop_begin(orderedReconfigurations))) {
+      int64_t beforeOrdinal = std::get<0>(adjacent)->boundary.getOrdinal();
+      int64_t afterOrdinal = std::get<1>(adjacent)->boundary.getOrdinal();
+      reconfigurationSuccessors[beforeOrdinal].insert(afterOrdinal);
+    }
 
     SmallVector<const DFBPerNodeLifetime *> nodeLifetimes(logicalDFBs.size());
     for (auto [logicalIndex, logicalDFB] : llvm::enumerate(logicalDFBs)) {
@@ -4647,7 +5281,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           allocationDiagnostics
               ? &allocationDiagnostics->nodeLifetimeDiagnostics
               : nullptr,
-          validatedResets, resetBoundaryEvents, graph, structuralOrder,
+          validatedResets, resetBoundaryEvents, validatedReconfigurations,
+          reconfigurationBoundaryEvents, graph, structuralOrder,
           operationEvents, accessEvents, executionCounts, accessRuns,
           domainState);
       logicalDFB.nodeLifetimes.back().completionProof = proof;
@@ -4690,11 +5325,18 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         &possibleAccessEvents = possibleGraphState->accessEvents;
     ResetBoundaryEvents &possibleResetBoundaryEvents =
         possibleGraphState->resetBoundaryEvents;
+    ReconfigurationBoundaryEvents &possibleReconfigurationBoundaryEvents =
+        possibleGraphState->reconfigurationBoundaryEvents;
     addSynchronizedResetAccessEdges(
         logicalDFBs, validatedResets, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
         possibleResetBoundaryEvents, executionCounts, *possibleAccessRuns,
         structuralOrder,
+        /*includeUnknownDomains=*/true);
+    addDFBReconfigurationAccessEdges(
+        logicalDFBs, validatedReconfigurations, node, possibleGraph,
+        possibleOperationEvents, possibleAccessEvents,
+        possibleReconfigurationBoundaryEvents, executionCounts, structuralOrder,
         /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
@@ -4713,9 +5355,11 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           allocationDiagnostics
               ? &allocationDiagnostics->possibleNodeLifetimeDiagnostics
               : nullptr,
-          validatedResets, possibleResetBoundaryEvents, possibleGraph,
-          structuralOrder, possibleOperationEvents, possibleAccessEvents,
-          executionCounts, *possibleAccessRuns, domainState,
+          validatedResets, possibleResetBoundaryEvents,
+          validatedReconfigurations, possibleReconfigurationBoundaryEvents,
+          possibleGraph, structuralOrder, possibleOperationEvents,
+          possibleAccessEvents, executionCounts, *possibleAccessRuns,
+          domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().completionProof = proof;
       possibleNodeLifetimes[logicalIndex] =
@@ -4754,6 +5398,55 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         conditionalEpochOrdering.inconsistent);
     conditionallyEpochOrderedBeforeByNode.push_back(
         std::move(conditionalEpochOrdering));
+  }
+
+  DenseMap<int64_t, unsigned> reconfigurationPredecessorCount;
+  for (int64_t ordinal : declaredReconfigurationOrdinals) {
+    reconfigurationPredecessorCount[ordinal] = 0;
+  }
+  for (const auto &[beforeOrdinal, successors] : reconfigurationSuccessors) {
+    (void)beforeOrdinal;
+    for (int64_t successor : successors) {
+      ++reconfigurationPredecessorCount[successor];
+    }
+  }
+  SmallVector<int64_t> readyReconfigurations;
+  for (int64_t ordinal : declaredReconfigurationOrdinals) {
+    if (reconfigurationPredecessorCount.lookup(ordinal) == 0) {
+      readyReconfigurations.push_back(ordinal);
+    }
+  }
+  auto sortReadyReconfigurations = [&] {
+    llvm::sort(readyReconfigurations, [&](int64_t lhs, int64_t rhs) {
+      return reconfigurationDeclarationOrder.lookup(lhs) >
+             reconfigurationDeclarationOrder.lookup(rhs);
+    });
+  };
+  sortReadyReconfigurations();
+  while (!readyReconfigurations.empty()) {
+    int64_t ordinal = readyReconfigurations.pop_back_val();
+    reconfigurationBoundaryOrdinals.push_back(ordinal);
+    for (int64_t successor : reconfigurationSuccessors[ordinal]) {
+      unsigned &predecessorCount = reconfigurationPredecessorCount[successor];
+      assert(predecessorCount > 0 && "boundary predecessor count underflow");
+      --predecessorCount;
+      if (predecessorCount == 0) {
+        readyReconfigurations.push_back(successor);
+      }
+    }
+    sortReadyReconfigurations();
+  }
+  if (reconfigurationBoundaryOrdinals.size() !=
+      declaredReconfigurationOrdinals.size()) {
+    int64_t cyclicOrdinal =
+        *llvm::find_if(declaredReconfigurationOrdinals, [&](int64_t ordinal) {
+          return reconfigurationPredecessorCount.lookup(ordinal) != 0;
+        });
+    errorOperation = reconfigurationEvidence.lookup(cyclicOrdinal);
+    errorMessage =
+        "DFB reconfiguration boundaries execute in different orders across "
+        "launch nodes";
+    return;
   }
 
   assert(orderedBeforeByNode.size() == launchNodes.size() &&
