@@ -96,6 +96,63 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
         ]
 
 
+# Physical allocation metadata preserves exact and empty launch-node domains.
+@pytest.mark.parametrize(
+    ("allocation_nodes", "expected"),
+    [
+        ("[[1, 0], [0, 0]]", ((0, 0), (1, 0))),
+        ("[]", ()),
+    ],
+    ids=["exact", "empty"],
+)
+def test_allocation_nodes_preserve_exact_physical_domain(allocation_nodes, expected):
+    with Context():
+        module = Module.parse(
+            "module attributes {ttl.dfb_allocations = [{"
+            "block_count = 1 : i32, dfb_index = 0 : i32, "
+            "element_type = bf16, num_tiles = 1 : i32, "
+            "page_size = 2048 : i32, allocation_nodes = "
+            f"{allocation_nodes}"
+            "}]} {}"
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                None,
+                allocation_nodes=expected,
+            )
+        ]
+
+
+# Malformed physical allocation domains are rejected during metadata parsing.
+@pytest.mark.parametrize(
+    ("allocation_nodes", "message"),
+    [
+        ("[[0, 0], [0, 0]]", "duplicate coordinate"),
+        ("[[-1, 0]]", "negative coordinate"),
+        ("[[0]]", "must contain \\[x, y\\]"),
+    ],
+)
+def test_invalid_allocation_nodes_are_rejected(allocation_nodes, message):
+    with Context():
+        module = Module.parse(
+            "module attributes {ttl.dfb_allocations = [{"
+            "block_count = 1 : i32, dfb_index = 0 : i32, "
+            "element_type = bf16, num_tiles = 1 : i32, "
+            "page_size = 2048 : i32, allocation_nodes = "
+            f"{allocation_nodes}"
+            "}]} {}"
+        )
+
+        with pytest.raises(ValueError, match=message):
+            _resolve_dfb_configs(module)
+
+
 @pytest.mark.parametrize(
     ("element_type", "data_format", "tile", "page_size"),
     [

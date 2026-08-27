@@ -50,6 +50,24 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// An analysis-only representative node cannot define tensor-backed residency.
+module {
+  func.func @unknown_grid_tensor_backing()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    // expected-error @below {{tensor-backed physical DFB requires an exact non-empty launch-node domain}}
+    %tensor_backed_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 64>}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    ttl.opaque_call "access" (%tensor_backed_dfb)
+        {header = "access.hpp"}
+        : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    return
+  }
+}
+
+// -----
+
 // Partially overlapping ranges cannot describe distinct physical DFBs on one
 // launch node.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
