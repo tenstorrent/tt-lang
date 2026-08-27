@@ -84,10 +84,11 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 }
 
 static bool requiresDstAccumulation(ComputeOp op) {
-  // tile_accumulate has in-place DST semantics. Lowering it through ordinary
-  // per-iteration DstSectionOps would reacquire DST for each reduction
-  // iteration and lose the recurrence state.
-  if (op.containsOp<TileAccumulateOp>()) {
+  // In-DST recurrences and inter-tile reduction initializers must share one
+  // DST section across reduction iterations. Ordinary per-iteration sections
+  // would reacquire DST and lose the accumulator state.
+  if (op.containsOp<TileAccumulateOp>() ||
+      op.containsOp<TileReductionInitOp>()) {
     return true;
   }
   return op.getBody()
@@ -163,6 +164,7 @@ static scf::LoopNest generateAccumulatingLoops(
   // output now avoids consulting the replaced compute during publication.
   Block &bodyBlock = op.getBody().front();
   SmallVector<StoreInfo> storeInfos;
+  SmallVector<TileReductionInitOp> reductionInitializers;
   llvm::SmallPtrSet<Operation *, 4> accumulatorInitOps;
   // Accumulator init ops must execute once per output tile before the
   // reduction loop. If they stayed in the reduction body, every contribution
@@ -194,6 +196,10 @@ static scf::LoopNest generateAccumulatingLoops(
       storeInfos.push_back(
           {store, dstIdx ? static_cast<int32_t>(*dstIdx) : 0, *outputIndex});
       continue;
+    }
+
+    if (auto initializer = dyn_cast<TileReductionInitOp>(&bodyOp)) {
+      reductionInitializers.push_back(initializer);
     }
 
     auto accumulate = dyn_cast<TileAccumulateOp>(&bodyOp);
@@ -268,7 +274,7 @@ static scf::LoopNest generateAccumulatingLoops(
     mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (isa<IterIndexOp, TileStoreOp>(&bodyOp) ||
+      if (isa<IterIndexOp, TileReductionInitOp, TileStoreOp>(&bodyOp) ||
           accumulatorInitOps.contains(&bodyOp)) {
         continue;
       }
@@ -293,6 +299,22 @@ static scf::LoopNest generateAccumulatingLoops(
             buildFullIVs(parallelIVs, zeroReductionIVs);
         IRMapping accumulatorInitMapping =
             cloneAccumulatorInits(secBuilder, parLoc, initIVs);
+
+        // Initialize inter-tile reduction accumulators once per output tile.
+        // Their DST slots then persist for every input tile in the loop below.
+        for (TileReductionInitOp initializer : reductionInitializers) {
+          std::optional<int64_t> dstIndex =
+              getConstantIntValue(initializer.getDstIndex());
+          assert(dstIndex &&
+                 "reduction initializer must have a constant DST index");
+          Value clonedDstIndex =
+              arith::ConstantIndexOp::create(secBuilder, parLoc, *dstIndex);
+          Value initializedAccumulator = TileReductionInitOp::create(
+              secBuilder, parLoc, initializer.getResult().getType(),
+              initializer.getReduceTypeAttr(), clonedDstIndex);
+          accumulatorInitMapping.map(initializer.getResult(),
+                                     initializedAccumulator);
+        }
 
         // Inner: reduction loops.
         scf::LoopNest redNest = scf::buildLoopNest(
@@ -399,13 +421,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
-    bool isAccumulating = op.getBody()
-                              .walk([](Operation *inner) {
-                                return inner->hasTrait<TTLAccumulatingOpTrait>()
-                                           ? WalkResult::interrupt()
-                                           : WalkResult::advance();
-                              })
-                              .wasInterrupted();
+    bool isAccumulating =
+        op.getBody()
+            .walk([](Operation *inner) {
+              return inner->hasTrait<TTLAccumulatingOpTrait>() ||
+                             isa<TileReductionInitOp>(inner)
+                         ? WalkResult::interrupt()
+                         : WalkResult::advance();
+            })
+            .wasInterrupted();
 
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {

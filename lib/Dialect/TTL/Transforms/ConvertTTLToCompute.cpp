@@ -1131,13 +1131,28 @@ struct LowerReduceToCompute : PlannedComputeRewritePattern<ReduceOp> {
     return buildComputeFromInputs(
         op, rewriter, ComputeOpCreationRecipe::Reduce, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,
-           const ComputeOpCreationPlan &creation) {
-          assert(creation.reduceType && creation.reduceDimension &&
-                 "reduce recipe must record function and dimension");
-          return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
+           const ComputeOpCreationPlan &creation) -> Value {
+          assert(creation.reduceType &&
+                 "reduce recipe must record its reduction function");
+          if (creation.reduceDimension) {
+            return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
+                builder, location, tileType, body->getArgument(0),
+                body->getArgument(1), body->getArgument(2),
+                *creation.reduceType, *creation.reduceDimension);
+          }
+
+          Value accumulator =
+              createTileOpWithPlaceholderDstIndex<TileReductionInitOp>(
+                  builder, location, tileType, *creation.reduceType);
+          Value scaledInput = createTileOpWithPlaceholderDstIndex<MulTileOp>(
               builder, location, tileType, body->getArgument(0),
-              body->getArgument(1), body->getArgument(2), *creation.reduceType,
-              *creation.reduceDimension);
+              body->getArgument(1));
+          if (*creation.reduceType == ReduceType::Sum) {
+            return createTileOpWithPlaceholderDstIndex<TileAddInPlaceOp>(
+                builder, location, tileType, accumulator, scaledInput);
+          }
+          return createTileOpWithPlaceholderDstIndex<MaxTileOp>(
+              builder, location, tileType, accumulator, scaledInput);
         });
   }
 };

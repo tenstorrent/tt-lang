@@ -534,7 +534,8 @@ struct ComputeOpCreationPlan {
   /// Intra-tile broadcast operation, absent for inter-tile-only broadcast.
   std::optional<BcastType> tileBroadcast;
 
-  /// Hardware reduction dimension for a reduce recipe.
+  /// Hardware reduction dimension for a reduce recipe. Absent when only
+  /// leading tensor dimensions are reduced between tiles.
   std::optional<ttkernel::ReduceDim> reduceDimension;
 
   /// Reduction function for a reduce recipe.

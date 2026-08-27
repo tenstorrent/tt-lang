@@ -1474,8 +1474,12 @@ def TTL_ReduceOp : TTL_ComputePrimitiveOp<"reduce", "Reduce", [Pure,
     - dims=[-2] or dims=[0]: reduce rows
     - dims=[-1] or dims=[1]: reduce columns
     - dims=[-2,-1] or dims=[0,1]: reduce both
+    Leading dimensions use inter-tile accumulation. Reducing either of the
+    innermost dimensions also applies the corresponding within-tile hardware
+    reduction.
 
-    Both input and scaler must be CB-attached rank-2 tensors.
+    The input must be a CB-attached tensor of rank 2 or greater. The scaler is
+    a CB-attached rank-2 single-tile tensor used by the hardware reduction.
   }];
   let arguments = (ins AnyRankedTensor:$input,
                        AnyRankedTensor:$scaler,
@@ -1505,6 +1509,31 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
   let assemblyFormat = [{
     $input `,` $scaler `,` $output $reduce_type $reduce_dim `into` `dst` `[` $dst_index `]` attr-dict `:`
     `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+def TTL_TileReductionInitOp : TTL_TileOp<"tile_reduction_init", "Fill",
+    [TTL_DstResultOpTrait]> {
+  let summary = "Initialize an inter-tile reduction accumulator";
+  let description = [{
+    Initializes a DST tile to the identity value for a sum or max reduction.
+    Loop lowering hoists this operation outside the reduction loops so the
+    accumulator persists across input tiles.
+  }];
+  let arguments = (ins TTL_ReduceTypeAttr:$reduce_type, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = [{
+    $reduce_type `into` `dst` `[` $dst_index `]` attr-dict `:` type($result)
+  }];
+}
+
+def TTL_TileAddInPlaceOp : TTL_TileSfpuBinaryOp<"tile_add_in_place",
+    [TTL_InPlaceOpTrait]> {
+  let summary = "Add a tile into an existing DST accumulator";
+  let description = [{
+    Adds the right-hand DST tile to the left-hand DST tile in place. This form
+    is used for inter-tile sum reductions whose accumulator must survive across
+    reduction-loop iterations.
   }];
 }
 

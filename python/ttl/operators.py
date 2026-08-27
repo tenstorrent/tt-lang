@@ -973,8 +973,8 @@ def _reduce_impl(
     input_type = input.type
     input_shape = list(input_type.shape)
     rank = len(input_shape)
-    if rank != 2:
-        raise ValueError(f"reduce only supports 2D tensors, got rank {rank}")
+    if rank < 2:
+        raise ValueError(f"reduce requires rank 2 or greater, got rank {rank}")
     if not dims:
         raise ValueError("dims must be non-empty")
 

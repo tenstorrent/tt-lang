@@ -2214,17 +2214,17 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
   auto scalerType = mlir::cast<RankedTensorType>(getScaler().getType());
   auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
 
-  if (inputType.getRank() != 2) {
-    return emitOpError() << "input must be rank 2, got rank "
+  if (inputType.getRank() < 2) {
+    return emitOpError() << "input must have rank 2 or greater, got rank "
                          << inputType.getRank();
   }
   if (scalerType.getRank() != 2) {
     return emitOpError() << "scaler must be rank 2, got rank "
                          << scalerType.getRank();
   }
-  if (resultType.getRank() != 2) {
-    return emitOpError() << "result must be rank 2, got rank "
-                         << resultType.getRank();
+  if (resultType.getRank() != inputType.getRank()) {
+    return emitOpError() << "result rank " << resultType.getRank()
+                         << " must match input rank " << inputType.getRank();
   }
 
   if (!inputType.hasStaticShape() || !scalerType.hasStaticShape() ||
@@ -2263,7 +2263,7 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
 
   // Scaler must be a single tile (1, 1): one scaling value applied to every
   // reduction.  The hardware reduce_tile reads one scaler tile from srcB.
-  for (int64_t i = 0; i < rank; ++i) {
+  for (int64_t i = 0; i < scalerType.getRank(); ++i) {
     if (scalerType.getDimSize(i) != 1) {
       return emitOpError() << "scaler dim " << i << " is "
                            << scalerType.getDimSize(i) << " but must be 1";
