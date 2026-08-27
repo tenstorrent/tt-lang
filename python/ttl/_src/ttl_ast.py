@@ -777,9 +777,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
 
-                # Check for PipeNet.is_src/is_dst/is_active predicate calls
-                if self._is_pipenet_predicate_call(node):
-                    return self._handle_pipenet_predicate(node)
+                # Check for PipeNet role and record-count query calls.
+                if self._is_pipenet_query_call(node):
+                    return self._handle_pipenet_query(node)
 
                 if self._is_device_domain_predicate_call(node):
                     return self._handle_device_domain_predicate(node)
@@ -1129,16 +1129,17 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return isinstance(val, PipeNet)
 
-    _PIPENET_PREDICATE_OPS = {
+    _PIPENET_QUERY_OPS = {
         "is_src": ttl.is_src,
         "is_dst": ttl.is_dst,
         "is_active": ttl.is_active,
+        "destination_count": ttl.pipenet_destination_count,
     }
 
-    def _is_pipenet_predicate_call(self, node):
+    def _is_pipenet_query_call(self, node):
         if not isinstance(node.func, ast.Attribute):
             return False
-        if node.func.attr not in self._PIPENET_PREDICATE_OPS:
+        if node.func.attr not in self._PIPENET_QUERY_OPS:
             return False
         if not isinstance(node.func.value, ast.Name):
             return False
@@ -1149,7 +1150,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return isinstance(tbl[node.func.value.id], PipeNet)
 
-    def _handle_pipenet_predicate(self, node):
+    def _handle_pipenet_query(self, node):
         from ..pipe import PipeNet
 
         method = node.func.attr
@@ -1158,14 +1159,16 @@ class TTLGenericCompiler(TTCompilerBase):
         assert isinstance(pipenet, PipeNet)
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
-        return self._PIPENET_PREDICATE_OPS[method](
-            pipe_net_id=IntegerAttr.get(
+        arguments = {
+            "pipe_net_id": IntegerAttr.get(
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
-            ),
-            records=(
-                self._get_pipe_net_records_attr(pipenet) if pipenet.is_graph else None
-            ),
-        )
+            )
+        }
+        if method == "destination_count":
+            arguments["records"] = self._get_pipe_net_records_attr(pipenet)
+        elif pipenet.is_graph:
+            arguments["records"] = self._get_pipe_net_records_attr(pipenet)
+        return self._PIPENET_QUERY_OPS[method](**arguments)
 
     def _device_domain_call_receiver(self, node):
         if not isinstance(node.func, ast.Attribute):

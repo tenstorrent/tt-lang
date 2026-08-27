@@ -27,6 +27,38 @@ _NET_OF_ANOTHER_OPERATION = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 1))])
 class TestPipeNetPredicates:
     """PipeNet.is_src / is_dst / is_active use ttl.node(); run inside @ttl.operation."""
 
+    def test_destination_count_matches_callback_multiplicity(self) -> None:
+        net = ttl.PipeNet(
+            [
+                ttl.Pipe((0, 0), (3, 0)),
+                ttl.Pipe((1, 0), (3, 0)),
+                ttl.Pipe((2, 0), (3, 0)),
+                ttl.Pipe((0, 0), (2, 0)),
+            ]
+        )
+
+        @ttl.operation(grid=(4, 1))
+        def op(_input_tensor: ttnn.Tensor, _output_tensor: ttnn.Tensor) -> None:
+            @ttl.compute()
+            def compute() -> None:
+                node_x, _node_y = ttl.node(dims=2)
+                expected_counts = (0, 0, 1, 3)
+                matching_sources = []
+                net.if_dst(lambda pipe: matching_sources.append(pipe.src))
+                assert net.destination_count() == expected_counts[node_x]
+                assert net.destination_count() == len(matching_sources)
+
+            @ttl.datamovement()
+            def dm0() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass
+
+        tensor = make_zeros_tensor(32, 32)
+        op(tensor, tensor)
+
     def test_unicast_src_dst_inactive(self) -> None:
         """Unicast (0,0) -> (1,0): only those two nodes participate on a 2x2 grid."""
         pipe = ttl.Pipe((0, 0), (1, 0))

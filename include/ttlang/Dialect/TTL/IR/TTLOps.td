@@ -1100,6 +1100,22 @@ def TTL_IsDstOp : TTL_Op<"is_dst",
   let hasVerifier = 1;
 }
 
+def TTL_PipeNetDestinationCountOp : TTL_Op<"pipenet_destination_count", [Pure]> {
+  let summary = "Count PipeNet records targeting the current node";
+  let description = [{
+    Returns the number of records in the named PipeNet whose destination range
+    contains the current node. The count equals the number of times a
+    `ttl.pipenet_foreach_dst` region for the same PipeNet executes on that node.
+    For graph PipeNets, destination matching includes the current logical
+    device.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id,
+                        TTL_PipeNetRecordsAttr:$records);
+  let results = (outs Index:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
 def TTL_IsActiveOp : TTL_Op<"is_active",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
   let summary = "Predicate: current node is a source or destination in the PipeNet";

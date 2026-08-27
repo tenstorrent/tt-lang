@@ -3189,8 +3189,8 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
-template <typename PredicateOp>
-static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+template <typename PipeNetReferenceOp>
+static mlir::LogicalResult verifyPipeNetReference(PipeNetReferenceOp op) {
   mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
   int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
   if (records && records.getPipeNetId() != pipeNetId) {
@@ -3206,15 +3206,19 @@ static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetReference(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetReference(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetDestinationCountOp::verify() {
+  return verifyPipeNetReference(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetReference(*this);
 }
 
 int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {

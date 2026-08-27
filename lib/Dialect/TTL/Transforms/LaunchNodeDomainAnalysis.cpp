@@ -492,6 +492,9 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](PipeNetForeachDstOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
+  module.walk([&](PipeNetDestinationCountOp op) {
+    recordPipeNetRecords(op.getRecords(), op.getLoc());
+  });
   module.walk([&](SelectPipeSrcOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
@@ -571,10 +574,33 @@ static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
   return selected;
 }
 
+static std::optional<std::uint64_t>
+evaluatePipeNetDestinationCountAtLaunchLocation(
+    PipeNetDestinationCountOp countOp,
+    const LaunchExecutionLocation &location) {
+  std::uint64_t count = 0;
+  for (PipeRecordAttr record : countOp.getRecords().getPipes()) {
+    std::optional<bool> recordMatches = pipeRecordRoleMatchesAtLaunchLocation(
+        record, PipeRole::Destination, location);
+    if (!recordMatches) {
+      return std::nullopt;
+    }
+    count += *recordMatches;
+  }
+  return count;
+}
+
 static std::optional<llvm::APInt>
 evaluateLaunchLocationContextValue(Value value,
                                    const LaunchExecutionLocation &location,
                                    const LaunchNodeDomainState *state) {
+  if (auto countOp = value.getDefiningOp<PipeNetDestinationCountOp>()) {
+    std::optional<std::uint64_t> count =
+        evaluatePipeNetDestinationCountAtLaunchLocation(countOp, location);
+    return count ? std::optional<llvm::APInt>(llvm::APInt(
+                       IndexType::kInternalStorageBitWidth, *count))
+                 : std::nullopt;
+  }
   if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
     if (predicate.getReferencedRecords()) {
       std::optional<bool> selected =
@@ -818,6 +844,7 @@ static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
   bool result = false;
   if (op) {
     if (mlir::isa<CoreXOp, CoreYOp, PipeNetPredicateOpInterface,
+                  PipeNetDestinationCountOp,
                   ttkernel::MyLogicalXOp, ttkernel::MyLogicalYOp>(op)) {
       result = true;
     } else {
