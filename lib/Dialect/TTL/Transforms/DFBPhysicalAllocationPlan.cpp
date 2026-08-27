@@ -1953,7 +1953,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
 }
 
 /// Builds the dense runtime descriptor table without modifying IR.
-static FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>>
+static FailureOr<DFBPhysicalAllocationDescriptorList>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                  const DFBConcurrentKernelLivenessAnalysis &liveness,
                  DFBAnalysisFailure &analysisFailure) {
@@ -1968,7 +1968,18 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     lifecycleByLogicalId.try_emplace(logicalDFB.logicalId, &logicalDFB);
   }
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
+  llvm::DenseMap<int32_t, LaunchNodeDomain> allocationDomainByIndex;
+  llvm::DenseMap<int32_t, SmallVector<const DFBPhysicalIndexAssignment *, 0>>
+      assignmentsByIndex;
+  auto getRuntimeAllocationDomain = [&](const LaunchNodeDomain &domain) {
+    return liveness.hasExactLaunchGrid() ? domain : LaunchNodeDomain::unknown();
+  };
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
+    assignmentsByIndex[assignment.physicalIndex].push_back(&assignment);
+    LaunchNodeDomain &allocationDomain =
+        allocationDomainByIndex[assignment.physicalIndex];
+    allocationDomain = allocationDomain.unionWith(
+        getRuntimeAllocationDomain(assignment.launchDomain));
     auto [existingIt, inserted] =
         uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
     if (inserted || existingIt->second->type == assignment.type) {
@@ -2020,7 +2031,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     return lhs.first < rhs.first;
   });
 
-  SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
+  DFBPhysicalAllocationDescriptorList descriptors;
   descriptors.reserve(sorted.size());
   for (auto [expectedIndex, indexedAssignment] : llvm::enumerate(sorted)) {
     int32_t physicalIndex = indexedAssignment.first;
@@ -2036,12 +2047,14 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     }
     DFBPhysicalAllocationDescriptor descriptor;
     descriptor.physicalIndex = physicalIndex;
+    descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;
     auto addConfiguration =
         [&](const DFBPhysicalIndexAssignment &candidate,
             std::optional<int64_t> entryReconfigurationOrdinal,
             LaunchNodeDomain activeDomain) -> LogicalResult {
+      activeDomain = getRuntimeAllocationDomain(activeDomain);
       auto dfbType = cast<CircularBufferType>(candidate.type);
       FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
       FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
@@ -2144,10 +2157,12 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       return success();
     };
 
-    for (const DFBPhysicalIndexAssignment &candidate : assignments) {
-      if (candidate.physicalIndex != physicalIndex) {
-        continue;
-      }
+    auto assignmentsIt = assignmentsByIndex.find(physicalIndex);
+    assert(assignmentsIt != assignmentsByIndex.end() &&
+           "every physical index must have an assignment");
+    for (const DFBPhysicalIndexAssignment *indexedCandidate :
+         assignmentsIt->second) {
+      const DFBPhysicalIndexAssignment &candidate = *indexedCandidate;
       const DFBLogicalLifecycle *lifecycle =
           lifecycleByLogicalId.lookup(candidate.logicalId);
       assert(lifecycle && "every assignment must have a logical lifecycle");
@@ -2424,7 +2439,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
 
-  FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>> descriptors =
+  FailureOr<DFBPhysicalAllocationDescriptorList> descriptors =
       buildDescriptors(plan.assignments, liveness, analysisFailure);
   if (failed(descriptors)) {
     errorOperation = analysisFailure.operation;

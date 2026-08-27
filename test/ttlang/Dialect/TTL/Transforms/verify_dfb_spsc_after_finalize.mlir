@@ -7,7 +7,7 @@
 // DFBs cannot retain the same provisional physical index.
 
 // CHECK: module attributes {ttl.dfb_allocations = [
-// CHECK-SAME: {block_count = 2 : i32, dfb_index = 0 : i32,
+// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32,
 // CHECK-LABEL: func.func @producer_a
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
 // CHECK: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, {{.*}} {dfb_id = 0 : index}
