@@ -104,7 +104,14 @@ ttl-erase-pipenet-scopes       (Module)   Remove verified PipeNet markers
 ttl-validate-cb-budget         (Module)   Validate DFB/reset/reconfig L1 use
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
+ttkernel-specialize-cores      (Module)   Clone coordinate-dependent kernels
+canonicalize, cse              (Module)   Remove untaken coordinate branches
+ttkernel-annotate-dfb-use      (Module)   Record surviving physical DFB uses
 ```
+
+The final three entries run only when per-core specialization is enabled.
+Annotation follows canonicalization so an eliminated branch cannot keep an
+otherwise-unused DFB live on that clone's launch node.
 
 `ttl-finalize-dfb-indices` must precede
 `ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.
@@ -123,6 +130,57 @@ physical index assignment. Finalization may use that reservation to select a
 lower-byte valid coloring. The budget pass validates finalized DFB and
 synchronized-reset and reconfiguration allocations. Conversion validates the
 exact combined allocation after PipeNet resource planning.
+
+### Per-core descriptor allocation
+
+Physical allocation records the exact union of launch nodes that access each
+physical DFB index. The runtime restricts descriptors to this domain without
+requiring kernel specialization. An exact empty domain installs no descriptor;
+an unknown domain retains conservative whole-grid allocation.
+
+Per-core kernel specialization can remove different DFB operations on
+different launch nodes. Each final TTKernel function records the physical
+indices still referenced by its compile-time arguments in
+`ttl.used_dfb_indices`. Direct helper calls contribute their transitive uses.
+An unresolved call or missing annotation is conservative and keeps every DFB
+available on the affected function's launch nodes.
+
+The runtime unions these sets for every kernel dispatched to a logical core,
+then intersects the result with the physical allocation domain and finalized
+storage segments. Static storage, tensor-backed ranges, and PipeNet
+computed-address backing therefore use only cores where a surviving kernel can
+access that physical index. A computed-address DFB with an empty effective
+domain retains one hidden backing shard because the PipeNet ABI still requires
+a receiver address, but no launch core installs its descriptor.
+
+Descriptor construction creates one descriptor for each physical DFB storage
+source and restricts it to the exact launch nodes using that source. Sparse
+domains allocate one tensor shard per selected core rather than the area of
+their bounding rectangle.
+
+TT-Metal allocates static descriptor storage in descriptor order. It maintains
+one allocation frontier per core, and a descriptor shared by several cores
+starts at the greatest frontier among those cores. The runtime simulates these
+frontiers with TT-Metal's address alignment and the remaining L1 on each core.
+It preserves the physical-index order when that order fits. Otherwise, it
+evaluates deterministic node-count orders and improving pairwise exchanges. If
+those orders do not fit, a bounded exact search prunes states whose per-core
+frontiers are dominated or whose remaining minimum allocation exceeds L1. Only
+an order whose simulated allocation fits every selected core is emitted. Search
+exhaustion proves that no order fits; reaching the state limit reports a
+conservative failure and the best candidate's overflow.
+
+The usable interval for each core begins at the configured DFB allocator base
+and ends at the lowest live L1 tensor page. Subtracting only allocated page
+sizes would ignore allocator gaps and could overestimate the available range.
+Tensor-backed and already allocated computed-address storage do not advance the
+static frontiers. For a multi-device mesh, tensor and runtime-resource
+allocations use common L1 addresses, while harvested worker mappings can
+differ. The runtime therefore applies the reference allocator's global minimum
+remaining interval to every logical core.
+The correctness invariant is that every surviving DFB access has one compatible
+descriptor on its launch core; conservative metadata preserves the
+whole-program descriptor behavior when this cannot be proved.
 
 `ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
 `bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The
@@ -2195,7 +2253,12 @@ the first tensor-accessor argument index after these compiler-defined entries.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
 Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
-and `block_count`. The planner computes `page_size` with
+and `block_count`. When the compiler proves the exact union of launch nodes
+that access the physical index, the descriptor also contains
+`allocation_nodes`. An empty array records an unreachable allocation. Omitting
+the field retains conservative whole-grid allocation when the node domain is
+unknown. This metadata controls storage residency independently from optional
+per-core executable specialization. The planner computes `page_size` with
 `ttcore::getElementSizeBytes()` on the finalized element type, so subtile
 dimensions affect the physical allocation without requiring runtime device
 initialization.
@@ -2203,6 +2266,7 @@ initialization.
 ```text
 buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
   for physicalIndex in assignments grouped by index:
+    allocationDomain = exactUnionOrUnknown(physicalIndex.launchDomains)
     for assignment in physicalIndex.assignments:
       for active lifecycle epoch, or the initial epoch when none is recorded:
         configuration = configurations[epoch.entryBoundary]
@@ -2217,7 +2281,8 @@ buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
     copy the initial configuration into the physical descriptor fields
     if the initial configuration is tensor-backed:
       add scratch placeholder segments for cores first active in later epochs
-    emit the physical descriptor and its ordered epoch configurations
+    emit the physical descriptor with allocation_nodes = allocationDomain
+    emit its ordered epoch configurations
 ```
 
 Every finalized declaration contributes to the table. Exact-type reuse keeps
@@ -2237,6 +2302,12 @@ format except U8, whose compute passthrough is unsupported; U8 is qualified for
 the NoC interfaces. IEEE FP16 is rejected because TTNN does not expose a native
 FP16 tensor representation; its `float16` compatibility name resolves to BF16
 and does not represent IEEE FP16 storage.
+
+The runtime intersects `allocation_nodes` with final per-kernel DFB-use
+metadata when both are available. The allocation domain restricts an
+unspecialized grid-wide kernel, while specialized use metadata may remove
+additional DFBs after coordinate folding. Tensor-backed storage segments must
+cover the exact allocation nodes and retain their existing storage identity.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It

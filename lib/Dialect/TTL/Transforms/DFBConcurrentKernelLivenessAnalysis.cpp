@@ -4997,6 +4997,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
 
   LivenessDomainState domainState;
   domainState.initialize(module);
+  exactLaunchGridAvailable = domainState.hasLaunchGrid;
   if (!domainState.hasLaunchGrid) {
     if (dependsOnLaunchNode) {
       for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {

@@ -295,6 +295,10 @@ public:
 
   ArrayRef<LaunchNodeCoord> getLaunchNodes() const { return launchNodes; }
 
+  /// Returns whether launch nodes come from module metadata rather than the
+  /// representative domain used to analyze grid-independent lifetimes.
+  bool hasExactLaunchGrid() const { return exactLaunchGridAvailable; }
+
   ArrayRef<DFBResetAllocationConflict> getResetAllocationConflicts() const {
     return resetAllocationConflicts;
   }
@@ -361,6 +365,7 @@ private:
 
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<LaunchNodeCoord> launchNodes;
+  bool exactLaunchGridAvailable = false;
   SmallVector<int64_t> reconfigurationBoundaryOrdinals;
   SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   SmallVector<SmallVector<llvm::BitVector>> conditionallyOrderedBeforeByNode;

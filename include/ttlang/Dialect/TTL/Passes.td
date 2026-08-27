@@ -1136,7 +1136,11 @@ def TTLFinalizeDFBIndices
     missing compiler-created logical IDs, and builds `ttl.dfb_allocations` for
     the Python runtime. The attribute contains one descriptor per physical
     index, including user-declared and compiler-created DFBs, and records the
-    page size computed from the finalized element type. See
+    page size computed from the finalized element type. A descriptor also
+    records the exact union of launch nodes that access its physical index when
+    that domain is known. An exact empty domain causes the runtime to install no
+    DFB descriptor; omitted domain metadata requires conservative whole-grid
+    allocation. See
     docs/development/DFBManagement.md.
   }];
 
