@@ -15,7 +15,6 @@ make_tt_smi_mock() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_TT_SMI_ARGS"
 case "$1" in
-    -glx_reset) exit "${FAKE_TT_SMI_GLX_FAIL:-0}" ;;
     -r)         exit "${FAKE_TT_SMI_R_FAIL:-0}" ;;
     --snapshot_no_tty) exit "${FAKE_TT_SMI_SNAPSHOT_FAIL:-0}" ;;
 esac
@@ -35,26 +34,16 @@ setup() {
     export TT_RESET_RETRY_SECONDS=0
 }
 
-@test "glx reset succeeds and health check passes -> exit 0" {
+@test "warm reset succeeds and health check passes -> exit 0" {
     run -0 "$SCRIPT"
     assert_output --partial "reset and health check passed on attempt 1"
-    grep -q -- "-glx_reset" "$FAKE_TT_SMI_ARGS"
+    grep -q '^-r$' "$FAKE_TT_SMI_ARGS"
     grep -q -- "--snapshot_no_tty" "$FAKE_TT_SMI_ARGS"
+    run -1 grep -q -- "-glx_reset" "$FAKE_TT_SMI_ARGS"
 }
 
-@test "glx reset unsupported -> falls back to tt-smi -r" {
-    FAKE_TT_SMI_GLX_FAIL=1 run -0 "$SCRIPT"
-    grep -q '^-r' "$FAKE_TT_SMI_ARGS"
-    assert_output --partial "reset and health check passed"
-}
-
-@test "successful glx reset does not also run tt-smi -r" {
-    run -0 "$SCRIPT"
-    run -1 grep -q '^-r$' "$FAKE_TT_SMI_ARGS"
-}
-
-@test "both resets fail -> retries then fails" {
-    TT_RESET_MAX_ATTEMPTS=2 FAKE_TT_SMI_GLX_FAIL=1 FAKE_TT_SMI_R_FAIL=1 run -1 "$SCRIPT"
+@test "reset keeps failing -> retries then fails" {
+    TT_RESET_MAX_ATTEMPTS=2 FAKE_TT_SMI_R_FAIL=1 run -1 "$SCRIPT"
     assert_output --partial "Reset attempt 2 of 2"
     assert_output --partial "failed after 2 attempts"
 }
