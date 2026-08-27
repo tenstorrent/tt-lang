@@ -15,6 +15,8 @@ from utils.correctness import assert_pcc
 
 TILE_SIZE = 32
 KIMI_MATMUL_TILE_SHAPE = (1, 48, 2)
+KIMI_ACTIVATION_TILE = (1, TILE_SIZE)
+KIMI_WEIGHT_TILE = (TILE_SIZE, TILE_SIZE)
 
 
 def _make_staged_weight_matmul(math_fidelity):
@@ -131,12 +133,13 @@ def _host_tensors(weight_dtype):
     row_tiles, contraction_tiles, column_tiles = KIMI_MATMUL_TILE_SHAPE
     activation = ttnn.from_torch(
         torch.randn(
-            row_tiles * TILE_SIZE,
+            row_tiles * KIMI_ACTIVATION_TILE[0],
             contraction_tiles * TILE_SIZE,
             dtype=torch.bfloat16,
         ),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile(KIMI_ACTIVATION_TILE),
     )
     weights = ttnn.from_torch(
         torch.randn(
@@ -146,15 +149,17 @@ def _host_tensors(weight_dtype):
         ),
         dtype=weight_dtype,
         layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile(KIMI_WEIGHT_TILE),
     )
     output = ttnn.from_torch(
         torch.zeros(
-            row_tiles * TILE_SIZE,
+            row_tiles * KIMI_ACTIVATION_TILE[0],
             column_tiles * TILE_SIZE,
             dtype=torch.bfloat16,
         ),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile(KIMI_ACTIVATION_TILE),
     )
     return activation, weights, output
 
@@ -172,10 +177,11 @@ def test_mixed_dtype_matmul_compile_only(tmp_path, monkeypatch, weight_format):
     initial_text = initial_mlir.read_text()
     final_text = final_mlir.read_text()
     assert "ttl.matmul" in initial_text
-    assert "!ttcore.tile<32x32, bf16>" in initial_text
-    assert f"!ttcore.tile<32x32, {mlir_dtype}>" in initial_text
+    assert "!ttcore.tile<1x32, bf16>" in initial_text
+    assert f"!ttcore.tile<{TILE_SIZE}x{TILE_SIZE}, {mlir_dtype}>" in initial_text
     assert "ttl.matmul" not in final_text
-    assert f"!ttcore.tile<32x32, {mlir_dtype}>" in final_text
+    assert "!ttcore.tile<1x32, bf16>" in final_text
+    assert f"!ttcore.tile<{TILE_SIZE}x{TILE_SIZE}, {mlir_dtype}>" in final_text
     assert f"page_size = {page_size}" in final_text
 
 
@@ -185,12 +191,13 @@ def _make_weight_tensor(weights_torch, weight_dtype, device, memory_config):
         weights_torch,
         dtype=weight_dtype,
         layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile(KIMI_WEIGHT_TILE),
         device=device,
         memory_config=memory_config,
     )
 
 
-def _make_width_sharded_l1_memory_config(tensor_shape):
+def _make_sharded_l1_memory_config(tensor_shape, memory_layout):
     shard_spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet(
             {
@@ -204,7 +211,7 @@ def _make_width_sharded_l1_memory_config(tensor_shape):
         ttnn.ShardOrientation.ROW_MAJOR,
     )
     return ttnn.MemoryConfig(
-        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        memory_layout,
         ttnn.BufferType.L1,
         shard_spec,
     )
@@ -212,19 +219,31 @@ def _make_width_sharded_l1_memory_config(tensor_shape):
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize(
-    "weight_storage",
-    ("dram", "interleaved_l1", "tensor_backed_width_sharded_l1"),
-    ids=("dram", "l1", "tensor-backed-width-sharded-l1"),
+    ("weight_storage", "tensor_backing_layout"),
+    (
+        ("dram", None),
+        ("interleaved_l1", None),
+        ("tensor_backed_l1", ttnn.TensorMemoryLayout.HEIGHT_SHARDED),
+        ("tensor_backed_l1", ttnn.TensorMemoryLayout.WIDTH_SHARDED),
+        ("tensor_backed_l1", ttnn.TensorMemoryLayout.BLOCK_SHARDED),
+    ),
+    ids=(
+        "dram",
+        "l1",
+        "tensor-backed-height-sharded-l1",
+        "tensor-backed-width-sharded-l1",
+        "tensor-backed-block-sharded-l1",
+    ),
 )
 @pytest.mark.parametrize("math_fidelity", ("LoFi", "HiFi4"), ids=("lofi", "hifi4"))
 def test_mixed_dtype_matmul_device(
-    device, weight_storage, math_fidelity, weight_format
+    device, weight_storage, tensor_backing_layout, math_fidelity, weight_format
 ):
     weight_dtype, _mlir_dtype, _page_size = weight_format
     row_tiles, contraction_tiles, column_tiles = KIMI_MATMUL_TILE_SHAPE
     torch.manual_seed(0)
     activation_torch = torch.randn(
-        row_tiles * TILE_SIZE,
+        row_tiles * KIMI_ACTIVATION_TILE[0],
         contraction_tiles * TILE_SIZE,
         dtype=torch.bfloat16,
     )
@@ -234,7 +253,7 @@ def test_mixed_dtype_matmul_device(
         dtype=torch.bfloat16,
     )
     output_torch = torch.zeros(
-        row_tiles * TILE_SIZE,
+        row_tiles * KIMI_ACTIVATION_TILE[0],
         column_tiles * TILE_SIZE,
         dtype=torch.bfloat16,
     )
@@ -245,17 +264,19 @@ def test_mixed_dtype_matmul_device(
     elif weight_storage == "interleaved_l1":
         weight_memory_config = ttnn.L1_MEMORY_CONFIG
         matmul = STAGED_WEIGHT_MATMULS[math_fidelity]
-    else:
-        weight_memory_config = _make_width_sharded_l1_memory_config(
-            tuple(weights_torch.shape)
+    elif weight_storage == "tensor_backed_l1":
+        weight_memory_config = _make_sharded_l1_memory_config(
+            tuple(weights_torch.shape), tensor_backing_layout
         )
         matmul = TENSOR_BACKED_WEIGHT_MATMULS[math_fidelity]
+    else:
+        raise ValueError(f"unsupported weight storage {weight_storage}")
 
-    activation = to_dram(activation_torch, device)
+    activation = to_dram(activation_torch, device, tile=KIMI_ACTIVATION_TILE)
     weights = _make_weight_tensor(
         weights_torch, weight_dtype, device, weight_memory_config
     )
-    output = to_dram(output_torch, device)
+    output = to_dram(output_torch, device, tile=KIMI_ACTIVATION_TILE)
     activation_before = ttnn.to_torch(activation).clone()
     weights_before = ttnn.to_torch(weights).clone()
 
@@ -277,6 +298,11 @@ def test_mixed_dtype_matmul_device(
     assert torch.equal(weights_before, ttnn.to_torch(weights))
     assert output.dtype == ttnn.bfloat16
     assert output.layout == ttnn.TILE_LAYOUT
+    assert tuple(activation.get_tile().tile_shape) == KIMI_ACTIVATION_TILE
+    assert tuple(weights.get_tile().tile_shape) == KIMI_WEIGHT_TILE
+    assert tuple(output.get_tile().tile_shape) == KIMI_ACTIVATION_TILE
+    if tensor_backing_layout is not None:
+        assert weights.memory_config().memory_layout == tensor_backing_layout
 
     expected = activation_before.float() @ weights_before.float()
     assert_pcc(expected.float(), first_output.float(), threshold=0.999)
