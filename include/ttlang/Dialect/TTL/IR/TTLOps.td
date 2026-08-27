@@ -342,9 +342,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
     /// Returns the unique formal output index whose attached DFB matches
     /// `view`. Failure means the association is absent or ambiguous.
-    /// TODO(bnorris): Encode this association in `ttl.tile_store` and remove
-    /// DFB-based discovery. See #797.
+    /// TODO(#797): Encode this association in `ttl.tile_store` and remove
+    /// DFB-based discovery.
     FailureOr<unsigned> getOutputIndexForView(Value view);
+    FailureOr<unsigned> getOutputIndexForView(Value view, Operation *use);
 
     // Return whether the body contains an op of the given type.
     template <typename OpTy>
@@ -1203,7 +1204,8 @@ def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate", "ElementwiseBinary",
     `ttl.tile_accumulate` models one tile-level recurrence update whose
     accumulator is resident in DST. The operation applies `combiner` to
     `accumulator` and `contribution`, writes the result into `dst_index`, and
-    returns the value resident in that same DST slot.
+    returns the value resident in that same DST slot. Supported combiners are
+    `add` and `max`.
 
     Example:
 
@@ -1509,31 +1511,6 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
   let assemblyFormat = [{
     $input `,` $scaler `,` $output $reduce_type $reduce_dim `into` `dst` `[` $dst_index `]` attr-dict `:`
     `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
-  }];
-}
-
-def TTL_TileReductionInitOp : TTL_TileOp<"tile_reduction_init", "Fill",
-    [TTL_DstResultOpTrait]> {
-  let summary = "Initialize an inter-tile reduction accumulator";
-  let description = [{
-    Initializes a DST tile to the identity value for a sum or max reduction.
-    Loop lowering hoists this operation outside the reduction loops so the
-    accumulator persists across input tiles.
-  }];
-  let arguments = (ins TTL_ReduceTypeAttr:$reduce_type, Index:$dst_index);
-  let results = (outs TTL_TileType:$result);
-  let assemblyFormat = [{
-    $reduce_type `into` `dst` `[` $dst_index `]` attr-dict `:` type($result)
-  }];
-}
-
-def TTL_TileAddInPlaceOp : TTL_TileSfpuBinaryOp<"tile_add_in_place",
-    [TTL_InPlaceOpTrait]> {
-  let summary = "Add a tile into an existing DST accumulator";
-  let description = [{
-    Adds the right-hand DST tile to the left-hand DST tile in place. This form
-    is used for inter-tile sum reductions whose accumulator must survive across
-    reduction-loop iterations.
   }];
 }
 

@@ -1,4 +1,5 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),cse,canonicalize)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-lower-to-loops))' --split-input-file | FileCheck %s --check-prefix=SCF
 
 // Summary: Tests for ttl.reduce lowering to ttl.compute with tile_reduce.
 // Verifies indexing maps, iterator types, body data flow, and reduce_dim
@@ -10,6 +11,8 @@
 // CHECK: #[[$MAP_ZERO:.*]] = affine_map<(d0, d1) -> (0, 0)>
 // CHECK: #[[$MAP_OUT:.*]] = affine_map<(d0, d1) -> (0, d1)>
 // CHECK-LABEL: func.func @reduce_sum_dim0
+// SCF-LABEL: func.func @reduce_sum_dim0
+// SCF: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop
 func.func @reduce_sum_dim0() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -52,6 +55,8 @@ func.func @reduce_sum_dim0() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_
 // CHECK: #[[$MAP_ZERO:.*]] = affine_map<(d0, d1) -> (0, 0)>
 // CHECK: #[[$MAP_OUT:.*]] = affine_map<(d0, d1) -> (d0, 0)>
 // CHECK-LABEL: func.func @reduce_sum_dim1
+// SCF-LABEL: func.func @reduce_sum_dim1
+// SCF: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop
 func.func @reduce_sum_dim1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -81,6 +86,9 @@ func.func @reduce_sum_dim1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_
 // CHECK: #[[$MAP_ID:.*]] = affine_map<(d0, d1) -> (d0, d1)>
 // CHECK: #[[$MAP_ZERO:.*]] = affine_map<(d0, d1) -> (0, 0)>
 // CHECK-LABEL: func.func @reduce_max_both
+// SCF-LABEL: func.func @reduce_max_both
+// SCF: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop
+// SCF: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop
 func.func @reduce_max_both() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

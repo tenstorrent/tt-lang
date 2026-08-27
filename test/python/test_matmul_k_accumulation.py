@@ -3,22 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Matmul K-accumulation precision: verify error stays bounded as K grows.
+Matmul K-accumulation precision and multicore correctness coverage.
 
-Two strategies tested:
-  - Kt=1 streaming: explicit accumulation with separate partial and acc DFBs.
-  - Kt>1 single fill: entire K in one DFB, compiler-generated K loop.
+The parameterized precision tests compare two accumulation forms as K grows:
+  - Kt=1 streaming: each K tile computes a partial result, and explicit DFB
+    state accumulates those partials.
+  - Kt>1 single fill: one input DFB contains the full K block, and
+    compiler-generated matmul_block accumulation keeps intermediate results in
+    DST when the output block fits DST capacity.
 
-Accuracy requirements (PCC > 0.999, max/mean error scaling as sqrt(K)):
-  - Each K step adds an independent bf16 rounding error. For random inputs
-    these errors are uncorrelated, so the accumulated error grows as
-    O(sqrt(K)) (random walk).
-  - Kt>1 with matmul_full_fp32 accumulates in f32 DST without intermediate
-    bf16 truncation, so error bounds are tighter than Kt=1 which truncates
-    to bf16 at each CB round-trip.
-  - Error that grows faster than sqrt(K) indicates a correctness bug
-    (e.g., wrong tile indexing, missing subblocking, or fp32_dest_acc_en
-    not propagated to all compute ops).
+For the precision tests, PCC must exceed 0.999 and max/mean error must scale
+as sqrt(K). Each K step adds an independent bf16 rounding error; for random
+inputs these errors are uncorrelated. The Kt>1 DST-resident form accumulates
+in f32 DST without intermediate bf16 truncation, so its bounds are tighter
+than Kt=1 streaming, which stores through DFB state after each K step.
+
+The multicore test uses the Kt>1 DST-resident form on a 2x2 grid to verify
+that M/N block distribution preserves the same K-accumulation semantics across
+cores.
 """
 
 import math
@@ -129,6 +131,92 @@ def _make_matmul_kn(k_tiles, block_n):
     return kernel
 
 
+def _make_matmul_kn_multicore(k_tiles, block_m, block_n, grid):
+    """Kt>1 single fill with M/N output blocks distributed across cores."""
+
+    @ttl.operation(grid=grid)
+    def kernel(a, w, out):
+        Mt = a.shape[0] // TILE
+        Nt = w.shape[1] // TILE
+
+        M_num = Mt // block_m
+        N_num = Nt // block_n
+
+        grid_n, grid_m = ttl.grid_size(dims=2)
+        m_per = -(-M_num // grid_m)
+        n_per = -(-N_num // grid_n)
+
+        a_dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(block_m, k_tiles), block_count=2
+        )
+        w_dfb = ttl.make_dataflow_buffer_like(
+            w, shape=(k_tiles, block_n), block_count=2
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(block_m, block_n), block_count=2
+        )
+
+        @ttl.compute()
+        def compute():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_per):
+                m_block = node_m * m_per + local_m
+                if m_block < M_num:
+                    for local_n in range(n_per):
+                        n_block = node_n * n_per + local_n
+                        if n_block < N_num:
+                            with (
+                                a_dfb.wait() as a_blk,
+                                w_dfb.wait() as w_blk,
+                                out_dfb.reserve() as out_blk,
+                            ):
+                                out_blk.store(a_blk @ w_blk)
+
+        @ttl.datamovement()
+        def dm_read():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_per):
+                m_block = node_m * m_per + local_m
+                if m_block < M_num:
+                    m_offset = m_block * block_m
+                    for local_n in range(n_per):
+                        n_block = node_n * n_per + local_n
+                        if n_block < N_num:
+                            n_offset = n_block * block_n
+                            with a_dfb.reserve() as a_blk:
+                                ttl.copy(
+                                    a[m_offset : m_offset + block_m, 0:k_tiles],
+                                    a_blk,
+                                ).wait()
+                            with w_dfb.reserve() as w_blk:
+                                ttl.copy(
+                                    w[0:k_tiles, n_offset : n_offset + block_n],
+                                    w_blk,
+                                ).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_per):
+                m_block = node_m * m_per + local_m
+                if m_block < M_num:
+                    m_offset = m_block * block_m
+                    for local_n in range(n_per):
+                        n_block = node_n * n_per + local_n
+                        if n_block < N_num:
+                            n_offset = n_block * block_n
+                            with out_dfb.wait() as out_blk:
+                                ttl.copy(
+                                    out_blk,
+                                    out[
+                                        m_offset : m_offset + block_m,
+                                        n_offset : n_offset + block_n,
+                                    ],
+                                ).wait()
+
+    return kernel
+
+
 def _run(make_fn, k_tiles, block_n, device, max_err_limit, mean_err_limit):
     k_dim = k_tiles * TILE
     n_dim = max(256, block_n * TILE)
@@ -202,3 +290,29 @@ def test_matmul_k_accumulation_single_fill(k_tiles, block_n, device):
         max_err_limit=max_err,
         mean_err_limit=mean_err,
     )
+
+
+@pytest.mark.requires_device
+def test_matmul_dst_resident_accumulation_multicore(device):
+    """DST-resident K accumulation remains correct across a 2x2 grid."""
+    k_tiles = 8
+    block_m = 2
+    block_n = 2
+    m_blocks = 4
+    n_blocks = 4
+
+    m_dim = block_m * m_blocks * TILE
+    k_dim = k_tiles * TILE
+    n_dim = block_n * n_blocks * TILE
+
+    torch.manual_seed(9001)
+    a = torch.randn(m_dim, k_dim, dtype=torch.bfloat16)
+    w = torch.randn(k_dim, n_dim, dtype=torch.bfloat16)
+    golden = (a.float() @ w.float()).float()
+
+    out = to_dram(torch.zeros(m_dim, n_dim, dtype=torch.bfloat16), device)
+    kernel = _make_matmul_kn_multicore(k_tiles, block_m, block_n, grid=(2, 2))
+    kernel(to_dram(a, device), to_dram(w, device), out)
+
+    result = ttnn.to_torch(out).float()
+    assert_pcc(golden, result, threshold=0.999)

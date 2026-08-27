@@ -8,9 +8,13 @@ import struct
 from dataclasses import dataclass
 from typing import List, Optional, Set
 
-from ttl.pykernel._src.kernel_ast import TTCompilerBase
+from ttl.pykernel._src.kernel_ast import (
+    TTCompilerBase,
+    _get_single_result,
+    _require_mlir_value_type,
+)
 from ttl.pykernel._src.utils import _get_type_str
-from ttl.dialects import arith, func, ttcore, ttkernel
+from ttl.dialects import arith, func, memref, scf, ttcore, ttkernel
 from ttl.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
@@ -136,6 +140,30 @@ def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Locatio
     return Location.file(
         source_file, node.lineno + line_offset, node.col_offset + 1, ctx
     )
+
+
+@dataclass(frozen=True)
+class _GuardedDFBBlock:
+    """DFB block value defined only when `guard` is true."""
+
+    value: object
+    dfb: object
+    guard: object
+    guard_description: str
+    acquire_method: str
+
+    _ttlang_guarded_dfb_block = True
+
+
+@dataclass(frozen=True)
+class _GuardedDFBAssignment:
+    """Branch-local DFB acquire that becomes a guarded outer binding."""
+
+    name: str
+    dfb: object
+    tensor_type: object
+    acquire_method: str
+    node: ast.Assign
 
 
 def _get_annotation_name(annotation):
@@ -278,6 +306,7 @@ class TTLGenericCompiler(TTCompilerBase):
         # Include paths collected from ttl.call_extern_func invocations,
         # forwarded to the JIT compiler as -I flags.
         self._opaque_include_paths: list[str] = []
+        self._active_guards = []
 
     def _set_var(self, var_name, value):
         # Capture PipeNet variable names so the verifier can render
@@ -553,7 +582,8 @@ class TTLGenericCompiler(TTCompilerBase):
         `+=` on a DFB-attached block emits an accumulating store through
         `__iadd__`. Other tensor targets are rewritten to an ordinary
         assignment so loop-carried SSA values can be represented by `scf.for`
-        iter_args.
+        iter_args; accumulation lowering handles recognized additive
+        recurrences.
         """
         with self._loc_for_node(node):
             target = self.visit(node.target)
@@ -589,6 +619,241 @@ class TTLGenericCompiler(TTCompilerBase):
                     )
                     return self.visit(synthetic)
             return super().visit_AugAssign(node)
+
+    def _coerce_if_condition(self, condition):
+        if hasattr(condition, "result"):
+            condition = condition.result
+
+        condition_type = None
+        if hasattr(condition, "type") and isinstance(condition.type, memref.MemRefType):
+            condition = memref.LoadOp(
+                condition, arith.ConstantOp(IndexType.get(self.ctx), 0)
+            ).result
+            condition_type = condition.type
+        elif hasattr(condition, "type") and isinstance(condition.type, IntegerType):
+            condition_type = condition.type
+        elif isinstance(condition, arith.ConstantOp):
+            condition_type = condition.type
+
+        if condition_type is None or not isinstance(condition_type, IntegerType):
+            raise ValueError("Cannot Compare Non-Integer Values")
+
+        if condition_type.width != 1:
+            condition = arith.cmpi(
+                arith.CmpIPredicate.ne,
+                condition,
+                arith.ConstantOp(condition_type, 0),
+            )
+        return condition
+
+    def _format_guard_description(self, node) -> str:
+        try:
+            return ast.unparse(node)
+        except Exception:
+            return type(node).__name__
+
+    def _get_guarded_dfb_assignment(self, stmt):
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            return None
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name) or self._var_exists(target.id):
+            return None
+        value = stmt.value
+        if not isinstance(value, ast.Call) or value.args or value.keywords:
+            return None
+        if not isinstance(value.func, ast.Attribute):
+            return None
+        acquire_method = value.func.attr
+        if acquire_method not in ("reserve", "wait"):
+            return None
+        if not isinstance(value.func.value, ast.Name):
+            return None
+        dfb_table = self._var_exists(value.func.value.id)
+        if not dfb_table:
+            return None
+        dfb = dfb_table[value.func.value.id]
+        if not hasattr(dfb, "type"):
+            return None
+        if ttl.CircularBufferType.maybe_downcast(dfb.type) is None:
+            return None
+        return _GuardedDFBAssignment(
+            target.id,
+            dfb,
+            self._get_cb_tensor_type(dfb, node=value),
+            acquire_method,
+            stmt,
+        )
+
+    def _get_guarded_dfb_assignments(self, node):
+        if node.orelse:
+            return []
+        assignments = []
+        seen_names = set()
+        for stmt in node.body:
+            assignment = self._get_guarded_dfb_assignment(stmt)
+            if assignment is None or assignment.name in seen_names:
+                continue
+            assignments.append(assignment)
+            seen_names.add(assignment.name)
+        return assignments
+
+    def _emit_inactive_guarded_dfb_value(self, assignment):
+        return Operation.create(
+            "builtin.unrealized_conversion_cast",
+            results=[assignment.tensor_type],
+            operands=[],
+            attributes={"ttl.inactive_guarded_dfb": UnitAttr.get()},
+        ).result
+
+    def _visit_guarded_if_region(
+        self,
+        statements,
+        carried_var_names,
+        carried_initial_values,
+        guarded_assignments,
+        active_guard=None,
+    ):
+        self.symbol_tables.append({})
+        if active_guard is not None:
+            self._active_guards.append(active_guard)
+        try:
+            for stmt in statements:
+                self.visit(stmt)
+            self._on_scope_exit()
+
+            yield_values = []
+            for var_name, initial_value in zip(
+                carried_var_names, carried_initial_values
+            ):
+                final_value = self.symbol_tables[-1].get(var_name, initial_value)
+                initial_type = _require_mlir_value_type(
+                    initial_value, var_name, "an if statement"
+                )
+                final_type = _require_mlir_value_type(
+                    final_value, var_name, "an if statement"
+                )
+                if final_type != initial_type:
+                    raise ValueError(
+                        f"Variable '{var_name}' changes type across an if "
+                        f"statement from {initial_type} to {final_type}"
+                    )
+                yield_values.append(_get_single_result(final_value))
+
+            for assignment in guarded_assignments:
+                final_value = self.symbol_tables[-1].get(assignment.name)
+                if final_value is None:
+                    self._raise_error(
+                        assignment.node,
+                        f"guarded DFB block '{assignment.name}' was not "
+                        "defined in the active branch",
+                    )
+                final_value = _get_single_result(final_value)
+                if final_value.type != assignment.tensor_type:
+                    self._raise_error(
+                        assignment.node,
+                        f"guarded DFB block '{assignment.name}' changes type "
+                        f"from {assignment.tensor_type} to {final_value.type}",
+                    )
+                yield_values.append(final_value)
+            scf.YieldOp(yield_values)
+        finally:
+            if active_guard is not None:
+                self._active_guards.pop()
+            self.symbol_tables.pop()
+
+    def _visit_inactive_guarded_if_region(
+        self, statements, carried_var_names, carried_initial_values, guarded_assignments
+    ):
+        self.symbol_tables.append({})
+        try:
+            for stmt in statements:
+                self.visit(stmt)
+            self._on_scope_exit()
+
+            yield_values = []
+            for var_name, initial_value in zip(
+                carried_var_names, carried_initial_values
+            ):
+                final_value = self.symbol_tables[-1].get(var_name, initial_value)
+                initial_type = _require_mlir_value_type(
+                    initial_value, var_name, "an if statement"
+                )
+                final_type = _require_mlir_value_type(
+                    final_value, var_name, "an if statement"
+                )
+                if final_type != initial_type:
+                    raise ValueError(
+                        f"Variable '{var_name}' changes type across an if "
+                        f"statement from {initial_type} to {final_type}"
+                    )
+                yield_values.append(_get_single_result(final_value))
+
+            for assignment in guarded_assignments:
+                yield_values.append(self._emit_inactive_guarded_dfb_value(assignment))
+            scf.YieldOp(yield_values)
+        finally:
+            self.symbol_tables.pop()
+
+    def visit_If(self, node):
+        self._reject_unsupported_language_constructs([node])
+
+        condition = self._coerce_if_condition(self.visit(node.test))
+        carried_var_names = self._get_if_carried_var_names(node)
+        carried_initial_values = [
+            _get_single_result(self._var_exists(var_name)[var_name])
+            for var_name in carried_var_names
+        ]
+        carried_types = [
+            _require_mlir_value_type(value, var_name, "an if statement")
+            for var_name, value in zip(carried_var_names, carried_initial_values)
+        ]
+
+        guarded_assignments = self._get_guarded_dfb_assignments(node)
+        result_types = carried_types + [
+            assignment.tensor_type for assignment in guarded_assignments
+        ]
+        if_op = scf.IfOp(
+            cond=condition,
+            results_=result_types,
+            has_else=bool(node.orelse) or bool(result_types),
+        )
+
+        self._on_scope_exit()
+        with InsertionPoint(if_op.then_block), Location.unknown():
+            self._visit_guarded_if_region(
+                node.body,
+                carried_var_names,
+                carried_initial_values,
+                guarded_assignments,
+                active_guard=condition,
+            )
+
+        if node.orelse or result_types:
+            with InsertionPoint(if_op.else_block), Location.unknown():
+                self._visit_inactive_guarded_if_region(
+                    node.orelse,
+                    carried_var_names,
+                    carried_initial_values,
+                    guarded_assignments,
+                )
+
+        result_index = 0
+        for var_name in carried_var_names:
+            self._set_var(var_name, if_op.results[result_index])
+            result_index += 1
+        guard_description = self._format_guard_description(node.test)
+        for assignment in guarded_assignments:
+            self._set_var(
+                assignment.name,
+                _GuardedDFBBlock(
+                    if_op.results[result_index],
+                    assignment.dfb,
+                    condition,
+                    guard_description,
+                    assignment.acquire_method,
+                ),
+            )
+            result_index += 1
 
     def _is_pipenet_callback_call(self, node):
         """Check if this is a pipenet.if_src(fn) or pipenet.if_dst(fn) call."""
@@ -807,6 +1072,14 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to check function globals for simple constants."""
         result = super().visit_Name(node)
         if result is not None:
+            if isinstance(result, _GuardedDFBBlock):
+                if result.guard not in self._active_guards:
+                    self._raise_error(
+                        node,
+                        f"DFB block '{node.id}' is only defined when "
+                        f"{result.guard_description} is true",
+                    )
+                return ttl.attach_cb(result.value.type, result.value, result.dfb)
             return result
 
         # Check if it's a module-level constant
@@ -1678,6 +1951,8 @@ class TTLGenericCompiler(TTCompilerBase):
             # Get tensor type from CB for reserve/wait result
             tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
             if method_name == "reserve":
+                # TODO(#645): Parse reserve(accumulation_strategy=...) here
+                # once source-level accumulation strategy hints are specified.
                 tensor = self._emit_op_signposts(
                     "cb_reserve",
                     context_expr,

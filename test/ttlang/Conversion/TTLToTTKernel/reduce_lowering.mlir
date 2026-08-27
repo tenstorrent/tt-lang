@@ -55,7 +55,7 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
       ttl.tile_store %red, %reserve[%c0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
-  } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
   ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -95,7 +95,7 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
       ttl.tile_store %red, %reserve[%iv0, %c0] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
-  } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
   ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -104,7 +104,7 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 
 // -----
 
-// Multi-tile reduce (2x1 -> 1x1): reduction loop with L1 accumulation guard.
+// Multi-tile reduce (2x1 -> 1x1): reduction loop with conditional L1 accumulation enable.
 // CHECK-LABEL: func.func @reduce_2x1_l1_acc
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
@@ -123,12 +123,12 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // CHECK:   ttkernel.reduce_uninit()
 // CHECK:   ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]], true)
 // CHECK:   ttkernel.tile_regs_release
-// L1 accumulation guard: enable once after the first iteration's pack.
+// L1 accumulation is enabled once after the first iteration's pack.
 // CHECK:   %[[FIRST:.*]] = arith.cmpi eq, %[[IV]], %[[C0]]
 // CHECK-NEXT:   scf.if %[[FIRST]]
 // CHECK-NEXT:     ttkernel.pack_reconfig_l1_acc(%[[C1I]])
 // CHECK:        }
-// CHECK: } {ttl.reduction_loop
+// CHECK: } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop
 // Disable L1 accumulation after reduction loop.
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[C0I]])
 func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en = true} {
@@ -157,7 +157,7 @@ func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crt
       ttl.tile_store %red, %reserve[%c0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
-  } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+  } {ttl.l1_acc_initial = 0 : i32, ttl.l1_acc_scope_id = 0 : i64, ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
   ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb0 : <[2, 1], !ttcore.tile<32x32, bf16>, 2>
