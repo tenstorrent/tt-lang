@@ -327,10 +327,11 @@ ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=t
 Group eligible repeated PipeNet transfers and select bounded receiver storage.
 Later PipeTransport planning replaces proven-private grouped DFB lifecycles
 with transport-owned scratch; scalar residuals retain the original lifecycle.
-Selection uses a conservative upper bound for target-aligned DFB allocation,
-receiver-published addresses, transport scratch, GlobalSemaphore counters,
-record-selected callback resources, synchronized-reset state, and
-reconfiguration state. A group size of one validates and records the
+Selection uses a target-aligned logical DFB estimate and a conservative upper
+bound for receiver-published addresses, transport scratch, GlobalSemaphore
+counters, record-selected callback resources, synchronized-reset state, and
+reconfiguration state. The estimate selects a grouping size; it does not reject
+the finalized physical DFB allocation. A group size of one records the
 reservation without grouping. Exact combined validation occurs after PipeNet
 planning in `convert-ttl-to-ttkernel`.
 
