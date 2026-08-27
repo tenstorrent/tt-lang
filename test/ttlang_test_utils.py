@@ -119,9 +119,13 @@ def pin_xdist_worker_to_device() -> None:
         return
     visible_device_groups = os.environ.get("TTLANG_XDIST_VISIBLE_DEVICE_GROUPS")
     if visible_device_groups:
-        device_groups = visible_device_groups.split(";")
+        device_groups = [group for group in visible_device_groups.split(";") if group]
         worker_number = int(worker_index)
-        assert worker_number < len(device_groups)
+        if worker_number >= len(device_groups):
+            raise RuntimeError(
+                "TTLANG_XDIST_VISIBLE_DEVICE_GROUPS does not define a group "
+                f"for xdist worker {worker_name}: {visible_device_groups!r}"
+            )
         visible_devices = device_groups[worker_number]
     else:
         visible_devices = worker_index
