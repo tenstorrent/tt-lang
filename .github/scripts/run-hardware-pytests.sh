@@ -7,10 +7,11 @@
 #
 # Chip count is the number of digit-named nodes under /dev/tenstorrent (matching
 # test/lit.cfg.py). With more than one chip, single-device tests run under
-# pytest-xdist with each worker restricted to one chip through
-# TT_VISIBLE_DEVICES. Compile-only tests then run without xdist so concurrent
-# compiler subprocesses do not contend for host resources. The multi_device
-# tests run serially after that. With one chip the whole suite runs serially.
+# pytest-xdist with each worker restricted to the smallest topology-valid
+# device group through TT_VISIBLE_DEVICES. Compile-only tests then run without
+# xdist so concurrent compiler subprocesses do not contend for host resources.
+# The multi_device tests run serially after that. With one chip the whole suite
+# runs serially.
 #
 # Env: HW_PYTEST_CHIPS overrides the detected chip count.
 # Env: HW_TEST_WORKERS caps xdist concurrency at no more than the chip count.
@@ -91,8 +92,24 @@ run_multi_device_phase() {
     run_pytest_phase "$@"
 }
 
+run_full_suite_serially() {
+    python3 -m pytest "$TEST_DIR" "${common[@]}" --junitxml="${REPORT_PREFIX}.xml"
+}
+
 if [ "$chips" -gt 1 ]; then
-    echo "Detected ${chips} chips: single-device tests in parallel (-n ${workers}), compile_only and multi_device serial"
+    device_groups_string="$(resolve_tt_device_groups "$chips")" || {
+        echo "No valid device grouping found; running the full suite serially with full topology visibility"
+        unset TT_VISIBLE_DEVICES
+        run_full_suite_serially
+        exit
+    }
+    IFS=';' read -r -a device_groups <<< "$device_groups_string"
+    device_group_count="${#device_groups[@]}"
+    if [ "$workers" -gt "$device_group_count" ]; then
+        workers="$device_group_count"
+    fi
+
+    echo "Detected ${chips} chips as ${device_group_count} valid device groups: single-device tests in parallel (-n ${workers}), compile_only and multi_device serial"
     unset TT_VISIBLE_DEVICES
     cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
     rc=0
@@ -100,6 +117,7 @@ if [ "$chips" -gt 1 ]; then
     # the original crash and invalidate the crash guard's completeness check.
     TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
         TTLANG_XDIST_TT_METAL_CACHE_ROOT="$cache_root" \
+        TTLANG_XDIST_VISIBLE_DEVICE_GROUPS="$device_groups_string" \
         run_pytest_phase "$TEST_DIR" -m "not multi_device and not compile_only" -n "$workers" \
         --max-worker-restart=0 "${common[@]}" \
         --junitxml="${REPORT_PREFIX}-parallel.xml" || rc=1
@@ -115,4 +133,4 @@ if [ "$chips" -gt 1 ]; then
 fi
 
 echo "Detected ${chips} chip(s): running the full suite serially"
-python3 -m pytest "$TEST_DIR" "${common[@]}" --junitxml="${REPORT_PREFIX}.xml"
+run_full_suite_serially
