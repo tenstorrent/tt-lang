@@ -5,6 +5,7 @@ self-hosted-runner:
   labels:
     - mlir-large-runner-lang
     - n150
-    - bh-loudbox
+    - BH-Quietbox-2
+    - in-service
     - exabox-multihost-ci-sc1
     - tt-ubuntu-2204-*-stable
