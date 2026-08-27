@@ -38,6 +38,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       independently of the physical slot selected by `cb_index`. Bindings in
       different kernels with the same `dfb_id` refer to the same logical
       buffer.
+    - `allocation_group`, when present, requests one compiler-verified physical
+      allocation for all logical DFBs carrying the same group identity.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
       The range is relative to the local shard on each launch node.
@@ -52,7 +54,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     IndexAttr:$cb_index,
     DefaultValuedAttr<I64Attr, "2">:$block_count,
     OptionalAttr<IndexAttr>:$dfb_id,
-    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing
+    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing,
+    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -1201,7 +1204,8 @@ def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate", "ElementwiseBinary",
     `ttl.tile_accumulate` models one tile-level recurrence update whose
     accumulator is resident in DST. The operation applies `combiner` to
     `accumulator` and `contribution`, writes the result into `dst_index`, and
-    returns the value resident in that same DST slot.
+    returns the value resident in that same DST slot. Supported combiners are
+    `add` and `max`.
 
     Example:
 
@@ -1472,8 +1476,12 @@ def TTL_ReduceOp : TTL_ComputePrimitiveOp<"reduce", "Reduce", [Pure,
     - dims=[-2] or dims=[0]: reduce rows
     - dims=[-1] or dims=[1]: reduce columns
     - dims=[-2,-1] or dims=[0,1]: reduce both
+    Leading dimensions use inter-tile accumulation. Reducing either of the
+    innermost dimensions also applies the corresponding within-tile hardware
+    reduction.
 
-    Both input and scaler must be CB-attached rank-2 tensors.
+    The input must be a CB-attached tensor of rank 2 or greater. The scaler is
+    a CB-attached rank-2 single-tile tensor used by the hardware reduction.
   }];
   let arguments = (ins AnyRankedTensor:$input,
                        AnyRankedTensor:$scaler,
@@ -1817,16 +1825,27 @@ def TTL_CBPopOp
 
 def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     [MemoryEffects<[MemWrite]>]> {
-  let summary = "Store a tensor to a circular buffer reserve view";
+  let summary = "Store a tensor to an acquired dataflow buffer view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
-    an output circular buffer.
+    an acquired dataflow buffer view. A reserve-backed destination writes a
+    producer-owned slot. A wait-backed destination replaces a consumer-owned
+    slot after the original value has been consumed.
 
-    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
-    (accumulate). During `convert-ttl-to-compute`, this op is transformed
-    into a `ttl.tile_store` inside the compute body.
+    Python's `o.store(result)` emits an overwrite. `o += result` emits packer
+    accumulation for a reserve-backed destination or an explicit
+    read-add-replacement sequence for a wait-backed destination.
 
-    When `accumulate` is set, the enclosing loop is annotated for L1
+    Wait-backed replacement is valid only when compiler analysis proves that
+    the one-block DFB is acquired completely, so the read and write pointers
+    address the same pages. It does not advance either pointer and the existing
+    `ttl.cb_pop` remains the release operation. The replacement must execute
+    after a read of the acquired value, and its wait must be the first access
+    to that DFB in the compute kernel. Multi-block, partial-ring, conditional,
+    repeated, and otherwise unresolved mutations are rejected.
+
+    When `accumulate` is set, the destination must be reserve-backed. The
+    enclosing loop is annotated for L1
     packer accumulation so that each iteration adds to the existing L1
     value instead of overwriting.
 
@@ -1973,13 +1992,90 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Synchronized dataflow buffer reset
+//===----------------------------------------------------------------------===//
+
+def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Synchronize DFB owners and reset selected interfaces";
+  let description = [{
+    `ttl.reset_dfbs` is one worker-local synchronization boundary shared by
+    the three logical kernels named by `reset`. Each participant executes the
+    same zero-or-one dynamic instance per dispatch and launch node, or one
+    instance per iteration of an equivalent immutable sequential loop nest.
+    Before any participant returns, the operation completes prior DFB-interface
+    work and restores the listed DFBs to canonical empty protocol state without
+    changing descriptor configuration or payload storage.
+
+    The operation resets read and write pointers, the packer write-tile
+    pointer, initialization state, and stream occupancy counters. It does not
+    clear payload bytes or change the descriptor. Each participating data
+    movement RISC drains its own outstanding NoC commands before publishing
+    boundary arrival. The operation cannot complete commands issued by another
+    core or a non-participating RISC, so every producer must issue its required
+    transfers before its local boundary occurrence. Runtime lowering is
+    supported only for Blackhole.
+  }];
+  let arguments = (ins
+    TTL_SynchronizedDFBResetAttr:$reset,
+    Variadic<TTL_CircularBuffer>:$dfbs
+  );
+  let assemblyFormat = "$reset `(` $dfbs `:` type($dfbs) `)` attr-dict";
+  let hasVerifier = 1;
+}
+
+def TTL_ResetAllDFBsOp
+    : TTL_Op<"reset_all_dfbs", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Synchronize DFB owners and reset every local interface";
+  let description = [{
+    `ttl.reset_all_dfbs` has the synchronization and state-reset semantics of
+    `ttl.reset_dfbs`, applied to every worker-local DFB allocated by the
+    program. It does not take DFB operands because the complete allocation set
+    is resolved after physical DFB indices are finalized.
+  }];
+  let arguments = (ins TTL_SynchronizedDFBResetAttr:$reset);
+  let assemblyFormat = "$reset attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// Dataflow-buffer reconfiguration boundary
+//===----------------------------------------------------------------------===//
+
+def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Enter the next worker-local DFB configuration epoch";
+  let description = [{
+    `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
+    by the logical kernels named by `boundary`. Every participant executes the
+    same zero-or-one dynamic boundary instance per dispatch and launch node and
+    executes boundary sites in the same order. Every boundary in one module
+    declares the same participant set. DFB-interface work ordered before the
+    boundary completes before the runtime installs the next epoch's
+    configuration. DFB-interface work ordered after the boundary begins after
+    installation. Independent math and SFPU work may overlap the boundary.
+
+    The source operation does not name physical DFB indices or enumerate the
+    interfaces that change. Allocation analysis derives the configuration for
+    each epoch from logical DFB lifetimes. Live protocol state retains its
+    physical index, storage, and interface configuration across the boundary;
+    reassignment requires a complete protocol and synchronization proof.
+
+    Runtime execution is currently supported only on Blackhole. Compilation
+    rejects a resolved non-Blackhole target. Shared-L1 synchronization state
+    coordinates interface changes across the participating kernels.
+  }];
+  let arguments = (ins TTL_DFBReconfigurationAttr:$boundary);
+  let assemblyFormat = "$boundary attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 
 def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
      DeclareOpInterfaceMethods<TTL_DFBAccessOpInterface,
-                               ["getDFBIndexOperands",
+                               ["getDFBNonTransactionalAccesses",
+                                "getDFBIndexOperands",
                                 "hasUnknownDFBAccess"]>]> {
   let summary = "Call an external C/C++ function by name";
   let description = [{
@@ -2012,17 +2108,38 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     `getDFBDependencyOperands()` and carries a positive static tile count no
     greater than the selected DFB's capacity. Every listed effect occurs on
     every execution of the call. Repeated effects retain list order. The summary
-    does not emit protocol calls. Effects omitted for a dependency occurrence
-    leave its access opaque for the call duration. If one DFB occupies multiple
-    dependency occurrences, every occurrence requires its own effects to avoid
-    an opaque call-duration access. The
-    `unknown_dfb_access` unit attribute declares that the callee may also access
-    unlisted user-managed DFBs and disables physical-index reuse in affected
-    allocation scopes.
+    does not emit protocol calls.
 
-    Every asynchronous DFB access must also complete before the call returns.
-    A callee with outstanding asynchronous work requires a separate explicit
-    completion contract and cannot use this operation's synchronous summary.
+    The ordered `dfb_accesses` list describes synchronous DFB accesses that do
+    not perform queue transactions. `inspect` states that a callee may read the
+    dependency's descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. One dependency occurrence cannot declare
+    both a protocol effect and an inspection because their relative execution
+    order would be unspecified. Effects and accesses omitted for a dependency
+    occurrence leave its access opaque and incomplete for reuse with another
+    logical DFB on a shared launch node unless a matching synchronized reset
+    proves lifecycle completion. If one DFB occupies multiple dependency
+    occurrences, every occurrence requires its own summary or the same reset-
+    completion proof. The `unknown_dfb_access` unit attribute declares that the
+    callee may also access unlisted user-managed DFBs and adds an opaque
+    occurrence to each affected DFB. Exact disjoint launch-node domains remain
+    eligible for physical-index sharing.
+
+    A named DFB dependency occurrence without `dfb_effects` or `dfb_accesses`
+    contributes an opaque storage access that begins at call entry. Its protocol
+    and asynchronous interface work may remain live after the call. When the
+    call is ordered before a synchronized DFB reset through the same
+    participating logical kernel, reset completion terminates the access and
+    canonicalizes its unknown protocol state. The reset implementation must
+    complete each participant's earlier interface work before publishing
+    arrival. Storage reuse is permitted only after the reset. This does not
+    validate the callee's internal queue protocol.
+
+    Every action declared by `dfb_effects` must occur before the call returns.
+    Interface work still active after return must remain ordered by the
+    declared protocol and complete before its terminal consumer release or a
+    synchronized reset. Work that can outlive that terminal must leave the
+    affected DFB dependency opaque.
 
     `unsigned_arg_indices` identifies signless i32 operands that represent
     unsigned addresses at the C++ boundary. The lowering inserts explicit
@@ -2033,8 +2150,15 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     does not declare a call-level DFB access. If the callee consumes that index,
     the same DFB must be returned by `getDFBDependencyOperands()`.
 
-    Results are optional; when absent the call is treated as a void function
-    invocation.
+    The optional result is a signless i32 or i64 scalar. When absent the call
+    is treated as a void function invocation.
+
+    `condition_result` states that the scalar result evaluates one immutable
+    dispatch-stable condition. Calls using the same typed identity may be
+    evaluated independently in different logical kernels. Such a call cannot
+    access a DFB, declare DFB effects or non-transactional accesses, or declare
+    unknown DFB access because condition evaluation is stable and repeat-safe
+    rather than stateful.
 
     Example:
     ```mlir
@@ -2054,9 +2178,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<ArrayAttr>:$template_args,
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
-    UnitAttr:$unknown_dfb_access
+    OptionalAttr<TTL_DFBNonTransactionalAccessArrayAttr>:$dfb_accesses,
+    UnitAttr:$unknown_dfb_access,
+    OptionalAttr<TTL_DispatchConditionAttr>:$condition_result
   );
-  let results = (outs Variadic<AnyType>);
+  let results = (outs Optional<AnyTypeOf<[I32, I64]>>:$result);
   let assemblyFormat = [{
     $callee (`template_args` $template_args^)?
     (`template_dfbs` `(` $template_dfb_operands^ `:`
@@ -2064,6 +2190,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     (`dfb_dependencies` `(` $dependency_dfb_operands^ `:`
      type($dependency_dfb_operands) `)`)?
     (`dfb_effects` $dfb_effects^)?
+    (`dfb_accesses` $dfb_accesses^)?
     ` ` `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
@@ -2091,21 +2218,22 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
 def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
      TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface]> {
-  let summary = "Store a tile into a circular buffer view";
+  let summary = "Store a tile into an acquired dataflow buffer view";
   let description = [{
-    `ttl.tile_store` packs a single tile from the DST register into a circular
-    buffer view obtained from `ttl.cb_reserve`. This is the tile-level form of
-    `ttl.store`, created by `convert-ttl-to-compute` from the tensor-level store.
+    `ttl.tile_store` packs a single tile from the DST register into a dataflow
+    buffer view obtained from `ttl.cb_reserve` or `ttl.cb_wait`. This is the
+    tile-level form of `ttl.store`.
 
-    The tile value typically comes from compute operations (e.g., tile_add,
-    tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
-    same CB.
+    A `producer` store packs into producer-reserved pages. A
+    `consumer_replacement` store packs into waited pages without changing
+    occupancy or either dataflow buffer pointer. The latter is valid only when
+    the original generation has been read, the complete one-block DFB is
+    acquired, and all replacement reads precede the matching pop. `store_kind`
+    preserves this typed ownership decision when the view is replaced or
+    sliced.
 
-    The `indices` operands are multi-dimensional CB tile coordinates derived
-    from `ttl.iter_index` ops and the output indexing map. They are populated
-    by `ttl-assign-dst` inside the `ttl.compute` body and resolved to concrete
-    loop IVs by `ttl-lower-to-loops`. At `convert-ttl-to-ttkernel` time, the
-    indices are linearized to a flat CB tile index for `pack_tile`.
+    The `indices` operands are multi-dimensional DFB tile coordinates. The
+    `dst_index` operand identifies the source tile in the DST register.
 
     Example:
     ```mlir
@@ -2125,7 +2253,9 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     AnyType:$tile,
     AnyRankedTensor:$view,
     Variadic<Index>:$indices,
-    Index:$dst_index
+    Index:$dst_index,
+    DefaultValuedAttr<TTL_DFBTileStoreKindAttr,
+      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

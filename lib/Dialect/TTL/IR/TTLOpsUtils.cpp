@@ -269,6 +269,12 @@ getDefaultLegalTileExecutionStrategies(Operation *operation) {
   return strategies;
 }
 
+static bool hasDstBackedTileProducer(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  return definingOp &&
+         (isTileComputeOp(definingOp) || isa<DstIndexOp>(definingOp));
+}
+
 FailureOr<TileExecutionInfo>
 getDefaultTileExecutionInfo(Operation *operation,
                             std::optional<TileExecutionStrategy> strategy) {
@@ -350,10 +356,13 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.accumulatesIntoDst = true;
     return info;
   }
-  if (isa<TileAccumulateOp>(operation)) {
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(operation)) {
     info.primitive = TilePrimitive::ElementwiseBinary;
     info.operandRoutes[0] = TileOperandRoute::Dst;
-    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] =
+        hasDstBackedTileProducer(accumulate.getContribution())
+            ? TileOperandRoute::Dst
+            : TileOperandRoute::DataflowBuffer;
     info.accumulatesIntoDst = true;
     return info;
   }
@@ -546,21 +555,21 @@ std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
 
 FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
                                                   int64_t rank) {
-  if (rank != 2) {
+  if (rank < 2) {
     return failure();
   }
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
   // TTKernel names the surviving orientation: reducing height uses a column
   // reduction, while reducing width uses a row reduction.
-  bool reducesHeight = normalizedDims.contains(0);
-  bool reducesWidth = normalizedDims.contains(1);
-  if (reducesHeight && reducesWidth) {
+  bool reducesSecondInnermost = normalizedDims.contains(rank - 2);
+  bool reducesInnermost = normalizedDims.contains(rank - 1);
+  if (reducesSecondInnermost && reducesInnermost) {
     return ttkernel::ReduceDim::Scalar;
   }
-  if (reducesHeight) {
+  if (reducesSecondInnermost) {
     return ttkernel::ReduceDim::Col;
   }
-  if (reducesWidth) {
+  if (reducesInnermost) {
     return ttkernel::ReduceDim::Row;
   }
   return failure();
@@ -774,8 +783,10 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileMatmulBlockOp>(op)) {
     return TileOpCategory::FPUBinary;
   }
-  if (isa<TileAccumulateOp>(op)) {
-    return TileOpCategory::FPUBinary;
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(op)) {
+    return hasDstBackedTileProducer(accumulate.getContribution())
+               ? TileOpCategory::SFPUBinary
+               : TileOpCategory::FPUBinary;
   }
   if (isa<TileTransposeOp>(op)) {
     return TileOpCategory::Transpose;

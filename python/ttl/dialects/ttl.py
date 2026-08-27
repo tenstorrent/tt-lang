@@ -24,7 +24,12 @@ def ensure_dialects_registered(ctx):
 # Re-export C++-bound attributes/types for convenience.
 SliceAttr = ir.SliceAttr
 LogicalKernelAttr = ir.LogicalKernelAttr
+DispatchConditionAttr = ir.DispatchConditionAttr
+DFBAllocationGroupAttr = ir.DFBAllocationGroupAttr
+SynchronizedDFBResetAttr = ir.SynchronizedDFBResetAttr
+DFBReconfigurationAttr = ir.DFBReconfigurationAttr
 DFBProtocolEffectAttr = ir.DFBProtocolEffectAttr
+DFBNonTransactionalAccessAttr = ir.DFBNonTransactionalAccessAttr
 TensorBackingAttr = ir.TensorBackingAttr
 PipeRecordAttr = ir.PipeRecordAttr
 PipeNetRecordsAttr = ir.PipeNetRecordsAttr

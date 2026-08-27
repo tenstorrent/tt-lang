@@ -98,12 +98,12 @@ func.func @dfb_nested_seed_accumulate_existing_scope(
 
 // CHECK-LABEL: func.func @guarded_seed_accumulate_existing_scope
 // CHECK: %[[COND:.*]] = arith.constant true
-// CHECK: %[[VIEW:.*]] = scf.if %[[COND]]
+// CHECK: scf.if %[[COND]]
+// CHECK: %[[RESERVE:.*]] = ttl.cb_reserve
 // CHECK:   ttl.store
-// CHECK: ttl.accumulation_scope outs(%[[VIEW]]
+// CHECK: ttl.accumulation_scope outs(%[[RESERVE]]
 // CHECK:   scf.for
-// CHECK:     scf.if %[[COND]]
-// CHECK:       ttl.store
+// CHECK:     ttl.store
 // CHECK: } initial_modes([accumulate_existing])
 func.func @guarded_seed_accumulate_existing_scope(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -117,18 +117,11 @@ func.func @guarded_seed_accumulate_existing_scope(
   %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %init = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %input = ttl.attach_cb %arg1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %view = scf.if %condition -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  scf.if %condition {
     %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %attached = ttl.attach_cb %reserve, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %init, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-    scf.yield %attached : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  } else {
-    %inactive = "builtin.unrealized_conversion_cast"() {ttl.inactive_guarded_dfb} : () -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    scf.yield %inactive : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  }
-  scf.for %iv = %c0 to %c4 step %c1 {
-    scf.if %condition {
-      ttl.store %input, %view {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.for %iv = %c0 to %c4 step %c1 {
+      ttl.store %input, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
   }
   func.return

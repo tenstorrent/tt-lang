@@ -126,12 +126,16 @@ def TTLFormPipeTransports
 
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
-    bytes. Selection counts the widened intermediate DFB types, a conservative
-    receiver-published address table, and the required transport scratch
-    against the same L1 budget used by `ttl-validate-cb-budget`.
-    `group-size = 1` disables grouping. A larger value is an upper bound; the
-    pass selects a smaller group when required by the loop trip count or L1
-    capacity. Ineligible loops retain scalar transfer IR.
+    bytes. Selection uses a target-aligned DFB allocation and a conservative
+    upper bound for PipeNet address storage, scratch, GlobalSemaphore counters,
+    record-selected callback resources, synchronized-reset scratch, and DFB
+    reconfiguration state. `group-size = 1` disables grouping but still
+    validates the combined allocation and records the conservative reservation
+    for physical DFB allocation. A larger value is an upper bound; the pass
+    selects a smaller group when the loop trip count or L1 capacity requires
+    it. Ineligible loops retain scalar transfer IR. After PipeNet lowering
+    chooses exact resources, `convert-ttl-to-ttkernel` validates the
+    authoritative combined per-core allocation.
   }];
 
   let options = [
@@ -139,7 +143,8 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the L1 DFB budget in bytes for transport selection.">
+           "Override the combined per-core L1 budget in bytes for "
+           "transport selection.">
   ];
 
   let dependentDialects = [
@@ -323,20 +328,28 @@ def TTLLowerAccumulationScopes
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
+  let summary = "Lower TTL data movement, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel";
   let description = [{
-    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
-    and semaphore operations. PipeNet lowering selects receiver-published or
+    Converts TTL DFB, copy, wait, PipeNet, synchronized-reset, and DFB
+    reconfiguration operations to TTKernel DFB, NoC, semaphore, and external
+    interface operations. PipeNet lowering selects receiver-published or
     computed destination addresses and receiver-post or capacity-counter
     synchronization according to the pass options and transfer eligibility.
     PipeNet counters use local semaphore ids before GlobalSemaphore storage by
     default; the global-only option preserves all local semaphore ids for
     application use.
 
+    The pass validates finalized DFB backing plus the exact PipeNet and
+    synchronized-reset scratch and DFB reconfiguration state against the
+    selected per-core L1 budget before lowering the operations.
+
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     exact launch-node domains, and single-block event regions required by
-    protocol planning.
+    protocol planning. After planning, this pass validates the authoritative
+    per-core L1 footprint: target-aligned finalized DFB allocations,
+    synchronized-reset state, reconfiguration tensors, PipeNet scratch, and
+    GlobalSemaphore allocations.
   }];
 
   let options = [
@@ -359,7 +372,10 @@ def TTLConvertTTLToTTKernel
            "bool", "false",
            "Allocate all compiler-managed PipeNet synchronization counters "
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
-           "available to the application.">
+           "available to the application.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the per-core L1 budget used for finalized DFB and "
+           "scratch validation. 0 selects the target budget.">
   ];
 
   let dependentDialects = [
@@ -615,14 +631,16 @@ def TTLAssignDST
 }
 
 def TTLSetComputeKernelConfig
-    : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
+    : Pass<"ttl-set-compute-kernel-config", "::mlir::ModuleOp"> {
   let summary = "Resolve compute-kernel configuration";
   let description = [{
     Selects tile execution strategies and resolves kernel-wide destination
     element width, synchronization mode, and per-dataflow-buffer unpack mode.
     Target capabilities, user policy, and target-independent kernel
     requirements are analyzed separately. The pass validates a complete
-    configuration before writing operation or function attributes.
+    configuration for every function before writing operation or function
+    attributes. Module scope provides one immutable launch-domain snapshot and
+    a transformation barrier before destination assignment mutates functions.
   }];
 
   let options = [
@@ -1001,7 +1019,18 @@ def TTLLowerDPrintToEmitC
     device debug print calls. Resolves CB indices, DST register slots,
     and data formats from the IR. Runs before convert-ttl-to-ttkernel
     so that DST assignments and CB annotations are still available.
+
+    Circular-buffer, tile, and CB-backed tensor prints keep an i32
+    `ttkernel.get_compile_time_arg_val` use as an `emitc.verbatim` operand
+    instead of baking the index into C++ text. `ttkernel-annotate-dfb-use`
+    can then drop prints whose DFB has no remaining non-print use on a
+    specialized core.
   }];
+
+  let dependentDialects = [
+    "::mlir::emitc::EmitCDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
 }
 
 def TTLLowerSignpostToEmitC
@@ -1030,13 +1059,65 @@ def TTLFinalizeDFBIndices
     later analyses can distinguish DFBs that share one hardware slot.
 
     With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
-    including declarations shared across kernels. Reuse requires exact
-    `CircularBufferType` equality, equal transaction tile counts that divide
-    the DFB capacity, and identical read- and write-pointer processors on each
-    launch node. These requirements preserve hardware counter and ring-pointer
-    state. A logical DFB without an exact single lifecycle or a proven lifetime
-    order conflicts with every other DFB. Unsupported or unknown control flow
-    can reduce reuse but cannot produce an unsafe physical assignment.
+    including declarations shared across kernels. Within one configuration
+    epoch, reuse requires exact `CircularBufferType` equality, equal transaction
+    tile counts that divide the DFB capacity, and identical read- and
+    write-pointer processors on each launch node. These requirements preserve
+    hardware counter and ring-pointer state. Logical DFBs active only in
+    disjoint synchronized configuration epochs may share a physical index with
+    different geometry or storage. A DFB with live protocol state crosses a
+    reconfiguration unchanged and remains active in every epoch it spans, so
+    its physical index cannot be reassigned at those boundaries.
+
+    One unresolved structured condition is supported when every active DFB
+    access belongs to one reserve, push, wait, and pop transaction controlled
+    by equivalent `scf.if` or `affine.if` frames. Branch polarity, nesting, and
+    control values must match. Within one kernel function, ordinary SSA
+    equality can establish equivalence. Separately evaluated `scf.if`
+    conditions can match across logical kernels when every unresolved frame is
+    a structurally equal expression rooted in the same typed dispatch-condition
+    identities at the same launch coordinate. Untyped evaluations, mixed typed
+    and untyped nesting, and unresolved loops remain conservative. A logical
+    DFB without a matched lifecycle or a proven lifetime order conflicts with
+    every other DFB.
+
+    Explicit allocation groups may reuse one physical index across
+    reset-delimited epochs from different logical DFBs. Every pair of active
+    epochs on a launch node must have one strict proven order. Each adjacent
+    handoff must either follow a reset that establishes canonical pointer state
+    or preserve both pointer owners. The allocator simulates every epoch's
+    transaction sequence against the group's physical capacity envelope and
+    rejects boundary crossings or unequal read and write offsets. This
+    epoch-level contract applies only to explicit allocation groups; automatic
+    reuse continues to compare complete logical-DFB lifetimes.
+
+    Two DFBs used by one compute kernel may share a physical index only when
+    every target-supported destination width assigns compatible static unpack
+    modes to that index. This constraint is added to the conflict graph before
+    coloring.
+
+    `unsafe-assume-allocation-groups` applies only to explicit allocation
+    groups. It permits missing launch-domain, access-completion,
+    pointer-handoff, and lifetime-order proofs while preserving page-format,
+    storage, static compute-configuration, ring-envelope, target-capacity, and
+    L1-budget
+    validation. Each group accepted this way emits a warning and is recorded
+    in `ttl.assumed_dfb_allocation_groups`. Automatic DFB reuse remains
+    proof-based. The option is disabled by default.
+
+    An access whose launch domain is otherwise unknown is refined to an exact
+    domain when execution-count analysis proves a count on every base launch
+    node. Nodes with positive counts belong to the domain; nodes with zero
+    counts do not. The logical DFB domain is exact only when every access has an
+    exact domain. A logical DFB is inactive when the union of all its access
+    domains is empty. An inactive scratch DFB may share a compatible physical
+    descriptor without a lifetime-order proof because no launched node accesses
+    it. Tensor-backed empty domains retain their existing allocation diagnostic.
+    Operations proven to execute zero times on every launch node do not impose
+    runtime compute-configuration requirements, but strategy-dependent tile
+    operations still receive a strategy required by later lowering. Unknown
+    execution remains configuration-constraining. The subsequent compute
+    configuration pass uses the same exact-empty proof.
 
     The allocator represents each logical DFB as a vertex, each pair that
     cannot share as an edge, and each physical index as a color. First-fit
@@ -1048,20 +1129,52 @@ def TTLFinalizeDFBIndices
     Exhaustive assignment search can grow exponentially, so it runs only when
     first-fit prevents acceptance and the pairwise-conflict lower bound does
     not already prove failure. The physical-index check asks directly whether
-    an assignment fits the available indices. Minimum physical-index-count
-    search runs only when an otherwise valid assignment exceeds the L1 budget.
+    an assignment fits the available indices. When first-fit exceeds the
+    DFB-plus-fixed-state L1 budget, or the provisional threshold after a
+    conservative PipeNet reservation, weighted search asks whether another
+    assignment fits using the sum of the target-aligned maximum allocation
+    assigned to each physical index. The reservation triggers search but cannot
+    make finalization reject an assignment that satisfies the authoritative
+    budget. Conversion validates the finalized allocation against exact PipeNet
+    resources.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
-    allocation diagnostic; it does not report that hardware capacity was
+    allocation diagnostic only when acceptance requires the search result. A
+    reservation-only search may retain an authoritative-budget-valid first-fit
+    assignment. Limit exhaustion does not report that hardware capacity was
     proved insufficient.
+
+    An assertions-enabled build accepts
+    `-debug-only=ttl-finalize-dfb-indices` to print the immutable liveness facts
+    and typed conflicts before allocation succeeds or fails. The report includes
+    logical descriptors, access domains, protocol effects, exact execution
+    counts, transaction sizes, pointer owners, lifetime frontiers, and conflict
+    evidence. Lifecycle epochs identify every configuration in which live state
+    must be retained. Lifetime frontiers use access-occurrence indices that map
+    to the report's numbered access records. For an unknown launch-node domain,
+    it separately labels a possible-domain per-node analysis that treats unknown
+    accesses as possible while preserving exact-zero inactivity. It may
+    establish conditional boundedness only for one complete transaction whose
+    active accesses share one structured at-most-once condition on every
+    possible node. Reuse remains restricted to two conditionally bounded
+    unknown-domain DFBs with matching transactions, pointer owners, and
+    possible-domain lifetime order. Per-access counts and lifetime-frontier
+    indices remain report-only. If node-dependent IR has no launch grid, the
+    report retains logical DFB and access facts but omits per-node rows because
+    no base launch nodes are available.
 
     Every storage-accessing operation with a direct DFB operand is treated as a
     runtime access from operation entry through completion. Every direct DFB
-    operand of `ttl.opaque_call` is a possible read or write; both require the
-    same storage-liveness interval. Identity-only `ttl.attach_cb` and
+    operand of `ttl.opaque_call` is a possible read or write unless a typed
+    summary describes that dependency occurrence. An `inspect` access is
+    bounded by the call and contributes no queue-state transition because the
+    callee does not publish, consume, or leave the DFB changed. Its storage
+    lifetime must still be strictly ordered relative to another logical DFB on
+    the same physical index. Identity-only `ttl.attach_cb` and
     `ttl.get_dfb_id` operations do not access storage. An external call whose
     C++ body implements the DFB protocol does not provide the visible reserve,
-    push, wait, and pop operations required to prove a bounded lifecycle.
+    push, wait, and pop operations required to prove a bounded lifecycle unless
+    it supplies exact typed protocol effects.
 
     Disabling `reuse-user-dfbs` compacts distinct provisional user indices
     without introducing new sharing between user DFBs, then assigns only
@@ -1087,45 +1200,57 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices for logical DFBs with proven "
            "non-overlapping lifetimes across concurrent kernels.">,
+    Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
+           "bool", "false",
+           "Trust explicit DFB allocation groups when runtime handoff cannot "
+           "be proven. Emits warnings and assumption metadata.">,
     Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
            "uint64_t", "1000000",
            "Maximum states examined by exact DFB allocation before reporting "
-           "an inconclusive result.">
+           "an inconclusive result.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the per-core L1 budget used by DFB allocation and "
+           "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }
 
 def TTLValidateCBBudget
     : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
-  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
-    circular buffer declared in the module and compares against a per-core
-    L1 budget.
+    `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
+    static backing-store size per physical DFB index, allocator-rounded
+    synchronized-reset state, and one target-aligned configuration tensor per
+    synchronized reconfiguration boundary. Tensor-backed DFB storage is
+    excluded because the tensor allocator owns that allocation.
 
     For each `BindCBOp`, the pass computes:
-      cb_bytes = total_elements * tile_size_bytes
+      dfb_payload_bytes = total_elements * tile_size_bytes
+      dfb_allocation_bytes = align_to_target_quantum(dfb_payload_bytes)
 
     When the same `cb_index` appears in multiple functions (e.g. compute
-    and data-movement kernels sharing a CB slot), only the largest
-    allocation for that index is counted.
+    and data-movement kernels sharing a DFB slot), only the largest allocation
+    for that index is counted.
 
-    On overflow the pass emits an error with a per-CB breakdown and a
+    On overflow the pass emits an error with a per-DFB breakdown and a
     hint to reduce block shapes or block counts.
 
     L1 budget is taken from the module's TTCore system descriptor and
     default device when present (`ChipDescAttr::getUsableL1Size()` for the
     selected chip). When the module has no system descriptor, the pass uses
-    the same static per-core CB region limit as Wormhole and Blackhole
+    the same static per-core DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    This is a static "CB region vs budget" check. It does not model
-    other L1 consumers (kernel binaries, stack, runtime buffers).
+    This is a static DFB and fixed-state check. Pipe transport formation and
+    final conversion validate the same backing together with PipeNet, reset,
+    semaphore, and reconfiguration resources. These checks do not model kernel
+    binaries, stacks, or unrelated runtime allocations.
   }];
 
   let options = [
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override L1 CB budget (bytes). 0 means auto-detect from "
+           "Override L1 DFB budget (bytes). 0 means auto-detect from "
            "device attributes or use architecture default.">
   ];
 }
@@ -1336,6 +1461,37 @@ def TTKernelSpecializeCores
     "::mlir::arith::ArithDialect",
     "::mlir::func::FuncDialect"
   ];
+}
+
+def TTKernelAnnotateDFBUse
+    : Pass<"ttkernel-annotate-dfb-use", "::mlir::ModuleOp"> {
+  let summary = "Record physical DFB indices used by each TTKernel function";
+  let description = [{
+    Runs after per-core specialization and canonicalization.
+    For each `ttkernel.thread` function, records the
+    sorted physical DFB indices reached through surviving
+    `ttkernel.get_compile_time_arg_val` operations below
+    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
+    call-graph analysis so their uses propagate to kernel entries.
+    Declarations are not annotated. The compile-time ABI places
+    every DFB before tensor-accessor arguments, including DFB ids passed to
+    opaque externs as scalar values.
+
+    Calls are resolved through the MLIR call graph. Uses are propagated from
+    callees to callers in SCC order, including recursive calls. An unknown or
+    external callee is handled conservatively by recording every DFB
+    compile-time argument below `ttl.base_cta_index`.
+
+    Print-only `get_compile_time_arg_val` operations (those whose only users
+    are `emitc.verbatim` debug prints, through unrealized casts) are excluded
+    from the recorded set. After call-graph propagation, those prints are
+    erased when the function does not otherwise use that DFB index. Keeping
+    them would require allocating the DFB on a specialized core that no
+    longer uses it. Debug prints of a DFB remain on functions that still
+    have a non-print use of it, including uses inherited from callees.
+  }];
+
+  let dependentDialects = [];
 }
 
 def TTKernelCombinePackTiles

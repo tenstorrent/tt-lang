@@ -92,6 +92,7 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
 
 static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
   return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
+         isa<ResetDFBsOp, ResetAllDFBsOp>(operation) ||
          !mayAccessDFBStorage(operation);
 }
 

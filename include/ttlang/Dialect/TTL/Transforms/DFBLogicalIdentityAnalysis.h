@@ -24,6 +24,9 @@ struct DFBLogicalIdentityAssignment {
 
   /// Module-wide identity shared by declarations of the same logical DFB.
   int64_t logicalId = 0;
+
+  /// Optional compiler-verified physical-allocation identity.
+  DFBAllocationGroupAttr allocationGroup;
 };
 
 /// Resolves the module-wide logical identity of every DFB declaration.

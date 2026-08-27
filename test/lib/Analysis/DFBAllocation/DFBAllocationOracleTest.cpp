@@ -26,9 +26,12 @@ namespace {
 
 using mlir::tt::ttl::ExactInterferenceGraphColoring;
 using mlir::tt::ttl::ExactInterferenceGraphColoringStatus;
+using mlir::tt::ttl::ExactInterferenceGraphWeightColoring;
+using mlir::tt::ttl::ExactInterferenceGraphWeightStatus;
 using mlir::tt::ttl::InterferenceGraph;
 using mlir::tt::ttl::InterferenceGraphColorLimitResult;
 using mlir::tt::ttl::InterferenceGraphColorLimitStatus;
+using mlir::tt::ttl::InterferenceGraphWeightLimitResult;
 
 constexpr uint64_t kUnlimitedSearchStates =
     std::numeric_limits<uint64_t>::max();
@@ -219,6 +222,60 @@ static bool verifyColoring(const InterferenceGraph &graph,
     }
   }
   return true;
+}
+
+/// Enumerates every legal assignment and returns its minimum sum of maximum
+/// vertex weight per used color.
+static void oracleMinimumAllocationWeight(
+    const InterferenceGraph &graph, llvm::ArrayRef<uint64_t> vertexWeights,
+    llvm::MutableArrayRef<unsigned> colors,
+    llvm::MutableArrayRef<uint64_t> colorWeights, unsigned vertex,
+    unsigned colorLimit, uint64_t currentWeight, uint64_t &minimumWeight) {
+  if (vertex == graph.size()) {
+    minimumWeight = std::min(minimumWeight, currentWeight);
+    return;
+  }
+  for (unsigned color = 0; color < colorLimit; ++color) {
+    bool permitted = true;
+    for (unsigned otherVertex = 0; otherVertex < vertex; ++otherVertex) {
+      if (colors[otherVertex] == color &&
+          graph.interferes(vertex, otherVertex)) {
+        permitted = false;
+        break;
+      }
+    }
+    if (!permitted) {
+      continue;
+    }
+    uint64_t previousColorWeight = colorWeights[color];
+    uint64_t updatedColorWeight =
+        std::max(previousColorWeight, vertexWeights[vertex]);
+    uint64_t addedWeight = updatedColorWeight - previousColorWeight;
+    if (addedWeight > minimumWeight - currentWeight) {
+      continue;
+    }
+    colors[vertex] = color;
+    colorWeights[color] = updatedColorWeight;
+    oracleMinimumAllocationWeight(graph, vertexWeights, colors, colorWeights,
+                                  vertex + 1, colorLimit,
+                                  currentWeight + addedWeight, minimumWeight);
+    colors[vertex] = std::numeric_limits<unsigned>::max();
+    colorWeights[color] = previousColorWeight;
+  }
+}
+
+static uint64_t
+oracleMinimumAllocationWeight(const InterferenceGraph &graph,
+                              llvm::ArrayRef<uint64_t> vertexWeights,
+                              unsigned colorLimit) {
+  llvm::SmallVector<unsigned> colors(graph.size(),
+                                     std::numeric_limits<unsigned>::max());
+  llvm::SmallVector<uint64_t> colorWeights(colorLimit);
+  uint64_t minimumWeight = std::numeric_limits<uint64_t>::max();
+  oracleMinimumAllocationWeight(graph, vertexWeights, colors, colorWeights,
+                                /*vertex=*/0, colorLimit,
+                                /*currentWeight=*/0, minimumWeight);
+  return minimumWeight;
 }
 
 /// Compares minimum and fixed-limit production queries against exhaustive
@@ -418,6 +475,121 @@ static bool verifyFixedLimitAvoidsMinimumSearch() {
   return true;
 }
 
+/// Verifies that disconnected epoch components coordinate color permutations
+/// to minimize the combined maximum allocation per physical index.
+static bool verifyWeightedColoringAcrossComponents() {
+  InterferenceGraph graph(4);
+  graph.addInterference(0, 1);
+  graph.addInterference(2, 3);
+  constexpr std::uint64_t weights[] = {100, 1, 1, 100};
+  InterferenceGraphWeightLimitResult exactFit =
+      mlir::tt::ttl::colorInterferenceGraphWithinWeightLimitExactly(
+          graph, weights, /*colorLimit=*/2, /*weightLimit=*/101,
+          kUnlimitedSearchStates);
+  InterferenceGraphWeightLimitResult belowFit =
+      mlir::tt::ttl::colorInterferenceGraphWithinWeightLimitExactly(
+          graph, weights, /*colorLimit=*/2, /*weightLimit=*/100,
+          kUnlimitedSearchStates);
+  InterferenceGraphWeightLimitResult limited =
+      mlir::tt::ttl::colorInterferenceGraphWithinWeightLimitExactly(
+          graph, weights, /*colorLimit=*/2, /*weightLimit=*/101,
+          /*searchStateLimit=*/1);
+  constexpr unsigned firstFitColors[] = {0, 1, 0, 1};
+  ExactInterferenceGraphWeightColoring minimum =
+      mlir::tt::ttl::colorInterferenceGraphMinimumWeightExactly(
+          graph, weights, /*colorLimit=*/2, firstFitColors,
+          kUnlimitedSearchStates);
+  ExactInterferenceGraphWeightColoring minimumLimited =
+      mlir::tt::ttl::colorInterferenceGraphMinimumWeightExactly(
+          graph, weights, /*colorLimit=*/2, firstFitColors,
+          /*searchStateLimit=*/1);
+  if (!exactFit.isFeasible() || exactFit.colorCount != 2 ||
+      exactFit.colors[0] != exactFit.colors[3] ||
+      exactFit.colors[1] != exactFit.colors[2] ||
+      belowFit.status != InterferenceGraphColorLimitStatus::Infeasible ||
+      limited.status != InterferenceGraphColorLimitStatus::SearchLimitReached ||
+      !minimum.isOptimal() || minimum.allocationWeight != 101 ||
+      minimum.colors[0] != minimum.colors[3] ||
+      minimum.colors[1] != minimum.colors[2] ||
+      minimumLimited.status !=
+          ExactInterferenceGraphWeightStatus::SearchLimitReached) {
+    llvm::errs() << "weighted coloring witness mismatch\n";
+    return false;
+  }
+  return true;
+}
+
+/// Compares the weighted optimizer with exhaustive enumeration for every
+/// four-vertex graph, small weight tuple, and feasible color limit.
+static bool compareWeightedSolverWithOracle() {
+  constexpr unsigned kVertexCount = 4;
+  constexpr unsigned kGraphCount = 1U << 6;
+  constexpr unsigned kWeightValueCount = 3;
+  constexpr unsigned kWeightTupleCount = kWeightValueCount * kWeightValueCount *
+                                         kWeightValueCount * kWeightValueCount;
+  uint64_t checkedCaseCount = 0;
+  for (unsigned edgeMask = 0; edgeMask < kGraphCount; ++edgeMask) {
+    InterferenceGraph graph = buildGraph(kVertexCount, edgeMask);
+    unsigned minimumColorCount = oracleMinimumIndexCount(graph);
+    for (unsigned encodedWeights = 0; encodedWeights < kWeightTupleCount;
+         ++encodedWeights) {
+      unsigned remainingWeights = encodedWeights;
+      llvm::SmallVector<uint64_t> weights;
+      for (unsigned vertex = 0; vertex < kVertexCount; ++vertex) {
+        weights.push_back(1 + remainingWeights % kWeightValueCount);
+        remainingWeights /= kWeightValueCount;
+      }
+      for (unsigned colorLimit = minimumColorCount; colorLimit <= kVertexCount;
+           ++colorLimit) {
+        InterferenceGraphColorLimitResult initial =
+            mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+                graph, colorLimit, kUnlimitedSearchStates);
+        ExactInterferenceGraphWeightColoring production =
+            mlir::tt::ttl::colorInterferenceGraphMinimumWeightExactly(
+                graph, weights, colorLimit, initial.colors,
+                kUnlimitedSearchStates);
+        uint64_t expected =
+            oracleMinimumAllocationWeight(graph, weights, colorLimit);
+        if (!initial.isFeasible() || !production.isOptimal() ||
+            production.allocationWeight != expected ||
+            !verifyColoring(graph, production.colors, production.colorCount)) {
+          llvm::errs() << "weighted solver mismatch: edge_mask=" << edgeMask
+                       << " encoded_weights=" << encodedWeights
+                       << " color_limit=" << colorLimit
+                       << " oracle=" << expected
+                       << " production=" << production.allocationWeight << "\n";
+          return false;
+        }
+        ++checkedCaseCount;
+      }
+    }
+  }
+
+  InterferenceGraph independentPair(2);
+  constexpr uint64_t overflowingWeights[] = {
+      std::numeric_limits<uint64_t>::max(),
+      std::numeric_limits<uint64_t>::max()};
+  constexpr unsigned separateColors[] = {0, 1};
+  ExactInterferenceGraphWeightColoring representable =
+      mlir::tt::ttl::colorInterferenceGraphMinimumWeightExactly(
+          independentPair, overflowingWeights, /*colorLimit=*/2, separateColors,
+          kUnlimitedSearchStates);
+  independentPair.addInterference(0, 1);
+  ExactInterferenceGraphWeightColoring overflow =
+      mlir::tt::ttl::colorInterferenceGraphMinimumWeightExactly(
+          independentPair, overflowingWeights, /*colorLimit=*/2, separateColors,
+          kUnlimitedSearchStates);
+  if (!representable.isOptimal() ||
+      representable.allocationWeight != std::numeric_limits<uint64_t>::max() ||
+      overflow.status !=
+          ExactInterferenceGraphWeightStatus::AllocationWeightOverflow) {
+    llvm::errs() << "weighted overflow handling mismatch\n";
+    return false;
+  }
+  llvm::outs() << "weighted_solver_cases=" << checkedCaseCount << "\n";
+  return true;
+}
+
 /// Exhaustively measures the assignment-count penalty of uniform assignment
 /// relative to per-node and two-group contracts.
 static bool compareAssignmentContracts() {
@@ -481,6 +653,8 @@ int main() {
                  verifyGreedyCapacityReproducer() &&
                  verifySearchLimitOutcome() &&
                  verifyFixedLimitAvoidsMinimumSearch() &&
+                 verifyWeightedColoringAcrossComponents() &&
+                 compareWeightedSolverWithOracle() &&
                  verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0

@@ -437,9 +437,7 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
-/// Lower in-place tile accumulation to the TTKernel operation that reuses the
-/// destination register as one binary operand. The contribution is read
-/// directly from its dataflow buffer.
+/// Lowers tile accumulation while preserving the accumulator DST index.
 struct TTLTileAccumulateToTTKernel : OpConversionPattern<TileAccumulateOp> {
   TTLTileAccumulateToTTKernel(const TypeConverter &typeConverter,
                               MLIRContext *ctx)
@@ -448,16 +446,49 @@ struct TTLTileAccumulateToTTKernel : OpConversionPattern<TileAccumulateOp> {
   LogicalResult
   matchAndRewrite(TileAccumulateOp op, TileAccumulateOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (op.getCombiner() != AccumulationCombiner::Add) {
-      return rewriter.notifyMatchFailure(op, "unsupported combiner");
-    }
-
     Location loc = op.getLoc();
     FailureOr<Value> accumulatorDst =
         getSrcDstIndex(op.getAccumulator(), loc, rewriter);
     if (failed(accumulatorDst)) {
       return rewriter.notifyMatchFailure(
           op, "failed to extract dst_index from accumulator");
+    }
+
+    FailureOr<Value> contributionDst =
+        getSrcDstIndex(op.getContribution(), loc, rewriter);
+    if (succeeded(contributionDst)) {
+      switch (op.getCombiner()) {
+      case AccumulationCombiner::Add:
+        if (isIntegerTileType(op.getResult().getType())) {
+          auto tileType = cast<ttcore::TileType>(op.getResult().getType());
+          auto dataTypeAttr = ttcore::DataTypeAttr::get(rewriter.getContext(),
+                                                        tileType.getDataType());
+          ttk::AddIntTileOp::create(rewriter, loc, *accumulatorDst,
+                                    *contributionDst, *accumulatorDst,
+                                    dataTypeAttr);
+        } else {
+          ttk::AddBinaryTilesOp::create(rewriter, loc, *accumulatorDst,
+                                        *contributionDst, *accumulatorDst);
+        }
+        break;
+      case AccumulationCombiner::Max:
+        if (isIntegerTileType(op.getResult().getType())) {
+          ttk::BinaryMaxInt32TileOp::create(rewriter, loc, *accumulatorDst,
+                                            *contributionDst, *accumulatorDst);
+        } else {
+          ttk::BinaryMaxTileOp::create(rewriter, loc, *accumulatorDst,
+                                       *contributionDst, *accumulatorDst);
+        }
+        break;
+      }
+
+      rewriter.replaceOp(op, adaptor.getAccumulator());
+      return success();
+    }
+
+    if (op.getCombiner() != AccumulationCombiner::Add) {
+      return rewriter.notifyMatchFailure(
+          op, "DFB-backed tile accumulation only supports add");
     }
 
     auto funcOp = op->getParentOfType<func::FuncOp>();

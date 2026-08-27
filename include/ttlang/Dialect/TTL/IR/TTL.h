@@ -152,6 +152,15 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 /// Module attribute containing one runtime descriptor per physical DFB index.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
+/// Module attribute identifying allocation groups accepted by an unsafe
+/// user-supplied handoff assumption.
+constexpr llvm::StringLiteral
+    kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
+
+/// Module attribute containing physical DFB configuration-epoch metadata.
+constexpr llvm::StringLiteral
+    kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
@@ -159,6 +168,11 @@ constexpr llvm::StringLiteral
     kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
 constexpr llvm::StringLiteral
     kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
+constexpr llvm::StringLiteral
+    kPipeConservativeL1BytesAttrName("ttl.pipe_conservative_l1_bytes");
+
+/// Module attribute carrying the number of synchronized DFB resets.
+constexpr llvm::StringLiteral kDFBResetCountAttrName("ttl.dfb_reset_count");
 
 /// Function attribute listing receiver DFB indices whose L1 base addresses are
 /// passed after tensor buffer addresses as common runtime arguments.
@@ -173,6 +187,10 @@ constexpr llvm::StringLiteral
 /// Function attribute recording the base compile-time argument index.
 /// CTA layout is [CBs, TAs], so this equals the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
+
+/// Function attribute recording physical DFB indices referenced by the final
+/// TTKernel body after per-core specialization and canonicalization.
+constexpr llvm::StringLiteral kUsedDFBIndicesAttrName("ttl.used_dfb_indices");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>

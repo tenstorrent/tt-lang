@@ -318,7 +318,7 @@ Validation should include:
 - predictor-equivalence tests comparing the predicted per-resource sequence with
   actual TTKernel IR for sample lowerings;
 - generated-code checks that prove structural behavior, such as
-  `ttl.tile_accumulate_add` or absence of `llk_pack_reconfig_l1_acc` for
+  `ttl.tile_accumulate ... add` or absence of `llk_pack_reconfig_l1_acc` for
   DST-resident accumulation;
 - device benchmarks for ranking: DST versus L1 accumulation, fp32 matmul
   DST-versus-L1 crossover, FPU versus SFPU elementwise placement, and

@@ -34,6 +34,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "ttl-validate-cb-budget"
@@ -93,7 +94,7 @@ struct TTLValidateCBBudgetPass
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
       std::string failureReason;
       FailureOr<bool> increased =
-          footprint.add(physicalIndex, cbType, failureReason);
+          footprint.add(moduleOp, physicalIndex, cbType, failureReason);
       if (failed(increased)) {
         bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();
@@ -109,7 +110,21 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    if (footprint.empty()) {
+    FailureOr<uint64_t> resetScratchBytes =
+        getSynchronizedDFBResetStateAllocationBytes(moduleOp);
+    if (failed(resetScratchBytes)) {
+      signalPassFailure();
+      return;
+    }
+    FailureOr<uint64_t> reconfigurationStateBytes =
+        getDFBReconfigurationStateAllocationBytes(moduleOp);
+    if (failed(reconfigurationStateBytes)) {
+      signalPassFailure();
+      return;
+    }
+
+    if (footprint.empty() && *resetScratchBytes == 0 &&
+        *reconfigurationStateBytes == 0) {
       return;
     }
 
@@ -120,7 +135,25 @@ struct TTLValidateCBBudgetPass
       signalPassFailure();
       return;
     }
-    uint64_t totalBytes = *maybeTotalBytes;
+    std::optional<uint64_t> maybeDFBAndResetBytes =
+        llvm::checkedAddUnsigned(*maybeTotalBytes, *resetScratchBytes);
+    if (!maybeDFBAndResetBytes) {
+      moduleOp.emitOpError()
+          << "total DFB and fixed-state allocation size is not "
+             "representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    std::optional<uint64_t> maybeCombinedBytes = llvm::checkedAddUnsigned(
+        *maybeDFBAndResetBytes, *reconfigurationStateBytes);
+    if (!maybeCombinedBytes) {
+      moduleOp.emitOpError()
+          << "total DFB and fixed-state allocation size is not "
+             "representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    uint64_t totalBytes = *maybeCombinedBytes;
     SmallVector<int64_t> sortedIndices = footprint.getSortedPhysicalIndices();
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
@@ -136,12 +169,23 @@ struct TTLValidateCBBudgetPass
           diag << " (compiler-allocated)";
         }
       }
+      if (*resetScratchBytes > 0) {
+        diag << "\n  synchronized-reset scratch: " << *resetScratchBytes
+             << " bytes";
+      }
+      if (*reconfigurationStateBytes > 0) {
+        diag << "\n  reconfiguration state: " << *reconfigurationStateBytes
+             << " bytes";
+      }
       std::string percentage =
           formatDFBUsagePercentage(totalBytes, budgetBytes);
       diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
            << percentage << " percent)";
-      diag << "\n  hint: reduce DFB block shapes or block_count, or reduce "
+      diag << "\n  hint: reduce DFB block shapes or block_count, reduce "
               "compiler-inserted buffers (fusion splits)";
+      if (*resetScratchBytes > 0 || *reconfigurationStateBytes > 0) {
+        diag << ", or reduce synchronized-reset or reconfiguration boundaries";
+      }
     };
 
     // Anchor diagnostics on the bind for the largest per-index allocation so
@@ -161,10 +205,14 @@ struct TTLValidateCBBudgetPass
     };
 
     if (totalBytes > budgetBytes) {
-      BindCBOp reportAt = bindForLargestAllocation();
-      auto diag = reportAt.emitOpError()
-                  << "total circular buffer allocation (" << totalBytes
-                  << " bytes) exceeds L1 budget (" << budgetBytes << " bytes)";
+      InFlightDiagnostic diag = sortedIndices.empty()
+                                    ? moduleOp.emitOpError()
+                                    : bindForLargestAllocation().emitOpError();
+      diag << ((*resetScratchBytes > 0 || *reconfigurationStateBytes > 0)
+                   ? "total DFB and fixed-state allocation ("
+                   : "total DFB allocation (")
+           << totalBytes << " bytes) exceeds L1 budget (" << budgetBytes
+           << " bytes)";
       emitBreakdown(diag);
       signalPassFailure();
       return;

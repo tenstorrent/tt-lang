@@ -2,9 +2,7 @@
 // store must not be dropped. Verifies that scale * (A @ B) + bias produces
 // matmul_block followed by mul_binary_tile and add_binary_tile.
 
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-lower-to-loops,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' --split-input-file | FileCheck %s
 
 // CHECK-LABEL: func.func @matmul_scale_bias
 // CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32

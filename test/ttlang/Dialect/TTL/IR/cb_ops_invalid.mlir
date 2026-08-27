@@ -2,6 +2,19 @@
 
 // -----
 
+// Allocation-group ordinals identify module-local compile-time identities.
+module {
+  func.func @negative_allocation_group_ordinal() {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        // expected-error @below {{DFB allocation group ordinal must be nonnegative}}
+        {allocation_group = #ttl.dfb_allocation_group<-1>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
+
+// -----
+
 // cb_reserve result shape must match CB shape.
 module {
   func.func @cb_reserve_shape_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<2x2xf32> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

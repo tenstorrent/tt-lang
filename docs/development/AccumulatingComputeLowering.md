@@ -371,9 +371,10 @@ output reservation. The generated loop carries
 already materialized the accumulator baseline in L1.
 
 Reduction L1 lowering is additive only. `reduce_max` and
-`ttl.tile_accumulate_add` have no L1 packer representation in this lowering,
-so they remain DST-resident. #646 tracks non-additive update contracts and
-the shared legality table for recurrence classes and strategy pairs.
+`ttl.tile_accumulate ... max` have no L1 packer representation in this
+lowering, so they remain DST-resident. #646 tracks non-additive update
+contracts and the shared legality table for recurrence classes and strategy
+pairs.
 
 Unsupported L1 output formats are diagnosed in
 `TTKernelInsertL1Accumulation`, where the final pack output type is visible.
@@ -582,7 +583,7 @@ concrete storage strategy.
 
 **DST strategy:** when the recurrence satisfies the DST legality rules,
 the lowering creates a reduction-style `ttl.compute` with
-`ttl.tile_accumulate_add`. The generated `ttl.dst_section` spans the
+`ttl.tile_accumulate ... add`. The generated `ttl.dst_section` spans the
 reduction loop, so the accumulator stays in the destination register file
 until the final store. This requires one acquire/release cycle around the
 full reduction; releasing DST inside the reduction would lose the register

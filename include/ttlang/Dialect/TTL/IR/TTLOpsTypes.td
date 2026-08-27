@@ -104,6 +104,8 @@ def TTL_InputClampingAttr
 def TTL_AccumulationCombinerAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationCombiner,
                "accumulation_combiner">;
+def TTL_DFBTileStoreKindAttr
+    : EnumAttr<TTL_Dialect, TTL_DFBTileStoreKind, "dfb_tile_store_kind">;
 
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";

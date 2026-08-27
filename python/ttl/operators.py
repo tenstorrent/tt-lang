@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith, ttl
@@ -24,9 +25,18 @@ from ttl.ir import (
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from .condition import DispatchCondition
 from .constants import DEFAULT_TILE_SIZE
 from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
+from .scalar import ScalarType
+from .dfb_reset import DFBReset
+from .dfb_reconfiguration import DFBReconfiguration
+
+
+def reconfigure_dfbs(boundary: DFBReconfiguration) -> None:
+    """Enter the next compiler-derived worker-local DFB configuration epoch."""
+    raise RuntimeError("ttl.reconfigure_dfbs() is valid only in a compiled kernel")
 
 
 def call_extern_func(
@@ -37,10 +47,13 @@ def call_extern_func(
     func_args=None,
     dfb_dependencies=None,
     dfb_effects=None,
+    dfb_accesses=None,
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
-) -> None:
+    result_type: Optional[ScalarType] = None,
+    condition_result: Optional[DispatchCondition] = None,
+) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
     Args:
@@ -48,14 +61,18 @@ def call_extern_func(
         callee: External C++ function name.
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
-        func_args: Values emitted as C++ function arguments.
+        func_args: Values emitted as C++ function arguments. Repeated opaque
+            DFBs are valid. Summarized occurrences must use distinct parameters
+            of a composed operation.
         dfb_dependencies: DFBs accessed by external C++ without adding C++
-            arguments. Entries must be mutually distinct and must not duplicate
-            automatic dependencies in ``func_args`` or DFB descriptor template
-            arguments.
+            arguments. Entries must identify distinct source occurrences and
+            must not repeat an automatic dependency source in ``func_args`` or
+            DFB descriptor template arguments.
         dfb_effects: Optional call-wide sequence of synchronous DFB protocol
             actions performed on every call execution. A complete summary can
             permit physical-index reuse and does not emit protocol calls.
+        dfb_accesses: Optional synchronous DFB inspections performed by the
+            call without publishing, consuming, or changing DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
             user-managed DFBs, conservatively restricting physical-index reuse.
         include_paths: Compile-time directories added to external header
@@ -68,8 +85,35 @@ def call_extern_func(
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
     removes the selector before AST lowering.
+
+    ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
+    ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
+    function.
+
+    ``condition_result`` declares that the result evaluates one immutable
+    dispatch-stable condition. Its scalar type comes from the declaration. The
+    call must be repeat-safe and cannot access DFB state.
+
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
+    """Synchronize DFB interface owners and reset the listed interfaces.
+
+    The operation restores pointer, initialization, and occupancy state to an
+    empty queue. It preserves descriptor configuration and payload bytes. It
+    makes each participating data movement RISC drain its own outstanding NoC
+    commands before publishing boundary arrival. It cannot complete commands
+    issued by another core or a non-participating RISC, so every producer must
+    issue its required transfers before its local reset occurrence.
+    """
+    raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
+
+
+def reset_all_dfbs(reset: DFBReset, /) -> None:
+    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+    raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 
 class DFBEffect:
@@ -105,6 +149,15 @@ class DFBEffect:
     def pop(dfb, *, tiles: int):
         """Declare that the external call returns consumed DFB capacity."""
         raise RuntimeError("ttl.DFBEffect.pop() is valid only in a compiled kernel")
+
+
+class DFBAccess:
+    """Typed synchronous DFB access by an external call."""
+
+    @staticmethod
+    def inspect(dfb):
+        """Read a DFB without changing its contents or queue position."""
+        raise RuntimeError("ttl.DFBAccess.inspect() is valid only in a compiled kernel")
 
 
 def dfb_descriptor(dfb):
@@ -315,42 +368,47 @@ class TensorBlock:
         return _build_matmul(ast_self, rhs, transpose_rhs=False)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Store result tensor to the output CB reserve view (overwrite).
+        """Store a result into a reserved or previously read waited block.
 
-        Emits ttl.store with the result tensor and reserve view.
-        Always overwrites the CB slot. For accumulation, use ``+=``.
+        A waited destination represents ordered replacement of the acquired
+        pages. Compiler analysis accepts it only after proving the complete
+        consumer-owned mutation contract.
         """
         if not _is_block(ast_self):
             raise ValueError(
-                "store() must be called on a block acquired from reserve(), not a regular tensor"
+                "store() must be called on a block acquired from reserve() or wait()"
             )
-        reserve = _get_reserve_from_block(ast_self)
+        acquired_view = _get_acquired_view_from_block(ast_self)
         _require_matching_tile_shapes(
             rhs.type.element_type,
-            reserve.type.element_type,
+            acquired_view.type.element_type,
             "source",
-            "destination CB",
+            "destination DFB",
         )
-        ttl.store(rhs, reserve)
+        ttl.store(rhs, acquired_view)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Accumulate into a reserved block via L1 packer accumulation.
+        """Accumulate into a reserve or replace a previously read wait.
 
-        Emits ttl.store with the ``accumulate`` attribute. When used
-        inside a loop, the compiler inserts ``pack_reconfig_l1_acc``
-        guards so that each iteration adds to the existing L1 value
-        instead of overwriting.
+        A reserve-backed block uses L1 packer accumulation. A wait-backed block
+        reads the original value, adds ``rhs``, and stores the replacement
+        without changing dataflow buffer occupancy or pointers.
 
-        This is an interim mechanism; the spec's full pattern
-        (``fill`` + lazy ``BlockExpr`` ``+=`` + ``store``) is deferred
-        to the BlockExpr PR (#446).
+        The compiler accepts waited replacement only after proving the
+        complete consumer-owned mutation contract.
         """
         if not _is_block(ast_self):
             raise ValueError(
-                "+= must be called on a block acquired from reserve(), not a regular tensor"
+                "+= must be called on a block acquired from reserve() or wait()"
             )
-        reserve = _get_reserve_from_block(ast_self)
-        ttl.store(rhs, reserve, accumulate=True)
+        acquired_view = _get_acquired_view_from_block(ast_self)
+        acquisition = acquired_view.owner
+        if acquisition.name == "ttl.cb_wait":
+            ttl.store(ttl.add(ast_self, rhs), acquired_view)
+            return ast_self
+        if acquisition.name != "ttl.cb_reserve":
+            raise ValueError("block acquisition must be ttl.cb_reserve or ttl.cb_wait")
+        ttl.store(rhs, acquired_view, accumulate=True)
         return ast_self
 
     def push(
@@ -480,15 +538,20 @@ def _is_block(value) -> bool:
     return value.owner.name == "ttl.attach_cb"
 
 
-def _get_reserve_from_block(block):
-    """Extract the reserve view from a block (result of ttl.attach_cb).
+def _get_acquired_view_from_block(block):
+    """Extract the reserve or wait view from a block.
 
     The attach_cb op has signature: (tensor, cb) -> tensor
     So the reserve/wait tensor is operand[0].
     """
     if block.owner.name != "ttl.attach_cb":
         raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
-    return block.owner.operands[0]
+    acquired_view = block.owner.operands[0]
+    if acquired_view.owner.name not in ("ttl.cb_reserve", "ttl.cb_wait"):
+        raise ValueError(
+            "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
+        )
+    return acquired_view
 
 
 def _get_cb_from_block(block):
@@ -729,27 +792,37 @@ def node(*, dims):
     """
     Get the coordinates of the current core.
 
-    Currently only dims=2 is supported (temporary restriction).
+    Currently only dims=1 and dims=2 are supported (temporary restriction).
 
     Args:
-        dims: Number of dimensions to return (must be 2)
+        dims: Number of dimensions to return (must be 1 or 2)
 
     Returns:
         For dims=2: Tuple (x, y) where x is column coordinate and y is row coordinate
+        For dims=1: The node's index within the flattened grid
 
     Raises:
-        ValueError: If dims is not 2
+        ValueError: If dims is not 1 or 2
 
     Example:
         x, y = ttl.node(dims=2)
+        n = ttl.node(dims=1)
     """
     dims_val = _get_constant_int(dims)
-    if dims_val != 2:
+    if dims_val not in (1, 2):
         raise ValueError(
-            f"core() currently only supports dims=2, got dims={dims_val}. "
+            f"core() currently only supports dims=1 and dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
-    return (ttl.core_x(), ttl.core_y())
+    x = ttl.core_x()
+    if dims_val == 2:
+        return (x, ttl.core_y())
+    # The specification orders the second coordinate contiguously.
+    rows = _get_current_grid()[1]
+    ctx = x.type.context
+    stride = arith.ConstantOp(IndexType.get(ctx), rows).result
+    column_base = arith.MulIOp(x, stride).result
+    return arith.AddIOp(column_base, ttl.core_y()).result
 
 
 @syntax("grid_size")
@@ -757,28 +830,33 @@ def grid_size(*, dims):
     """
     Get the size of the grid.
 
-    Currently only dims=2 is supported (temporary restriction).
+    Currently only dims=1 and dims=2 are supported (temporary restriction).
 
     Args:
-        dims: Number of dimensions to return (must be 2)
+        dims: Number of dimensions to return (must be 1 or 2)
 
     Returns:
         For dims=2: Tuple (x_size, y_size) where x_size is columns and y_size is rows
+        For dims=1: The total number of nodes in the grid
 
     Raises:
-        ValueError: If dims is not 2
+        ValueError: If dims is not 1 or 2
 
     Example:
         x_size, y_size = ttl.grid_size(dims=2)
+        total = ttl.grid_size(dims=1)
     """
     dims_val = _get_constant_int(dims)
-    if dims_val != 2:
+    if dims_val not in (1, 2):
         raise ValueError(
-            f"grid_size() currently only supports dims=2, got dims={dims_val}. "
+            f"grid_size() currently only supports dims=1 and dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
     # grid is stored as (cols, rows) = (x, y), matching tt-metal convention
-    return _get_current_grid()
+    cols, rows = _get_current_grid()
+    if dims_val == 2:
+        return (cols, rows)
+    return cols * rows
 
 
 @syntax("signpost")
@@ -873,10 +951,21 @@ def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
     return ttl.block_broadcast(result_type, input, dims_attr, shape_attr)
 
 
+def _warn_if_reduce_shape_omitted(shape) -> None:
+    if shape is not None:
+        return
+    warnings.warn(
+        "Omitting the reduce shape argument is deprecated; pass shape explicitly",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 def _reduce_impl(
     input: TensorBlock,
     dims: List[int],
     reduce_type: int,
+    shape=None,
 ) -> TensorBlock:
     """Shared implementation for reduce_sum and reduce_max."""
     from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
@@ -884,8 +973,8 @@ def _reduce_impl(
     input_type = input.type
     input_shape = list(input_type.shape)
     rank = len(input_shape)
-    if rank != 2:
-        raise ValueError(f"reduce only supports 2D tensors, got rank {rank}")
+    if rank < 2:
+        raise ValueError(f"reduce requires rank 2 or greater, got rank {rank}")
     if not dims:
         raise ValueError("dims must be non-empty")
 
@@ -897,7 +986,25 @@ def _reduce_impl(
             )
     norm_dims = sorted({d % rank for d in dims})
 
-    result_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    expected_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    if shape is None:
+        # Keep accepting the legacy compiler spelling while supporting the
+        # explicit result shape required by the language specification.
+        result_shape = expected_shape
+    else:
+        result_shape = [_get_constant_int(s) for s in shape]
+        if len(result_shape) != rank:
+            raise ValueError(
+                f"reduce shape {tuple(result_shape)} has {len(result_shape)} "
+                f"dimensions but input has rank {rank}"
+            )
+        if result_shape != expected_shape:
+            raise ValueError(
+                f"reduce shape {tuple(result_shape)} does not match expected "
+                f"result shape {tuple(expected_shape)} (input shape "
+                f"{tuple(input_shape)}, reducing dims {dims})"
+            )
+
     result_type = RankedTensorType.get(
         result_shape, input_type.element_type, input_type.encoding
     )
@@ -914,21 +1021,33 @@ def _reduce_impl(
 
 
 @syntax("reduce_sum")
-def reduce_sum(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+def reduce_sum(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBlock:
     """Sum reduction over specified dimensions.
+
+    ``shape`` is the result shape required by the language specification. It
+    must be 1 in reduced dimensions and match the input in all other
+    dimensions. Omitting it is deprecated; it is currently inferred for
+    backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_sum(x, dims=...)`.
     """
-    return _reduce_impl(input, dims, reduce_type=0)
+    _warn_if_reduce_shape_omitted(shape)
+    return _reduce_impl(input, dims, reduce_type=0, shape=shape)
 
 
 @syntax("reduce_max")
-def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+def reduce_max(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBlock:
     """Max reduction over specified dimensions.
+
+    ``shape`` is the result shape required by the language specification. It
+    must be 1 in reduced dimensions and match the input in all other
+    dimensions. Omitting it is deprecated; it is currently inferred for
+    backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_max(x, dims=...)`.
     """
-    return _reduce_impl(input, dims, reduce_type=1)
+    _warn_if_reduce_shape_omitted(shape)
+    return _reduce_impl(input, dims, reduce_type=1, shape=shape)
 
 
 def _resolve_transpose_flag(val) -> bool:
@@ -1356,6 +1475,7 @@ __all__ = [
     "read_index",
     "call_extern_func",
     "DFBEffect",
+    "DFBAccess",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",

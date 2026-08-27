@@ -85,9 +85,8 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 }
 
 static bool requiresDstAccumulation(ComputeOp op) {
-  // tile_accumulate has in-place DST semantics. Lowering it through ordinary
-  // per-iteration DstSectionOps would reacquire DST for each reduction
-  // iteration and lose the recurrence state.
+  // In-DST recurrences must share one DST section across reduction iterations.
+  // Ordinary per-iteration sections would reacquire DST and lose the state.
   if (op.containsOp<TileAccumulateOp>()) {
     return true;
   }
@@ -356,7 +355,7 @@ static scf::LoopNest generateAccumulatingLoops(
                                                            storeInfo.dstIndex);
           TileStoreOp::create(storeBuilder, parLoc, placeholder,
                               storeInfo.store.getView(), storeIndices,
-                              dstIdxVal);
+                              dstIdxVal, storeInfo.store.getStoreKind());
         }
 
         return {};

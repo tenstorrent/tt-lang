@@ -21,13 +21,16 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <tuple>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
@@ -41,6 +44,65 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
 
 namespace mlir::tt::ttl {
+
+namespace {
+
+enum class LogicalKernelIdentityCategory {
+  Canonical,
+  CompilerOwnedRole,
+  Operation,
+};
+
+static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
+  LogicalKernelIdentityCategory identityCategory =
+      LogicalKernelIdentityCategory::Canonical;
+  if (participant.getIdentity()) {
+    identityCategory = participant.getRole()
+                           ? LogicalKernelIdentityCategory::CompilerOwnedRole
+                           : LogicalKernelIdentityCategory::Operation;
+  }
+  auto valueOrEmpty = [](StringAttr value) {
+    return value ? value.getValue() : StringRef();
+  };
+  return std::make_tuple(static_cast<unsigned>(participant.getKind()),
+                         identityCategory,
+                         valueOrEmpty(participant.getIdentity()),
+                         valueOrEmpty(participant.getOperation()),
+                         valueOrEmpty(participant.getRole()));
+}
+
+static bool hasRequiredDFBSynchronizationParticipants(
+    ArrayRef<LogicalKernelAttr> participants) {
+  unsigned computeParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::Compute;
+      });
+  unsigned dataMovementParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::DataMovement;
+      });
+  return participants.size() == 3 && computeParticipants == 1 &&
+         dataMovementParticipants == 2;
+}
+
+static bool hasDistinctDFBSynchronizationParticipants(
+    ArrayRef<LogicalKernelAttr> participants) {
+  llvm::DenseSet<Attribute> uniqueParticipants;
+  return llvm::all_of(participants, [&](LogicalKernelAttr participant) {
+    return uniqueParticipants.insert(participant).second;
+  });
+}
+
+static bool hasCanonicalDFBSynchronizationParticipantOrder(
+    ArrayRef<LogicalKernelAttr> participants) {
+  return std::is_sorted(participants.begin(), participants.end(),
+                        [](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
+                          return getLogicalKernelSortKey(lhs) <
+                                 getLogicalKernelSortKey(rhs);
+                        });
+}
+
+} // namespace
 
 llvm::LogicalResult LogicalKernelAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, LogicalKernelKind,
@@ -67,6 +129,95 @@ llvm::LogicalResult LogicalKernelAttr::verify(
                           "operation or compiler-owned role";
   }
   return llvm::success();
+}
+
+llvm::LogicalResult DispatchConditionAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    Type scalarType) {
+  if (ordinal < 0) {
+    return emitError() << "dispatch condition ordinal must be nonnegative";
+  }
+  auto integerType = dyn_cast<IntegerType>(scalarType);
+  if (!integerType || !integerType.isSignless() ||
+      (integerType.getWidth() != 32 && integerType.getWidth() != 64)) {
+    return emitError()
+           << "dispatch condition scalar type must be signless i32 or i64";
+  }
+  return success();
+}
+
+llvm::LogicalResult DFBAllocationGroupAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal) {
+  if (ordinal < 0) {
+    return emitError() << "DFB allocation group ordinal must be nonnegative";
+  }
+  return success();
+}
+
+llvm::LogicalResult SynchronizedDFBResetAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  if (ordinal < 0) {
+    return emitError() << "synchronized DFB reset ordinal must be nonnegative";
+  }
+  if (participants.empty()) {
+    return emitError()
+           << "synchronized DFB reset requires at least one participant";
+  }
+  if (!hasDistinctDFBSynchronizationParticipants(participants)) {
+    return emitError()
+           << "synchronized DFB reset participants must be distinct";
+  }
+  if (!hasRequiredDFBSynchronizationParticipants(participants)) {
+    return emitError() << "synchronized DFB reset participants must contain "
+                          "one compute kernel and two data movement kernels";
+  }
+  if (!hasCanonicalDFBSynchronizationParticipantOrder(participants)) {
+    return emitError()
+           << "synchronized DFB reset participants must use canonical order";
+  }
+  return success();
+}
+
+SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
+    Location location, MLIRContext *context, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  return SynchronizedDFBResetAttr::getChecked(
+      [location]() { return emitError(location); }, context, ordinal,
+      participants);
+}
+
+llvm::LogicalResult DFBReconfigurationAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  if (ordinal < 0) {
+    return emitError() << "DFB reconfiguration ordinal must be nonnegative";
+  }
+  if (participants.empty()) {
+    return emitError()
+           << "DFB reconfiguration requires at least one participant";
+  }
+  if (!hasRequiredDFBSynchronizationParticipants(participants)) {
+    return emitError()
+           << "DFB reconfiguration requires one compute and two data "
+              "movement participants";
+  }
+  if (!hasDistinctDFBSynchronizationParticipants(participants)) {
+    return emitError() << "DFB reconfiguration participants must be distinct";
+  }
+  if (!hasCanonicalDFBSynchronizationParticipantOrder(participants)) {
+    return emitError()
+           << "DFB reconfiguration participants must use canonical order";
+  }
+  return success();
+}
+
+DFBReconfigurationAttr DFBReconfigurationAttr::getCheckedInstance(
+    Location location, MLIRContext *context, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  return DFBReconfigurationAttr::getChecked(
+      [location]() { return emitError(location); }, context, ordinal,
+      participants);
 }
 
 void TTLDialect::registerAttributes() {
@@ -144,6 +295,16 @@ llvm::LogicalResult DFBProtocolEffectAttr::verify(
   if (numTiles <= 0) {
     return emitError() << "DFB protocol tile count must be positive, got "
                        << numTiles;
+  }
+  return success();
+}
+
+llvm::LogicalResult DFBNonTransactionalAccessAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DFBNonTransactionalAccessKind, int64_t dependencyIndex) {
+  if (dependencyIndex < 0) {
+    return emitError() << "DFB dependency index must be nonnegative, got "
+                       << dependencyIndex;
   }
   return success();
 }
@@ -1416,7 +1577,7 @@ mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
       mlir::tt::ttl::symbolizeAccumulationCombiner(combinerKeyword);
   if (!combiner) {
     return parser.emitError(combinerLoc)
-           << "expected accumulation combiner `add`";
+           << "expected accumulation combiner `add` or `max`";
   }
   result.addAttribute("combiner", mlir::tt::ttl::AccumulationCombinerAttr::get(
                                       parser.getContext(), *combiner));
@@ -1834,10 +1995,13 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  // The view must ultimately come from a `ttl.cb_reserve`, possibly
-  // through intervening `tensor.extract_slice` ops.
-  if (!findCBReserveForView(getView(), getOperation())) {
-    return emitOpError() << "view must come from ttl.cb_reserve";
+  Operation *acquire = findCBAcquireOp(getView());
+  if (!acquire) {
+    return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
+  }
+  if (getAccumulate() && isa<CBWaitOp>(acquire)) {
+    return emitOpError()
+           << "wait-backed replacement does not support packer accumulation";
   }
 
   return success();
@@ -1855,6 +2019,18 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
+  }
+
+  Operation *acquire = findCBAcquireOp(getView());
+  bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
+  if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
+      !isWaitBacked) {
+    return emitOpError(
+        "consumer_replacement store requires a ttl.cb_wait-backed view");
+  }
+  if (getStoreKind() == DFBTileStoreKind::Producer && isWaitBacked) {
+    return emitOpError(
+        "ttl.cb_wait-backed view requires consumer_replacement store kind");
   }
 
   // Inside a compute body, indices must match the view rank (populated by
@@ -2056,17 +2232,17 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
   auto scalerType = mlir::cast<RankedTensorType>(getScaler().getType());
   auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
 
-  if (inputType.getRank() != 2) {
-    return emitOpError() << "input must be rank 2, got rank "
+  if (inputType.getRank() < 2) {
+    return emitOpError() << "input must have rank 2 or greater, got rank "
                          << inputType.getRank();
   }
   if (scalerType.getRank() != 2) {
     return emitOpError() << "scaler must be rank 2, got rank "
                          << scalerType.getRank();
   }
-  if (resultType.getRank() != 2) {
-    return emitOpError() << "result must be rank 2, got rank "
-                         << resultType.getRank();
+  if (resultType.getRank() != inputType.getRank()) {
+    return emitOpError() << "result rank " << resultType.getRank()
+                         << " must match input rank " << inputType.getRank();
   }
 
   if (!inputType.hasStaticShape() || !scalerType.hasStaticShape() ||
@@ -2105,7 +2281,7 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
 
   // Scaler must be a single tile (1, 1): one scaling value applied to every
   // reduction.  The hardware reduce_tile reads one scaler tile from srcB.
-  for (int64_t i = 0; i < rank; ++i) {
+  for (int64_t i = 0; i < scalerType.getRank(); ++i) {
     if (scalerType.getDimSize(i) != 1) {
       return emitOpError() << "scaler dim " << i << " is "
                            << scalerType.getDimSize(i) << " but must be 1";
@@ -2614,6 +2790,7 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
   }
 
   SmallVector<Value> dependencies = getDFBDependencyOperands();
+  llvm::BitVector protocolDependencies(dependencies.size());
   if (std::optional<ArrayAttr> effects = getDfbEffects()) {
     for (auto [effectIndex, attribute] : llvm::enumerate(*effects)) {
       auto effect = cast<DFBProtocolEffectAttr>(attribute);
@@ -2633,6 +2810,60 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                << " exceeds dependency " << effect.getDependencyIndex()
                << " capacity " << dfbType.getTotalElements();
       }
+      protocolDependencies.set(
+          static_cast<size_t>(effect.getDependencyIndex()));
+    }
+  }
+  llvm::BitVector nonTransactionalDependencies(dependencies.size());
+  if (std::optional<ArrayAttr> accesses = getDfbAccesses()) {
+    for (auto [accessIndex, attribute] : llvm::enumerate(*accesses)) {
+      auto access = cast<DFBNonTransactionalAccessAttr>(attribute);
+      size_t dependencyIndex = static_cast<size_t>(access.getDependencyIndex());
+      if (dependencyIndex >= dependencies.size()) {
+        return emitOpError("DFB non-transactional access ")
+               << accessIndex << " dependency index "
+               << access.getDependencyIndex() << " is out of range for "
+               << dependencies.size() << " dependencies";
+      }
+      if (nonTransactionalDependencies.test(dependencyIndex)) {
+        return emitOpError("DFB dependency ")
+               << dependencyIndex
+               << " has more than one non-transactional access summary";
+      }
+      if (protocolDependencies.test(dependencyIndex)) {
+        return emitOpError("DFB dependency ")
+               << dependencyIndex
+               << " cannot declare both protocol effects and a "
+                  "non-transactional access";
+      }
+      nonTransactionalDependencies.set(dependencyIndex);
+    }
+  }
+  if (DispatchConditionAttr condition = getConditionResultAttr()) {
+    if (!getResult()) {
+      return emitOpError("condition result requires one scalar result");
+    }
+    if (getResult().getType() != condition.getScalarType()) {
+      return emitOpError("condition result type ")
+             << getResult().getType() << " does not match declared scalar type "
+             << condition.getScalarType();
+    }
+    if (!getTemplateDfbOperands().empty() || !dependencies.empty() ||
+        getDfbEffects() || getDfbAccesses() || getUnknownDfbAccess()) {
+      return emitOpError("condition result call cannot access DFB state");
+    }
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ResetDFBsOp::verify() {
+  if (getDfbs().empty()) {
+    return emitOpError("requires at least one DFB");
+  }
+  llvm::DenseSet<Value> uniqueDFBs;
+  for (Value dfb : getDfbs()) {
+    if (!uniqueDFBs.insert(dfb).second) {
+      return emitOpError("DFBs must be distinct");
     }
   }
   return success();
@@ -2703,6 +2934,27 @@ mlir::tt::ttl::OpaqueCallOp::getDFBProtocolEffects() {
                        static_cast<unsigned>(sequenceIndex)});
   }
   return effects;
+}
+
+llvm::SmallVector<mlir::tt::ttl::DFBNonTransactionalAccess>
+mlir::tt::ttl::OpaqueCallOp::getDFBNonTransactionalAccesses() {
+  llvm::SmallVector<DFBNonTransactionalAccess> accesses;
+  std::optional<ArrayAttr> accessAttrs = getDfbAccesses();
+  if (!accessAttrs) {
+    return accesses;
+  }
+  SmallVector<Value> dependencies = getDFBDependencyOperands();
+  accesses.reserve(accessAttrs->size());
+  for (auto [sequenceIndex, attribute] : llvm::enumerate(*accessAttrs)) {
+    auto access = cast<DFBNonTransactionalAccessAttr>(attribute);
+    size_t dependencyIndex = static_cast<size_t>(access.getDependencyIndex());
+    assert(dependencyIndex < dependencies.size() &&
+           "opaque_call must be verified before querying DFB accesses");
+    accesses.push_back({dependencies[dependencyIndex], access.getKind(),
+                        static_cast<unsigned>(dependencyIndex),
+                        static_cast<unsigned>(sequenceIndex)});
+  }
+  return accesses;
 }
 
 bool mlir::tt::ttl::OpaqueCallOp::hasUnknownDFBAccess() {

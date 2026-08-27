@@ -43,7 +43,6 @@
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
@@ -236,11 +235,9 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   return static_cast<int32_t>(*dfbIndex);
 }
 
-/// Get the L1 buffer address from runtime args for a tensor function argument.
-/// Runtime args are indexed by the tensor's function argument position.
-static Value
-getBufferAddressFromRuntimeArg(unsigned argIdx, Location loc,
-                               ConversionPatternRewriter &rewriter) {
+/// Read one L1 address from the function's common runtime arguments.
+static Value getCommonRuntimeArg(unsigned argIdx, Location loc,
+                                 ConversionPatternRewriter &rewriter) {
   auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, argIdx);
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         idxConst)
@@ -553,8 +550,15 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     Value dstIndex = adaptor.getDstIndex();
 
-    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
-                            /*out_of_order=*/true);
+    if (op.getStoreKind() == DFBTileStoreKind::ConsumerReplacement) {
+      uint64_t acquiredTiles = static_cast<uint64_t>(
+          cast<ttk::CBType>((*cb).getType()).getNumElements());
+      ttk::PackWaitedTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
+                                    /*out_of_order=*/true, acquiredTiles);
+    } else {
+      ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
+                              /*out_of_order=*/true);
+    }
 
     rewriter.eraseOp(op);
     return success();
@@ -1142,8 +1146,7 @@ static LogicalResult lowerTensorCBCopy(
   assert(transferShape.size() <= tensorRank &&
          "transfer tensor rank exceeds source tensor rank");
 
-  Value bankBase =
-      getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
+  Value bankBase = getCommonRuntimeArg(accessorInfo->argIdx, loc, rewriter);
   Value accessor =
       materializeTensorAccessor(tensor, bankBase, *accessorInfo, rewriter);
 
@@ -1561,9 +1564,195 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
       return rewriter.notifyMatchFailure(
           op, "raw_addr operand must be a function tensor argument");
     }
-    Value bankBase =
-        getBufferAddressFromRuntimeArg(*argIdx, op.getLoc(), rewriter);
+    Value bankBase = getCommonRuntimeArg(*argIdx, op.getLoc(), rewriter);
     rewriter.replaceOp(op, bankBase);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Synchronized DFB reset lowering
+//===----------------------------------------------------------------------===//
+
+struct DFBResetLoweringPlan {
+  DenseMap<SynchronizedDFBResetAttr, int64_t> stateOffsetByReset;
+  int64_t scratchBaseOffset = 0;
+  int64_t scratchBytes = 0;
+  uint64_t allDFBMask = 0;
+};
+
+static FailureOr<DFBResetLoweringPlan>
+buildDFBResetLoweringPlan(ModuleOp module) {
+  SmallVector<SynchronizedDFBResetAttr> orderedResets;
+  if (failed(collectSynchronizedDFBResets(module, orderedResets))) {
+    return failure();
+  }
+  FailureOr<uint64_t> scratchBytes = getSynchronizedDFBResetStateBytes(module);
+  if (failed(scratchBytes) ||
+      *scratchBytes >
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    if (succeeded(scratchBytes)) {
+      module.emitOpError(
+          "DFB reset synchronization state is not representable");
+    }
+    return failure();
+  }
+
+  DFBResetLoweringPlan plan;
+  for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
+    plan.stateOffsetByReset.try_emplace(
+        reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
+  }
+  plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
+
+  WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
+    std::optional<int64_t> dfbIndex = getCBIndex(bind.getResult());
+    if (!dfbIndex) {
+      bind.emitOpError("requires a finalized DFB index before reset lowering");
+      return WalkResult::interrupt();
+    }
+    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
+    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
+      bind.emitOpError("finalized DFB index ")
+          << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
+          << "] for " << getTargetDFBIndexCapacityDescription(bind);
+      return WalkResult::interrupt();
+    }
+    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    return WalkResult::advance();
+  });
+  if (allocationResult.wasInterrupted()) {
+    return failure();
+  }
+
+  if (!orderedResets.empty()) {
+    Builder builder(module.getContext());
+    module->setAttr(kDFBResetCountAttrName,
+                    builder.getI64IntegerAttr(orderedResets.size()));
+  }
+  return plan;
+}
+
+static LogicalResult lowerDFBReset(Operation *operation,
+                                   SynchronizedDFBResetAttr reset,
+                                   uint64_t dfbMask,
+                                   const DFBResetLoweringPlan &plan,
+                                   ConversionPatternRewriter &rewriter) {
+  auto stateOffsetIt = plan.stateOffsetByReset.find(reset);
+  if (stateOffsetIt == plan.stateOffsetByReset.end()) {
+    return operation->emitError("is absent from the DFB reset lowering plan");
+  }
+  Location location = operation->getLoc();
+  Value synchronizationAddress = buildPipeSramScratchAddress(
+      operation, plan.scratchBaseOffset + stateOffsetIt->second, rewriter);
+  Value lowMask = arith::ConstantIntOp::create(
+      rewriter, location, static_cast<uint32_t>(dfbMask), 32);
+  Value highMask = arith::ConstantIntOp::create(
+      rewriter, location, static_cast<uint32_t>(dfbMask >> 32), 32);
+  ttk::OpaqueCallOp::create(
+      rewriter, location, TypeRange{},
+      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("<cstdint>"),
+      ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
+      rewriter.getDenseI32ArrayAttr({0, 1, 2}));
+  rewriter.eraseOp(operation);
+  return success();
+}
+
+struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
+  ResetDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
+                    const DFBResetLoweringPlan &plan)
+      : OpConversionPattern(typeConverter, context), plan(plan) {}
+
+  LogicalResult
+  matchAndRewrite(ResetDFBsOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    uint64_t dfbMask = 0;
+    for (Value dfb : op.getDfbs()) {
+      FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
+      if (failed(dfbIndex)) {
+        return failure();
+      }
+      dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    }
+    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+  }
+
+private:
+  const DFBResetLoweringPlan &plan;
+};
+
+struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
+  ResetAllDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
+                       const DFBResetLoweringPlan &plan)
+      : OpConversionPattern(typeConverter, context), plan(plan) {}
+
+  LogicalResult
+  matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+  }
+
+private:
+  const DFBResetLoweringPlan &plan;
+};
+
+//===----------------------------------------------------------------------===//
+// DFB reconfiguration lowering
+//===----------------------------------------------------------------------===//
+
+struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(DFBReconfigurationOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    func::FuncOp function = op->getParentOfType<func::FuncOp>();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    if (!function || !module) {
+      return op.emitError("must be nested in a module kernel function");
+    }
+    auto plan =
+        module->getAttrOfType<DictionaryAttr>(kDFBReconfigurationPlanAttrName);
+    auto boundaryOrdinals =
+        plan ? plan.getAs<DenseI64ArrayAttr>("boundary_ordinals")
+             : DenseI64ArrayAttr();
+    auto dfbEntries = plan ? plan.getAs<ArrayAttr>("dfbs") : ArrayAttr();
+    if (!boundaryOrdinals || !dfbEntries) {
+      return op.emitError("requires finalized DFB reconfiguration metadata");
+    }
+    int64_t ordinal = op.getBoundary().getOrdinal();
+    auto ordinalIt = llvm::find(boundaryOrdinals.asArrayRef(), ordinal);
+    if (ordinalIt == boundaryOrdinals.asArrayRef().end()) {
+      return op.emitError("boundary ordinal is absent from finalized DFB "
+                          "reconfiguration metadata");
+    }
+
+    size_t boundaryRuntimeArgOffset = static_cast<size_t>(
+        std::distance(boundaryOrdinals.asArrayRef().begin(), ordinalIt));
+    if (dfbEntries.size() > std::numeric_limits<int32_t>::max() ||
+        boundaryRuntimeArgOffset > std::numeric_limits<int32_t>::max()) {
+      return op.emitError("runtime argument index is out of range");
+    }
+
+    Value callerRuntimeArgCount = ttk::GetCompileArgValOp::create(
+        rewriter, op.getLoc(), rewriter.getI32Type(),
+        static_cast<int32_t>(dfbEntries.size()));
+    Value boundaryOffset = arith::ConstantIntOp::create(
+        rewriter, op.getLoc(), static_cast<int32_t>(boundaryRuntimeArgOffset),
+        32);
+    Value runtimeArgIndex = arith::AddIOp::create(
+        rewriter, op.getLoc(), callerRuntimeArgCount, boundaryOffset);
+    Value configurationAddress = ttk::GetArgValOp::create(
+        rewriter, op.getLoc(),
+        IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),
+        runtimeArgIndex);
+    ttk::OpaqueCallOp::create(
+        rewriter, op.getLoc(), TypeRange{},
+        rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
+        rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
+        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}));
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1666,8 +1855,8 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
       const auto &tensor = std::get<OpaqueTensorArgument>(argument);
-      Value bankBase = getBufferAddressFromRuntimeArg(
-          tensor.accessorInfo.argIdx, location, rewriter);
+      Value bankBase =
+          getCommonRuntimeArg(tensor.accessorInfo.argIdx, location, rewriter);
       convertedArgs.push_back(materializeTensorAccessor(
           tensor.tensor, bankBase, tensor.accessorInfo, rewriter));
     }
@@ -2145,11 +2334,10 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 //===----------------------------------------------------------------------===//
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
-static LogicalResult
-lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                      TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName, bool pipeComputedAddresses,
-                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly) {
+static LogicalResult lowerTTLOpsToTTKernel(
+    ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
+    StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
+    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2232,11 +2420,19 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
 
   PipePlanningOptions pipePlanningOptions;
+  FailureOr<DFBResetLoweringPlan> resetLoweringPlan =
+      buildDFBResetLoweringPlan(mod);
+  if (failed(resetLoweringPlan)) {
+    return failure();
+  }
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.counterAllocationPolicy =
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
+  pipePlanningOptions.trailingSramScratchBytes =
+      resetLoweringPlan->scratchBytes;
+  pipePlanningOptions.trailingSramScratchAlignment = 4;
   FailureOr<PipeModulePlan> maybePipeModulePlan =
       buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
                           pipePlanningOptions);
@@ -2244,6 +2440,27 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
+  resetLoweringPlan->scratchBaseOffset =
+      pipeModulePlan.getTrailingSramScratchOffset();
+  FailureOr<DFBAllocationFootprint> allocationFootprint =
+      getDFBAllocationFootprint(mod);
+  if (failed(allocationFootprint)) {
+    mod.emitOpError("failed to compute finalized DFB allocation sizes");
+    return failure();
+  }
+  const PipeResourceRequirements &resourceRequirements =
+      pipeModulePlan.getResourceRequirements();
+  if (resourceRequirements.sramScratchBytes < 0) {
+    mod.emitOpError("PipeNet and reset scratch allocation is negative");
+    return failure();
+  }
+  if (failed(validateCombinedDFBResourceL1Bytes(
+          mod, *allocationFootprint,
+          static_cast<uint64_t>(resourceRequirements.sramScratchBytes),
+          resourceRequirements.globalSemaphoreCount, l1BudgetOverride))) {
+    return failure();
+  }
+  mod->removeAttr(kPipeConservativeL1BytesAttrName);
   applyPipeModuleAttributes(mod, pipeModulePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
@@ -2291,11 +2508,14 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
       typeConverter, &ctx, pipeTransportPlan);
+  patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
+                                                        *resetLoweringPlan);
   patterns
       .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
            ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           OpaqueCallLowering, GetDfbIdLowering>(typeConverter, &ctx);
+           DFBReconfigurationLowering, OpaqueCallLowering, GetDfbIdLowering>(
+          typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);
@@ -2571,6 +2791,14 @@ struct TTLConvertTTLToTTKernelPass
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
+    if (failed(validateSynchronizedDFBResetTarget(mod))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(validateDFBReconfigurationTarget(mod))) {
+      signalPassFailure();
+      return;
+    }
     std::string targetFailureReason;
     FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
         ComputeTargetEnvironment::get(mod, targetFailureReason);
@@ -2594,9 +2822,12 @@ struct TTLConvertTTLToTTKernelPass
     expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
-    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
-                                     pipeComputedAddresses, pipeCapacitySync,
-                                     pipeGlobalSemaphoresOnly))) {
+    if (failed(lowerTTLOpsToTTKernel(
+            mod, ctx, typeConverter, getName(), pipeComputedAddresses,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            l1BudgetOverride == 0
+                ? std::nullopt
+                : std::optional<uint64_t>(l1BudgetOverride)))) {
       signalPassFailure();
       return;
     }

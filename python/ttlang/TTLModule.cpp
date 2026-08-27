@@ -35,9 +35,13 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_SRAM_SCRATCH_BYTES_ATTR") =
       nb::str(kPipeSramScratchBytesAttrName.data(),
               kPipeSramScratchBytesAttrName.size());
+  m.attr("DFB_RESET_COUNT_ATTR") =
+      nb::str(kDFBResetCountAttrName.data(), kDFBResetCountAttrName.size());
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
+  m.attr("USED_DFB_INDICES_ATTR") =
+      nb::str(kUsedDFBIndicesAttrName.data(), kUsedDFBIndicesAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =
       nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
 
@@ -90,6 +94,108 @@ void populateTTLModule(nb::module_ &m) {
         StringAttr role = attribute.getRole();
         return role ? std::optional<std::string>(role.getValue().str())
                     : std::nullopt;
+      });
+
+  tt_attribute_class<DispatchConditionAttr>(m, "DispatchConditionAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal, MlirType scalarType) {
+            MLIRContext *cppContext = unwrap(context);
+            DispatchConditionAttr attribute = DispatchConditionAttr::getChecked(
+                [cppContext]() {
+                  return emitError(UnknownLoc::get(cppContext));
+                },
+                cppContext, ordinal, unwrap(scalarType));
+            if (!attribute) {
+              throw nb::value_error("invalid dispatch condition");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("scalar_type"))
+      .def_prop_ro("ordinal", &DispatchConditionAttr::getOrdinal)
+      .def_prop_ro("scalar_type", &DispatchConditionAttr::getScalarType);
+
+  tt_attribute_class<DFBAllocationGroupAttr>(m, "DFBAllocationGroupAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal) {
+            MLIRContext *cppContext = unwrap(context);
+            DFBAllocationGroupAttr attribute =
+                DFBAllocationGroupAttr::getChecked(
+                    [cppContext]() {
+                      return emitError(UnknownLoc::get(cppContext));
+                    },
+                    cppContext, ordinal);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB allocation group");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"))
+      .def_prop_ro("ordinal", &DFBAllocationGroupAttr::getOrdinal);
+
+  tt_attribute_class<SynchronizedDFBResetAttr>(m, "SynchronizedDFBResetAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal,
+             const std::vector<MlirAttribute> &participants) {
+            MLIRContext *cppContext = unwrap(context);
+            SmallVector<LogicalKernelAttr> participantAttrs;
+            participantAttrs.reserve(participants.size());
+            for (MlirAttribute participant : participants) {
+              participantAttrs.push_back(
+                  cast<LogicalKernelAttr>(unwrap(participant)));
+            }
+            SynchronizedDFBResetAttr attribute =
+                SynchronizedDFBResetAttr::getCheckedInstance(
+                    UnknownLoc::get(cppContext), cppContext, ordinal,
+                    participantAttrs);
+            if (!attribute) {
+              throw nb::value_error("invalid synchronized DFB reset");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("participants"))
+      .def_prop_ro("ordinal", &SynchronizedDFBResetAttr::getOrdinal)
+      .def_prop_ro("participants", [](SynchronizedDFBResetAttr attribute) {
+        std::vector<MlirAttribute> participants;
+        participants.reserve(attribute.getParticipants().size());
+        for (LogicalKernelAttr participant : attribute.getParticipants()) {
+          participants.push_back(wrap(participant));
+        }
+        return participants;
+      });
+
+  tt_attribute_class<DFBReconfigurationAttr>(m, "DFBReconfigurationAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, int64_t ordinal,
+             const std::vector<MlirAttribute> &participants) {
+            MLIRContext *cppContext = unwrap(context);
+            SmallVector<LogicalKernelAttr> participantAttrs;
+            participantAttrs.reserve(participants.size());
+            for (MlirAttribute participant : participants) {
+              participantAttrs.push_back(
+                  cast<LogicalKernelAttr>(unwrap(participant)));
+            }
+            DFBReconfigurationAttr attribute =
+                DFBReconfigurationAttr::getCheckedInstance(
+                    UnknownLoc::get(cppContext), cppContext, ordinal,
+                    participantAttrs);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB reconfiguration");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("participants"))
+      .def_prop_ro("ordinal", &DFBReconfigurationAttr::getOrdinal)
+      .def_prop_ro("participants", [](DFBReconfigurationAttr attribute) {
+        std::vector<MlirAttribute> participants;
+        participants.reserve(attribute.getParticipants().size());
+        for (LogicalKernelAttr participant : attribute.getParticipants()) {
+          participants.push_back(wrap(participant));
+        }
+        return participants;
       });
 
   nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
@@ -147,6 +253,32 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("dependency_index",
                    &DFBProtocolEffectAttr::getDependencyIndex)
       .def_prop_ro("num_tiles", &DFBProtocolEffectAttr::getNumTiles);
+
+  nb::enum_<DFBNonTransactionalAccessKind>(m, "DFBNonTransactionalAccessKind")
+      .value("Inspect", DFBNonTransactionalAccessKind::Inspect);
+
+  tt_attribute_class<DFBNonTransactionalAccessAttr>(
+      m, "DFBNonTransactionalAccessAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, DFBNonTransactionalAccessKind kind,
+             int64_t dependencyIndex) {
+            MLIRContext *cppContext = unwrap(context);
+            DFBNonTransactionalAccessAttr attribute =
+                DFBNonTransactionalAccessAttr::getChecked(
+                    [cppContext]() {
+                      return emitError(UnknownLoc::get(cppContext));
+                    },
+                    cppContext, kind, dependencyIndex);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB non-transactional access");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("dependency_index"))
+      .def_prop_ro("kind", &DFBNonTransactionalAccessAttr::getKind)
+      .def_prop_ro("dependency_index",
+                   &DFBNonTransactionalAccessAttr::getDependencyIndex);
 
   //===--------------------------------------------------------------------===//
   // SliceAttr

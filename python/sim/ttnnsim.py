@@ -28,6 +28,7 @@ from typing import (
     Dict,
     FrozenSet,
     Iterable,
+    Iterator,
     List,
     NoReturn,
     Optional,
@@ -1088,11 +1089,11 @@ class TensorSpec:
 # Maps torch attribute name -> original (pre-rebinding) dtype for every
 # narrow floating-point type that has a native torch representation and should
 # be promoted to float32 by default.  To add a new promotable type, add it
-# here; the rebinding loop, set_disable_float32_promotion, and _promote_dtype
+# here; the rebinding loop, set_disable_float32_promotion, and promote_dtype
 # all derive from this single definition.
 #
 # bfloat8_b is not in this dict because PyTorch has no native bfloat8_b dtype
-# and no torch.bfloat8_b attribute to rebind.  _promote_dtype handles it
+# and no torch.bfloat8_b attribute to rebind.  promote_dtype handles it
 # directly by mapping it to bfloat16 and then applying the normal logic.
 _PROMOTABLE_FLOAT_DTYPES: dict[str, torch.dtype] = {
     "bfloat16": torch.bfloat16,
@@ -1108,7 +1109,7 @@ for _attr in _PROMOTABLE_FLOAT_DTYPES:
 del _attr  # avoid leaking the loop variable into the module namespace
 
 # ttnn dtype aliases preserve the original (pre-rebinding) torch dtypes so
-# that element_size returns the correct hardware byte count and _promote_dtype
+# that element_size returns the correct hardware byte count and promote_dtype
 # can compare against them.
 bfloat16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["bfloat16"]
 float16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["float16"]
@@ -1121,7 +1122,7 @@ float32: torch.dtype = torch.float32
 _float32_promotion_enabled: bool = True
 
 
-def _promote_dtype(dtype: "DType") -> torch.dtype:
+def promote_dtype(dtype: "DType") -> torch.dtype:
     """Return the backing torch dtype to use when creating a tensor.
 
     All narrow floating-point types are promoted to float32 when promotion is
@@ -1159,7 +1160,7 @@ def set_disable_float32_promotion(value: bool) -> None:
 
     - bfloat16 and float16: the corresponding torch.* attributes are rebound to
       float32 so that native PyTorch code also uses float32.
-    - bfloat8_b: _promote_dtype maps it to bfloat16 and then promotes that to
+    - bfloat8_b: promote_dtype maps it to bfloat16 and then promotes that to
       float32; no torch attribute rebinding is needed.
 
     Passing True restores native dtypes throughout (bfloat16/float16 tensors use
@@ -1224,7 +1225,7 @@ DType = Union[torch.dtype, _BFloat8BDtype]
 
 # Maps custom dtype classes (those with no native torch representation) to the
 # torch.dtype that serves as their native backing before promotion is applied.
-# _promote_dtype looks up a dtype's class here so that custom types are handled
+# promote_dtype looks up a dtype's class here so that custom types are handled
 # with the same logic as native narrow floats, without requiring a match branch
 # for each one.  To add a new custom dtype, add it here.
 _CUSTOM_DTYPE_BACKING: dict[type, torch.dtype] = {
@@ -1689,6 +1690,8 @@ class Shape(tuple[int, ...]):
         Growing prepends 1s; shrinking drops leading dimensions, which each
         have to be 1 for the shape to survive the trip.
         """
+        if new_rank < 0:
+            raise TypeError(f"Shape rank must be non-negative, got {new_rank}")
         dims = tuple(self)
         if new_rank >= len(dims):
             return Shape((1,) * (new_rank - len(dims)) + dims)
@@ -1915,6 +1918,7 @@ class Tensor:
         memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
         dtype: Any = None,
         logical_shape: Optional[Sequence[int]] = None,
+        device: Optional[object] = None,
     ) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
@@ -1942,6 +1946,10 @@ class Tensor:
         else:
             self.memory_config: MemoryConfig = memory_config
         self.mesh_shard_info: Optional[MeshShardInfo] = None
+        # The device handle a creation entry point was given, or None for a host
+        # tensor.  The simulator does not model residency, so this is the handle
+        # itself and nothing more; see :meth:`device`.
+        self._device: Optional[object] = device
         # _dtype is the declared/logical type; defaults to the tensor's native dtype.
         self._dtype: Any = dtype if dtype is not None else tensor.dtype
         # Cached results of _to_element_key() keyed by the raw user key.
@@ -1957,6 +1965,47 @@ class Tensor:
         # tile-style access (preserving the original error timing) and then
         # latch the result so subsequent _to_element_key() calls skip it.
         self._tile_alignment_checked: bool = False
+        # Set by ttnn.deallocate, after which reaching the data is an error.
+        # A plain flag rather than dropping the store, because the point is to
+        # catch the use, not to model the release: the guard is a bool test on
+        # the tile-indexing path, which runs millions of times in a matmul.
+        self._deallocated: bool = False
+
+    def _refuse_deallocated(self) -> NoReturn:
+        """Report a use of a tensor whose buffer ttnn.deallocate released."""
+        raise RuntimeError(
+            f"tensor of shape {self._logical_shape} was deallocated; its buffer "
+            f"is released and a device would not read it back"
+        )
+
+    def _require_allocated(self, *others: object) -> None:
+        """Reject a data operation if this tensor or another operand was released."""
+        if self._deallocated:
+            self._refuse_deallocated()
+        for other in others:
+            if isinstance(other, Tensor) and other._deallocated:
+                other._refuse_deallocated()
+
+    def device(self) -> object:
+        """Return the device handle this tensor was created on.
+
+        Mirrors the device method on ttnn.Tensor, which a kernel calls to route
+        a derived tensor to the same device as its input.  Only the creation
+        entry points (``from_torch`` / ``rand`` / ``empty`` / ``zeros``) carry a
+        handle; the simulator does not propagate residency through operations,
+        so a tensor produced by arithmetic or slicing has none and this raises
+        rather than name a device the simulator did not place it on.
+
+        Raises:
+            RuntimeError: The tensor was not created with a device.
+        """
+        if self._device is None:
+            raise RuntimeError(
+                "tensor has no device: it was created without one, or the "
+                "simulator does not carry a device through the operation that "
+                "produced it"
+            )
+        return self._device
 
     @property
     def shape(self) -> Shape:
@@ -2258,6 +2307,8 @@ class Tensor:
         (:func:`normalize_selector_to_slice`) rather than half-supported.
         """
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
+        if self._deallocated:
+            self._refuse_deallocated()
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         ek = self._to_element_key(normalized)
         result = Tensor(
@@ -2291,6 +2342,9 @@ class Tensor:
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
         """Write a sub-tensor, addressing it as :meth:`__getitem__` does."""
+        if self._deallocated:
+            self._refuse_deallocated()
+        value._require_allocated()
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         self._tensor[cast(Any, self._to_element_key(normalized))] = value._tensor
 
@@ -2304,9 +2358,10 @@ class Tensor:
         # differs, since the data shown is the padded store.
         padded = tuple(self._tensor.shape)
         padded_str = f", padded_shape={padded}" if padded != self._logical_shape else ""
+        data = "<deallocated>" if self._deallocated else repr(self._tensor)
         return (
             f"Tensor(shape={self._logical_shape}{padded_str}{layout_str}, "
-            f"data={repr(self._tensor)})"
+            f"data={data})"
         )
 
     def to_torch(self) -> torch.Tensor:
@@ -2324,7 +2379,14 @@ class Tensor:
         ``to_torch`` returns: use the module-level ``ttnn.to_torch()`` for that,
         which un-pads as ttnn does and is what a caller comparing against a
         torch reference wants.
+
+        Raises:
+            RuntimeError: the tensor was deallocated.  This is the chokepoint
+                every read of the data reaches, ``_logical_view`` and the
+                module-level ``to_torch`` among them.
         """
+        if self._deallocated:
+            self._refuse_deallocated()
         return self._tensor
 
     # ---- Dry-run helpers ----
@@ -2365,6 +2427,7 @@ class Tensor:
 
     def _zeros_like(self) -> "Tensor":
         """Return a zero tensor with the same shape, dtype, and layout."""
+        self._require_allocated()
         return Tensor(
             torch.zeros_like(self._tensor),
             self._layout,
@@ -2374,6 +2437,7 @@ class Tensor:
 
     def _zeros_broadcast(self, other: "Tensor") -> "Tensor":
         """Return zeros shaped by broadcasting self and other."""
+        self._require_allocated(other)
         out_shape = torch.broadcast_shapes(self._tensor.shape, other._tensor.shape)
         return Tensor(
             torch.zeros(out_shape, dtype=self._tensor.dtype),
@@ -2391,6 +2455,7 @@ class Tensor:
         rules (and raises identically on incompatible dims) without allocating
         storage or computing any values.
         """
+        self._require_allocated(other)
         out_shape = torch.matmul(
             self._tensor.to("meta"), other._tensor.to("meta")
         ).shape
@@ -2405,6 +2470,7 @@ class Tensor:
 
     def __add__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise addition."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2429,6 +2495,7 @@ class Tensor:
 
     def __sub__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise subtraction."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2453,6 +2520,7 @@ class Tensor:
 
     def __mul__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise multiplication."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2477,6 +2545,7 @@ class Tensor:
 
     def __truediv__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise true division."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2501,6 +2570,7 @@ class Tensor:
 
     def __floordiv__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise floor division."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2525,6 +2595,7 @@ class Tensor:
 
     def __mod__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise modulo."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2549,6 +2620,7 @@ class Tensor:
 
     def __pow__(self, other: TensorOrScalar) -> "Tensor":
         """Element-wise exponentiation."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2573,6 +2645,7 @@ class Tensor:
 
     def __matmul__(self, other: "Tensor") -> "Tensor":
         """Matrix multiplication."""
+        self._require_allocated(other)
         match other:
             case Tensor():
                 if _is_dry_run():
@@ -2588,6 +2661,7 @@ class Tensor:
 
     def __neg__(self) -> "Tensor":
         """Unary negation."""
+        self._require_allocated()
         if _is_dry_run():
             return self._zeros_like()
         return Tensor(
@@ -2599,6 +2673,7 @@ class Tensor:
 
     def __abs__(self) -> "Tensor":
         """Absolute value."""
+        self._require_allocated()
         if _is_dry_run():
             return self._zeros_like()
         return Tensor(
@@ -2612,6 +2687,7 @@ class Tensor:
 
     def __radd__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise addition."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2627,6 +2703,7 @@ class Tensor:
 
     def __rsub__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise subtraction."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2642,6 +2719,7 @@ class Tensor:
 
     def __rmul__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise multiplication."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2657,6 +2735,7 @@ class Tensor:
 
     def __rtruediv__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise true division."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2672,6 +2751,7 @@ class Tensor:
 
     def __rfloordiv__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise floor division."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2687,6 +2767,7 @@ class Tensor:
 
     def __rmod__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise modulo."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2702,6 +2783,7 @@ class Tensor:
 
     def __rpow__(self, other: Scalar) -> "Tensor":
         """Reverse element-wise exponentiation."""
+        self._require_allocated()
         match other:
             case float() | int():
                 if _is_dry_run():
@@ -2795,12 +2877,14 @@ def rand(
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    raw = torch.rand(shape, dtype=_promote_dtype(dtype))
+    raw = torch.rand(shape, dtype=promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
+        DRAM_MEMORY_CONFIG if memory_config is None else memory_config,
         dtype=dtype,
         logical_shape=tuple(shape),
+        device=device,
     )
 
 
@@ -2812,12 +2896,14 @@ def empty(
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    raw = torch.empty(shape, dtype=_promote_dtype(dtype))
+    raw = torch.empty(shape, dtype=promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
+        DRAM_MEMORY_CONFIG if memory_config is None else memory_config,
         dtype=dtype,
         logical_shape=tuple(shape),
+        device=device,
     )
 
 
@@ -2829,12 +2915,14 @@ def zeros(
     memory_config: object = None,
 ) -> Tensor:
     """Create a zero-filled tensor with given shape, dtype, and layout."""
-    raw = torch.zeros(shape, dtype=_promote_dtype(dtype))
+    raw = torch.zeros(shape, dtype=promote_dtype(dtype))
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
+        DRAM_MEMORY_CONFIG if memory_config is None else memory_config,
         dtype=dtype,
         logical_shape=tuple(shape),
+        device=device,
     )
 
 
@@ -2937,7 +3025,7 @@ def from_torch(
 
     match eff_dtype:
         case _ if eff_dtype is not None:
-            backing = _promote_dtype(eff_dtype)
+            backing = promote_dtype(eff_dtype)
             converted = tensor if tensor.dtype == backing else tensor.to(backing)
             result = Tensor(
                 converted,
@@ -2945,10 +3033,15 @@ def from_torch(
                 memory_config=eff_mc,
                 dtype=eff_dtype,
                 logical_shape=logical_shape,
+                device=device,
             )
         case _:
             result = Tensor(
-                tensor, layout, memory_config=eff_mc, logical_shape=logical_shape
+                tensor,
+                layout,
+                memory_config=eff_mc,
+                logical_shape=logical_shape,
+                device=device,
             )
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
@@ -3073,6 +3166,62 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
     return result
 
 
+def to_layout(
+    tensor: Tensor,
+    layout: IndexType,
+    dtype: Optional[DType] = None,
+    memory_config: Optional[MemoryConfig] = None,
+    sub_core_grids: Optional[CoreRangeSet] = None,
+    pad_value: float = 0.0,
+) -> Tensor:
+    """Re-store a tensor under a different layout, preserving its logical data.
+
+    Mirrors ttnn.to_layout.  A layout decides the store alone: tile alignment
+    pads ``TILE_LAYOUT`` storage and ``ROW_MAJOR_LAYOUT`` carries no padding, so
+    converting between them is re-padding the logical view rather than a value
+    computation.  That is why this is hand-written instead of golden-served -
+    a golden reads the logical tensor and so cannot say what the result stores.
+
+    ``sub_core_grids`` selects the cores ttnn runs the relayout on and does not
+    affect the result, so it is accepted and ignored.
+
+    Raises:
+        ValueError: pad_value is not zero.  The simulator pads every store with
+            zero, per the tiled-block section of the specification.
+    """
+    if pad_value:
+        raise ValueError(f"to_layout pads with zero; got pad_value={pad_value}")
+    return from_torch(
+        _logical_view(tensor).clone(),
+        dtype=tensor.dtype if dtype is None else dtype,
+        layout=layout,
+        memory_config=tensor.memory_config if memory_config is None else memory_config,
+    )
+
+
+def _operand_tensors(values: Iterable[Any]) -> Iterator[Tensor]:
+    """The tensor operands among ``values``, reaching through lists and tuples.
+
+    ttnn passes the operands of a join (``concat``, ``stack``) as one sequence,
+    so a scan of the top level alone reports that such a call has no tensor
+    operands at all.
+    """
+    for value in values:
+        match value:
+            case Tensor():
+                yield value
+            case list() | tuple():
+                yield from _operand_tensors(value)
+
+
+def _has_padded_operand(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> bool:
+    """Whether any tensor operand stores more than its logical extent."""
+    return any(
+        tuple(t.shape) != tuple(t.padded_shape)
+        for t in _operand_tensors(list(args) + list(kwargs.values()))
+    )
+
+
 def _golden_logical_result(
     golden_fn: Callable[..., Any], args: Tuple[Any, ...], kwargs: Dict[str, Any]
 ) -> Optional[torch.Tensor]:
@@ -3100,15 +3249,22 @@ def _golden_logical_result(
     run: when no input is padded (the two runs are then the same computation),
     when the op will not run on logical extents (an argument derived from the
     padded ones), or when it does not return a single tensor.
+
+    Operands are found through lists and tuples, not just at the top level:
+    ttnn passes the operands of a join (``concat``, ``stack``) as one sequence,
+    and leaving those wrapped hands the golden a simulator ``Tensor`` where it
+    wants a torch one, which it declines -- sending the very ops that most need
+    the logical run to the padded one instead.
     """
-    tensors = [a for a in list(args) + list(kwargs.values()) if isinstance(a, Tensor)]
-    if not any(tuple(t.shape) != tuple(t.padded_shape) for t in tensors):
+    if not _has_padded_operand(args, kwargs):
         return None
 
     def unpadded(arg: Any) -> Any:
         match arg:
             case Tensor():
                 return _logical_view(arg)
+            case list() | tuple():
+                return type(arg)(unpadded(item) for item in arg)
             case _:
                 return arg
 
@@ -3143,6 +3299,11 @@ def _elementwise_logical_shape(
     elementwise covers two cases: operands that do not broadcast against each
     other at all (``linear``'s ``(32, 64)`` and ``(64, 128)``), and operands that
     do broadcast but whose broadcast does not match the torch result.
+
+    A ``None`` here also decides that a padded run is not answerable at all,
+    in :func:`_create_golden_wrapper`: an op that broadcast the padded extents
+    onto its result left the padding in the pad region, and one that did not
+    moved it into the result.
     """
     tensors = [t for t in inputs if isinstance(t, Tensor)]
     if not tensors:
@@ -3600,6 +3761,283 @@ def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     )
 
 
+def reshape(
+    input_tensor: Tensor,
+    shape: Sequence[int],
+    *,
+    memory_config: Optional[MemoryConfig] = None,
+    pad_value: Optional[float] = None,
+    sub_core_grids: Optional[CoreRangeSet] = None,
+) -> Tensor:
+    """Give a tensor a new logical shape, keeping its element order.
+
+    Mirrors ttnn.reshape.  Reshapes the logical tensor and stores the result
+    padded again, as :func:`squeeze` does: the store's padding is not part of
+    the element order the new shape indexes, so reshaping the store would fold
+    padding into the result's logical data.  A single ``-1`` is inferred, as
+    torch does.
+
+    ``sub_core_grids`` selects the cores ttnn runs on and does not affect the
+    result, so it is accepted and ignored.
+
+    Raises:
+        ValueError: pad_value is neither None nor zero.  The simulator pads
+            every store with zero, per the tiled-block section of the
+            specification.
+    """
+    if pad_value:
+        raise ValueError(f"reshape pads with zero; got pad_value={pad_value}")
+    return from_torch(
+        _logical_view(input_tensor).reshape(tuple(int(d) for d in shape)),
+        dtype=input_tensor.dtype,
+        layout=input_tensor.layout,
+        memory_config=(
+            input_tensor.memory_config if memory_config is None else memory_config
+        ),
+    )
+
+
+def copy(input_a: Tensor, input_b: Tensor) -> Tensor:
+    """Write input_a's logical data into input_b in place and return it.
+
+    Mirrors ttnn.copy, which writes through to an existing tensor rather than
+    allocating one, so callers holding ``input_b`` observe the result.  Only
+    input_b's logical extent is written; its tile padding keeps whatever it
+    already held, matching where :func:`_pad_to_tile_alignment` places logical
+    data.
+
+    Raises:
+        ValueError: the two tensors do not have the same logical shape, which
+            ttnn.copy also requires.
+    """
+    if tuple(input_a.shape) != tuple(input_b.shape):
+        raise ValueError(
+            f"copy shape mismatch: source {tuple(input_a.shape)} into destination "
+            f"{tuple(input_b.shape)}"
+        )
+    stored = input_b.to_torch()
+    lifted = (1,) * (stored.ndim - len(input_b.shape)) + tuple(input_b.shape)
+    region = tuple(slice(0, extent) for extent in lifted)
+    stored[region] = _logical_view(input_a).reshape(lifted).to(stored.dtype)
+    return input_b
+
+
+def deallocate(tensor: Tensor, force: bool = True) -> None:
+    """Release a tensor's buffer, after which reading it is an error.
+
+    Mirrors ttnn.deallocate.  The simulator does not model the allocator, so
+    nothing is freed here; what is modelled is the consequence a kernel can
+    observe, that the data is gone.  Reading a deallocated tensor raises rather
+    than returning the values it happened to hold, because a device would not
+    return them either and a simulator that did would let a use-after-free
+    produce a clean answer here and an arbitrary one on hardware.
+
+    ``force=False`` leaves the tensor alone.  ttnn then deallocates only when
+    the buffer has a single reference, which the simulator cannot determine;
+    invalidating anyway would fail a kernel whose tensor ttnn would have kept.
+
+    Raises:
+        RuntimeError: the tensor was already deallocated.
+    """
+    if not force:
+        return
+    if tensor._deallocated:
+        tensor._refuse_deallocated()
+    tensor._deallocated = True
+
+
+def _fill_pad_region(tensor: Tensor, value: float) -> Tensor:
+    """Write ``value`` into everything a tensor stores outside its logical extent."""
+    stored = tensor.to_torch()
+    lifted = (1,) * (stored.ndim - len(tensor.shape)) + tuple(tensor.shape)
+    if tuple(stored.shape) == lifted:
+        return tensor
+    kept = torch.zeros(stored.shape, dtype=torch.bool)
+    kept[tuple(slice(0, extent) for extent in lifted)] = True
+    stored[~kept] = value
+    return tensor
+
+
+def _slice(
+    input_tensor: Tensor,
+    slice_start: Sequence[int],
+    slice_end: Sequence[int],
+    slice_step: Optional[Sequence[int]] = None,
+    *,
+    memory_config: Optional[MemoryConfig] = None,
+    output_tensor: Optional[Tensor] = None,
+    pad_value: Optional[float] = None,
+    sub_core_grids: Optional[CoreRangeSet] = None,
+) -> Tensor:
+    """Take a strided range of a tensor along every dimension.
+
+    Mirrors ttnn.slice, whose ``slice_end`` is exclusive and whose
+    ``slice_step`` defaults to 1 on every dimension.  The range is taken from
+    the logical data and the result stored padded again, as :func:`reshape`
+    does: the store's padding does not lie at the indices the caller is naming,
+    so slicing the store would take padding for data.
+
+    Padding of the result is filled with ``pad_value``, or with NaN when the
+    caller does not give one.  ttnn documents the implicit tile padding of a
+    slice as undefined by default, and NaN is the only value that reports being
+    read: filling with zero would let a kernel that addresses padding it was
+    never promised produce a clean answer here and an arbitrary one on a
+    device.  An integer store has no NaN and keeps the zero it was padded with.
+
+    ``sub_core_grids`` selects the cores ttnn runs on and does not affect the
+    result, so it is accepted and ignored.
+
+    Raises:
+        ValueError: an index list does not have one entry per dimension, an
+            index lies outside the dimension it addresses, a step is not
+            positive, a step other than 1 is asked of a bfloat8_b tensor
+            (which ttnn does not support), or ``output_tensor`` does not have
+            the shape the slice produces.
+    """
+    logical = _logical_view(input_tensor)
+    rank = logical.ndim
+    start = [int(v) for v in slice_start]
+    end = [int(v) for v in slice_end]
+    step = [1] * rank if slice_step is None else [int(v) for v in slice_step]
+    if not len(start) == len(end) == len(step) == rank:
+        raise ValueError(
+            f"slice of a rank-{rank} tensor needs {rank} indices per list; got "
+            f"start={len(start)}, end={len(end)}, step={len(step)}"
+        )
+    for axis, (first, last, stride) in enumerate(zip(start, end, step)):
+        extent = logical.shape[axis]
+        if stride < 1:
+            raise ValueError(f"slice step must be positive; got {stride} on dim {axis}")
+        if not 0 <= first < extent:
+            raise ValueError(
+                f"slice start {first} is outside dim {axis} of extent {extent}"
+            )
+        if not 0 < last <= extent:
+            raise ValueError(
+                f"slice end {last} is outside dim {axis} of extent {extent}"
+            )
+    if any(stride != 1 for stride in step) and isinstance(
+        input_tensor.dtype, _BFloat8BDtype
+    ):
+        raise ValueError("ttnn.slice does not stride a bfloat8_b tensor")
+
+    taken = logical[
+        tuple(slice(f, l, s) for f, l, s in zip(start, end, step))
+    ].contiguous()
+    if output_tensor is not None:
+        if tuple(output_tensor.shape) != tuple(taken.shape):
+            raise ValueError(
+                f"slice produces {tuple(taken.shape)} but output_tensor has "
+                f"{tuple(output_tensor.shape)}"
+            )
+        return copy(from_torch(taken, layout=output_tensor.layout), output_tensor)
+    result = from_torch(
+        taken,
+        dtype=input_tensor.dtype,
+        layout=input_tensor.layout,
+        memory_config=(
+            input_tensor.memory_config if memory_config is None else memory_config
+        ),
+    )
+    if pad_value is not None:
+        return _fill_pad_region(result, float(pad_value))
+    if not result.to_torch().dtype.is_floating_point:
+        return result
+    return _fill_pad_region(result, float("nan"))
+
+
+def _result_storage(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Storage a golden-wrapped op's result must have.
+
+    A golden function computes values and nothing else: they declare ``**_``
+    and drop the dtype, layout, memory config and device they were given, so
+    ``ttnn.ones(shape, dtype=...)`` comes back float32 whatever was asked for,
+    and the wrapper has to record the request the golden discarded.
+
+    Explicit requests match by type rather than by position or name, because
+    ttnn spells the same request either way -- ``typecast(t, dtype)``
+    positionally, ``ones(shape, dtype=dtype)`` by keyword -- and each of these
+    four is a type no operand shares, so a scan cannot mistake one for an
+    operand.  Derived tensors inherit anything the call leaves unspecified from
+    their first tensor operand, as ttnn's clone, like, and elementwise operations
+    do.
+    """
+    asked: Dict[str, Any] = {}
+    for value in list(args) + list(kwargs.values()):
+        match value:
+            case torch.dtype() | _BFloat8BDtype():
+                asked.setdefault("dtype", value)
+            case IndexType():
+                asked.setdefault("layout", value)
+            case MemoryConfig():
+                asked.setdefault("memory_config", value)
+            case Device() | MeshDevice():
+                asked.setdefault("device", value)
+    source = next(_operand_tensors(list(args) + list(kwargs.values())), None)
+    if source is not None:
+        asked.setdefault("layout", source.layout)
+        asked.setdefault("memory_config", source.memory_config)
+        if source._device is not None:
+            asked.setdefault("device", source._device)
+    return asked
+
+
+def _inherit_result_dtype(
+    result: torch.Tensor,
+    asked: Dict[str, Any],
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Carry an operand's declared dtype when the golden preserves its store.
+
+    Comparisons and similar operations return a new native dtype, so inheriting
+    the first operand unconditionally would turn their boolean result into a
+    float tensor.  A unique declared dtype whose backing dtype matches the
+    golden result identifies clone, like, unary, and same-dtype arithmetic
+    results without overriding a genuinely type-changing operation.
+    """
+    if "dtype" in asked:
+        return asked
+    candidates = {
+        tensor.dtype
+        for tensor in _operand_tensors(list(args) + list(kwargs.values()))
+        if tensor.underlying_dtype == result.dtype
+    }
+    if len(candidates) == 1:
+        return {**asked, "dtype": candidates.pop()}
+    return asked
+
+
+def _tensor_from_golden(
+    result: torch.Tensor,
+    logical_shape: Optional[Sequence[int]],
+    asked: Dict[str, Any],
+    pad: bool,
+) -> Tensor:
+    """Store a golden's result as the call that produced it asked.
+
+    ``pad`` says the result is a created tensor rather than a derived one, so
+    the logical extent the golden returned is the only extent there is and the
+    store has to be padded out to leave the top-left invariant every other
+    tensor here holds.  A derived result is stored exactly as it arrives: it
+    already matches the extent of the operands it came from, which a caller
+    that built them from raw torch data is entitled to have left unpadded.
+    """
+    dtype = asked.get("dtype")
+    layout = asked.get("layout", TILE_LAYOUT)
+    if dtype is not None:
+        result = result.to(promote_dtype(dtype))
+    return Tensor(
+        _pad_to_tile_alignment(result, layout) if pad else result,
+        layout,
+        dtype=dtype,
+        logical_shape=(
+            tuple(result.shape) if logical_shape is None else tuple(logical_shape)
+        ),
+        **{k: asked[k] for k in ("memory_config", "device") if k in asked},
+    )
+
+
 # Dynamically generate wrapper functions for all ttnn operations with golden functions
 def _create_golden_wrapper(
     operation_name: str, golden_fn: Callable[..., Any]
@@ -3618,18 +4056,37 @@ def _create_golden_wrapper(
         # Compute on the logical data where the inputs carry padding, and store
         # the result padded again, so a wrapped op behaves as ttnn's does and
         # leaves a tensor indistinguishable from a created one.
+        asked = _result_storage(args, kwargs)
+        match operation_name:
+            case "tilize":
+                asked["layout"] = TILE_LAYOUT
+            case "untilize":
+                asked["layout"] = ROW_MAJOR_LAYOUT
         logical_result = _golden_logical_result(golden_fn, args, kwargs)
         if logical_result is not None:
-            return Tensor(
-                _pad_to_tile_alignment(logical_result, TILE_LAYOUT),
-                logical_shape=tuple(logical_result.shape),
+            return _tensor_from_golden(
+                logical_result,
+                tuple(logical_result.shape),
+                _inherit_result_dtype(logical_result, asked, args, kwargs),
+                pad=True,
             )
 
-        # Convert Tensor arguments to torch.Tensor
+        # Falling back to the padded run makes the padding part of the
+        # computation, which is only harmless when there is none.  Refusing the
+        # rest is what lets an op be served on the strength of its logical run
+        # alone, rather than on a hand-maintained list of the ops whose padded
+        # run is known to be wrong: a wrong answer here is silent, and the
+        # caller cannot tell which run produced it.
+
+        # Convert Tensor arguments to torch.Tensor, reaching through the
+        # sequence a join passes its operands in as _golden_logical_result
+        # does, so an unpadded join is served here rather than declined.
         def convert_arg(arg: Any) -> Any:
             match arg:
                 case Tensor():
                     return arg.to_torch()
+                case list() | tuple():
+                    return type(arg)(convert_arg(item) for item in arg)
                 case _:
                     return arg
 
@@ -3643,10 +4100,29 @@ def _create_golden_wrapper(
         # shape where the elementwise rule can supply one.
         match result:
             case torch.Tensor():
-                logical = _elementwise_logical_shape(
-                    result, list(args) + list(kwargs.values())
+                operands = list(args) + list(kwargs.values())
+                logical = _elementwise_logical_shape(result, operands)
+                # An op that broadcast its operands' padded extents to its
+                # result left the padding where it found it, in the pad region,
+                # so the padded run answered what the logical one would have.
+                # Anything else moved the padding into the result, and is
+                # refused rather than returned: a wrong answer here is silent,
+                # and the caller cannot tell which of the two runs produced it.
+                # Refusing on this rather than on a name is what lets an op be
+                # served on the strength of its own behaviour.
+                if logical is None and _has_padded_operand(args, kwargs):
+                    raise NotImplementedError(
+                        f"ttnn.{operation_name} cannot be simulated on operands "
+                        f"that carry tile padding: its golden function declined "
+                        f"the logical extents, and on the padded store it does "
+                        f"not leave the padding in the pad region."
+                    )
+                return _tensor_from_golden(
+                    result,
+                    logical,
+                    _inherit_result_dtype(result, asked, args, kwargs),
+                    pad=not any(True for _ in _operand_tensors(operands)),
                 )
-                return Tensor(result, logical_shape=logical)
             case _:
                 return result
 
@@ -3659,89 +4135,108 @@ def _create_golden_wrapper(
     return wrapper
 
 
-# Python builtins this module calls.  The loop below binds each wrapper into
-# globals(), which for one of these names would shadow the builtin for every
-# function in the file.
-_SHADOWS_A_BUILTIN = {
-    "min",
-    "max",
-    "sum",
-}
-
 # Operations the simulator leaves unavailable rather than serve from a golden
-# function.  Each either creates a tensor or decides how one is stored -- its
-# layout, its dtype width, its padding, which core holds which shard -- and how
-# a tensor is stored is the simulator's own business, so a golden run cannot
-# say where the result lands.  Reaching one of these raises AttributeError,
-# which names the gap; a wrapper would answer with a tensor laid out wrongly.
+# function, because a golden run cannot say where their result lands and
+# answering with a tensor laid out wrongly is worse than the AttributeError
+# reaching one of these raises, which names the gap.  Each is here for one of
+# two reasons, and both are narrower than they once were: _tensor_from_golden
+# now carries a call's dtype, layout, memory config and device onto the result,
+# and _golden_logical_result runs an op on logical data and re-pads the result,
+# which between them serve every op whose only gap was one of those.
+#
+# Rearranging an operand's data where the logical run cannot stand in (pad,
+# bitcast): both are defined on the store rather than on the logical data, so
+# running them on a logical view answers a different question than the call
+# asked.  pad adds explicit padding, which the logical run would conflate with
+# the tile padding it just stripped; bitcast reinterprets the bytes of a dtype,
+# which the logical extent does not determine.
+#
+# Placement the simulator does not model (to_device, from_device, reallocate,
+# reshard, sharded_to_interleaved, interleaved_to_sharded, and the _partial
+# spellings): there is no residency or allocation here for a golden to compute,
+# so these want hand-written metadata ops, as to_memory_config and to_layout
+# already are.
+#
+# Two exceptions belong to neither: arange's golden returns int64 where ttnn
+# defaults to bfloat16, and empty_like's golden demands a fill_value its ttnn
+# signature makes optional, so both would fail a call that ttnn accepts.
 _DECIDES_THE_STORE = {
     "arange",
     "bitcast",
-    "clone",
-    "concat",
     "empty_like",
     "from_device",
-    "full",
-    "full_like",
     "interleaved_to_sharded",
     "interleaved_to_sharded_partial",
-    "ones",
-    "ones_like",
     "pad",
-    "permute",
     "reallocate",
-    "reshape",
     "reshard",
     "sharded_to_interleaved",
     "sharded_to_interleaved_partial",
-    "tilize",
     "to_device",
-    "to_dtype",
-    "to_layout",
-    "typecast",
-    "zeros_like",
 }
 
-# Names the golden-function loop below must not bind.  Anything this module
-# already defines is skipped there in any case, so only names it does not
-# define belong here -- a name that is both would be a claim about this module
-# that could go stale, and test_ttnnsim pins that it cannot.
-_EXCLUDE_FROM_WRAPPING = _SHADOWS_A_BUILTIN | _DECIDES_THE_STORE
+# Operations this module implements itself but cannot name in globals(),
+# because the name is a builtin the module calls: defining `slice` above would
+# shadow the builtin for every call in this file, `_logical_view` and `copy`
+# among them.  Held here for the same reason _GOLDEN_WRAPPERS is, and served
+# ahead of the golden path, which has nothing to offer for these names anyway.
+_HAND_WRITTEN: Dict[str, Callable[..., Any]] = {"slice": _slice}
 
-# Get all operations with golden functions and create wrappers at module load time
-if TTNN_AVAILABLE:
-    import ttnn  # type: ignore[reportMissingImports]  # Re-import for type checker to know ttnn is bound in this block
+# Wrappers built by __getattr__, kept out of globals() so that a wrapped op
+# named after a builtin this module calls (sum, min, max) cannot shadow the
+# builtin: a module's globals are searched before the builtins, but only
+# attribute access on the module consults __getattr__.
+_GOLDEN_WRAPPERS: Dict[str, Callable[..., Any]] = {}
 
-    _operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
 
-    for _op_name in _operations_to_wrap:
-        # Skip if already in our namespace or in exclude list
-        if _op_name in globals() or _op_name in _EXCLUDE_FROM_WRAPPING:
-            continue
+def __getattr__(name: str) -> Any:
+    """Serve a ttnn operation this module does not define from its golden function.
 
-        _op = getattr(ttnn, _op_name)
+    Python calls this only for names that are not already module attributes, so
+    everything defined above wins without needing to be listed anywhere, and a
+    name in :data:`_DECIDES_THE_STORE` stays unavailable.
 
-        # Skip non-callable attributes (classes, constants, etc.)
-        if not callable(_op):
-            continue
+    Raises:
+        AttributeError: ttnn is not installed, the name is not a callable ttnn
+            operation, it has no golden function, or the simulator decides that
+            operation's storage itself.
+    """
+    hand_written = _HAND_WRITTEN.get(name)
+    if hand_written is not None:
+        return hand_written
+    if (
+        not TTNN_AVAILABLE
+        or name.startswith("_")
+        or name in _DECIDES_THE_STORE
+        or not callable(getattr(ttnn, name, None))
+    ):
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    wrapper = _GOLDEN_WRAPPERS.get(name)
+    if wrapper is not None:
+        return wrapper
+    try:
+        golden_fn = ttnn.get_golden_function(getattr(ttnn, name))
+    except (RuntimeError, AttributeError):
+        # RuntimeError: the operation has no golden function.  AttributeError:
+        # the attribute is not an operation at all (an enum, a class).
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    wrapper = _create_golden_wrapper(name, golden_fn)  # type: ignore[arg-type]
+    _GOLDEN_WRAPPERS[name] = wrapper
+    return wrapper
 
-        try:
-            _golden_fn = ttnn.get_golden_function(_op)  # type: ignore[union-attr]
-            # Create wrapper and add to module globals
-            globals()[_op_name] = _create_golden_wrapper(
-                _op_name, _golden_fn  # type: ignore[arg-type]
-            )
-        except (RuntimeError, AttributeError):
-            # RuntimeError: Operation doesn't have a golden function
-            # AttributeError: Object doesn't have golden_function attribute (e.g., enums, classes)
-            # Both are expected for many ttnn attributes - skip them
-            continue
-        # Let other exceptions propagate - they indicate real bugs
 
-    # Clean up temporary variables
-    _cleanup_name: Optional[str] = None
-    for _cleanup_name in ("_operations_to_wrap", "_op_name", "_op", "_golden_fn"):
-        if _cleanup_name in globals():
-            del globals()[_cleanup_name]
-    if _cleanup_name is not None:
-        del _cleanup_name
+def __dir__() -> List[str]:
+    """Names this module offers, including the golden-backed ones.
+
+    ``dir()`` on a module reports its globals, which the golden-backed
+    operations are deliberately not in; without this they would be invisible to
+    tab completion and to code that inspects the module.
+    """
+    names = set(globals()) | set(_HAND_WRITTEN)
+    if TTNN_AVAILABLE:
+        names.update(
+            name
+            for name in dir(ttnn)
+            if not name.startswith("_") and name not in _DECIDES_THE_STORE
+        )
+    return sorted(names)
