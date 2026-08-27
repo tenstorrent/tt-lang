@@ -272,7 +272,8 @@ public:
       failureReason = "8x32 reduction supports only bf16 and f32 tiles";
       return failure();
     }
-    if (capability.reduceDimension != ttkernel::ReduceDim::Row) {
+    if (capability.reduceDimension &&
+        *capability.reduceDimension != ttkernel::ReduceDim::Row) {
       failureReason = "8x32 reduction supports only row reduction";
       return failure();
     }
@@ -527,7 +528,7 @@ FailureOr<ReductionCapability>
 getReductionCapability(Operation *operation, std::string &failureReason) {
   auto buildCapability = [&](Type input, Type scaler, Type result,
                              ReduceType reduceType,
-                             ttkernel::ReduceDim reduceDimension)
+                             std::optional<ttkernel::ReduceDim> reduceDimension)
       -> FailureOr<ReductionCapability> {
     FailureOr<ttcore::TileType> inputType =
         getRequiredTileType(input, "reduction input", failureReason);
@@ -554,16 +555,16 @@ getReductionCapability(Operation *operation, std::string &failureReason) {
       failureReason = "expected reduction input to be a ranked tensor";
       return failure();
     }
-    FailureOr<ttkernel::ReduceDim> reduceDimension =
+    std::optional<ttkernel::ReduceDim> reduceDimension;
+    FailureOr<ttkernel::ReduceDim> hardwareDimension =
         getReduceDimension(reduction.getDims(), inputType.getRank());
-    if (failed(reduceDimension)) {
-      failureReason = "has unsupported reduction dimensions";
-      return failure();
+    if (succeeded(hardwareDimension)) {
+      reduceDimension = *hardwareDimension;
     }
     return buildCapability(reduction.getInput().getType(),
                            reduction.getScaler().getType(),
                            reduction.getResult().getType(),
-                           reduction.getReduceType(), *reduceDimension);
+                           reduction.getReduceType(), reduceDimension);
   }
   if (auto reduction = dyn_cast<TileReduceOp>(operation)) {
     return buildCapability(reduction.getInput().getType(),

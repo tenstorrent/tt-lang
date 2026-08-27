@@ -30,6 +30,13 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
   // generated IDs during this walk could collide with a later declaration.
   WalkResult discoveryResult = moduleOp.walk([&](BindCBOp bindOp) {
     declarations.push_back(bindOp);
+    if (bindOp->hasAttr(kCompilerAllocatedAttrName) &&
+        bindOp.getAllocationGroupAttr()) {
+      errorOperation = bindOp;
+      errorMessage =
+          "compiler-created DFB cannot declare a user allocation group";
+      return WalkResult::interrupt();
+    }
     if (auto dfbId = bindOp.getDfbId()) {
       int64_t logicalId = dfbId->getSExtValue();
       maxExplicitId = std::max(maxExplicitId, logicalId);
@@ -95,7 +102,30 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
       errorMessage = messageStream.str();
       return;
     }
-    assignments.push_back({bindOp, logicalId});
+    if (!inserted && firstDeclarationIt->second.getAllocationGroupAttr() !=
+                         bindOp.getAllocationGroupAttr()) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "logical DFB " << logicalId
+                    << " has inconsistent allocation groups across kernel "
+                       "functions: expected ";
+      if (Attribute expected =
+              firstDeclarationIt->second.getAllocationGroupAttr()) {
+        messageStream << expected;
+      } else {
+        messageStream << "none";
+      }
+      messageStream << " but found ";
+      if (Attribute found = bindOp.getAllocationGroupAttr()) {
+        messageStream << found;
+      } else {
+        messageStream << "none";
+      }
+      errorOperation = bindOp;
+      errorMessage = messageStream.str();
+      return;
+    }
+    assignments.push_back({bindOp, logicalId, bindOp.getAllocationGroupAttr()});
     logicalIds[bindOp.getOperation()] = logicalId;
   }
 }

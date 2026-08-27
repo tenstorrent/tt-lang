@@ -1,7 +1,7 @@
 // RUN: ttlang-launch-node-domain-test %s | FileCheck %s
 
 // Summary: Prints launch-node lattice values for exact, empty, and bounded
-// unknown execution domains, including a bound covering the complete grid.
+// unknown execution domains and conditional-execution equivalence results.
 
 // CHECK:      entry = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: x_zero = {(0,0), (0,1)}
@@ -11,6 +11,8 @@
 // CHECK-NEXT: bounded_unknown = <unknown> within {(0,0), (0,1)}
 // CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: kernel_argument_condition = equivalent
+// CHECK-NEXT: helper_argument_condition = not-equivalent
 // CHECK-NOT:  =
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
@@ -52,6 +54,35 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
     %undeclared = ttl.is_src {pipe_net_id = 7 : i64}
     scf.if %undeclared {
       "test.observe"() {test.label = "undeclared_pipe"} : () -> ()
+    }
+    func.return
+  }
+
+  // One kernel entry argument has the same runtime value throughout one
+  // launched kernel instance.
+  func.func @kernel_argument_condition(%condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    scf.if %condition {
+      "test.observe"() {test.conditional_pair = "kernel_argument_condition"}
+          : () -> ()
+    }
+    scf.if %condition {
+      "test.observe"() {test.conditional_pair = "kernel_argument_condition"}
+          : () -> ()
+    }
+    func.return
+  }
+
+  // A helper argument can receive different values at separate call sites, so
+  // SSA identity inside the helper does not prove one runtime condition.
+  func.func private @helper_argument_condition(%condition: i1) {
+    scf.if %condition {
+      "test.observe"() {test.conditional_pair = "helper_argument_condition"}
+          : () -> ()
+    }
+    scf.if %condition {
+      "test.observe"() {test.conditional_pair = "helper_argument_condition"}
+          : () -> ()
     }
     func.return
   }

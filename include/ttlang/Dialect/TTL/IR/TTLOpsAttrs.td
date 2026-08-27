@@ -31,6 +31,120 @@ def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_DispatchConditionAttr
+    : TTL_Attr<"DispatchCondition", "dispatch_condition"> {
+  let summary = "Module-local dispatch-stable condition identity";
+  let description = [{
+    Identifies one immutable condition declaration within a module. Equal
+    attributes reference the same condition and evaluate to the same truth
+    value for one dispatch and launch coordinate. Distinct conditions within a
+    module require distinct ordinals. Zero is false and nonzero is true. The
+    value may differ between launch coordinates or dispatches.
+
+    The ordinal is module-local and has no runtime meaning. The scalar type
+    is the external result carrier and must be signless i32 or i64.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    "Type":$scalarType
+  );
+  let assemblyFormat = "`<` $ordinal `,` $scalarType `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DFBAllocationGroupAttr
+    : TTL_Attr<"DFBAllocationGroup", "dfb_allocation_group"> {
+  let summary = "Module-local verified dataflow buffer allocation identity";
+  let description = [{
+    Identifies logical dataflow buffers that must receive one physical DFB
+    index after the compiler proves compatible static configuration, storage,
+    non-overlapping lifecycles, and reusable protocol state. Equal attributes
+    identify one group. Distinct attributes impose no allocation relationship.
+
+    `$ordinal` is module-local and has no runtime meaning. The attribute does
+    not synchronize execution, reset DFB state, or by itself permit an
+    interference edge to be removed.
+  }];
+  let parameters = (ins "int64_t":$ordinal);
+  let assemblyFormat = "`<` $ordinal `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_SynchronizedDFBResetAttr
+    : TTL_Attr<"SynchronizedDFBReset", "synchronized_dfb_reset"> {
+  let summary = "Worker-local synchronized dataflow buffer reset identity";
+  let description = [{
+    Identifies one synchronized reset declaration and the complete set of
+    logical kernels that participate on each active worker. Every participant
+    reaches each corresponding dynamic instance before any participant
+    returns. A declaration in an immutable sequential structured loop denotes
+    one reset instance per iteration; participant loops must define the same
+    nested iteration sequence. The reset establishes canonical read-pointer,
+    write-pointer, occupancy, and initialization state for each target declared
+    by the operation.
+
+    The ordinal is module-local and has no runtime meaning. Equal attributes
+    reference the same reset instance or statically repeated instance sequence.
+    Distinct ordinals identify independent reset declarations. Participant
+    order is canonical and otherwise semantically insignificant. The
+    participant set contains one compute kernel and both data movement kernels
+    that own DFB interface state. Each participant executes the declaration at
+    most once at each point in the enclosing nested iteration sequence and
+    launch node.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
+  );
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
+  let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    static SynchronizedDFBResetAttr getCheckedInstance(
+        ::mlir::Location location, ::mlir::MLIRContext *context,
+        int64_t ordinal,
+        ::llvm::ArrayRef<LogicalKernelAttr> participants);
+  }];
+}
+
+def TTL_DFBReconfigurationAttr
+    : TTL_Attr<"DFBReconfiguration", "dfb_reconfiguration"> {
+  let summary = "Worker-local synchronized DFB configuration-epoch boundary";
+  let description = [{
+    Identifies one worker-local DFB configuration-epoch boundary site and
+    the complete set of logical kernels that participate on each active worker.
+    Every site executes zero or one dynamic instance per dispatch and launch
+    node. Every participant executes the same instances in the same order, and
+    every boundary site in one module declares the same participant set.
+    DFB-interface work ordered before the boundary completes before the runtime
+    installs the next epoch's configuration. DFB-interface work ordered after
+    the boundary begins after installation. Independent math and SFPU work may
+    overlap the boundary.
+
+    This attribute identifies synchronization only. Source programs retain
+    logical DFB identities across boundaries; physical indices and epoch
+    configurations are compiler-owned. A DFB with live payload or incomplete
+    protocol state cannot cross the boundary unless its physical index,
+    storage, and complete interface configuration remain unchanged.
+
+    The ordinal is module-local and has no runtime meaning. Equal attributes
+    reference the same boundary site. Distinct ordinals identify distinct
+    boundary sites. Participant order is canonical and otherwise
+    semantically insignificant.
+  }];
+  let parameters = (ins
+    "int64_t":$ordinal,
+    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
+  );
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
+  let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    static DFBReconfigurationAttr getCheckedInstance(
+        ::mlir::Location location, ::mlir::MLIRContext *context,
+        int64_t ordinal,
+        ::llvm::ArrayRef<LogicalKernelAttr> participants);
+  }];
+}
+
 def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   let summary = "Slice specification for core range";
   let parameters = (ins
@@ -270,6 +384,29 @@ def TTL_DFBProtocolEffectAttr
 def TTL_DFBProtocolEffectArrayAttr
     : TypedArrayAttrBase<TTL_DFBProtocolEffectAttr,
                          "ordered dataflow buffer protocol effects">;
+
+def TTL_DFBNonTransactionalAccessAttr
+    : TTL_Attr<"DFBNonTransactionalAccess", "dfb_non_transactional_access"> {
+  let summary = "One synchronous non-transactional dataflow buffer access";
+  let description = [{
+    Describes an external call's use of one ordered DFB dependency without a
+    reserve, push, wait, or pop transaction. `dependency_index` selects the
+    call's ordered DFB dependency list. `inspect` states that the callee may
+    read the DFB descriptor or contents but does not publish, consume, or leave
+    the DFB changed when it returns. The call must complete all associated work
+    synchronously.
+  }];
+  let parameters = (ins
+    "DFBNonTransactionalAccessKind":$kind,
+    "int64_t":$dependencyIndex
+  );
+  let assemblyFormat = "`<` $kind `,` $dependencyIndex `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DFBNonTransactionalAccessArrayAttr
+    : TypedArrayAttrBase<TTL_DFBNonTransactionalAccessAttr,
+                         "ordered non-transactional dataflow buffer accesses">;
 
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";

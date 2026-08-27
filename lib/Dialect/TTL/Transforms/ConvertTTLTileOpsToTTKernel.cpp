@@ -34,6 +34,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 
+#include <limits>
 #include <type_traits>
 
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
@@ -1131,6 +1132,29 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
   }
 };
 
+struct TTLTileReductionInitToTTKernel
+    : OpConversionPattern<TileReductionInitOp> {
+  using OpConversionPattern<TileReductionInitOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileReductionInitOp op, TileReductionInitOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    float identity = op.getReduceType() == ReduceType::Sum
+                         ? 0.0f
+                         : -std::numeric_limits<float>::infinity();
+    Value fillValue = arith::ConstantOp::create(
+        rewriter, op.getLoc(), rewriter.getF32FloatAttr(identity));
+    ttk::FillTileOp::create(rewriter, op.getLoc(), adaptor.getDstIndex(),
+                            fillValue);
+
+    auto cast = UnrealizedConversionCastOp::create(
+        rewriter, op.getLoc(), TypeRange{op.getResult().getType()},
+        ValueRange{adaptor.getDstIndex()});
+    rewriter.replaceOp(op, cast.getResult(0));
+    return success();
+  }
+};
+
 struct TTLTileMulUnaryConstToTTKernel
     : OpConversionPattern<TileMulUnaryConstOp> {
   using OpConversionPattern<TileMulUnaryConstOp>::OpConversionPattern;
@@ -1187,6 +1211,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // DST-based ops.
   patterns.add<TTLTileFillToTTKernel>(ctx);
+  patterns.add<TTLTileReductionInitToTTKernel>(ctx);
+  patterns.add<TTLTileBinaryToTTKernel<
+      TileAddInPlaceOp, ttk::AddBinaryTilesInitOp, ttk::AddBinaryTilesOp>>(ctx);
   patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
   patterns.add<TTLTileExpToTTKernel>(ctx);

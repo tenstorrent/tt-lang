@@ -31,6 +31,12 @@ Coverage:
     kernels are cloned (per-clone tensor indices / core ranges).
   * emit_runner_executes: emitted runner, run cold, reproduces the swap
     (per-kernel core ranges and NOC roles baked into the template).
+  * subset_dfb: an extra DFB is reserved and waited only on column-0 cores.
+    Specialization folds that use away on the other cores; the kernel still
+    runs on device. Clone `ttl.used_dfb_indices` values are checked against a
+    fixture with fixed indices (column-0 keeps 0 and 1; column-1 keeps 0). The
+    pass itself is covered by
+    `test/ttlang/Dialect/TTKernel/Transforms/specialize_cores_dfb_use_elision.mlir`.
 """
 
 import os
@@ -43,6 +49,9 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import torch
 
 import ttl
+import ttl.dialects.ttl as ttl_dialect
+import ttl.ttl_api as ttl_api
+from ttl.ir import Context, Module
 from ttlang_test_utils import assert_pcc, to_dram
 
 TILE_SIZE = 32
@@ -262,6 +271,122 @@ def test_specialize_cores_branch_matches_reference(device, monkeypatch, tmp_path
 
     # The reader branches on core_x, so it must be cloned once per core.
     _assert_reader_cloned(str(final_mlir))
+
+
+# An extra DFB is live only on column-0 cores. The reader and compute both
+# branch on `x == 0`, so specialization clones them and folds the extra
+# reserve/wait away on column 1. Column 0 writes `a + extra`; column 1 writes
+# `a`. Extra is one tile-column so only the live cores address it.
+def _make_subset_dfb_op():
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def subset_dfb(a, extra, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        extra_dfb = ttl.make_dataflow_buffer_like(extra, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute_fn():
+            x, _y = ttl.node(dims=2)
+            if x == 0:
+                with (
+                    a_dfb.wait() as a_tile,
+                    extra_dfb.wait() as extra_tile,
+                    out_dfb.reserve() as o,
+                ):
+                    o.store(a_tile + extra_tile)
+            else:
+                with a_dfb.wait() as a_tile, out_dfb.reserve() as o:
+                    o.store(a_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            x, y = ttl.node(dims=2)
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[y, x], blk)
+                tx.wait()
+            if x == 0:
+                with extra_dfb.reserve() as extra_blk:
+                    tx = ttl.copy(extra[y, 0], extra_blk)
+                    tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            x, y = ttl.node(dims=2)
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[y, x])
+                tx.wait()
+
+    return subset_dfb
+
+
+subset_dfb_specialized = _make_subset_dfb_op()
+
+# Clone names and DFB slots for the specialized subset-DFB kernel. Column-0
+# keeps the shared tile (0) and the extra tile (1); column-1 keeps only 0.
+# Compute also uses the output tile (2).
+_SUBSET_DFB_SPECIALIZED_MLIR = """
+module {
+  func.func @dm_read_c0_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0, 1>
+  } {
+    return
+  }
+  func.func @dm_read_c1_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0>
+  } {
+    return
+  }
+  func.func @compute_fn_c0_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0, 1, 2>
+  } {
+    return
+  }
+  func.func @compute_fn_c1_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0, 2>
+  } {
+    return
+  }
+}
+"""
+
+
+def test_specialize_cores_used_dfb_indices_match_cloned_funcs():
+    """Column-0 clones keep DFB 1; column-1 clones keep only the shared slots."""
+    context = Context()
+    ttl_dialect.ensure_dialects_registered(context)
+    with context:
+        module = Module.parse(_SUBSET_DFB_SPECIALIZED_MLIR)
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "dm_read_c0_0", "ttl.used_dfb_indices"
+        ) == [0, 1]
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "dm_read_c1_0", "ttl.used_dfb_indices"
+        ) == [0]
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "compute_fn_c0_0", "ttl.used_dfb_indices"
+        ) == [0, 1, 2]
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "compute_fn_c1_0", "ttl.used_dfb_indices"
+        ) == [0, 2]
+
+
+def test_specialize_cores_subset_dfb_runs_on_device(device):
+    """A DFB used only on column-0 cores stays correct after specialization."""
+    assert GRID_X == 2, "subset DFB reference assumes a two-column launch grid"
+    a_shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    extra_shape = (GRID_Y * TILE_SIZE, TILE_SIZE)
+    a_torch = torch.randn(a_shape, dtype=torch.bfloat16)
+    extra_torch = torch.randn(extra_shape, dtype=torch.bfloat16)
+    expected = a_torch.clone()
+    expected[:, :TILE_SIZE] = a_torch[:, :TILE_SIZE] + extra_torch
+
+    a = to_dram(a_torch, device)
+    extra = to_dram(extra_torch, device)
+    out = to_dram(torch.zeros(a_shape, dtype=torch.bfloat16), device)
+
+    subset_dfb_specialized(a, extra, out, options="--ttl-specialize-cores")
+
+    assert_pcc(expected, ttnn.to_torch(out))
 
 
 def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):

@@ -14,6 +14,12 @@ from ttl.dialects import arith, func, scf, ttcore, ttkernel
 from ttl.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
+from ..condition import DispatchCondition, _BoundDispatchCondition
+from ..dfb_reset import DFBReset, _BoundDFBReset
+from ..dfb_reconfiguration import (
+    DFBReconfiguration,
+    _BoundDFBReconfiguration,
+)
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
@@ -23,20 +29,29 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
-from ..kernel import _DFB_RELEASE_METHODS, _format_selector
 from ..fabric import FabricManagerClaim, FabricManagerEffectKind
+from ..kernel import (
+    Kernel,
+    KernelKind,
+    _DFB_RELEASE_METHODS,
+    _format_selector,
+    _selector_implicit_role,
+    _selector_kind,
+    _selector_sort_key,
+)
+from ..scalar import ScalarType
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
     is_auto_profile_enabled,
 )
+from .atom_inline import _DFB_SOURCE_OCCURRENCE
 from .global_semaphore import (
     get_ttnn_global_semaphore_address,
     is_ttnn_global_semaphore,
 )
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 from ..pipe import DstPipeIdentity, SrcPipeIdentity
-
 
 # Use the same 4096-item scale as other bounded static enumerations in the
 # compiler. External protocol summaries are expected to be much shorter; this
@@ -72,12 +87,22 @@ def _saturating_add_expanded_dfb_effect_count(
     return current_effect_count + body_effect_count * repeat_count
 
 
+_MISSING_STATIC_VALUE = object()
+
+
 @dataclass(frozen=True)
 class _ExternalTemplateArg:
     """Separate compile-time payloads from DFB values needed by allocation."""
 
     kind: object
     value: object
+    dfb_source_occurrence: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _ExternalDFBDependency:
+    dfb: object
+    source_occurrence: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -87,6 +112,7 @@ class _ExternalDFBEffect:
     kind: object
     dfb: object
     num_tiles: int
+    source_occurrence: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -95,6 +121,15 @@ class _ExternalDFBEffectRepeat:
 
     count: int
     effects: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class _ExternalDFBAccess:
+    """One parsed external-call non-transactional DFB access."""
+
+    kind: object
+    dfb: object
+    source_occurrence: Optional[str]
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
@@ -522,6 +557,53 @@ class TTLGenericCompiler(TTCompilerBase):
                 raise ValueError("Tuple unpacking requires simple variable names")
             self._set_var(elt.id, val)
 
+    def visit_AnnAssign(self, node):
+        """Keep expressions derived from external scalar results as SSA."""
+        if node.value is not None and self._contains_external_scalar_result(node.value):
+            if not isinstance(node.target, ast.Name):
+                self._raise_error(
+                    node.target,
+                    "an annotated external scalar result requires a name target",
+                )
+            value = self.visit(node.value)
+            if value is None:
+                self._raise_error(
+                    node.value,
+                    "an annotated external scalar expression must produce a value",
+                )
+            self._set_var(node.target.id, value)
+            return
+        return super().visit_AnnAssign(node)
+
+    def _contains_external_scalar_result(self, root):
+        for candidate in ast.walk(root):
+            if not isinstance(candidate, ast.Call) or not self._is_ttl_api_call(
+                candidate, "call_extern_func"
+            ):
+                continue
+            result_type_node = next(
+                (
+                    keyword.value
+                    for keyword in candidate.keywords
+                    if keyword.arg == "result_type"
+                ),
+                None,
+            )
+            condition_result_node = next(
+                (
+                    keyword.value
+                    for keyword in candidate.keywords
+                    if keyword.arg == "condition_result"
+                ),
+                None,
+            )
+            if condition_result_node is not None or (
+                result_type_node is not None
+                and self._resolve_scalar_type(result_type_node) is not None
+            ):
+                return True
+        return False
+
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
         if self.debug_locations and hasattr(node, "lineno"):
@@ -628,6 +710,15 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 if self._is_ttl_api_call(node, "call_extern_func"):
                     return self.visit_Call_Extern_Func(node, node.args, node.keywords)
+
+                if self._is_ttl_api_call(node, "reset_dfbs"):
+                    return self._visit_reset_dfbs(node, reset_all=False)
+
+                if self._is_ttl_api_call(node, "reset_all_dfbs"):
+                    return self._visit_reset_dfbs(node, reset_all=True)
+
+                if self._is_ttl_api_call(node, "reconfigure_dfbs"):
+                    return self._visit_dfb_reconfiguration(node)
 
                 if self._is_ttl_api_call(node, "raw_addr"):
                     return self._visit_raw_addr(node)
@@ -925,6 +1016,31 @@ class TTLGenericCompiler(TTCompilerBase):
             ttl.yield_([])
 
         return None  # Statement, no return value
+
+    def _coerce_binary_operands(self, left_value, right_value, left_node, right_node):
+        if (
+            left_value.type != right_value.type
+            and isinstance(left_value.type, IntegerType)
+            and isinstance(right_value.type, IntegerType)
+        ):
+            raise TypeError(
+                "integer operands require matching widths, got "
+                f"{left_value.type} and {right_value.type}"
+            )
+        return super()._coerce_binary_operands(
+            left_value, right_value, left_node, right_node
+        )
+
+    def _materialize_integer_literal(self, node, value: int, integer_type: IntegerType):
+        bit_width = integer_type.width
+        minimum = -(1 << (bit_width - 1))
+        maximum = (1 << (bit_width - 1)) - 1
+        if not minimum <= value <= maximum:
+            self._raise_error(
+                node,
+                f"integer literal {value} does not fit in signed i{bit_width}",
+            )
+        return arith.ConstantOp(integer_type, value).result
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""
@@ -1381,6 +1497,10 @@ class TTLGenericCompiler(TTCompilerBase):
         }
         if tensor_backing is not None:
             bind_attributes["tensor_backing"] = tensor_backing
+        if cb.allocation_group is not None:
+            bind_attributes["allocation_group"] = ttl.DFBAllocationGroupAttr.get(
+                self.ctx, cb.allocation_group.ordinal
+            )
         return ttl.bind_cb(cb_type, cb._cb_index, **bind_attributes)
 
     def _emit_pipe_from_capture(
@@ -1495,6 +1615,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 if is_ttnn_tensor(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
+                if val is None:
+                    continue
                 if type(val) is bool:
                     self._set_var(
                         name,
@@ -1506,6 +1628,10 @@ class TTLGenericCompiler(TTCompilerBase):
                     self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
                     self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
+                elif isinstance(val, (tuple, list)):
+                    # Shape and axis lists are consumed by the Python-level API,
+                    # exactly as an inline literal would be.
+                    self._set_var(name, val)
                 elif isinstance(val, DataflowBuffer):
                     self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):
@@ -1521,6 +1647,14 @@ class TTLGenericCompiler(TTCompilerBase):
                     self._set_var(name, val)
                 elif isinstance(val, FabricManagerClaim):
                     self._set_var(name, val)
+                elif (
+                    val is ScalarType
+                    or isinstance(val, ScalarType)
+                    or isinstance(val, _BoundDispatchCondition)
+                    or isinstance(val, _BoundDFBReset)
+                    or isinstance(val, _BoundDFBReconfiguration)
+                ):
+                    continue
                 elif is_ttnn_global_semaphore(val):
                     sem_addr = get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
@@ -2023,7 +2157,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(
                     node.args[0], f"{wrapper_name} argument must be a DFB"
                 )
-            return _ExternalTemplateArg(kind, dfb_value)
+            return _ExternalTemplateArg(
+                kind,
+                dfb_value,
+                getattr(node.args[0], _DFB_SOURCE_OCCURRENCE, None),
+            )
 
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "get_dfb_id"):
             return _dfb_reference(arg_kind.DFBIndex)
@@ -2210,14 +2348,240 @@ class TTLGenericCompiler(TTCompilerBase):
             "resolvable bool",
         )
 
-    def _resolve_dfb_value(self, node, param_name):
+    def _resolve_static_reference(self, node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            for namespace in (self.captures, self.fn_globals):
+                if node.id in namespace:
+                    return namespace[node.id]
+            return _MISSING_STATIC_VALUE
+        if not isinstance(node, ast.Attribute):
+            return _MISSING_STATIC_VALUE
+        owner = self._resolve_static_reference(node.value)
+        if owner is _MISSING_STATIC_VALUE:
+            return _MISSING_STATIC_VALUE
+        return inspect.getattr_static(owner, node.attr, _MISSING_STATIC_VALUE)
+
+    def _resolve_scalar_type(self, node):
+        """Resolve a statically known ScalarType without emitting SSA."""
+        result_type = self._resolve_static_reference(node)
+        if result_type is None:
+            return None
+        if not isinstance(result_type, ScalarType):
+            type_detail = (
+                ""
+                if result_type is _MISSING_STATIC_VALUE
+                else f", got {type(result_type).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() result_type must be "
+                "ttl.ScalarType.I32 or ttl.ScalarType.I64" + type_detail,
+            )
+        return result_type
+
+    def _resolve_dispatch_condition(self, node):
+        """Resolve a module-local dispatch condition declaration."""
+        condition = self._resolve_static_reference(node)
+        if isinstance(condition, DispatchCondition):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() condition_result must be captured by "
+                "an enclosing @ttl.operation factory",
+            )
+        if not isinstance(condition, _BoundDispatchCondition):
+            type_detail = (
+                ""
+                if condition is _MISSING_STATIC_VALUE
+                else f", got {type(condition).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() condition_result must be a "
+                "ttl.DispatchCondition" + type_detail,
+            )
+        return condition
+
+    def _resolve_dfb_reset(self, node, api_name):
+        """Resolve an operation-local synchronized reset declaration."""
+        reset = self._resolve_static_reference(node)
+        if isinstance(reset, DFBReset):
+            self._raise_error(
+                node,
+                f"ttl.{api_name}() reset must be captured by an enclosing "
+                "@ttl.operation factory",
+            )
+        if not isinstance(reset, _BoundDFBReset):
+            type_detail = (
+                ""
+                if reset is _MISSING_STATIC_VALUE
+                else f", got {type(reset).__name__}"
+            )
+            self._raise_error(
+                node,
+                f"ttl.{api_name}() reset must be a ttl.DFBReset" + type_detail,
+            )
+        return reset
+
+    def _resolve_dfb_reconfiguration(self, node):
+        """Resolve an operation-local DFB reconfiguration declaration."""
+        boundary = self._resolve_static_reference(node)
+        if isinstance(boundary, DFBReconfiguration):
+            self._raise_error(
+                node,
+                "ttl.reconfigure_dfbs() boundary must be captured by an "
+                "enclosing @ttl.operation factory",
+            )
+        if not isinstance(boundary, _BoundDFBReconfiguration):
+            type_detail = (
+                ""
+                if boundary is _MISSING_STATIC_VALUE
+                else f", got {type(boundary).__name__}"
+            )
+            self._raise_error(
+                node,
+                "ttl.reconfigure_dfbs() boundary must be a "
+                "ttl.DFBReconfiguration" + type_detail,
+            )
+        return boundary
+
+    def _visit_dfb_reconfiguration(self, node):
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node,
+                "ttl.reconfigure_dfbs() requires exactly one positional "
+                "DFBReconfiguration argument",
+            )
+        boundary = self._resolve_dfb_reconfiguration(node.args[0])
+        participant_attrs = [
+            self._logical_kernel_attr(participant)
+            for participant in sorted(boundary.participants, key=_selector_sort_key)
+        ]
+        boundary_attr = ttl.ir.DFBReconfigurationAttr.get(
+            self.ctx, boundary.ordinal, participant_attrs
+        )
+        return ttl.dfb_reconfiguration(boundary_attr)
+
+    def _logical_kernel_attr(self, participant):
+        participant_kind = _selector_kind(participant)
+        ir_kind = {
+            KernelKind.COMPUTE: ttl.ir.LogicalKernelKind.Compute,
+            KernelKind.DATA_MOVEMENT: ttl.ir.LogicalKernelKind.DataMovement,
+        }[participant_kind]
+        if isinstance(participant, KernelKind):
+            return ttl.ir.LogicalKernelAttr.get(
+                self.ctx,
+                ir_kind,
+                None,
+                None,
+                None,
+            )
+        if participant._identity is None:
+            raise TypeError(
+                "DFB synchronization participant Kernel must be captured by the enclosing "
+                "@ttl.operation"
+            )
+        return ttl.ir.LogicalKernelAttr.get(
+            self.ctx,
+            ir_kind,
+            participant.identity,
+            participant._operation_identity,
+            _selector_implicit_role(participant),
+        )
+
+    def _resolve_dfb_value(self, node, param_name, api_name="call_extern_func"):
         """Resolve one DFB expression and reject other SSA values."""
         value = self.visit(node)
         if ttl.CircularBufferType.maybe_downcast(getattr(value, "type", None)) is None:
             self._raise_error(
-                node, f"ttl.call_extern_func() {param_name} element must be a DFB"
+                node, f"ttl.{api_name}() {param_name} element must be a DFB"
             )
         return value
+
+    def _resolve_external_dfb_reference(self, node, param_name):
+        return _ExternalDFBDependency(
+            self._resolve_dfb_value(node, param_name),
+            getattr(node, _DFB_SOURCE_OCCURRENCE, None),
+        )
+
+    def _resolve_external_dfb_dependency_index(
+        self, reference, ordered_dependencies, diagnostic_node, summary_name
+    ):
+        value_matches = [
+            dependency_index
+            for dependency_index, dependency in enumerate(ordered_dependencies)
+            if dependency.dfb == reference.dfb
+        ]
+        if reference.source_occurrence is not None:
+            exact_matches = [
+                dependency_index
+                for dependency_index in value_matches
+                if ordered_dependencies[dependency_index].source_occurrence
+                == reference.source_occurrence
+            ]
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+            if len(exact_matches) > 1:
+                value_matches = exact_matches
+        if len(value_matches) == 1:
+            return value_matches[0]
+        if len(value_matches) > 1:
+            self._raise_error(
+                diagnostic_node,
+                f"ttl.call_extern_func() DFB {summary_name} reference is "
+                "ambiguous because the DFB appears in multiple dependency "
+                "positions; use a distinct composed-operation DFB parameter "
+                "for each position and reference it directly",
+            )
+        self._raise_error(
+            diagnostic_node,
+            f"ttl.call_extern_func() DFB {summary_name} references a DFB that "
+            "is not a function argument, descriptor, or dependency",
+        )
+
+    def _visit_reset_dfbs(self, node, reset_all):
+        api_name = "reset_all_dfbs" if reset_all else "reset_dfbs"
+        if len(node.args) != 1:
+            self._raise_error(
+                node,
+                f"ttl.{api_name}() requires one positional DFBReset argument",
+            )
+        reset = self._resolve_dfb_reset(node.args[0], api_name)
+        participant_attrs = [
+            self._logical_kernel_attr(participant)
+            for participant in sorted(reset.participants, key=_selector_sort_key)
+        ]
+        reset_attr = ttl.ir.SynchronizedDFBResetAttr.get(
+            self.ctx, reset.ordinal, participant_attrs
+        )
+
+        keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
+        if reset_all:
+            if keyword_values:
+                self._raise_error(
+                    node,
+                    "ttl.reset_all_dfbs() does not accept keyword arguments",
+                )
+            return ttl.reset_all_dfbs(reset=reset_attr)
+
+        if set(keyword_values) != {"dfbs"}:
+            self._raise_error(
+                node,
+                "ttl.reset_dfbs() requires the dfbs keyword argument",
+            )
+        dfbs_node = keyword_values["dfbs"]
+        if not isinstance(dfbs_node, ast.List) or not dfbs_node.elts:
+            self._raise_error(
+                dfbs_node, "ttl.reset_dfbs() dfbs must be a nonempty list"
+            )
+        dfbs = [
+            self._resolve_dfb_value(element, "dfbs", api_name)
+            for element in dfbs_node.elts
+        ]
+        if any(dfb in dfbs[:dfb_index] for dfb_index, dfb in enumerate(dfbs)):
+            self._raise_error(dfbs_node, "ttl.reset_dfbs() dfbs must be distinct")
+        return ttl.reset_dfbs(reset=reset_attr, dfbs=dfbs)
 
     def _resolve_dfb_effect(self, node):
         """Resolve ``DFBEffect.<kind>(dfb, tiles=N)`` to typed facts."""
@@ -2271,8 +2635,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 keyword_values["tiles"],
                 "ttl.call_extern_func() effect tiles must be positive",
             )
-        dfb = self._resolve_dfb_value(node.args[0], "dfb_effects")
-        return _ExternalDFBEffect(effect_kinds[effect_name], dfb, num_tiles)
+        dfb = self._resolve_external_dfb_reference(node.args[0], "dfb_effects")
+        return _ExternalDFBEffect(
+            effect_kinds[effect_name],
+            dfb.dfb,
+            num_tiles,
+            dfb.source_occurrence,
+        )
 
     def _is_dfb_effect_repeat(self, node):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -2361,6 +2730,43 @@ class TTLGenericCompiler(TTCompilerBase):
         self._append_dfb_effect_sequence(parsed_effects, resolved_effects)
         return resolved_effects
 
+    def _resolve_dfb_access(self, node):
+        """Resolve ``DFBAccess.inspect(dfb)`` to a typed fact."""
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_accesses element must be "
+                "ttl.DFBAccess.inspect",
+            )
+
+        access_owner = node.func.value
+        is_qualified_owner = (
+            isinstance(access_owner, ast.Attribute)
+            and access_owner.attr == "DFBAccess"
+            and isinstance(access_owner.value, ast.Name)
+            and access_owner.value.id == "ttl"
+        )
+        is_direct_owner = (
+            isinstance(access_owner, ast.Name) and access_owner.id == "DFBAccess"
+        )
+        if not (is_qualified_owner or is_direct_owner) or (node.func.attr != "inspect"):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_accesses element must be "
+                "ttl.DFBAccess.inspect",
+            )
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node,
+                "ttl.DFBAccess.inspect() requires exactly one DFB argument",
+            )
+        dfb = self._resolve_external_dfb_reference(node.args[0], "dfb_accesses")
+        return _ExternalDFBAccess(
+            ttl.ir.DFBNonTransactionalAccessKind.Inspect,
+            dfb.dfb,
+            dfb.source_occurrence,
+        )
+
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
         if len(node.args) != 1 or node.keywords:
@@ -2404,8 +2810,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     ttl.DFBEffect.wait(dfb, tiles=1),
                     ttl.DFBEffect.pop(dfb, tiles=1),
                 ],
+                dfb_accesses=[ttl.DFBAccess.inspect(descriptor_dfb)],
                 unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
+                result_type=ttl.ScalarType.I64, # optional scalar result
+                condition_result=active,        # dispatch-stable condition
             )
 
         DFBs use explicit forms in template_args and may appear directly in
@@ -2452,7 +2861,10 @@ class TTLGenericCompiler(TTCompilerBase):
             "fabric_manager_effects",
             "dfb_dependencies",
             "dfb_effects",
+            "dfb_accesses",
             "unknown_dfb_access",
+            "result_type",
+            "condition_result",
         }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
@@ -2474,6 +2886,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 resolved_template_args.append(self._resolve_template_arg_value(elt))
 
         func_args = []
+        func_arg_nodes = []
         unsigned_arg_indices = []
         if "func_args" in kw_map:
             fa_node = kw_map["func_args"]
@@ -2500,8 +2913,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 if requires_unsigned_cast:
                     unsigned_arg_indices.append(len(func_args))
                 func_args.append(arg)
+                func_arg_nodes.append(elt)
 
         dependency_dfb_operands = []
+        dependency_dfb_references = []
         if "dfb_dependencies" in kw_map:
             dependency_node = kw_map["dfb_dependencies"]
             if not isinstance(dependency_node, ast.List):
@@ -2509,15 +2924,30 @@ class TTLGenericCompiler(TTCompilerBase):
                     dependency_node,
                     "ttl.call_extern_func() dfb_dependencies must be a list",
                 )
-            dependency_dfb_operands = [
-                self._resolve_dfb_value(element, "dfb_dependencies")
+            dependency_dfb_references = [
+                self._resolve_external_dfb_reference(element, "dfb_dependencies")
                 for element in dependency_node.elts
+            ]
+            dependency_dfb_operands = [
+                dependency.dfb for dependency in dependency_dfb_references
             ]
 
         resolved_dfb_effects = []
         if "dfb_effects" in kw_map:
             effects_node = kw_map["dfb_effects"]
             resolved_dfb_effects = self._resolve_dfb_effect_sequence(effects_node)
+
+        resolved_dfb_accesses = []
+        if "dfb_accesses" in kw_map:
+            accesses_node = kw_map["dfb_accesses"]
+            if not isinstance(accesses_node, ast.List):
+                self._raise_error(
+                    accesses_node,
+                    "ttl.call_extern_func() dfb_accesses must be a list",
+                )
+            resolved_dfb_accesses = [
+                self._resolve_dfb_access(element) for element in accesses_node.elts
+            ]
 
         unknown_dfb_access = False
         if "unknown_dfb_access" in kw_map:
@@ -2591,6 +3021,30 @@ class TTLGenericCompiler(TTCompilerBase):
                     )
                 )
 
+        if "result_type" in kw_map and "condition_result" in kw_map:
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() cannot combine result_type and "
+                "condition_result",
+            )
+        result_types = []
+        condition_result_attr = None
+        if "result_type" in kw_map:
+            result_type = self._resolve_scalar_type(kw_map["result_type"])
+            if result_type is not None:
+                result_types.append(
+                    IntegerType.get_signless(result_type.bit_width, self.ctx)
+                )
+        elif "condition_result" in kw_map:
+            condition = self._resolve_dispatch_condition(kw_map["condition_result"])
+            result_type = IntegerType.get_signless(
+                condition.scalar_type.bit_width, self.ctx
+            )
+            result_types.append(result_type)
+            condition_result_attr = ttl.ir.DispatchConditionAttr.get(
+                self.ctx, condition.ordinal, result_type
+            )
+
         template_dfb_operands = []
         template_arg_attrs = []
         dfb_kinds = {
@@ -2607,44 +3061,92 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
         automatic_dependencies = [
-            func_arg
-            for func_arg in func_args
+            _ExternalDFBDependency(
+                func_arg,
+                getattr(func_arg_node, _DFB_SOURCE_OCCURRENCE, None),
+            )
+            for func_arg, func_arg_node in zip(func_args, func_arg_nodes)
             if ttl.CircularBufferType.maybe_downcast(getattr(func_arg, "type", None))
             is not None
         ]
         automatic_dependencies.extend(
-            template_arg.value
+            _ExternalDFBDependency(
+                template_arg.value, template_arg.dfb_source_occurrence
+            )
             for template_arg in resolved_template_args
             if template_arg.kind == ttl.ir.ExternalTemplateArgKind.DFBDescriptor
         )
-        if any(
-            dependency in automatic_dependencies
-            or dependency in dependency_dfb_operands[:dependency_index]
-            for dependency_index, dependency in enumerate(dependency_dfb_operands)
+
+        def is_same_source_occurrence(lhs, rhs):
+            if lhs.dfb != rhs.dfb:
+                return False
+            if lhs.source_occurrence is not None and rhs.source_occurrence is not None:
+                return lhs.source_occurrence == rhs.source_occurrence
+            return True
+
+        def has_repeated_source_occurrence(dependencies, prior_dependencies=()):
+            previous_dependencies = list(prior_dependencies)
+            for dependency in dependencies:
+                if any(
+                    is_same_source_occurrence(dependency, previous)
+                    for previous in previous_dependencies
+                ):
+                    return True
+                previous_dependencies.append(dependency)
+            return False
+
+        if has_repeated_source_occurrence(
+            dependency_dfb_references, automatic_dependencies
         ):
             self._raise_error(
                 kw_map["dfb_dependencies"],
                 "ttl.call_extern_func() dfb_dependencies must contain only "
                 "distinct dependency-only DFBs",
             )
-        ordered_dependencies = automatic_dependencies + dependency_dfb_operands
+        ordered_dependencies = automatic_dependencies + dependency_dfb_references
+
+        if condition_result_attr is not None and (
+            template_dfb_operands
+            or ordered_dependencies
+            or resolved_dfb_effects
+            or resolved_dfb_accesses
+            or unknown_dfb_access
+        ):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() condition_result call cannot access "
+                "DFB state",
+            )
 
         effect_attrs = []
         for effect in resolved_dfb_effects:
-            try:
-                dependency_index = ordered_dependencies.index(effect.dfb)
-            except ValueError:
-                self._raise_error(
-                    kw_map["dfb_effects"],
-                    "ttl.call_extern_func() DFB effect references a DFB that "
-                    "is not a function argument, descriptor, or dependency",
-                )
+            dependency_index = self._resolve_external_dfb_dependency_index(
+                effect,
+                ordered_dependencies,
+                kw_map["dfb_effects"],
+                "effect",
+            )
             effect_attrs.append(
                 ttl.ir.DFBProtocolEffectAttr.get(
                     self.ctx,
                     effect.kind,
                     dependency_index,
                     effect.num_tiles,
+                )
+            )
+        access_attrs = []
+        for access in resolved_dfb_accesses:
+            dependency_index = self._resolve_external_dfb_dependency_index(
+                access,
+                ordered_dependencies,
+                kw_map["dfb_accesses"],
+                "access",
+            )
+            access_attrs.append(
+                ttl.ir.DFBNonTransactionalAccessAttr.get(
+                    self.ctx,
+                    access.kind,
+                    dependency_index,
                 )
             )
         template_args_attr = (
@@ -2661,10 +3163,11 @@ class TTLGenericCompiler(TTCompilerBase):
             else None
         )
         effects_attr = ArrayAttr.get(effect_attrs) if effect_attrs else None
+        accesses_attr = ArrayAttr.get(access_attrs) if access_attrs else None
         unknown_dfb_access_attr = UnitAttr.get(self.ctx) if unknown_dfb_access else None
 
-        ttl.opaque_call(
-            [],
+        opaque_call = ttl.opaque_call(
+            result_types[0] if result_types else None,
             callee,
             header,
             func_args,
@@ -2674,8 +3177,12 @@ class TTLGenericCompiler(TTCompilerBase):
             unsigned_arg_indices=unsigned_arg_indices_attr,
             fabric_manager_effects=fabric_manager_effects_attr,
             dfb_effects=effects_attr,
+            dfb_accesses=accesses_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
+            condition_result=condition_result_attr,
         )
+        if result_types:
+            return opaque_call
 
     def visit_With(self, node):
         """

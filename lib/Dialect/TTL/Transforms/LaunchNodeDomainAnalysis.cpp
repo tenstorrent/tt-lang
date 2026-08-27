@@ -22,6 +22,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APInt.h"
@@ -755,20 +756,46 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
     functionCache.sharedState =
         std::make_unique<ExecutionCountAnalysisSharedState>(function.getBody());
   }
-  ExecutionCountAnalysis &analysis =
-      functionCache.analysesByLocation.getOrCreate(location, [&] {
-        return std::make_unique<ExecutionCountAnalysis>(
-            *functionCache.sharedState,
-            [location, &state](Value value) {
-              return evaluateLaunchLocationContextValue(value, location,
-                                                        &state);
-            },
-            [location, &state](Region &region) {
-              return getRegionInvocationCountAtLaunchLocation(region, location,
-                                                              state);
-            });
-      });
-  return analysis.getExecutionCount(op);
+  auto createAnalysis = [&] {
+    return std::make_unique<ExecutionCountAnalysis>(
+        *functionCache.sharedState,
+        [location, &state](Value value) {
+          return evaluateLaunchLocationContextValue(value, location, &state);
+        },
+        [location, &state](Region &region) {
+          return getRegionInvocationCountAtLaunchLocation(region, location,
+                                                          state);
+        });
+  };
+  ExecutionCountAnalysis *analysis = nullptr;
+  if (!location.device) {
+    auto [analysisIt, inserted] =
+        functionCache.analysesByNode.try_emplace(location.node);
+    if (inserted) {
+      analysisIt->second = createAnalysis();
+    }
+    analysis = analysisIt->second.get();
+  } else {
+    analysis = &functionCache.analysesByDeviceLocation.getOrCreate(
+        location, createAnalysis);
+  }
+  assert(analysis && "execution-count analysis cache returned null");
+  return analysis->getExecutionCount(op);
+}
+
+bool hasExactEmptyLaunchDomain(Operation *op,
+                               const LaunchNodeDomainState &state) {
+  if (!state.hasLaunchGrid || state.sawError) {
+    return false;
+  }
+  for (LaunchNodeCoord node : state.baseDomain.nodes) {
+    std::optional<std::uint64_t> executionCount =
+        getExactExecutionCountAtLaunchNode(op, node, state);
+    if (!executionCount || *executionCount != 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// Return true if evaluating `value` can depend on the current launch
@@ -856,29 +883,20 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
 
 namespace {
 
-enum class UnresolvedControlKind { ScfIf, AffineIf, ScfFor };
+enum class UnresolvedControlFrameKind { ScfIf, AffineIf, ScfFor };
 
 struct UnresolvedControlFrame {
-  UnresolvedControlKind kind;
-  std::size_t regionNumber;
-  IntegerSet affineConstraints;
-
-  bool operator==(const UnresolvedControlFrame &rhs) const {
-    return kind == rhs.kind && regionNumber == rhs.regionNumber &&
-           affineConstraints == rhs.affineConstraints;
-  }
+  UnresolvedControlFrameKind kind = UnresolvedControlFrameKind::ScfIf;
+  Operation *operation = nullptr;
+  std::size_t regionNumber = 0;
+  IntegerSetAttr affinePredicate;
+  SmallVector<Value, 3> controlValues;
 };
 
-/// Structured-control frames and values that determine an unresolved count.
+/// Structured-control frames that determine an unresolved count.
 struct UnresolvedExecutionCountContext {
   func::FuncOp function;
   SmallVector<UnresolvedControlFrame> frames;
-  SmallVector<Value> controlValues;
-
-  bool operator==(const UnresolvedExecutionCountContext &rhs) const {
-    return function == rhs.function && frames == rhs.frames &&
-           controlValues.size() == rhs.controlValues.size();
-  }
 };
 
 static std::optional<UnresolvedExecutionCountContext>
@@ -951,9 +969,11 @@ getUnresolvedExecutionCountContext(
         current = parent;
         continue;
       }
-      context.frames.push_back({UnresolvedControlKind::ScfIf,
-                                region->getRegionNumber(), IntegerSet()});
-      context.controlValues.push_back(ifOp.getCondition());
+      context.frames.push_back({UnresolvedControlFrameKind::ScfIf,
+                                parent,
+                                region->getRegionNumber(),
+                                nullptr,
+                                {ifOp.getCondition()}});
     } else if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent);
                affineIfOp && state.hasLaunchGrid) {
       LaunchNodeDomainResult trueDomain =
@@ -967,16 +987,19 @@ getUnresolvedExecutionCountContext(
         current = parent;
         continue;
       }
-      context.frames.push_back({UnresolvedControlKind::AffineIf,
-                                region->getRegionNumber(),
-                                affineIfOp.getIntegerSet()});
-      llvm::append_range(context.controlValues, affineIfOp.getOperands());
+      UnresolvedControlFrame &frame = context.frames.emplace_back();
+      frame.kind = UnresolvedControlFrameKind::AffineIf;
+      frame.operation = parent;
+      frame.regionNumber = region->getRegionNumber();
+      frame.affinePredicate = affineIfOp.getConditionAttr();
+      llvm::append_range(frame.controlValues, affineIfOp.getOperands());
     } else if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      context.frames.push_back({UnresolvedControlKind::ScfFor,
-                                region->getRegionNumber(), IntegerSet()});
-      context.controlValues.push_back(forOp.getLowerBound());
-      context.controlValues.push_back(forOp.getUpperBound());
-      context.controlValues.push_back(forOp.getStep());
+      context.frames.push_back(
+          {UnresolvedControlFrameKind::ScfFor,
+           parent,
+           region->getRegionNumber(),
+           nullptr,
+           {forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep()}});
     } else if (isa<scf::ExecuteRegionOp>(parent)) {
       current = parent;
       continue;
@@ -1094,6 +1117,11 @@ static bool proveEqualValuesAtLaunchLocations(
     return equal;
   }
 
+  if (lhsValue == rhsValue && lhsLocation == rhsLocation) {
+    cache[cacheKey] = true;
+    return true;
+  }
+
   Operation *lhsDefiningOp = lhsValue.getDefiningOp();
   Operation *rhsDefiningOp = rhsValue.getDefiningOp();
   if (!lhsDefiningOp || !rhsDefiningOp || lhsDefiningOp->getNumRegions() != 0 ||
@@ -1130,6 +1158,159 @@ static bool proveEqualValuesAtLaunchLocations(
       });
   cache[cacheKey] = equal;
   return equal;
+}
+
+static std::optional<llvm::APInt> getIntegerConstant(Value value) {
+  Attribute constant;
+  if (!matchPattern(value, m_Constant(&constant))) {
+    return std::nullopt;
+  }
+  auto integer = dyn_cast<IntegerAttr>(constant);
+  if (!integer) {
+    return std::nullopt;
+  }
+  return integer.getValue();
+}
+
+// Prove equality between expressions rooted in typed dispatch conditions.
+// Polarity tracks whether the caller observes zero or nonzero as true.
+static bool proveEquivalentDispatchConditionExpressions(Value lhsValue,
+                                                        bool lhsNonzeroIsTrue,
+                                                        Value rhsValue,
+                                                        bool rhsNonzeroIsTrue) {
+  std::optional<llvm::APInt> lhsConstant = getIntegerConstant(lhsValue);
+  std::optional<llvm::APInt> rhsConstant = getIntegerConstant(rhsValue);
+  if (lhsConstant || rhsConstant) {
+    return lhsConstant && rhsConstant &&
+           (lhsConstant->isZero() != lhsNonzeroIsTrue) ==
+               (rhsConstant->isZero() != rhsNonzeroIsTrue);
+  }
+
+  auto lhsComparison = lhsValue.getDefiningOp<arith::CmpIOp>();
+  auto rhsComparison = rhsValue.getDefiningOp<arith::CmpIOp>();
+  if (lhsComparison || rhsComparison) {
+    if (!lhsComparison || !rhsComparison) {
+      return false;
+    }
+    auto stripZeroComparison =
+        [](arith::CmpIOp comparison) -> std::optional<std::pair<Value, bool>> {
+      arith::CmpIPredicate predicate = comparison.getPredicate();
+      if (predicate != arith::CmpIPredicate::eq &&
+          predicate != arith::CmpIPredicate::ne) {
+        return std::nullopt;
+      }
+      if (std::optional<llvm::APInt> lhs =
+              getIntegerConstant(comparison.getLhs());
+          lhs && lhs->isZero()) {
+        return std::pair<Value, bool>{comparison.getRhs(),
+                                      predicate == arith::CmpIPredicate::ne};
+      }
+      if (std::optional<llvm::APInt> rhs =
+              getIntegerConstant(comparison.getRhs());
+          rhs && rhs->isZero()) {
+        return std::pair<Value, bool>{comparison.getLhs(),
+                                      predicate == arith::CmpIPredicate::ne};
+      }
+      return std::nullopt;
+    };
+    std::optional<std::pair<Value, bool>> lhsExpression =
+        stripZeroComparison(lhsComparison);
+    std::optional<std::pair<Value, bool>> rhsExpression =
+        stripZeroComparison(rhsComparison);
+    if (!lhsExpression || !rhsExpression) {
+      return false;
+    }
+    return proveEquivalentDispatchConditionExpressions(
+        lhsExpression->first, lhsNonzeroIsTrue == lhsExpression->second,
+        rhsExpression->first, rhsNonzeroIsTrue == rhsExpression->second);
+  }
+
+  auto lhsCall = lhsValue.getDefiningOp<OpaqueCallOp>();
+  auto rhsCall = rhsValue.getDefiningOp<OpaqueCallOp>();
+  if (lhsCall || rhsCall) {
+    return lhsCall && rhsCall && lhsNonzeroIsTrue == rhsNonzeroIsTrue &&
+           lhsCall.getResult() == lhsValue && rhsCall.getResult() == rhsValue &&
+           lhsCall.getConditionResultAttr() &&
+           lhsCall.getConditionResultAttr() == rhsCall.getConditionResultAttr();
+  }
+
+  if (lhsNonzeroIsTrue != rhsNonzeroIsTrue) {
+    return false;
+  }
+  auto proveBinaryOperands = [&](auto lhsOperation, auto rhsOperation) {
+    return lhsOperation && rhsOperation &&
+           lhsOperation.getType().isInteger(1) &&
+           rhsOperation.getType().isInteger(1) &&
+           proveEquivalentDispatchConditionExpressions(
+               lhsOperation.getLhs(), true, rhsOperation.getLhs(), true) &&
+           proveEquivalentDispatchConditionExpressions(
+               lhsOperation.getRhs(), true, rhsOperation.getRhs(), true);
+  };
+  if (auto lhsAnd = lhsValue.getDefiningOp<arith::AndIOp>()) {
+    return proveBinaryOperands(lhsAnd, rhsValue.getDefiningOp<arith::AndIOp>());
+  }
+  if (auto lhsOr = lhsValue.getDefiningOp<arith::OrIOp>()) {
+    return proveBinaryOperands(lhsOr, rhsValue.getDefiningOp<arith::OrIOp>());
+  }
+  if (auto lhsXor = lhsValue.getDefiningOp<arith::XOrIOp>()) {
+    return proveBinaryOperands(lhsXor, rhsValue.getDefiningOp<arith::XOrIOp>());
+  }
+  return false;
+}
+
+static bool proveEquivalentUnresolvedExecutionContexts(
+    const UnresolvedExecutionCountContext &lhsContext,
+    const LaunchExecutionLocation &lhsLocation,
+    const IntegerExpressionEvaluator::ValueEvaluator &lhsContextValueEvaluator,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    const UnresolvedExecutionCountContext &rhsContext,
+    const LaunchExecutionLocation &rhsLocation,
+    const IntegerExpressionEvaluator::ValueEvaluator &rhsContextValueEvaluator,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument,
+    const LaunchNodeDomainState &state, bool requireConditionalExecution) {
+  bool sameFunction = lhsContext.function == rhsContext.function;
+  if (lhsContext.frames.size() != rhsContext.frames.size() ||
+      (!requireConditionalExecution && !sameFunction) ||
+      (requireConditionalExecution && !sameFunction &&
+       !(lhsLocation == rhsLocation))) {
+    return false;
+  }
+
+  llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
+  for (auto &&[lhsFrame, rhsFrame] :
+       llvm::zip_equal(lhsContext.frames, rhsContext.frames)) {
+    if (lhsFrame.kind != rhsFrame.kind ||
+        lhsFrame.regionNumber != rhsFrame.regionNumber ||
+        lhsFrame.affinePredicate != rhsFrame.affinePredicate ||
+        lhsFrame.controlValues.size() != rhsFrame.controlValues.size() ||
+        (requireConditionalExecution &&
+         lhsFrame.kind == UnresolvedControlFrameKind::ScfFor) ||
+        (requireConditionalExecution && !sameFunction &&
+         lhsFrame.kind == UnresolvedControlFrameKind::AffineIf)) {
+      return false;
+    }
+    for (auto &&[lhsValue, rhsValue] :
+         llvm::zip_equal(lhsFrame.controlValues, rhsFrame.controlValues)) {
+      bool equalValue = sameFunction &&
+                        proveEqualValuesAtLaunchLocations(
+                            lhsValue, lhsLocation, lhsContextValueEvaluator,
+                            resolveLhsFunctionArgument, rhsValue, rhsLocation,
+                            rhsContextValueEvaluator,
+                            resolveRhsFunctionArgument, state, equalValueCache);
+      if (!equalValue && lhsLocation == rhsLocation &&
+          requireConditionalExecution &&
+          lhsFrame.kind == UnresolvedControlFrameKind::ScfIf) {
+        equalValue = proveEquivalentDispatchConditionExpressions(
+            lhsValue, true, rhsValue, true);
+      }
+      if (!equalValue) {
+        return false;
+      }
+    }
+  }
+  return !requireConditionalExecution || !lhsContext.frames.empty();
 }
 
 } // namespace
@@ -1181,20 +1362,40 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
       getUnresolvedExecutionCountContext(rhs, rhsLocation, state,
                                          rhsContextValueEvaluator,
                                          rhsExclusiveAncestor);
-  if (!maybeLhsContext || !maybeRhsContext ||
-      !(*maybeLhsContext == *maybeRhsContext)) {
+  if (!maybeLhsContext || !maybeRhsContext) {
     return false;
   }
-  llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
-  return llvm::all_of(
-      llvm::zip(maybeLhsContext->controlValues, maybeRhsContext->controlValues),
-      [&](auto controlValues) {
-        return proveEqualValuesAtLaunchLocations(
-            std::get<0>(controlValues), lhsLocation, lhsContextValueEvaluator,
-            resolveLhsFunctionArgument, std::get<1>(controlValues), rhsLocation,
-            rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
-            equalValueCache);
-      });
+  return proveEquivalentUnresolvedExecutionContexts(
+      *maybeLhsContext, lhsLocation, lhsContextValueEvaluator,
+      resolveLhsFunctionArgument, *maybeRhsContext, rhsLocation,
+      rhsContextValueEvaluator, resolveRhsFunctionArgument, state,
+      /*requireConditionalExecution=*/false);
+}
+
+bool proveEquivalentConditionalExecutionAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state) {
+  std::optional<UnresolvedExecutionCountContext> maybeLhsContext =
+      getUnresolvedExecutionCountContext(
+          lhs, LaunchExecutionLocation(lhsCoord), state,
+          IntegerExpressionEvaluator::ValueEvaluator());
+  std::optional<UnresolvedExecutionCountContext> maybeRhsContext =
+      getUnresolvedExecutionCountContext(
+          rhs, LaunchExecutionLocation(rhsCoord), state,
+          IntegerExpressionEvaluator::ValueEvaluator());
+  if (!maybeLhsContext || !maybeRhsContext) {
+    return false;
+  }
+  auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
+    return std::nullopt;
+  };
+  return proveEquivalentUnresolvedExecutionContexts(
+      *maybeLhsContext, LaunchExecutionLocation(lhsCoord),
+      IntegerExpressionEvaluator::ValueEvaluator(), resolveNoFunctionArguments,
+      *maybeRhsContext, LaunchExecutionLocation(rhsCoord),
+      IntegerExpressionEvaluator::ValueEvaluator(), resolveNoFunctionArguments,
+      state,
+      /*requireConditionalExecution=*/true);
 }
 
 bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,

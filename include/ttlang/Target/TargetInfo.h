@@ -54,6 +54,21 @@ struct TargetDFBIndexCapacity {
   }
 };
 
+/// Maximum L1 allocation quantum selected by any supported tt-metal allocator.
+inline uint64_t getTargetL1AllocationQuantumBytes(ttcore::Arch targetArch) {
+  switch (targetArch) {
+  case ttcore::Arch::WormholeB0:
+    return 32;
+  case ttcore::Arch::Blackhole:
+  case ttcore::Arch::Quasar:
+    return 64;
+  }
+  llvm_unreachable("unhandled ttcore::Arch");
+}
+
+/// Preserve safety when compilation has no target metadata.
+inline uint64_t getConservativeL1AllocationQuantumBytes() { return 64; }
+
 namespace target_info_detail {
 
 inline FailureOr<std::optional<ttcore::Arch>>
@@ -167,6 +182,19 @@ resolveTargetDFBIndexCapacity(Operation *operation,
   }
   return *targetArch ? getTargetDFBIndexCapacity(**targetArch)
                      : getConservativeDFBIndexCapacity();
+}
+
+/// Resolve the maximum runtime L1 allocation quantum for an operation.
+inline FailureOr<uint64_t>
+resolveTargetL1AllocationQuantumBytes(Operation *operation,
+                                      std::string &failureReason) {
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(operation, failureReason);
+  if (failed(targetArch)) {
+    return failure();
+  }
+  return *targetArch ? getTargetL1AllocationQuantumBytes(**targetArch)
+                     : getConservativeL1AllocationQuantumBytes();
 }
 
 /// Return the physical DFB-index capacity after target metadata validation.

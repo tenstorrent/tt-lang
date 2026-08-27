@@ -549,7 +549,7 @@ func.func @compute_result_count_mismatch(
 
 // -----
 
-// Test: tile_store view not from cb_reserve inside compute body
+// Test: tile_store view not from a DFB acquisition inside compute body
 func.func @compute_tile_store_view_not_from_reserve(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %view: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -579,6 +579,43 @@ func.func @compute_tile_store_view_not_from_reserve(
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: consumer replacement requires a waited view.
+func.func @consumer_replacement_from_reserve(
+    %tile: !ttcore.tile<32x32, f32>) {
+  %c0 = arith.constant 0 : index
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %view = ttl.cb_reserve %dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{'ttl.tile_store' op consumer_replacement store requires a ttl.cb_wait-backed view}}
+  ttl.tile_store %tile, %view[] from dst[%c0]
+      {store_kind = 1 : i32}
+      : !ttcore.tile<32x32, f32>,
+        tensor<1x1x!ttcore.tile<32x32, f32>>
+  return
+}
+
+// -----
+
+// Test: waited views cannot use producer packing.
+func.func @producer_store_to_waited_view(
+    %tile: !ttcore.tile<32x32, f32>) {
+  %c0 = arith.constant 0 : index
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %view = ttl.cb_wait %dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{'ttl.tile_store' op ttl.cb_wait-backed view requires consumer_replacement store kind}}
+  ttl.tile_store %tile, %view[] from dst[%c0]
+      : !ttcore.tile<32x32, f32>,
+        tensor<1x1x!ttcore.tile<32x32, f32>>
+  return
 }
 
 // -----

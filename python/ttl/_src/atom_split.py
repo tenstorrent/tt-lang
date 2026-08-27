@@ -19,6 +19,11 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
+from ttl.dfb_reset import DFBReset, _BoundDFBReset
+from ttl.dfb_reconfiguration import (
+    DFBReconfiguration,
+    _BoundDFBReconfiguration,
+)
 from ttl.fabric import FabricManagerClaim
 from ttl.kernel import (
     Kernel,
@@ -34,6 +39,8 @@ from ttl.kernel import (
 
 _EXTERNAL_CALL_NAME = "call_extern_func"
 _KERNEL_KEYWORD = "kernel"
+_DFB_RESET_CALLS = frozenset({"reset_dfbs", "reset_all_dfbs"})
+_DFB_RECONFIGURATION_CALL_NAME = "reconfigure_dfbs"
 
 
 class _Placement(Enum):
@@ -95,6 +102,7 @@ _TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
 _TTL_NAMESPACES: Dict[str, Union[KernelKind, _Placement]] = {
     "math": KernelKind.COMPUTE,
     "block": KernelKind.COMPUTE,
+    "DFBAccess": _Placement.CONTROL,
     "DFBEffect": _Placement.CONTROL,
 }
 
@@ -142,9 +150,28 @@ def _is_external_call(call: ast.Call) -> bool:
     )
 
 
+def _is_dfb_reconfiguration_call(call: ast.Call) -> bool:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id == _DFB_RECONFIGURATION_CALL_NAME
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == _DFB_RECONFIGURATION_CALL_NAME
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "ttl"
+    )
+
+
 def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
     for keyword in call.keywords:
         if keyword.arg == _KERNEL_KEYWORD:
+            return keyword.value
+    return None
+
+
+def _keyword_value(call: ast.Call, name: str) -> Optional[ast.expr]:
+    for keyword in call.keywords:
+        if keyword.arg == name:
             return keyword.value
     return None
 
@@ -245,6 +272,74 @@ class _KernelSelectorResolver:
                     f"{_format_kernels(claim_selection)}, but the external "
                     f"call selects {_format_kernels(selected)}",
                 )
+
+    def resolve_reset(self, call: ast.Call) -> FrozenSet[KernelSelector]:
+        if len(call.args) != 1:
+            raise _split_error(
+                call, f"{ast.unparse(call.func)} requires one DFBReset argument"
+            )
+        reset_node = call.args[0]
+        reset = self._resolve_reference(reset_node)
+        if isinstance(reset, _BoundDFBReset):
+            participants = reset.participants
+        elif isinstance(reset, DFBReset):
+            participants = reset.participants
+        else:
+            type_detail = ""
+            if reset is not _MISSING_SELECTOR_VALUE:
+                type_detail = f", got {type(reset).__name__}"
+            raise _split_error(
+                reset_node,
+                f"{ast.unparse(call.func)} reset must be a DFBReset captured by "
+                f"the enclosing operation{type_detail}",
+            )
+        for participant in participants:
+            if participant._implicit_role is None and not any(
+                participant is kernel for kernel in self.logical_kernels.values()
+            ):
+                raise _split_error(
+                    reset_node,
+                    "DFBReset participant Kernel must be declared by the "
+                    "enclosing operation",
+                )
+        return frozenset(participants)
+
+    def resolve_dfb_reconfiguration(self, call: ast.Call) -> FrozenSet[KernelSelector]:
+        if len(call.args) != 1 or call.keywords:
+            raise _split_error(
+                call,
+                "reconfigure_dfbs requires exactly one positional "
+                "DFBReconfiguration argument",
+            )
+        boundary_node = call.args[0]
+        boundary = self._resolve_reference(boundary_node)
+        if isinstance(boundary, _BoundDFBReconfiguration):
+            participants = boundary.participants
+        elif isinstance(boundary, DFBReconfiguration):
+            participants = boundary.participants
+        else:
+            type_detail = ""
+            if boundary is not _MISSING_SELECTOR_VALUE:
+                type_detail = f", got {type(boundary).__name__}"
+            raise _split_error(
+                boundary_node,
+                "reconfigure_dfbs argument must be a DFBReconfiguration "
+                f"captured by the enclosing operation{type_detail}",
+            )
+        for participant in participants:
+            if (
+                isinstance(participant, Kernel)
+                and participant._implicit_role is None
+                and not any(
+                    participant is kernel for kernel in self.logical_kernels.values()
+                )
+            ):
+                raise _split_error(
+                    boundary_node,
+                    "DFBReconfiguration participant Kernel must be declared "
+                    "by the enclosing operation",
+                )
+        return frozenset(participants)
 
     def resolve_release(self, call: ast.Call) -> Optional[KernelSelector]:
         selector = _kernel_keyword(call)
@@ -359,12 +454,16 @@ def _classify_ttl_call(
     """Return a registry-driven call's logical-kernel selection."""
     if _is_external_call(call):
         return selector_resolver.resolve_external(call, inferred_external_kernels)
+    if _is_dfb_reconfiguration_call(call):
+        return selector_resolver.resolve_dfb_reconfiguration(call)
 
     func = call.func
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
         receiver = func.value.id
         name = func.attr
         if receiver == "ttl":
+            if name in _DFB_RESET_CALLS:
+                return selector_resolver.resolve_reset(call)
             classification = _TTL_OPS.get(name)
             if classification is None:
                 raise _split_error(
@@ -442,6 +541,7 @@ class SplitResult:
 class _AnalysisState:
     def __init__(self):
         self.anchor_selections: Dict[int, FrozenSet[KernelSelector]] = {}
+        self.control_header_selections: Dict[int, FrozenSet[KernelSelector]] = {}
         self.kernel_origins: Dict[KernelSelector, ast.stmt] = {}
         self.transactions: List[DFBTransactionPlan] = []
 
@@ -449,6 +549,10 @@ class _AnalysisState:
         self.anchor_selections[id(statement)] = frozenset(kernels)
         for kernel in kernels:
             self.kernel_origins.setdefault(kernel, statement)
+
+    def extend(self, statement: ast.stmt, kernels: Set[KernelSelector]) -> None:
+        existing = self.anchor_selections.get(id(statement), frozenset())
+        self.anchor_selections[id(statement)] = existing | frozenset(kernels)
 
 
 def split_function_body(
@@ -493,6 +597,7 @@ def split_function_body(
     )
 
     all_kernels = frozenset(ordered_kernels)
+    _ScalarLivenessPlanner(state, all_kernels).analyze(fn_def.body)
     statements = tuple(
         StatementSelection(
             statement_id=id(statement),
@@ -539,11 +644,11 @@ class _AnchorPlanner:
 
     Anchors fall into three categories:
 
-    1. Direct anchors: any stmt whose AST subtree contains a registered
+    1. Direct anchors: any statement expression containing a registered
        ``ttl.<op>(...)`` call, a ``<pipenet>.if_src/if_dst(...)`` call,
        a DFB direct-method call (``dfb.publish()``), a block-method call
-       (``blk.store(...)``), or a ``@`` MatMult.
-       Selection is the union of logical kernels found.
+       (``blk.store(...)``), or a ``@`` MatMult. Every executable anchor in
+       one expression must have the same complete logical-kernel selection.
 
     2. Deferred producer anchors: ``name = cb.wait()/.reserve()`` (or
        ``with cb.<m>() as name:``). The producer statement uses the
@@ -691,8 +796,27 @@ class _AnchorPlanner:
 
     def _annotate(self, stmt: ast.stmt) -> None:
         if isinstance(stmt, (ast.For, ast.While, ast.If)):
-            for child in list(stmt.body) + list(stmt.orelse):
+            children = list(stmt.body) + list(stmt.orelse)
+            for child in children:
                 self._annotate(child)
+            child_kernels: Set[KernelSelector] = set()
+            for child in children:
+                child_kernels.update(self._descendant_anchor_kernels(child))
+            anchored_kernels = self._stmt_anchor_kernels(stmt)
+            if anchored_kernels is not None:
+                self._state.control_header_selections[id(stmt)] = frozenset(
+                    anchored_kernels
+                )
+                excluded = child_kernels - anchored_kernels
+                if excluded:
+                    raise _split_error(
+                        stmt,
+                        "selected control expression excludes logical kernels "
+                        f"used by its body ({_format_kernels(excluded)})",
+                    )
+                child_kernels.update(anchored_kernels)
+            if child_kernels:
+                self._state.select(stmt, child_kernels)
             return
         if isinstance(stmt, ast.With):
             kernels = self._with_kernels(stmt)
@@ -753,14 +877,27 @@ class _AnchorPlanner:
 
         kernels = self._stmt_anchor_kernels(stmt)
         if kernels is not None:
-            if len(kernels) != 1 and not _is_external_call_statement(stmt):
-                raise _split_error(
-                    stmt,
-                    "executable statement is assigned to multiple logical "
-                    f"kernels ({_format_kernels(kernels)}); split the work "
-                    "into separate statements",
-                )
             self._state.select(stmt, kernels)
+
+    def _descendant_anchor_kernels(self, statement: ast.stmt) -> Set[KernelSelector]:
+        kernels: Set[KernelSelector] = set()
+        pending = [statement]
+        while pending:
+            nested_statement = pending.pop()
+            kernels.update(
+                self._state.anchor_selections.get(
+                    id(nested_statement),
+                    frozenset(),
+                )
+            )
+            if isinstance(nested_statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            pending.extend(
+                child
+                for child in ast.iter_child_nodes(nested_statement)
+                if isinstance(child, ast.stmt)
+            )
+        return kernels
 
     def _with_kernels(self, stmt: ast.With) -> Optional[Set[KernelSelector]]:
         merged: Set[KernelSelector] = set()
@@ -797,18 +934,30 @@ class _AnchorPlanner:
         return {owner} if owner is not None else set()
 
     def _anchor_kernels_in(self, root: ast.AST) -> Set[KernelSelector]:
-        kernels: Set[KernelSelector] = set()
+        selections: List[FrozenSet[KernelSelector]] = []
         for node in _iter_skip_nested_fns(root):
             if isinstance(node, ast.Call):
                 selection = self._classify_call(node)
                 if selection is not None:
-                    kernels.update(selection)
+                    selections.append(selection)
             elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
-                kernels.add(KernelKind.COMPUTE)
-        return kernels
+                selections.append(frozenset({KernelKind.COMPUTE}))
+        if not selections:
+            return set()
+        expected = selections[0]
+        for selection in selections[1:]:
+            if selection != expected:
+                raise _split_error(
+                    root,
+                    "calls in one indivisible expression select different "
+                    f"logical kernels ({_format_kernels(expected)} versus "
+                    f"{_format_kernels(selection)}); split the calls into "
+                    "separate statements",
+                )
+        return set(expected)
 
     def _stmt_anchor_kernels(self, stmt: ast.stmt) -> Optional[Set[KernelSelector]]:
-        """Union of logical-kernel anchors found in a statement subtree.
+        """Logical-kernel selection shared by one indivisible expression.
 
         ``None`` means the statement is control or scalar code and is cloned
         into every selected logical kernel.
@@ -821,7 +970,13 @@ class _AnchorPlanner:
 
         The result is ``None`` if the stmt has no kernel-pinning anchor.
         """
-        kernels = self._anchor_kernels_in(stmt)
+        if isinstance(stmt, (ast.If, ast.While)):
+            anchor_root = stmt.test
+        elif isinstance(stmt, ast.For):
+            anchor_root = stmt.iter
+        else:
+            anchor_root = stmt
+        kernels = self._anchor_kernels_in(anchor_root)
         if kernels:
             return kernels
         if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
@@ -853,6 +1008,373 @@ class _AnchorPlanner:
                     if owner is not None:
                         return frozenset({owner})
         return None
+
+
+# ----- scalar liveness -----------------------------------------------------
+
+
+def _copy_live_map(
+    live: Mapping[str, Set[KernelSelector]],
+) -> Dict[str, Set[KernelSelector]]:
+    return {name: set(kernels) for name, kernels in live.items()}
+
+
+def _merge_live_maps(
+    *live_maps: Mapping[str, Set[KernelSelector]],
+) -> Dict[str, Set[KernelSelector]]:
+    merged: Dict[str, Set[KernelSelector]] = {}
+    for live in live_maps:
+        for name, kernels in live.items():
+            merged.setdefault(name, set()).update(kernels)
+    return merged
+
+
+def _restrict_live_map(
+    live: Mapping[str, Set[KernelSelector]],
+    kernels: FrozenSet[KernelSelector],
+) -> Dict[str, Set[KernelSelector]]:
+    selected_kernels = set(kernels)
+    restricted: Dict[str, Set[KernelSelector]] = {}
+    for name, live_kernels in live.items():
+        selected = set(live_kernels) & selected_kernels
+        if selected:
+            restricted[name] = selected
+    return restricted
+
+
+def _exclude_live_map(
+    live: Mapping[str, Set[KernelSelector]],
+    kernels: FrozenSet[KernelSelector],
+) -> Dict[str, Set[KernelSelector]]:
+    excluded_kernels = set(kernels)
+    excluded: Dict[str, Set[KernelSelector]] = {}
+    for name, live_kernels in live.items():
+        retained = set(live_kernels) - excluded_kernels
+        if retained:
+            excluded[name] = retained
+    return excluded
+
+
+def _bound_names_in_target(target: ast.AST) -> Set[str]:
+    names: Set[str] = set()
+    if isinstance(target, ast.Name):
+        names.add(target.id)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            names.update(_bound_names_in_target(element))
+    elif isinstance(target, ast.Starred):
+        names.update(_bound_names_in_target(target.value))
+    return names
+
+
+def _direct_bound_names(statement: ast.stmt) -> Set[str]:
+    if isinstance(statement, ast.Assign):
+        names: Set[str] = set()
+        for target in statement.targets:
+            names.update(_bound_names_in_target(target))
+        return names
+    if isinstance(statement, ast.AnnAssign):
+        if statement.value is None:
+            return set()
+        return _bound_names_in_target(statement.target)
+    if isinstance(statement, ast.AugAssign):
+        return _bound_names_in_target(statement.target)
+    return set()
+
+
+def _loaded_names_in(root: ast.AST) -> Set[str]:
+    return {
+        node.id
+        for node in _iter_skip_nested_fns(root)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+
+class _LambdaFreeLoadCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names: Set[str] = set()
+        self._bound_names: List[Set[str]] = []
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        inherited = self._bound_names[-1] if self._bound_names else set()
+        self._bound_names.append(inherited)
+        for default in node.args.defaults:
+            self.visit(default)
+        for default in node.args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        self._bound_names[-1] = inherited | _nested_scope_bindings(node)
+        self.visit(node.body)
+        self._bound_names.pop()
+
+    def visit_Name(self, node):
+        if (
+            self._bound_names
+            and isinstance(node.ctx, ast.Load)
+            and node.id not in self._bound_names[-1]
+        ):
+            self.names.add(node.id)
+
+
+def _lambda_free_loaded_names(root: ast.AST) -> Set[str]:
+    collector = _LambdaFreeLoadCollector()
+    for node in ast.iter_child_nodes(root):
+        collector.visit(node)
+    return collector.names
+
+
+def _direct_loaded_names(statement: ast.stmt) -> Set[str]:
+    names = _loaded_names_in(statement)
+    names.update(_lambda_free_loaded_names(statement))
+    if isinstance(statement, ast.AugAssign):
+        names.update(_bound_names_in_target(statement.target))
+    return names
+
+
+def _control_header_loaded_names(statement: ast.stmt) -> Set[str]:
+    if isinstance(statement, (ast.If, ast.While)):
+        return _loaded_names_in(statement.test)
+    if isinstance(statement, ast.For):
+        return _loaded_names_in(statement.iter)
+    if isinstance(statement, ast.With):
+        names: Set[str] = set()
+        for item in statement.items:
+            names.update(_loaded_names_in(item.context_expr))
+        return names
+    return set()
+
+
+def _function_header_loaded_names(
+    statement: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+) -> Set[str]:
+    expressions: List[ast.expr] = list(statement.decorator_list)
+    expressions.extend(statement.args.defaults)
+    expressions.extend(
+        default for default in statement.args.kw_defaults if default is not None
+    )
+    if statement.returns is not None:
+        expressions.append(statement.returns)
+    for argument in (
+        list(statement.args.posonlyargs)
+        + list(statement.args.args)
+        + list(statement.args.kwonlyargs)
+    ):
+        if argument.annotation is not None:
+            expressions.append(argument.annotation)
+    if statement.args.vararg is not None:
+        annotation = statement.args.vararg.annotation
+        if annotation is not None:
+            expressions.append(annotation)
+    if statement.args.kwarg is not None:
+        annotation = statement.args.kwarg.annotation
+        if annotation is not None:
+            expressions.append(annotation)
+    names: Set[str] = set()
+    for expression in expressions:
+        names.update(_loaded_names_in(expression))
+    return names
+
+
+def _assigned_names_in(statements: List[ast.stmt]) -> Set[str]:
+    names: Set[str] = set()
+    for statement in statements:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names.update(_direct_bound_names(statement))
+        if isinstance(statement, ast.For):
+            names.update(_bound_names_in_target(statement.target))
+            names.update(_assigned_names_in(statement.body))
+            names.update(_assigned_names_in(statement.orelse))
+        elif isinstance(statement, (ast.If, ast.While)):
+            names.update(_assigned_names_in(statement.body))
+            names.update(_assigned_names_in(statement.orelse))
+        elif isinstance(statement, ast.With):
+            for item in statement.items:
+                if item.optional_vars is not None:
+                    names.update(_bound_names_in_target(item.optional_vars))
+            names.update(_assigned_names_in(statement.body))
+    return names
+
+
+class _ScalarLivenessPlanner:
+    """Preserve scalar definitions in every kernel that observes them."""
+
+    def __init__(
+        self,
+        state: _AnalysisState,
+        all_kernels: FrozenSet[KernelSelector],
+    ):
+        self._state = state
+        self._all_kernels = all_kernels
+
+    def analyze(self, body: List[ast.stmt]) -> None:
+        self._analyze_body(body, {}, self._all_kernels)
+
+    def _selection(
+        self, statement: ast.stmt, parent_kernels: FrozenSet[KernelSelector]
+    ) -> FrozenSet[KernelSelector]:
+        return self._state.anchor_selections.get(id(statement), parent_kernels)
+
+    def _analyze_body(
+        self,
+        body: List[ast.stmt],
+        live_out: Mapping[str, Set[KernelSelector]],
+        parent_kernels: FrozenSet[KernelSelector],
+    ) -> Dict[str, Set[KernelSelector]]:
+        live = _copy_live_map(live_out)
+        for statement in reversed(body):
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner_live = self._analyze_body(statement.body, {}, self._all_kernels)
+                local_names = _nested_scope_bindings(statement)
+                live = _merge_live_maps(
+                    live,
+                    {
+                        name: kernels
+                        for name, kernels in inner_live.items()
+                        if name not in local_names
+                    },
+                )
+                for name in _function_header_loaded_names(statement):
+                    live.setdefault(name, set()).update(parent_kernels)
+                continue
+            if isinstance(statement, (ast.For, ast.While, ast.If)):
+                live = self._analyze_control(statement, live, parent_kernels)
+                continue
+            if isinstance(statement, ast.With):
+                live = self._analyze_with(statement, live, parent_kernels)
+                continue
+            live = self._analyze_statement(statement, live, parent_kernels)
+        return live
+
+    @staticmethod
+    def _required_output_kernels(
+        assigned_names: Set[str],
+        live: Mapping[str, Set[KernelSelector]],
+    ) -> Set[KernelSelector]:
+        required: Set[KernelSelector] = set()
+        for name in assigned_names:
+            required.update(live.get(name, set()))
+        return required
+
+    def _analyze_control(
+        self,
+        statement: Union[ast.For, ast.While, ast.If],
+        live: Dict[str, Set[KernelSelector]],
+        parent_kernels: FrozenSet[KernelSelector],
+    ) -> Dict[str, Set[KernelSelector]]:
+        assigned_names = _assigned_names_in(statement.body + statement.orelse)
+        required = self._required_output_kernels(assigned_names, live)
+        header_kernels = self._state.control_header_selections.get(id(statement))
+        if header_kernels is not None:
+            excluded = required - set(header_kernels)
+            if excluded:
+                raise _split_error(
+                    statement,
+                    "selected control expression excludes logical kernels "
+                    "that consume values defined by its body "
+                    f"({_format_kernels(excluded)})",
+                )
+        if required:
+            self._state.extend(statement, required)
+        statement_kernels = self._selection(statement, parent_kernels)
+        outside_live = _exclude_live_map(live, statement_kernels)
+        branch_live_out = _restrict_live_map(live, statement_kernels)
+        else_live = self._analyze_body(
+            statement.orelse, branch_live_out, statement_kernels
+        )
+        if isinstance(statement, ast.If):
+            body_live = self._analyze_body(
+                statement.body, branch_live_out, statement_kernels
+            )
+            result = _merge_live_maps(outside_live, body_live, else_live)
+        else:
+            loop_exit_live = _merge_live_maps(branch_live_out, else_live)
+            if isinstance(statement, ast.While):
+                for name in _control_header_loaded_names(statement):
+                    loop_exit_live.setdefault(name, set()).update(statement_kernels)
+            loop_entry_live = _copy_live_map(loop_exit_live)
+            while True:
+                body_live = self._analyze_body(
+                    statement.body,
+                    loop_entry_live,
+                    statement_kernels,
+                )
+                if isinstance(statement, ast.For):
+                    for name in _bound_names_in_target(statement.target):
+                        body_live.get(name, set()).difference_update(statement_kernels)
+                next_loop_entry_live = _merge_live_maps(loop_exit_live, body_live)
+                if next_loop_entry_live == loop_entry_live:
+                    break
+                loop_entry_live = next_loop_entry_live
+            result = _merge_live_maps(outside_live, loop_entry_live)
+        if not isinstance(statement, ast.While):
+            for name in _control_header_loaded_names(statement):
+                result.setdefault(name, set()).update(statement_kernels)
+        return result
+
+    def _analyze_with(
+        self,
+        statement: ast.With,
+        live: Dict[str, Set[KernelSelector]],
+        parent_kernels: FrozenSet[KernelSelector],
+    ) -> Dict[str, Set[KernelSelector]]:
+        optional_names: Set[str] = set()
+        for item in statement.items:
+            if item.optional_vars is not None:
+                optional_names.update(_bound_names_in_target(item.optional_vars))
+        assigned_names = _assigned_names_in(statement.body) | optional_names
+        required = self._required_output_kernels(assigned_names, live)
+        statement_kernels = self._selection(statement, parent_kernels)
+        missing = required - set(statement_kernels)
+        if missing and id(statement) in self._state.anchor_selections:
+            raise _split_error(
+                statement,
+                "values defined inside a selected DFB acquisition are used "
+                "by excluded logical kernels "
+                f"({_format_kernels(missing)})",
+            )
+        body_live = self._analyze_body(
+            statement.body,
+            _restrict_live_map(live, statement_kernels),
+            statement_kernels,
+        )
+        for item in reversed(statement.items):
+            if item.optional_vars is not None:
+                for name in _bound_names_in_target(item.optional_vars):
+                    body_live.get(name, set()).difference_update(statement_kernels)
+            for name in _loaded_names_in(item.context_expr):
+                body_live.setdefault(name, set()).update(statement_kernels)
+        result = _merge_live_maps(_exclude_live_map(live, statement_kernels), body_live)
+        return result
+
+    def _analyze_statement(
+        self,
+        statement: ast.stmt,
+        live: Dict[str, Set[KernelSelector]],
+        parent_kernels: FrozenSet[KernelSelector],
+    ) -> Dict[str, Set[KernelSelector]]:
+        statement_kernels = self._selection(statement, parent_kernels)
+        anchored = id(statement) in self._state.anchor_selections
+        for name in _direct_bound_names(statement):
+            required = live.get(name, set())
+            missing = required - set(statement_kernels)
+            if missing and anchored:
+                raise _split_error(
+                    statement,
+                    f"value {name!r} is produced for "
+                    f"({_format_kernels(statement_kernels)}) but consumed by "
+                    f"excluded logical kernels ({_format_kernels(missing)})",
+                )
+            required.difference_update(statement_kernels)
+        for name in _direct_loaded_names(statement):
+            live.setdefault(name, set()).update(statement_kernels)
+        return live
 
 
 # ----- split-plan application ---------------------------------------------
@@ -969,14 +1491,6 @@ def _prune_statement_list(
 
 
 # ----- helpers --------------------------------------------------------------
-
-
-def _is_external_call_statement(statement: ast.stmt) -> bool:
-    return (
-        isinstance(statement, ast.Expr)
-        and isinstance(statement.value, ast.Call)
-        and _is_external_call(statement.value)
-    )
 
 
 def _assigned_copy_target(stmt: ast.stmt) -> Optional[str]:
@@ -1114,8 +1628,8 @@ def _walk_skip_nested_fns_iter(stmts: List[ast.stmt]):
         yield from _iter_skip_nested_fns(stmt)
 
 
-def _local_bindings(fn_node) -> Set[str]:
-    """Names locally bound inside a FunctionDef/AsyncFunctionDef/Lambda."""
+def _nested_scope_bindings(fn_node) -> Set[str]:
+    """Names in a nested scope that do not resolve in its enclosing scope."""
     locals_: Set[str] = set()
     args = fn_node.args
     for arg_list in (args.args, args.posonlyargs, args.kwonlyargs):
@@ -1129,30 +1643,28 @@ def _local_bindings(fn_node) -> Set[str]:
     if isinstance(fn_node, ast.Lambda):
         return locals_
 
+    global_names: Set[str] = set()
+    nonlocal_names: Set[str] = set()
     for stmt in fn_node.body:
         for sub in _iter_skip_nested_fns(stmt):
             if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 locals_.add(sub.name)
             elif isinstance(sub, ast.Assign):
-                for t in sub.targets:
-                    for n in ast.walk(t):
-                        if isinstance(n, ast.Name):
-                            locals_.add(n.id)
+                for target in sub.targets:
+                    locals_.update(_bound_names_in_target(target))
             elif isinstance(sub, (ast.AugAssign, ast.AnnAssign)):
-                if isinstance(sub.target, ast.Name):
-                    locals_.add(sub.target.id)
+                locals_.update(_bound_names_in_target(sub.target))
             elif isinstance(sub, ast.For):
-                if isinstance(sub.target, ast.Name):
-                    locals_.add(sub.target.id)
-                elif isinstance(sub.target, ast.Tuple):
-                    for elt in sub.target.elts:
-                        if isinstance(elt, ast.Name):
-                            locals_.add(elt.id)
+                locals_.update(_bound_names_in_target(sub.target))
             elif isinstance(sub, ast.With):
                 for item in sub.items:
-                    if isinstance(item.optional_vars, ast.Name):
-                        locals_.add(item.optional_vars.id)
-    return locals_
+                    if item.optional_vars is not None:
+                        locals_.update(_bound_names_in_target(item.optional_vars))
+            elif isinstance(sub, ast.Global):
+                global_names.update(sub.names)
+            elif isinstance(sub, ast.Nonlocal):
+                nonlocal_names.update(sub.names)
+    return (locals_ - nonlocal_names) | global_names
 
 
 def _collect_block_ownership(
@@ -1281,7 +1793,7 @@ def _collect_block_ownership(
                         inferred_users[root].add(KernelKind.COMPUTE)
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            inner = visible - _local_bindings(node)
+            inner = visible - _nested_scope_bindings(node)
             selected_callback_kernels = callback_kernels.get(node.name)
             if selected_callback_kernels is None:
                 nested_data_movement_kernels = current_data_movement_kernels
@@ -1298,7 +1810,7 @@ def _collect_block_ownership(
                 )
             return
         if isinstance(node, ast.Lambda):
-            inner = visible - _local_bindings(node)
+            inner = visible - _nested_scope_bindings(node)
             visit(
                 node.body,
                 inner,

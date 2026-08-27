@@ -1,3 +1,4 @@
+// Summary: Verifies PipeNet and DFB passes occur in the required pipeline order.
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline --dump-pass-pipeline 2>&1 | FileCheck %s
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-verify-pipenet)' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=SUBPIPELINE
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=false})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-DISABLED
@@ -28,7 +29,8 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
-// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 reuse-user-dfbs=true},
+// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 reuse-user-dfbs=true unsafe-assume-allocation-groups=false},
+// CHECK-NEXT: ttl-set-compute-kernel-config{{.*}},
 // CHECK-NEXT: func.func(
 // CHECK-NOT:    ttl-verify-pipenet-guards
 // CHECK-NOT:    ttl-verify-pipenet-schedule

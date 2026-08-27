@@ -33,12 +33,18 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .condition import DispatchCondition
+from .dfb_reset import DFBReset
+from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
+from .dfb_reconfiguration import DFBReconfiguration
+from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
     make_dfb,
     make_tensor_backed_dfb,
 )
 from .operators import (
+    DFBAccess,
     DFBEffect,
     call_extern_func,
     copy,
@@ -48,10 +54,16 @@ from .operators import (
     matmul,
     node,
     raw_addr,
+    reset_all_dfbs,
+    reset_dfbs,
+    reconfigure_dfbs,
 )
 
 # Math operations namespace
 from . import ttl_math as math
+
+# Block operations namespace
+from . import ttl_block as block
 
 __all__ = [
     "operation",
@@ -66,19 +78,30 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "DispatchCondition",
+    "DFBReset",
+    "DFBAllocationGroup",
+    "DFBReconfiguration",
+    "ScalarType",
     "compute",
     "datamovement",
     "make_dataflow_buffer_like",
     "make_dfb",
     "make_tensor_backed_dfb",
+    "make_dfb_allocation_group",
     "copy",
     "node",
     "grid_size",
     "matmul",
     "call_extern_func",
     "DFBEffect",
+    "DFBAccess",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
+    "reset_dfbs",
+    "reset_all_dfbs",
+    "reconfigure_dfbs",
     "math",
+    "block",
 ]

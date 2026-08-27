@@ -3,13 +3,24 @@
 
 // -----
 
-// Rank-3 input
-func.func @reduce_rank3(
+// Rank-1 input.
+func.func @reduce_rank1(
+    %a: tensor<2x!ttcore.tile<32x32, bf16>>,
+    %s: tensor<1x!ttcore.tile<32x32, bf16>>) -> tensor<1x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{input must have rank 2 or greater, got rank 1}}
+  %r = ttl.reduce %a, %s 0 : i32 [0] : (tensor<2x!ttcore.tile<32x32, bf16>>, tensor<1x!ttcore.tile<32x32, bf16>>) -> tensor<1x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Result rank must match the input rank.
+func.func @reduce_result_rank_mismatch(
     %a: tensor<1x2x3x!ttcore.tile<32x32, bf16>>,
-    %s: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x1x!ttcore.tile<32x32, bf16>> {
-  // expected-error @below {{input must be rank 2, got rank 3}}
-  %r = ttl.reduce %a, %s 0 : i32 [2] : (tensor<1x2x3x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x1x!ttcore.tile<32x32, bf16>>
-  return %r : tensor<1x2x1x!ttcore.tile<32x32, bf16>>
+    %s: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{result rank 2 must match input rank 3}}
+  %r = ttl.reduce %a, %s 0 : i32 [2] : (tensor<1x2x3x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<1x2x!ttcore.tile<32x32, bf16>>
 }
 
 // -----
@@ -80,7 +91,7 @@ func.func @reduce_scaler_wrong_shape(
 
 // -----
 
-// Scaler must be rank 2
+// Scaler must be rank 2.
 func.func @reduce_scaler_rank1(
     %a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
     %s: tensor<1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>> {

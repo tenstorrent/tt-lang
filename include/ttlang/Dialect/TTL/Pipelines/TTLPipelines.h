@@ -85,14 +85,19 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(0)};
   Option<uint32_t> l1BudgetOverride{
       *this, "l1-budget-override",
-      llvm::cl::desc("Override the L1 allocation budget used by DFB validation "
-                     "and PipeTransport selection."),
+      llvm::cl::desc("Override the combined DFB, PipeNet, and synchronized-"
+                     "reset L1 allocation budget."),
       llvm::cl::init(0)};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<bool> unsafeAssumeAllocationGroups{
+      *this, "unsafe-assume-allocation-groups",
+      llvm::cl::desc("Trust explicit DFB allocation groups when runtime "
+                     "handoff cannot be proven."),
+      llvm::cl::init(false)};
   Option<std::uint64_t> exactColoringSearchStateLimit{
       *this, "exact-coloring-search-limit",
       llvm::cl::desc("Maximum states examined by exact DFB allocation before "
@@ -117,6 +122,10 @@ void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 
 /// Add the ordered PipeNet launch-domain and synchronization verifiers.
 void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
+
+/// Clone kernels per launch coordinate, fold unused branches, and record
+/// surviving DFB compile-time argument indices.
+void buildTTKernelSpecializationPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();
 

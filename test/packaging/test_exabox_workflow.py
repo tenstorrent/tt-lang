@@ -69,14 +69,11 @@ def test_hardware_matrix_adds_manual_blackhole_loudbox() -> None:
     hardware_workflow = CALL_TEST_HARDWARE.read_text()
 
     assert "inputs.run_loudbox_tests && fromJSON" in call_build
-    assert '["n150","bh-loudbox-viommu"]' in call_build
-    assert "matrix.hardware == 'bh-loudbox-viommu'" in call_build
-    assert "tt-ubuntu-2204-bh-loudbox-viommu-stable" in call_build
+    assert '["n150","bh-loudbox"]' in call_build
+    assert "matrix.hardware == 'bh-loudbox'" in call_build
+    assert "tt-ubuntu-2204-bh-loudbox-stable" in call_build
     assert "tt-ubuntu-2204-n150-stable" in call_build
-    assert (
-        "defer_result_check: ${{ matrix.hardware != 'bh-loudbox-viommu' }}"
-        in call_build
-    )
+    assert "defer_result_check: ${{ matrix.hardware != 'bh-loudbox' }}" in call_build
     assert "--optional-runner" not in call_build
     assert "inputs.run_galaxy_tests && 3 || 2" in call_build
     assert "inputs.run_galaxy_tests && 2 || 1" in call_build

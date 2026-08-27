@@ -1,6 +1,7 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=false})' | FileCheck %s --check-prefix=LOCAL
 // Global-only mode must not lower any counter to a local semaphore lookup.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true})' | FileCheck %s --check-prefix=GLOBAL --implicit-check-not=ttkernel.get_semaphore
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-global-semaphores-only=true l1-budget-override=12480})' -o /dev/null
 
 // Summary: Verifies that the PipeNet counter-storage option preserves the
 // allocation plan while selecting local or GlobalSemaphore storage.
@@ -48,7 +49,10 @@
 // GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_READY_PTR]]
 // GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 
-module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+module attributes {
+  ttl.launch_grid = array<i64: 2, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
   func.func @select_pipe_counter_storage()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}

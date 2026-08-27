@@ -334,7 +334,7 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
     return info;
   }
-  if (isa<TileFillOp>(operation)) {
+  if (isa<TileFillOp, TileReductionInitOp>(operation)) {
     info.primitive = TilePrimitive::Fill;
     return info;
   }
@@ -546,21 +546,21 @@ std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
 
 FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
                                                   int64_t rank) {
-  if (rank != 2) {
+  if (rank < 2) {
     return failure();
   }
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
   // TTKernel names the surviving orientation: reducing height uses a column
   // reduction, while reducing width uses a row reduction.
-  bool reducesHeight = normalizedDims.contains(0);
-  bool reducesWidth = normalizedDims.contains(1);
-  if (reducesHeight && reducesWidth) {
+  bool reducesSecondInnermost = normalizedDims.contains(rank - 2);
+  bool reducesInnermost = normalizedDims.contains(rank - 1);
+  if (reducesSecondInnermost && reducesInnermost) {
     return ttkernel::ReduceDim::Scalar;
   }
-  if (reducesHeight) {
+  if (reducesSecondInnermost) {
     return ttkernel::ReduceDim::Col;
   }
-  if (reducesWidth) {
+  if (reducesInnermost) {
     return ttkernel::ReduceDim::Row;
   }
   return failure();
