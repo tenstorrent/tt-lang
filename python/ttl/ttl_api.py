@@ -1678,6 +1678,25 @@ def _parse_mlir_element_type(
     )
 
 
+def _extract_dfb_node_coordinates(
+    nodes_attr, *, context: str, allow_empty: bool
+) -> tuple[tuple[int, int], ...]:
+    nodes = []
+    for node_position, node_attr in enumerate(nodes_attr):
+        node = ArrayAttr(node_attr)
+        if len(node) != 2:
+            raise ValueError(f"{context}[{node_position}] must contain [x, y]")
+        coordinate = tuple(int(IntegerAttr(component).value) for component in node)
+        if coordinate[0] < 0 or coordinate[1] < 0:
+            raise ValueError(f"{context} contains negative coordinate {coordinate}")
+        if coordinate in nodes:
+            raise ValueError(f"{context} contains duplicate coordinate {coordinate}")
+        nodes.append(coordinate)
+    if not allow_empty and not nodes:
+        raise ValueError(f"{context} must not be empty")
+    return tuple(sorted(nodes))
+
+
 def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
     """Parse and validate one compiler-emitted physical DFB configuration."""
     required_fields = ("num_tiles", "element_type", "block_count", "page_size")
@@ -1699,6 +1718,14 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         if value <= 0:
             raise ValueError(f"{context}.{field} must be positive, got {value}")
 
+    allocation_nodes = None
+    if "allocation_nodes" in entry:
+        allocation_nodes = _extract_dfb_node_coordinates(
+            entry["allocation_nodes"],
+            context=f"{context}.allocation_nodes",
+            allow_empty=True,
+        )
+
     storage_segments = []
     seen_nodes = set()
     storage_segment_entries = (
@@ -1708,24 +1735,17 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         segment_context = f"{context}.storage_segments[{segment_position}]"
         if "nodes" not in segment:
             raise ValueError(f"{segment_context} is missing 'nodes'")
-        nodes = []
-        for node_position, node_attr in enumerate(segment["nodes"]):
-            node = ArrayAttr(node_attr)
-            if len(node) != 2:
+        nodes = _extract_dfb_node_coordinates(
+            segment["nodes"],
+            context=f"{segment_context}.nodes",
+            allow_empty=False,
+        )
+        for coordinate in nodes:
+            if coordinate in seen_nodes:
                 raise ValueError(
-                    f"{segment_context}.nodes[{node_position}] must contain [x, y]"
+                    f"{context} assigns launch node {coordinate} to multiple segments"
                 )
-            coord = tuple(int(IntegerAttr(component).value) for component in node)
-            if coord[0] < 0 or coord[1] < 0:
-                raise ValueError(f"{context} contains negative launch node {coord}")
-            if coord in seen_nodes:
-                raise ValueError(
-                    f"{context} assigns launch node {coord} to multiple segments"
-                )
-            seen_nodes.add(coord)
-            nodes.append(coord)
-        if not nodes:
-            raise ValueError(f"{segment_context}.nodes must not be empty")
+            seen_nodes.add(coordinate)
 
         tensor_index = None
         byte_offset = 0
@@ -1747,7 +1767,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
                 )
         storage_segments.append(
             DFBStorageSegment(
-                nodes=tuple(sorted(nodes)),
+                nodes=nodes,
                 tensor_index=tensor_index,
                 byte_offset=byte_offset,
                 byte_size=byte_size,
@@ -1761,6 +1781,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         page_size=page_size,
         tile=tile,
         storage_segments=tuple(storage_segments),
+        allocation_nodes=allocation_nodes,
     )
 
 
