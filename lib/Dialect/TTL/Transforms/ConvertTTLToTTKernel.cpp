@@ -520,6 +520,12 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       // converted). Trace the original (unconverted) view instead.
       Value origCB = getAttachedCB(op.getView());
       if (!origCB) {
+        if (auto reserve =
+                findCBReserveForView(op.getView(), op.getOperation())) {
+          origCB = reserve.getCb();
+        }
+      }
+      if (!origCB) {
         return rewriter.notifyMatchFailure(
             op, "view not associated with a dataflow buffer");
       }

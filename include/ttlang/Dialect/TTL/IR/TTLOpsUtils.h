@@ -163,9 +163,95 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
 }
 
-/// Return the user reserve that produced a pipe receive destination block.
+/// Returns true when `operation` executes only in a then-region guarded by
+/// `condition`.
+inline bool isOperationInThenRegionGuardedBy(mlir::Operation *operation,
+                                             mlir::Value condition) {
+  for (mlir::Operation *ancestor = operation->getParentOp(), *child = operation;
+       ancestor; child = ancestor, ancestor = ancestor->getParentOp()) {
+    auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(ancestor);
+    if (!ifOp || ifOp.getCondition() != condition) {
+      continue;
+    }
+    return ifOp.getThenRegion().isAncestor(child->getParentRegion());
+  }
+  return false;
+}
+
+/// Returns true when `value` denotes the inactive branch of a conditionally
+/// acquired dataflow buffer.
+inline bool isInactiveGuardedDFBYield(mlir::Value value) {
+  value = traceUnrealizedCasts(value);
+  auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>();
+  return cast && cast.getInputs().empty() &&
+         cast->hasAttr("ttl.inactive_guarded_dfb");
+}
+
+/// Trace a tensor value through view-preserving operations to its DFB acquire
+/// when `use` is executed under the condition that makes a guarded acquire
+/// active.
+inline mlir::Operation *findCBAcquireOp(mlir::Value tensor,
+                                        mlir::Operation *use) {
+  while (true) {
+    tensor = traceUnrealizedCasts(tensor);
+    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+      tensor = attach.getTensor();
+      continue;
+    }
+    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      tensor = slice.getSource();
+      continue;
+    }
+    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+      tensor = extract.getTensor();
+      continue;
+    }
+    mlir::Operation *definition = tensor.getDefiningOp();
+    if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
+      return definition;
+    }
+
+    auto result = mlir::dyn_cast<mlir::OpResult>(tensor);
+    if (!result) {
+      return nullptr;
+    }
+    auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner());
+    if (!ifOp || ifOp.getElseRegion().empty() ||
+        !isOperationInThenRegionGuardedBy(use, ifOp.getCondition())) {
+      return nullptr;
+    }
+
+    unsigned resultIndex = result.getResultNumber();
+    auto thenYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+        ifOp.getThenRegion().front().getTerminator());
+    auto elseYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+        ifOp.getElseRegion().front().getTerminator());
+    if (!thenYield || !elseYield ||
+        resultIndex >= thenYield.getResults().size() ||
+        resultIndex >= elseYield.getResults().size() ||
+        !isInactiveGuardedDFBYield(elseYield.getResults()[resultIndex])) {
+      return nullptr;
+    }
+    tensor = thenYield.getResults()[resultIndex];
+  }
+}
+
+/// Returns the reserve that produced `view` when `use` is executed under the
+/// same condition as a conditionally yielded reserve.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view,
+                                                       mlir::Operation *use) {
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view, use));
+}
+
+/// Return the reserve that produced an unguarded pipe receive destination.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
+}
+
+/// Return the reserve that produced a pipe receive destination used here.
+inline mlir::tt::ttl::CBReserveOp
+findCBReserveForPipeReceive(mlir::Value dst, mlir::Operation *use) {
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst, use));
 }
 
 /// Returns the DFB declaration reached through unrealized conversion casts.
@@ -802,23 +888,12 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   return tileOp;
 }
 
-/// Collect the CB values targeted by pack_tile ops inside a loop.
+/// Collect the dataflow buffer values targeted by pack operations inside a
+/// loop.
 llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
 
-/// Returns true if two loops share any pack_tile CB target.
+/// Returns true if two loops share any pack operation dataflow buffer target.
 bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
-
-/// A group of consecutive sibling loops that pack to the same output CB.
-struct LoopGroup {
-  scf::ForOp rootLoop;
-  SmallVector<scf::ForOp> loops;
-  Operation *scopeEnd = nullptr;
-};
-
-/// Collect groups of annotated sibling loops that share a pack CB target.
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

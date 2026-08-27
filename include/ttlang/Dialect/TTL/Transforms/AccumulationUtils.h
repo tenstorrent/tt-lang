@@ -12,9 +12,20 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 
+#include <optional>
+
 namespace mlir::tt::ttl {
 
 class DFBAcquireReleaseIndex;
+
+/// Accumulation scope family selected by scope insertion and lowering passes.
+enum class AccumulationScopeKind {
+  Tensor,
+  DFB,
+};
+
+/// Parse an accumulation scope kind pass option.
+FailureOr<AccumulationScopeKind> parseAccumulationScopeKind(StringRef kind);
 
 /// Describes how the contribution operand is acquired relative to the source
 /// recurrence loop.
@@ -62,6 +73,9 @@ struct TensorAccumulationMatch {
 /// Properties that must remain stable between the precondition scan and the
 /// rewrite to a recurrence whose accumulator stays resident in DST.
 struct TensorDstAccumulationInfo {
+  /// Source loop trip count when statically known.
+  std::optional<int64_t> tripCount;
+
   /// Number of accumulator tiles resident for the whole DST section.
   int64_t unitTileCount;
 
@@ -88,6 +102,21 @@ struct TensorDstAccumulationInfo {
   Operation *residentContributionLastUse;
 };
 
+/// Recurrence properties required for packer L1 tensor accumulation.
+struct TensorL1PackAccumulationInfo {
+  /// Static trip count of the contributing loop, when known.
+  std::optional<int64_t> tripCount;
+
+  /// Number of tiles in one contribution tensor, when statically known.
+  std::optional<int64_t> unitTileCount;
+};
+
+/// Loop-carried recurrence value that would be read after its DFB release.
+enum class TensorAccumulationReleasedValue {
+  Initial,
+  Contribution,
+};
+
 /// Placement constraint for the output reservation associated with a matched
 /// tensor accumulation.
 enum class TensorAccumulationReservePlacement {
@@ -110,6 +139,14 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
     ArrayRef<Operation *> allowedReserveUsers = {},
     ArrayRef<Operation *> allowedLoopResultUsers = {});
 
+/// Return true when the loop result at `resultIndex` carries ranked tensor
+/// state that must be removed before compute lowering.
+bool isTensorLoopState(scf::ForOp loop, unsigned resultIndex);
+
+/// Return the static trip count, accepting constant bounds that have been cast
+/// to index. `scf::ForOp::getStaticTripCount` does not fold index casts.
+std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop);
+
 /// Return DST-resident accumulation properties for `match` when the source
 /// loop can be deleted without dropping side effects.
 FailureOr<TensorDstAccumulationInfo>
@@ -123,6 +160,18 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
                                 Value initialValue,
                                 const DFBAcquireReleaseIndex &dfbIndex);
 
+/// Return the first loop-carried recurrence operand whose acquired DFB slot has
+/// an owned release before the lowering would read the value.
+std::optional<TensorAccumulationReleasedValue>
+getTensorAccumulationUseAfterOwnedRelease(
+    const TensorAccumulationMatch &match,
+    const DFBAcquireReleaseIndex &dfbIndex);
+
+/// Return packer L1 accumulation properties for `match` when legal.
+FailureOr<TensorL1PackAccumulationInfo> analyzeTensorAccumulationForL1Pack(
+    const TensorAccumulationMatch &match,
+    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
+
 /// Lower a matched additive tensor recurrence to a DST section whose
 /// accumulator stays resident across the original source loop. Contribution
 /// acquisition follows `info.contributionResidency`. The caller assigns
@@ -132,6 +181,16 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
                                   const TensorDstAccumulationInfo &info,
                                   bool synthesizeResidentContributionPop,
                                   RewriterBase &rewriter);
+
+/// Lower a matched additive tensor recurrence to one initial output store plus
+/// per-iteration accumulating stores. The generated loop is annotated for L1
+/// packer accumulation reconfiguration insertion.
+LogicalResult lowerTensorAccumulationToL1Pack(
+    const TensorAccumulationMatch &match, int64_t scopeId,
+    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter);
+
+/// Return one more than the maximum L1 accumulation scope id under `root`.
+int64_t getNextL1AccScopeId(Operation *root);
 
 } // namespace mlir::tt::ttl
 
