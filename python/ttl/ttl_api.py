@@ -2532,6 +2532,7 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        accumulation_strategy = compiler_options.accumulation_strategy
         pipe_batch_tiles = compiler_options.pipe_batch_tiles
         pipe_transport_options = [f"group-size={pipe_batch_tiles}"]
         if l1_budget_override > 0:
@@ -2549,14 +2550,18 @@ def _lower_program_to_kernel(
             compiler_options.dfb_exact_coloring_search_limit
         )
         tensor_recurrence_pipeline = (
-            "ttl-form-accumulation-scopes,"
-            "ttl-lower-accumulation-scopes,"
+            "ttl-form-accumulation-scopes{"
+            f"strategy={accumulation_strategy}"
+            "},"
+            f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}},"
             "ttl-materialize-loop-state"
         )
         pipeline_passes = [
             f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-annotate-l1-acc-loops)",
+            "func.func(ttl-auto-sync)",
+            "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
+            "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",

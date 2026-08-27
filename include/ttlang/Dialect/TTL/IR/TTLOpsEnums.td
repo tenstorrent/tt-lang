@@ -143,7 +143,7 @@ def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
     [TTL_AccumulationInitialMode_Overwrite,
      TTL_AccumulationInitialMode_AccumulateExisting,
      TTL_AccumulationInitialMode_Init]> {
-        let cppNamespace = "::mlir::tt::ttl";
+  let cppNamespace = "::mlir::tt::ttl";
 }
 
 //===----------------------------------------------------------------------===//
@@ -165,11 +165,11 @@ def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mod
 }
 
 def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
-// TODO(#646): Add non-additive combiners once their DST-resident legality and
-// lowering behavior are specified.
+def TTL_AccumulationCombiner_Max : I32EnumAttrCase<"Max", 1, "max">;
 
 def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
-    "TTL accumulation combiner", [TTL_AccumulationCombiner_Add]> {
+    "TTL accumulation combiner",
+    [TTL_AccumulationCombiner_Add, TTL_AccumulationCombiner_Max]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 

@@ -1,10 +1,12 @@
+# REQUIRES: optimized
 # RUN: %python %s
 
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Bounds protocol-graph and structural-order construction time.
+# Bounds protocol-graph and structural-order construction time in optimized
+# builds.
 
 import os
 import subprocess

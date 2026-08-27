@@ -57,9 +57,9 @@ enum class DFBAcquireReleaseKind { Producer, Consumer };
 /// Half-open ownership interval for one DFB acquire operation.
 ///
 /// `kindBoundary` is the closest later acquire of the same kind on the same
-/// DFB, projected into the acquire block. Direct DFB uses after that boundary
-/// belong to a later acquire interval. Tensor SSA uses may extend past the
-/// boundary because they continue to name the original acquired slot.
+/// DFB, projected into the interval ordering block. Direct DFB uses after that
+/// boundary belong to a later acquire interval. Tensor SSA uses may extend past
+/// the boundary because they continue to name the original acquired slot.
 struct DFBAcquireInterval {
   /// The `ttl.cb_reserve` or `ttl.cb_wait` that starts the interval.
   Operation *acquire = nullptr;
@@ -81,6 +81,12 @@ struct DFBReleaseSearch {
 
   /// Releases nested under operations in the acquire interval.
   SmallVector<Operation *> nestedReleases;
+
+  /// Releases inside the active branch of a guarded acquire.
+  SmallVector<Operation *> guardedLocalReleases;
+
+  /// Same-block releases that precede storage uses owned by the acquire.
+  SmallVector<Operation *> releasesBeforeOwnedUses;
 
   bool hasSameLevelRelease() const { return !sameLevelReleases.empty(); }
 };
@@ -150,6 +156,17 @@ Value getDFBAcquireDFB(Operation *op);
 /// Returns the DFB operand of a `ttl.cb_push` or `ttl.cb_pop`.
 Value getDFBReleaseDFB(Operation *op);
 
+/// Returns true if `op` is acquired under an `scf.if` condition and yielded
+/// from that region with an inactive value in the else region.
+bool isGuardedDFBAcquire(Operation *op);
+
+/// Returns true when `operation` directly names the slot owned by `interval`.
+///
+/// This excludes lifecycle and identity-only operations. Tensor SSA uses of an
+/// acquired slot are modeled by walking from the acquire result instead.
+bool operationMayDirectlyUseAcquiredDFBSlot(DFBAcquireInterval interval,
+                                            Operation *operation);
+
 /// Returns the number of whole DFB blocks acquired or released by `op`.
 ///
 /// Returns `std::nullopt` when the transaction size is not a positive multiple
@@ -195,6 +212,17 @@ DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
 /// See `docs/development/DFBManagement.md` for the asymmetric classification of
 /// direct DFB uses and tensor SSA uses.
 Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval);
+
+/// Collects operations that access storage owned by `interval`.
+///
+/// Propagation-only operations are traversed but are not returned.
+void collectDFBAcquireOwnedUses(DFBAcquireInterval interval,
+                                SmallVectorImpl<Operation *> &uses);
+
+/// Returns true if `release` may publish producer storage before a later
+/// operation accesses storage acquired by `interval`.
+bool hasProducerDFBAcquireStorageUseAfterRelease(DFBAcquireInterval interval,
+                                                 Operation *release);
 
 /// Finds releases owned by `interval`.
 ///
