@@ -113,9 +113,14 @@ func.func @nonstore_use_before_store()
 // PLAN-NOT:   materialize
 
 // FULL-LABEL: func.func @slice_of_second_acquisition
-// FULL:       %[[SECOND_SLICE:.*]] = tensor.extract_slice
-// FULL:       ttl.cb_pop %[[INPUT_DFB:.*]]
+// FULL:       %[[INPUT_DFB:.*]] = ttl.bind_cb{cb_index = 0
+// FULL:       %[[INPUT_WAIT:.*]] = ttl.cb_wait %[[INPUT_DFB]] {num_tiles = 2 : i64}
+// FULL:       tensor.extract_slice %[[INPUT_WAIT]][0, 0]
+// FULL:       %[[SECOND_TILE:.*]] = tensor.extract_slice %[[INPUT_WAIT]][0, 1]
+// FULL:       %[[SECOND_VIEW:.*]] = ttl.attach_cb %[[SECOND_TILE]], %[[INPUT_DFB]]
+// FULL:       %[[SECOND_SLICE:.*]] = tensor.extract_slice %[[SECOND_VIEW]]
 // FULL:       ttl.compute ins(%[[SECOND_SLICE]]
+// FULL:       ttl.cb_pop %[[INPUT_DFB]] {num_tiles = 2 : i64}
 // FULL-NOT:   ttl.compiler_allocated
 // FULL-NOT:   ttl.exp
 // FULL-NOT:   ttl.store

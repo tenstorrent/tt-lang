@@ -19,6 +19,10 @@ import os
 import sys
 from typing import Optional, Sequence
 
+# TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
+# accumulation strategy.
+_ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
+
 
 def _nonnegative_int(value: str) -> int:
     parsed_value = int(value)
@@ -40,6 +44,15 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="maximize_dst",
         action=argparse.BooleanOptionalAction,
         help="Enable DST maximization via subblock compute and scheduling (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-accumulation-strategy",
+        default=None,
+        dest="accumulation_strategy",
+        help=(
+            "Select tensor recurrence accumulation storage strategy: auto, "
+            "dst, or l1-pack (default: auto)."
+        ),
     )
     p.add_argument(
         "--ttl-fpu-binary-ops",
@@ -202,7 +215,14 @@ def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> d
             raise ValueError(f"Unknown kernel option(s): {unknown}")
     else:
         ns, _ = _PARSER.parse_known_args(tokens)
-    return {k: v for k, v in vars(ns).items() if v is not None}
+    explicit = {k: v for k, v in vars(ns).items() if v is not None}
+    strategy = explicit.get("accumulation_strategy")
+    if strategy is not None and strategy not in _ACCUMULATION_STRATEGIES:
+        raise ValueError(
+            "Invalid accumulation strategy "
+            f"{strategy!r}; expected one of {sorted(_ACCUMULATION_STRATEGIES)}"
+        )
+    return explicit
 
 
 @dataclasses.dataclass(frozen=True)
@@ -224,6 +244,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
+    accumulation_strategy: str = "auto"
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
     subblock_sync: bool = False
@@ -248,6 +269,15 @@ class CompilerOptions:
     _explicit: frozenset = dataclasses.field(
         default=frozenset(), compare=False, hash=False, repr=False
     )
+
+    def __post_init__(self):
+        """Validate options that can be constructed without argparse."""
+        if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
+            raise ValueError(
+                "Invalid accumulation strategy "
+                f"{self.accumulation_strategy!r}; expected one of "
+                f"{sorted(_ACCUMULATION_STRATEGIES)}"
+            )
 
     @staticmethod
     def from_string(options: Optional[str] = None) -> CompilerOptions:

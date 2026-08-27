@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -84,11 +85,9 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 }
 
 static bool requiresDstAccumulation(ComputeOp op) {
-  // In-DST recurrences and inter-tile reduction initializers must share one
-  // DST section across reduction iterations. Ordinary per-iteration sections
-  // would reacquire DST and lose the accumulator state.
-  if (op.containsOp<TileAccumulateOp>() ||
-      op.containsOp<TileReductionInitOp>()) {
+  // In-DST recurrences must share one DST section across reduction iterations.
+  // Ordinary per-iteration sections would reacquire DST and lose the state.
+  if (op.containsOp<TileAccumulateOp>()) {
     return true;
   }
   return op.getBody()
@@ -98,6 +97,16 @@ static bool requiresDstAccumulation(ComputeOp op) {
                    : WalkResult::advance();
       })
       .wasInterrupted();
+}
+
+static void annotateReductionLoop(scf::ForOp loop, OpBuilder &builder,
+                                  int64_t scopeId) {
+  MLIRContext *context = builder.getContext();
+  loop->setAttr(kReductionLoopAttrName, builder.getUnitAttr());
+  loop->setAttr(kL1AccInitialAttrName,
+                AccumulationInitialModeAttr::get(
+                    context, AccumulationInitialMode::Overwrite));
+  loop->setAttr(kL1AccScopeIdAttrName, builder.getI64IntegerAttr(scopeId));
 }
 
 /// Generate parallel-outer / reduction-inner loop structure for accumulating
@@ -115,7 +124,8 @@ static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
     ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
-    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps,
+    int64_t reductionScopeId) {
 
   SmallVector<unsigned> parallelDims, reductionDims;
   for (auto [idx, iterType] : llvm::enumerate(iterTypes)) {
@@ -164,7 +174,6 @@ static scf::LoopNest generateAccumulatingLoops(
   // output now avoids consulting the replaced compute during publication.
   Block &bodyBlock = op.getBody().front();
   SmallVector<StoreInfo> storeInfos;
-  SmallVector<TileReductionInitOp> reductionInitializers;
   llvm::SmallPtrSet<Operation *, 4> accumulatorInitOps;
   // Accumulator init ops must execute once per output tile before the
   // reduction loop. If they stayed in the reduction body, every contribution
@@ -190,16 +199,12 @@ static scf::LoopNest generateAccumulatingLoops(
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
       FailureOr<unsigned> outputIndex =
-          op.getOutputIndexForView(store.getView());
+          op.getOutputIndexForView(store.getView(), store.getOperation());
       assert(succeeded(outputIndex) &&
              "verified store must map to one formal compute output");
       storeInfos.push_back(
           {store, dstIdx ? static_cast<int32_t>(*dstIdx) : 0, *outputIndex});
       continue;
-    }
-
-    if (auto initializer = dyn_cast<TileReductionInitOp>(&bodyOp)) {
-      reductionInitializers.push_back(initializer);
     }
 
     auto accumulate = dyn_cast<TileAccumulateOp>(&bodyOp);
@@ -274,7 +279,7 @@ static scf::LoopNest generateAccumulatingLoops(
     mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (isa<IterIndexOp, TileReductionInitOp, TileStoreOp>(&bodyOp) ||
+      if (isa<IterIndexOp, TileStoreOp>(&bodyOp) ||
           accumulatorInitOps.contains(&bodyOp)) {
         continue;
       }
@@ -300,22 +305,6 @@ static scf::LoopNest generateAccumulatingLoops(
         IRMapping accumulatorInitMapping =
             cloneAccumulatorInits(secBuilder, parLoc, initIVs);
 
-        // Initialize inter-tile reduction accumulators once per output tile.
-        // Their DST slots then persist for every input tile in the loop below.
-        for (TileReductionInitOp initializer : reductionInitializers) {
-          std::optional<int64_t> dstIndex =
-              getConstantIntValue(initializer.getDstIndex());
-          assert(dstIndex &&
-                 "reduction initializer must have a constant DST index");
-          Value clonedDstIndex =
-              arith::ConstantIndexOp::create(secBuilder, parLoc, *dstIndex);
-          Value initializedAccumulator = TileReductionInitOp::create(
-              secBuilder, parLoc, initializer.getResult().getType(),
-              initializer.getReduceTypeAttr(), clonedDstIndex);
-          accumulatorInitMapping.map(initializer.getResult(),
-                                     initializedAccumulator);
-        }
-
         // Inner: reduction loops.
         scf::LoopNest redNest = scf::buildLoopNest(
             secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
@@ -333,7 +322,7 @@ static scf::LoopNest generateAccumulatingLoops(
           unsigned origDim = reductionDims[idx];
           loop->setAttr(kTileLoopStrideAttrName,
                         parBuilder.getIndexAttr(domainStrides[origDim]));
-          loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+          annotateReductionLoop(loop, parBuilder, reductionScopeId);
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
@@ -421,15 +410,13 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
-    bool isAccumulating =
-        op.getBody()
-            .walk([](Operation *inner) {
-              return inner->hasTrait<TTLAccumulatingOpTrait>() ||
-                             isa<TileReductionInitOp>(inner)
-                         ? WalkResult::interrupt()
-                         : WalkResult::advance();
-            })
-            .wasInterrupted();
+    bool isAccumulating = op.getBody()
+                              .walk([](Operation *inner) {
+                                return inner->hasTrait<TTLAccumulatingOpTrait>()
+                                           ? WalkResult::interrupt()
+                                           : WalkResult::advance();
+                              })
+                              .wasInterrupted();
 
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
@@ -477,9 +464,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       if (isAccumulating) {
         if (dstAccumulation || requiresDstAccumulation(op)) {
           usedDstAccumulation = true;
-          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
-                                           indexingMaps, iterTypes, lowerBounds,
-                                           upperBounds, steps);
+          return generateAccumulatingLoops(
+              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
+              lowerBounds, upperBounds, steps,
+              getNextL1AccScopeId(op->getParentOfType<func::FuncOp>()));
         }
       }
 
@@ -521,13 +509,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       domainStrides = computeStrides(domainSizes);
     }
     if (!usedDstAccumulation) {
+      int64_t reductionScopeId =
+          getNextL1AccScopeId(op->getParentOfType<func::FuncOp>());
       // Loops are in declaration order, matching iterTypes.
       for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
         int64_t stride =
             fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
         loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
         if (iterTypes[idx].getValue() == "reduction") {
-          loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+          annotateReductionLoop(loop, rewriter, reductionScopeId);
         }
       }
     }

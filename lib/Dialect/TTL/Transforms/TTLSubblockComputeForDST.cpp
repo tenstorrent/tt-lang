@@ -59,8 +59,7 @@ struct TTLSubblockComputeForDSTPass
       bool hasAccumulating = false;
       bool hasMatmulBlock = false;
       computeOp.getBody().walk([&](Operation *op) {
-        if (op->hasTrait<TTLAccumulatingOpTrait>() ||
-            isa<TileReductionInitOp>(op)) {
+        if (op->hasTrait<TTLAccumulatingOpTrait>()) {
           hasAccumulating = true;
         }
         if (isa<TileMatmulBlockOp>(op)) {

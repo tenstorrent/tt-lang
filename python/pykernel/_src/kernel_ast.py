@@ -280,6 +280,8 @@ def _is_attach_cb_block(value):
     """Block targets (`out_blk = cb.reserve()` / `cb.wait()`) wrap the
     result of `ttl.attach_cb` and lower `+=` via __iadd__ to an L1 acc
     store. They are not scf.for iter_arg / scf.if result candidates."""
+    if getattr(value, "_ttlang_guarded_dfb_block", False):
+        return True
     inner = _get_single_result(value)
     owner = getattr(inner, "owner", None)
     if owner is None or not hasattr(owner, "name"):
