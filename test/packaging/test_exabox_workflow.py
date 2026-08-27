@@ -37,20 +37,20 @@ def test_hardware_event_policy_and_manual_controls() -> None:
     call_build = CALL_BUILD.read_text()
 
     assert ci_workflow.count("run_galaxy_tests:") == 2
-    assert ci_workflow.count("run_loudbox_tests:") == 2
+    assert ci_workflow.count("run_quietbox_tests:") == 2
     assert (
         "run_galaxy_tests: ${{ github.event_name == 'schedule' || "
         "(github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}"
         in ci_workflow
     )
     assert (
-        "run_loudbox_tests: ${{ github.event_name == 'pull_request' || "
+        "run_quietbox_tests: ${{ github.event_name == 'pull_request' || "
         "(github.event_name == 'push' && github.ref == 'refs/heads/main') || "
-        "(github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests) }}"
+        "(github.event_name == 'workflow_dispatch' && inputs.run_quietbox_tests) }}"
         in ci_workflow
     )
     assert call_build.count("run_galaxy_tests:") == 2
-    assert call_build.count("run_loudbox_tests:") == 2
+    assert call_build.count("run_quietbox_tests:") == 2
 
 
 def test_exabox_configuration_remains_available() -> None:
@@ -70,12 +70,12 @@ def test_hardware_matrix_adds_blackhole_quietbox_runner() -> None:
     debug_hardware = DEBUG_HARDWARE.read_text()
     hardware_workflow = CALL_TEST_HARDWARE.read_text()
 
-    assert "inputs.run_loudbox_tests && fromJSON" in call_build
-    assert '["n150","bh-loudbox"]' in call_build
-    assert "matrix.hardware == 'bh-loudbox'" in call_build
+    assert "inputs.run_quietbox_tests && fromJSON" in call_build
+    assert '["n150","BH-Quietbox-2"]' in call_build
+    assert "matrix.hardware == 'BH-Quietbox-2'" in call_build
     assert '["BH-Quietbox-2","in-service"]' in call_build
     assert "tt-ubuntu-2204-n150-stable" in call_build
-    assert "defer_result_check: ${{ matrix.hardware != 'bh-loudbox' }}" in call_build
+    assert "defer_result_check: ${{ matrix.hardware != 'BH-Quietbox-2' }}" in call_build
     assert "--optional-runner" not in call_build
     assert "inputs.run_galaxy_tests && 3 || 2" in call_build
     assert "inputs.run_galaxy_tests && 2 || 1" in call_build
