@@ -961,7 +961,8 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
   for (OutputDFBTransaction &transaction : plan.transactions) {
     transaction.push.reset();
     for (StoreOp store : transaction.stores) {
-      if (findCBAcquireOp(store.getView()) != transaction.acquire) {
+      if (findCBAcquireOp(store.getView(), store.getOperation()) !=
+          transaction.acquire) {
         return PlanningResult<OutputPublicationPlan>::invalidIR(
             store, "output store acquisition changed after planning");
       }
@@ -1020,7 +1021,7 @@ buildOutputPublicationPlan(Operation *source) {
   DenseMap<Value, Operation *> firstAcquireByDFB;
 
   for (StoreOp store : stores.getPlan()) {
-    Operation *acquire = findCBAcquireOp(store.getView());
+    Operation *acquire = findCBAcquireOp(store.getView(), store.getOperation());
     if (!acquire) {
       return PlanningResult<OutputPublicationPlan, OutputPublicationRejection>::
           invalidIR(store, "output store view does not originate from "
@@ -1849,7 +1850,8 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
     failureReason = "store input is not dataflow-buffer-backed";
     return failure();
   }
-  CBReserveOp reserve = findCBReserveForView(store.getView());
+  CBReserveOp reserve =
+      findCBReserveForView(store.getView(), store.getOperation());
   if (!reserve) {
     failureReason = "store view does not originate from ttl.cb_reserve";
     return failure();

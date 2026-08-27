@@ -47,8 +47,8 @@ python examples/<example_name>.py
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
-| `singlenode_matmul.py` | Single-node matrix multiplication | ✓ | ✗ |
-| `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✗ |
+| `single_node_matmul.py` | Single-node matrix multiplication | ✓ | ✓ |
+| `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✓ |
 
 ### Demo/Tutorial
 

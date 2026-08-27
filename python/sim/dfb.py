@@ -957,7 +957,7 @@ class Block:
         """In-place add for temporary accumulator blocks.
 
         Allows the pattern:
-            y = ttl.math.fill(0, shape=(...))
+            y = ttl.block.fill(0, shape=(...))
             y += a_blk @ b_blk   # repeated accumulation
             dst_blk.store(y)
 

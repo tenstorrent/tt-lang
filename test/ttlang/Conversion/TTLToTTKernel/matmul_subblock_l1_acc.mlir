@@ -1,9 +1,20 @@
 // Matmul with subblocking AND L1 accumulation. Output 3x3 bf16 = 9 tiles
 // exceeds bf16 DST capacity (8), triggering subblocking. The user K loop
-// with {accumulate} triggers L1 acc annotation and pack_reconfig_l1_acc
+// with {accumulate} lowers to L1 metadata and pack_reconfig_l1_acc
 // guard insertion.
 
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module( func.func(ttl-annotate-l1-acc-loops,convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops{dst-accumulation=1},ttl-schedule-operations,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, ttkernel-insert-l1-accumulation, canonicalize, cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module( \
+// RUN:     func.func(ttl-insert-accumulation-scopes{kind=dfb}, \
+// RUN:       ttl-lower-accumulation-scopes{kind=dfb}, convert-ttl-to-compute), \
+// RUN:     ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, \
+// RUN:     func.func(ttl-assign-dst, \
+// RUN:       ttl-subblock-compute-for-dst, \
+// RUN:       ttl-lower-to-loops{dst-accumulation=1}, ttl-schedule-operations, \
+// RUN:       ttl-annotate-cb-associations), \
+// RUN:     convert-ttl-to-ttkernel, ttkernel-insert-inits, \
+// RUN:     ttkernel-insert-l1-accumulation, canonicalize, cse)' \
+// RUN:   --split-input-file | FileCheck %s
 
 // CHECK-LABEL: func.func @matmul_3x3_k_loop
 // Disable before the K loop.
