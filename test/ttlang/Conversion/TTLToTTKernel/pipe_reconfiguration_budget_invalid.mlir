@@ -1,7 +1,7 @@
 // Verifies exact combined-resource validation accepts the packed allocation
 // and rejects a one-byte-short budget.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21760},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21760},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21760})' -o /dev/null
-// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21759},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21759},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21759})'
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21760},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21760},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21760})' -o /dev/null
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21759},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21759},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21759})'
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
