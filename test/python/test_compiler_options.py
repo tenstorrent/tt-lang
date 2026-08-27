@@ -17,6 +17,7 @@ class TestDefaults:
     def test_defaults(self):
         opts = CompilerOptions()
         assert opts.maximize_dst is True
+        assert opts.accumulation_strategy == "auto"
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
         assert opts.pipe_computed_addresses is True
@@ -49,6 +50,15 @@ class TestFromString:
         assert opts.maximize_dst is False
         assert opts.enable_fpu_binary_ops is True
         assert "maximize_dst" in opts._explicit
+
+    def test_accumulation_strategy(self):
+        opts = CompilerOptions.from_string("--ttl-accumulation-strategy dst")
+        assert opts.accumulation_strategy == "dst"
+        assert "accumulation_strategy" in opts._explicit
+
+    def test_invalid_accumulation_strategy(self):
+        with pytest.raises(ValueError, match="Invalid accumulation strategy"):
+            CompilerOptions.from_string("--ttl-accumulation-strategy dfb-state")
 
     def test_disable_fpu(self):
         opts = CompilerOptions.from_string("--no-ttl-fpu-binary-ops")

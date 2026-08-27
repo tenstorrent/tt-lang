@@ -14,3 +14,18 @@ func.func @tile_accumulate_add(
         -> !ttcore.tile<32x32, bf16>
   return %result : !ttcore.tile<32x32, bf16>
 }
+
+// -----
+
+// CHECK-LABEL: func.func @tile_accumulate_max
+// CHECK: %[[RES:.*]] = ttl.tile_accumulate %{{.*}}, %{{.*}} max into dst[%{{.*}}]
+func.func @tile_accumulate_max(
+    %accumulator: !ttcore.tile<32x32, bf16>,
+    %contribution: !ttcore.tile<32x32, bf16>)
+    -> !ttcore.tile<32x32, bf16> {
+  %c0 = arith.constant 0 : index
+  %result = ttl.tile_accumulate %accumulator, %contribution max into dst[%c0]
+      : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+        -> !ttcore.tile<32x32, bf16>
+  return %result : !ttcore.tile<32x32, bf16>
+}

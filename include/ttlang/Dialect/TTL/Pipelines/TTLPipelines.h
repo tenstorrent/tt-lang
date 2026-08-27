@@ -8,6 +8,7 @@
 #include "mlir/Pass/PassOptions.h"
 
 #include <cstdint>
+#include <string>
 
 namespace mlir {
 class OpPassManager;
@@ -24,6 +25,13 @@ struct TTLToTTKernelPipelineOptions
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),
       llvm::cl::init(true)};
+  // TODO(#649): Replace maximize-dst with granular options for accumulation
+  // strategy, compute subblocking, and tile-op scheduling.
+  Option<std::string> accumulationStrategy{
+      *this, "accumulation-strategy",
+      llvm::cl::desc("Select tensor recurrence accumulation storage strategy: "
+                     "auto, dst, or l1-pack."),
+      llvm::cl::init("auto")};
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",
       llvm::cl::desc("Allow FPU strategy selection for binary add/sub/mul."),
@@ -113,9 +121,6 @@ struct TTLToTTKernelPipelineOptions
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
-
-/// Add tensor recurrence formation, lowering, and fallback materialization.
-void buildTTLTensorRecurrencePipeline(mlir::OpPassManager &pm);
 
 /// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);

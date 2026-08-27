@@ -229,7 +229,8 @@ getPostsOwnedByReserve(CBReserveOp reserveOp,
                        ArrayRef<PipeTransferPostOp> posts) {
   SmallVector<PipeTransferPostOp> ownedPosts;
   for (PipeTransferPostOp postOp : posts) {
-    if (findCBReserveForPipeReceive(postOp.getDst()) == reserveOp) {
+    if (findCBReserveForPipeReceive(postOp.getDst(), postOp.getOperation()) ==
+        reserveOp) {
       ownedPosts.push_back(postOp);
     }
   }

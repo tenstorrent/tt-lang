@@ -1005,9 +1005,20 @@ int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
                          std::multiplies<>());
 }
 
+static mlir::Value getDFBForViewAtUse(mlir::Value view, mlir::Operation *use) {
+  if (mlir::Value dfb = mlir::tt::ttl::getAttachedCB(view)) {
+    return dfb;
+  }
+  if (auto reserve = mlir::tt::ttl::findCBReserveForView(view, use)) {
+    return reserve.getCb();
+  }
+  return {};
+}
+
 mlir::FailureOr<unsigned>
-mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
-  mlir::Value viewDFB = getAttachedCB(view);
+mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view,
+                                                mlir::Operation *use) {
+  mlir::Value viewDFB = getDFBForViewAtUse(view, use);
   if (!viewDFB) {
     return mlir::failure();
   }
@@ -1028,6 +1039,11 @@ mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
     return mlir::failure();
   }
   return matchingIndex;
+}
+
+mlir::FailureOr<unsigned>
+mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
+  return getOutputIndexForView(view, getOperation());
 }
 
 llvm::FailureOr<mlir::TilingResult>
@@ -1078,7 +1094,8 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     if (view.getParentRegion() == &getBody()) {
       return mlir::WalkResult::advance();
     }
-    mlir::FailureOr<unsigned> outputIndex = getOutputIndexForView(view);
+    mlir::FailureOr<unsigned> outputIndex =
+        getOutputIndexForView(view, store.getOperation());
     if (mlir::failed(outputIndex)) {
       return mlir::WalkResult::interrupt();
     }
@@ -1471,11 +1488,12 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     hasTileStore = true;
-    Value viewCB = getAttachedCB(store.getView());
+    Value viewCB = getDFBForViewAtUse(store.getView(), store.getOperation());
     if (!viewCB) {
       return store.emitOpError() << "view must trace to a dataflow buffer";
     }
-    FailureOr<unsigned> outputIndex = getOutputIndexForView(store.getView());
+    FailureOr<unsigned> outputIndex =
+        getOutputIndexForView(store.getView(), store.getOperation());
     if (failed(outputIndex)) {
       return store.emitOpError()
              << "stores to CB that is not a formal output of the compute";
@@ -1559,7 +1577,7 @@ mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
       mlir::tt::ttl::symbolizeAccumulationCombiner(combinerKeyword);
   if (!combiner) {
     return parser.emitError(combinerLoc)
-           << "expected accumulation combiner `add`";
+           << "expected accumulation combiner `add` or `max`";
   }
   result.addAttribute("combiner", mlir::tt::ttl::AccumulationCombinerAttr::get(
                                       parser.getContext(), *combiner));
@@ -1977,7 +1995,7 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  Operation *acquire = findCBAcquireOp(getView());
+  Operation *acquire = findCBAcquireOp(getView(), getOperation());
   if (!acquire) {
     return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
   }
@@ -2003,7 +2021,7 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
                          << ") must match tile type (" << tileType << ")";
   }
 
-  Operation *acquire = findCBAcquireOp(getView());
+  Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
       !isWaitBacked) {

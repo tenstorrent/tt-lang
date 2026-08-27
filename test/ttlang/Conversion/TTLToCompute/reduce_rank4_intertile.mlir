@@ -1,7 +1,7 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),cse,canonicalize)' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops{dst-accumulation=true},ttl-schedule-operations,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=TTKERNEL
 
-// Rank-4 sum over a leading dimension uses an elementwise DST accumulator.
+// Rank-4 sum over a leading dimension uses an additive DST accumulator.
 // CHECK: affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 // CHECK: affine_map<(d0, d1, d2, d3) -> (0, 0)>
 // CHECK: affine_map<(d0, d1, d2, d3) -> (d0, 0, d2, d3)>
@@ -22,9 +22,9 @@ func.func @reduce_sum_leading_dim() attributes {ttl.base_cta_index = 3 : i32, tt
 
   // CHECK: ttl.compute
   // CHECK-SAME: iterator_types = ["parallel", "reduction", "parallel", "parallel"]
-  // CHECK: ttl.tile_reduction_init 0 : i32
+  // CHECK: ttl.tile_fill
   // CHECK: ttl.tile_mul
-  // CHECK: ttl.tile_add_in_place
+  // CHECK: ttl.tile_accumulate {{.*}} add into dst
   // CHECK: ttl.yield
   %result = ttl.reduce %inp_cb, %scaler_cb 0 : i32 [1] : (tensor<2x3x4x5x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<2x1x4x5x!ttcore.tile<32x32, bf16>>
   ttl.store %result, %reserve : tensor<2x1x4x5x!ttcore.tile<32x32, bf16>>, tensor<2x1x4x5x!ttcore.tile<32x32, bf16>>
@@ -36,7 +36,7 @@ func.func @reduce_sum_leading_dim() attributes {ttl.base_cta_index = 3 : i32, tt
 
 // -----
 
-// Rank-4 max over a leading dimension uses an in-place maximum accumulator.
+// Rank-4 max over a leading dimension uses a maximum DST accumulator.
 // CHECK-LABEL: func.func @reduce_max_leading_dim
 // TTKERNEL-LABEL: func.func @reduce_max_leading_dim
 // TTKERNEL: ttkernel.fill_tile
@@ -54,9 +54,9 @@ func.func @reduce_max_leading_dim() attributes {ttl.base_cta_index = 3 : i32, tt
 
   // CHECK: ttl.compute
   // CHECK-SAME: iterator_types = ["parallel", "reduction", "parallel", "parallel"]
-  // CHECK: ttl.tile_reduction_init 1 : i32
+  // CHECK: ttl.tile_fill
   // CHECK: ttl.tile_mul
-  // CHECK: ttl.tile_max
+  // CHECK: ttl.tile_accumulate {{.*}} max into dst
   // CHECK: ttl.yield
   %result = ttl.reduce %inp_cb, %scaler_cb 1 : i32 [1] : (tensor<2x3x4x5x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<2x1x4x5x!ttcore.tile<32x32, bf16>>
   ttl.store %result, %reserve : tensor<2x1x4x5x!ttcore.tile<32x32, bf16>>, tensor<2x1x4x5x!ttcore.tile<32x32, bf16>>
