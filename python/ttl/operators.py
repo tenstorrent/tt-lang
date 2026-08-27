@@ -402,11 +402,11 @@ class TensorBlock:
                 "+= must be called on a block acquired from reserve() or wait()"
             )
         acquired_view = _get_acquired_view_from_block(ast_self)
-        acquisition = acquired_view.owner
-        if acquisition.name == "ttl.cb_wait":
+        acquire_op_name = _get_acquire_op_name_from_view(acquired_view)
+        if acquire_op_name == "ttl.cb_wait":
             ttl.store(ttl.add(ast_self, rhs), acquired_view)
             return ast_self
-        if acquisition.name != "ttl.cb_reserve":
+        if acquire_op_name != "ttl.cb_reserve":
             raise ValueError("block acquisition must be ttl.cb_reserve or ttl.cb_wait")
         ttl.store(rhs, acquired_view, accumulate=True)
         return ast_self
@@ -538,6 +538,57 @@ def _is_block(value) -> bool:
     return value.owner.name == "ttl.attach_cb"
 
 
+def _is_inactive_guarded_dfb_value(value) -> bool:
+    owner = getattr(value, "owner", None)
+    return (
+        getattr(owner, "name", None) == "builtin.unrealized_conversion_cast"
+        and "ttl.inactive_guarded_dfb" in owner.attributes
+    )
+
+
+def _get_then_yielded_guarded_dfb_value(value):
+    owner = getattr(value, "owner", None)
+    if getattr(owner, "name", None) != "scf.if":
+        return None
+
+    result_number = getattr(value, "result_number", None)
+    if result_number is None:
+        return None
+
+    try:
+        then_block = owner.regions[0].blocks[0]
+        else_block = owner.regions[1].blocks[0]
+        then_yield = list(then_block.operations)[-1]
+        else_yield = list(else_block.operations)[-1]
+    except (IndexError, TypeError):
+        return None
+
+    if then_yield.name != "scf.yield" or else_yield.name != "scf.yield":
+        return None
+    if result_number >= len(then_yield.operands) or result_number >= len(
+        else_yield.operands
+    ):
+        return None
+    if not _is_inactive_guarded_dfb_value(else_yield.operands[result_number]):
+        return None
+    return then_yield.operands[result_number]
+
+
+def _get_acquire_op_name_from_view(value):
+    while True:
+        owner = getattr(value, "owner", None)
+        owner_name = getattr(owner, "name", None)
+        if owner_name in ("ttl.cb_reserve", "ttl.cb_wait"):
+            return owner_name
+        if owner_name == "ttl.attach_cb":
+            value = owner.operands[0]
+            continue
+        guarded_value = _get_then_yielded_guarded_dfb_value(value)
+        if guarded_value is None:
+            return None
+        value = guarded_value
+
+
 def _get_acquired_view_from_block(block):
     """Extract the reserve or wait view from a block.
 
@@ -547,7 +598,7 @@ def _get_acquired_view_from_block(block):
     if block.owner.name != "ttl.attach_cb":
         raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
     acquired_view = block.owner.operands[0]
-    if acquired_view.owner.name not in ("ttl.cb_reserve", "ttl.cb_wait"):
+    if _get_acquire_op_name_from_view(acquired_view) is None:
         raise ValueError(
             "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
         )

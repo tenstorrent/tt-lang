@@ -23,6 +23,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <limits>
+
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
 namespace mlir::tt::ttl {
@@ -184,7 +186,7 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
   size_t numInputs = computeOp.getNumInputs();
 
   FailureOr<unsigned> outputIndex =
-      computeOp.getOutputIndexForView(store.getView());
+      computeOp.getOutputIndexForView(store.getView(), store.getOperation());
   assert(succeeded(outputIndex) &&
          "planned store must map to one formal compute output");
   AffineMap outputMap = indexingMaps[numInputs + *outputIndex];
@@ -202,12 +204,14 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
     waitedMutation = &mutation;
   }
   bool isWaitedMutation = waitedMutation != nullptr;
-  assert(isWaitedMutation == isa<CBWaitOp>(findCBAcquireOp(store.getView())) &&
+  assert(isWaitedMutation == isa<CBWaitOp>(findCBAcquireOp(
+                                 store.getView(), store.getOperation())) &&
          "wait-backed tile store must consume a proved mutation plan");
   if (isWaitedMutation) {
     CBWaitOp waitedAcquire = waitedMutation->wait;
     CBPopOp waitedRelease = waitedMutation->release;
-    assert(waitedAcquire == findCBAcquireOp(store.getView()) &&
+    assert(waitedAcquire ==
+               findCBAcquireOp(store.getView(), store.getOperation()) &&
            waitedAcquire.getCb() == waitedMutation->dfb &&
            waitedRelease.getCb() == waitedMutation->dfb &&
            waitedMutation->transactionTiles ==
@@ -1141,18 +1145,23 @@ struct LowerReduceToCompute : PlannedComputeRewritePattern<ReduceOp> {
                 *creation.reduceType, *creation.reduceDimension);
           }
 
-          Value accumulator =
-              createTileOpWithPlaceholderDstIndex<TileReductionInitOp>(
-                  builder, location, tileType, *creation.reduceType);
+          float identity = *creation.reduceType == ReduceType::Sum
+                               ? 0.0f
+                               : -std::numeric_limits<float>::infinity();
+          Value accumulator = createTileOpWithPlaceholderDstIndex<TileFillOp>(
+              builder, location, tileType, builder.getF32FloatAttr(identity));
           Value scaledInput = createTileOpWithPlaceholderDstIndex<MulTileOp>(
               builder, location, tileType, body->getArgument(0),
               body->getArgument(1));
-          if (*creation.reduceType == ReduceType::Sum) {
-            return createTileOpWithPlaceholderDstIndex<TileAddInPlaceOp>(
-                builder, location, tileType, accumulator, scaledInput);
-          }
-          return createTileOpWithPlaceholderDstIndex<MaxTileOp>(
-              builder, location, tileType, accumulator, scaledInput);
+          AccumulationCombiner combiner =
+              *creation.reduceType == ReduceType::Sum
+                  ? AccumulationCombiner::Add
+                  : AccumulationCombiner::Max;
+          auto combinerAttr =
+              AccumulationCombinerAttr::get(builder.getContext(), combiner);
+          return createTileOpWithPlaceholderDstIndex<TileAccumulateOp>(
+              builder, location, tileType, accumulator, scaledInput,
+              combinerAttr);
         });
   }
 };

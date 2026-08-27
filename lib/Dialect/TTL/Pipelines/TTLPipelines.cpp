@@ -12,15 +12,41 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <utility>
+
 using namespace mlir;
 
 namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
-  buildTTLTensorRecurrencePipeline(pm.nest<func::FuncOp>());
+  {
+    TTLFormAccumulationScopesOptions formOptions;
+    formOptions.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLFormAccumulationScopes(std::move(formOptions)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOptions;
+    lowerOptions.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOptions)));
+  }
+  pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  pm.addNestedPass<func::FuncOp>(createTTLAnnotateL1AccLoops());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  {
+    TTLInsertAccumulationScopesOptions insertOptions;
+    insertOptions.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLInsertAccumulationScopes(std::move(insertOptions)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOptions;
+    lowerOptions.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOptions)));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
@@ -106,15 +132,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }
-}
-
-void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
-  // Accumulation lowering must run before loop-state materialization removes
-  // tensor iter_args. Materialized DFB state remains available for recurrences
-  // that do not satisfy the accumulation-scope preconditions.
-  pm.addPass(createTTLFormAccumulationScopes());
-  pm.addPass(createTTLLowerAccumulationScopes());
-  pm.addPass(createTTLMaterializeLoopState());
 }
 
 void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
