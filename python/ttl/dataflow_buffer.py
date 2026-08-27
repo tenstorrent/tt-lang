@@ -288,6 +288,8 @@ class PhysicalDFBConfig:
     independent of whether the allocation serves user-declared,
     compiler-created, or multiple non-overlapping logical DFBs.
     `tile` is present only when the DFB element type is a TTCore tile.
+    `allocation_nodes` distinguishes an unknown domain (`None`) from an exact,
+    possibly empty, launch-node set.
     """
 
     dfb_index: int
@@ -297,6 +299,7 @@ class PhysicalDFBConfig:
     page_size: int
     tile: Optional[Tuple[int, int]]
     storage_segments: Tuple["DFBStorageSegment", ...] = ()
+    allocation_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
 
 
 @dataclass(frozen=True)

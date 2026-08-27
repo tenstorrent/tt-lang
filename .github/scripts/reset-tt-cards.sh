@@ -5,8 +5,9 @@
 # Reset the runner's cards and verify tt-smi answers afterwards.
 #
 # A degraded cluster reports as unrelated failures in every device test rather
-# than as a device error, so fail here instead. -glx_reset is Galaxy-specific;
-# -r covers boards that do not implement it.
+# than as a device error, so fail here instead. Exabox Blackhole Galaxy workers
+# do not provide the IPMI utility required by -glx_reset; the UMD warm reset
+# supports these systems and the other CI devices.
 #
 # Env: TT_RESET_MAX_ATTEMPTS (10), TT_RESET_RETRY_SECONDS (30).
 #
@@ -20,7 +21,7 @@ RETRY_SECONDS="${TT_RESET_RETRY_SECONDS:-30}"
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     echo "=== Reset attempt $attempt of $MAX_ATTEMPTS ==="
 
-    if ! tt-smi -glx_reset && ! tt-smi -r; then
+    if ! tt-smi -r; then
         echo "reset failed on attempt $attempt"
         sleep "$RETRY_SECONDS"
         continue

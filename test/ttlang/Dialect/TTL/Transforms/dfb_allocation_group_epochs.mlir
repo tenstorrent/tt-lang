@@ -7,7 +7,7 @@
 // compute, and NOC1. Native acquire operations in later epochs must retain the
 // next same-kind acquire as their ownership boundary.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 3 : i32, dfb_index = 0 : i32
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 3 : i32, dfb_index = 0 : i32
 // CHECK: %{{.*}} = ttl.bind_cb{cb_index = 0, block_count = 3} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
 // CHECK: %{{.*}} = ttl.bind_cb{cb_index = 0, block_count = 3} {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
 // REPORT: DFB allocation group #ttl.dfb_allocation_group<0> launch_node=(0,0) epoch_order=[0:0, 1:0, 0:1, 1:1]
