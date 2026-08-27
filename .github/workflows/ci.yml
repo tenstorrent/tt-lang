@@ -15,8 +15,8 @@ on:
         required: false
         type: boolean
         default: false
-      run_loudbox_tests:
-        description: "Run hardware tests on the Blackhole loudbox."
+      run_quietbox_tests:
+        description: "Run hardware tests on the Blackhole Quietbox."
         required: false
         type: boolean
         default: false
@@ -172,7 +172,7 @@ jobs:
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
       run_galaxy_tests: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}
-      run_loudbox_tests: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests) }}
+      run_quietbox_tests: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_quietbox_tests) }}
 
   build-docs:
     name: Build documentation
