@@ -43,6 +43,12 @@ def _next_cb_index(reuse, signature):
                     f"dtype {previous_signature[0]!r} != "
                     f"{signature[0]!r}"
                 )
+            if previous_signature[4] != signature[4]:
+                raise ValueError(
+                    f"DFB reuse key {reuse!r} has incompatible declarations: "
+                    f"address_scope {previous_signature[4]!r} != "
+                    f"{signature[4]!r}"
+                )
             return index
     idx = _cb_index_counter
     _cb_index_counter += 1
@@ -84,11 +90,16 @@ class DataflowBuffer:
         dtype: Any = None,
         tile: Tuple[int, int] = (32, 32),
         reuse: str | None = None,
+        address_scope: str | None = None,
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
             raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
+        if address_scope not in (None, "local", "remote_uniform"):
+            raise ValueError(
+                "DFB address_scope must be 'local', 'remote_uniform', or None"
+            )
         # A buffer's dtype has one source: a backing tensor or an explicit
         # dtype. Supplying both is only valid when they resolve to the same type.
         if dtype is not None and getattr(tensor, "dtype", None) is not None:
@@ -108,9 +119,11 @@ class DataflowBuffer:
             tuple(shape),
             block_count,
             tuple(tile),
+            address_scope,
         )
         self._cb_index = _next_cb_index(reuse, signature)
         self.reuse = reuse
+        self.address_scope = address_scope
         # Python identifiers this buffer was captured under. Filled in when the
         # compiler walks thread closures; used only for debug output.
         self.debug_names: Tuple[str, ...] = ()
@@ -197,11 +210,29 @@ class EpochPhysicalDFBConfig:
     total_size: int
 
 
+@dataclass(frozen=True)
+class _PerCoreDFBConfig:
+    """One compiler-selected physical DFB capacity on a core group."""
+
+    dfb_index: int
+    num_pages: int
+    address_scope: str
+
+
+@dataclass(frozen=True)
+class _PerCoreDFBGroup:
+    """Cores sharing one compiler-selected physical DFB configuration."""
+
+    core_coords: Tuple[Tuple[int, int], ...]
+    configs: Tuple[_PerCoreDFBConfig, ...]
+
+
 def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
     reuse: str | None = None,
+    address_scope: str | None = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer with properties derived from a tensor.
@@ -215,6 +246,10 @@ def make_dataflow_buffer_like(
             differ; the physical allocation uses the largest page and page
             count. The caller must prove each earlier epoch is fully drained
             before the next declaration is used.
+        address_scope: Optional address contract. ``"local"`` permits exact
+            per-core presence and capacity. ``"remote_uniform"`` retains one
+            common capacity and base over every participating core for remote
+            NoC addressing. Omit for conservative legacy whole-grid allocation.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -222,7 +257,14 @@ def make_dataflow_buffer_like(
     tile = (32, 32)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
-    return DataflowBuffer(tensor, shape, block_count, tile=tile, reuse=reuse)
+    return DataflowBuffer(
+        tensor,
+        shape,
+        block_count,
+        tile=tile,
+        reuse=reuse,
+        address_scope=address_scope,
+    )
 
 
 def _resolve_dfb_dtype(dtype: Any):
@@ -246,6 +288,7 @@ def make_dfb(
     block_count: int = 2,
     tile: Tuple[int, int] = (32, 32),
     reuse: str | None = None,
+    address_scope: str | None = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.
@@ -262,6 +305,10 @@ def make_dfb(
             differ; the physical allocation uses the largest page and page
             count. The caller must prove each earlier epoch is fully drained
             before the next declaration is used.
+        address_scope: Optional address contract. ``"local"`` permits exact
+            per-core presence and capacity. ``"remote_uniform"`` retains one
+            common capacity and base over every participating core for remote
+            NoC addressing. Omit for conservative legacy whole-grid allocation.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -273,4 +320,5 @@ def make_dfb(
         dtype=_resolve_dfb_dtype(dtype),
         tile=tile,
         reuse=reuse,
+        address_scope=address_scope,
     )

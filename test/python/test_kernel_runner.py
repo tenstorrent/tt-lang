@@ -10,7 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from ttl import kernel_runner
-from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
+from ttl.dataflow_buffer import (
+    CompilerAllocatedDFBConfig,
+    _PerCoreDFBConfig,
+    _PerCoreDFBGroup,
+)
 
 
 class _FakeTensor:
@@ -51,6 +55,16 @@ class _FakeCoreCoord:
         self.x = x
         self.y = y
 
+    def __eq__(self, other):
+        return (
+            isinstance(other, _FakeCoreCoord)
+            and self.x == other.x
+            and self.y == other.y
+        )
+
+    def __hash__(self):
+        return hash((self.x, self.y))
+
 
 class _FakeCoreRange:
     def __init__(self, start, end):
@@ -71,6 +85,42 @@ class _FakeExplicitCoreRanges:
         return SimpleNamespace(
             grid_size=lambda: SimpleNamespace(x=max_x + 1, y=max_y + 1)
         )
+
+    def contains(self, core):
+        return any(
+            core_range.start.x <= core.x <= core_range.end.x
+            and core_range.start.y <= core.y <= core_range.end.y
+            for core_range in self._ranges
+        )
+
+
+class _FakePerCoreDeviceTensor:
+    def __init__(self, grid, addresses):
+        self._grid = grid
+        self._addresses = dict(addresses)
+
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+    def memory_config(self):
+        return SimpleNamespace(shard_spec=SimpleNamespace(grid=self._grid))
+
+    def experimental_per_core_buffer_address(self, core):
+        return self._addresses[(core.x, core.y)]
+
+    @staticmethod
+    def buffer_address():
+        raise AssertionError("per-core tensors have no common buffer address")
+
+
+class _FakePerCoreTensor(_FakePerCoreDeviceTensor):
+    def __init__(self, grid, device_addresses):
+        super().__init__(grid, device_addresses[0])
+        self.device_tensors = [
+            _FakePerCoreDeviceTensor(grid, addresses)
+            for addresses in device_addresses
+        ]
 
 
 class _FakeSubsetCoreRanges:
@@ -138,6 +188,13 @@ class _FakeTTNN:
         def ranges(self):
             return self._ranges
 
+        def contains(self, core):
+            return any(
+                core_range.start.x <= core.x <= core_range.end.x
+                and core_range.start.y <= core.y <= core_range.end.y
+                for core_range in self._ranges
+            )
+
     class ReaderConfigDescriptor:
         pass
 
@@ -192,6 +249,10 @@ class _FakeTTNN:
             "tensors": tensors,
             "program": program,
         }
+
+    @staticmethod
+    def get_device_tensors(tensor):
+        return getattr(tensor, "device_tensors", [tensor])
 
     def create_global_semaphore(self, device, core_ranges, initial_value):
         semaphore = {
@@ -476,6 +537,71 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         )
 
 
+def test_build_kernel_descriptors_groups_per_core_tensor_addresses(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _FakeExplicitCoreRanges(((0, 0), (2, 0)))
+    addresses = {(0, 0): 0x1000, (1, 0): 0x1100, (2, 0): 0x1000}
+    per_core = _FakePerCoreTensor(program, [addresses, addresses])
+    lockstep = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0, 1],
+        config=fake_ttnn.ReaderConfigDescriptor(),
+    )
+    runtime_args = [
+        (_FakeCoreCoord(0, 0), [10]),
+        (_FakeCoreCoord(1, 0), [11]),
+        (_FakeCoreCoord(2, 0), [12]),
+    ]
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[per_core, lockstep],
+        tensor_accessor_args=[],
+        core_ranges=program,
+        grid_cols=3,
+        grid_rows=1,
+        num_cbs=0,
+        extra_common_runtime_args=[0x3000],
+        runtime_args_by_thread={"ncrisc": runtime_args},
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x1000, 0x2000, 0x3000],
+        [0x1100, 0x2000, 0x3000],
+    ]
+    assert [
+        kernel_runner._core_range_coordinates(
+            descriptor.core_ranges, label="descriptor"
+        )
+        for descriptor in descriptors
+    ] == [{(0, 0), (2, 0)}, {(1, 0)}]
+    assert [descriptor.runtime_args for descriptor in descriptors] == [
+        [runtime_args[0], runtime_args[2]],
+        [runtime_args[1]],
+    ]
+
+
+def test_per_core_tensor_addresses_must_match_across_devices(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    grid = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    tensor = _FakePerCoreTensor(
+        grid,
+        [
+            {(0, 0): 0x1000, (1, 0): 0x1100},
+            {(0, 0): 0x1000, (1, 0): 0x1200},
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="different addresses across devices on core \\(1, 0\\)",
+    ):
+        kernel_runner._resolve_per_core_tensor_addresses([tensor])
+
+
 def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -600,6 +726,34 @@ def test_run_kernel_passes_through_in_range_program_hash(monkeypatch):
     )
 
     assert result["program"].custom_program_hash == 5
+
+
+def test_run_kernel_hashes_per_core_tensor_address_signature(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    grid = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    first_addresses = {(0, 0): 0x1000, (1, 0): 0x1100}
+    second_addresses = {(0, 0): 0x1200, (1, 0): 0x1300}
+
+    first = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakePerCoreTensor(grid, [first_addresses, first_addresses])],
+        cb_configs=[],
+        core_ranges=grid,
+        program_hash=5,
+    )
+    second = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakePerCoreTensor(grid, [second_addresses, second_addresses])],
+        cb_configs=[],
+        core_ranges=grid,
+        program_hash=5,
+    )
+
+    first_hash = first["program"].custom_program_hash
+    second_hash = second["program"].custom_program_hash
+    assert first_hash not in (None, 5)
+    assert second_hash not in (None, 5)
+    assert first_hash != second_hash
 
 
 def test_build_generic_op_io_tensors_duplicates_single_output():
@@ -928,6 +1082,101 @@ def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
     assert [
         descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [1, 1, 0, 0]
+
+
+def test_compiler_dfb_plan_builds_uniform_remote_descriptors(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 512)
+    program = _FakeExplicitCoreRanges(((0, 0), (2, 0)))
+    geometries = {
+        0: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=2,
+            total_size=64,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        1: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=4,
+            total_size=128,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        2: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=3,
+            total_size=96,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        3: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=2,
+            total_size=64,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+    }
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda index, _cb: geometries[index]
+    )
+    groups = (
+        _PerCoreDFBGroup(
+            core_coords=((0, 0),),
+            configs=(
+                _PerCoreDFBConfig(0, 2, "legacy"),
+                _PerCoreDFBConfig(1, 2, "remote_uniform"),
+                _PerCoreDFBConfig(2, 3, "remote_uniform"),
+                _PerCoreDFBConfig(3, 1, "local"),
+            ),
+        ),
+        _PerCoreDFBGroup(
+            core_coords=((1, 0),),
+            configs=(
+                _PerCoreDFBConfig(0, 2, "legacy"),
+                _PerCoreDFBConfig(1, 4, "remote_uniform"),
+                _PerCoreDFBConfig(3, 2, "local"),
+            ),
+        ),
+        _PerCoreDFBGroup(
+            core_coords=((2, 0),),
+            configs=(
+                _PerCoreDFBConfig(0, 2, "legacy"),
+                _PerCoreDFBConfig(2, 1, "remote_uniform"),
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner._build_compiler_cb_descriptors_by_core(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object(), object(), object(), object()],
+        core_ranges=program,
+        groups=groups,
+    )
+
+    assert [descriptor.total_size for descriptor in descriptors] == [
+        64,
+        128,
+        96,
+        32,
+        64,
+    ]
+    assert [
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
+    ] == [0, 1, 2, 3, 3]
+    assert [
+        kernel_runner._core_range_coordinates(
+            descriptor.core_ranges, label="descriptor"
+        )
+        for descriptor in descriptors
+    ] == [
+        {(0, 0), (1, 0), (2, 0)},
+        {(0, 0), (1, 0)},
+        {(0, 0), (2, 0)},
+        {(0, 0)},
+        {(1, 0)},
+    ]
 
 
 def test_cb_pages_by_core_requires_exact_grid_partition(monkeypatch):

@@ -263,3 +263,51 @@ module {
     func.return
   }
 }
+
+// -----
+
+// Logical DFB identity survives both the CB-typed compile-arg read and the i32
+// compile-arg read synthesized for an opaque-call CB operand.
+// CHECK-LABEL: func.func @cb_logical_identity(
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) {ttl.dfb_logical_index = 7 : i64} : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+// CHECK: %[[CB_ID:.*]] = ttkernel.get_compile_time_arg_val(0) {ttl.dfb_logical_index = 7 : i64} : () -> i32
+// CHECK: ttkernel.opaque_call "foreign_cb_access"(%[[CB_ID]]) {header = "foreign.hpp"} : (i32) -> ()
+module {
+  func.func @cb_logical_identity() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {ttl.dfb_logical_index = 7 : i64} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "foreign_cb_access"(%cb) {header = "foreign.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    func.return
+  }
+}
+
+// -----
+
+// The target reset epoch remains available to post-specialization resource
+// analysis after the synchronization-word offset is consumed by lowering.
+// CHECK-LABEL: func.func @reset_epoch_identity(
+// CHECK: ttkernel.opaque_call "ttlang::reset_dataflow_buffers"({{.*}}) {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0], ttl.dfb_reset_epoch = 2 : i32}
+module {
+  func.func @reset_epoch_identity()
+      attributes {ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 0], ttl.dfb_reset_epoch = 2 : i32} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// Reset DFB operands are compiler metadata, not C++ arguments. The preserved
+// physical-index attribute survives lowering for per-core resource analysis.
+// CHECK-LABEL: func.func @reset_preserve_metadata(
+// CHECK-NOT: ttkernel.get_compile_time_arg_val(0)
+// CHECK: ttkernel.opaque_call "ttlang::reset_dataflow_buffers"({{.*}}, {{.*}}, {{.*}}, {{.*}}) {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0], ttl.dfb_reset_epoch = 1 : i32, ttl.dfb_reset_preserved_indices = [0]}
+module {
+  func.func @reset_preserve_metadata()
+      attributes {ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {ttl.dfb_logical_index = 7 : i64} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "ttlang::reset_dataflow_buffers"(%cb) {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [0, 0], ttl.dfb_reset_epoch = 1 : i32, ttl.dfb_reset_preserved_indices = [0]} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    func.return
+  }
+}

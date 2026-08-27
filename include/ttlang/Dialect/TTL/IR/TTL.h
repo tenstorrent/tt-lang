@@ -150,9 +150,17 @@ constexpr llvm::StringLiteral kDFBIndexMapAttrName("ttl.dfb_index_map");
 constexpr llvm::StringLiteral
     kDFBEpochPhysicalConfigsAttrName("ttl.dfb_epoch_physical_configs");
 
-/// Original logical index retained on epoch-reused BindCBOp operations.
+/// Module attribute preserving logical DFB configurations after index reuse.
 constexpr llvm::StringLiteral
-    kDFBEpochLogicalIndexAttrName("ttl.dfb_epoch_logical_index");
+    kLogicalDFBConfigsAttrName("ttl.logical_dfb_configs");
+
+/// Original logical index retained on BindCBOp and lowered compile-arg reads.
+constexpr llvm::StringLiteral
+    kDFBLogicalIndexAttrName("ttl.dfb_logical_index");
+
+/// Optional DFB address contract: "local" or "remote_uniform".
+constexpr llvm::StringLiteral
+    kDFBAddressScopeAttrName("ttl.dfb_address_scope");
 
 /// External helper called by the reset_dataflow_buffers syntax operation.
 constexpr llvm::StringLiteral

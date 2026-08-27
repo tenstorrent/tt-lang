@@ -230,14 +230,21 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
-/// Resolve the logical CB index retained before epoch-local compaction.
+/// Resolve the logical CB index retained before physical index reuse.
 inline std::optional<int64_t> getLogicalCBIndex(mlir::Value cb) {
   cb = traceUnrealizedCasts(cb);
   if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
-    if (auto attr = bindOp->getAttrOfType<mlir::IntegerAttr>(
-            kDFBEpochLogicalIndexAttrName)) {
+    if (auto attr =
+            bindOp->getAttrOfType<mlir::IntegerAttr>(kDFBLogicalIndexAttrName)) {
       return attr.getInt();
     }
+  }
+  if (auto argOp = cb.getDefiningOp<mlir::tt::ttkernel::GetCompileArgValOp>()) {
+    if (auto attr =
+            argOp->getAttrOfType<mlir::IntegerAttr>(kDFBLogicalIndexAttrName)) {
+      return attr.getInt();
+    }
+    return argOp.getArgIndex();
   }
   return getCBIndex(cb);
 }

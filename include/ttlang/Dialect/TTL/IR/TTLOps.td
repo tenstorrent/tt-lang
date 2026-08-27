@@ -43,7 +43,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    DefaultValuedAttr<I64Attr, "2">:$block_count
+    DefaultValuedAttr<I64Attr, "2">:$block_count,
+    OptionalAttr<StrAttr>:$address_scope
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";

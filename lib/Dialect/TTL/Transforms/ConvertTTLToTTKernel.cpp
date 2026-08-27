@@ -59,6 +59,8 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
+constexpr llvm::StringLiteral kDFBResetPreservedIndicesAttrName =
+    "ttl.dfb_reset_preserved_indices";
 
 // PipeGraph is defined in PipeGraph.h.
 
@@ -233,6 +235,10 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
     // Create ttkernel.get_compile_time_arg_val to get the CB handle.
     auto getArgVal = ttk::GetCompileArgValOp::create(
         rewriter, op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
+    if (auto logicalIndex =
+            op->getAttrOfType<IntegerAttr>(kDFBLogicalIndexAttrName)) {
+      getArgVal->setAttr(kDFBLogicalIndexAttrName, logicalIndex);
+    }
 
     // Cast back to TTL CB type for downstream ops that still expect it.
     auto cast = UnrealizedConversionCastOp::create(
@@ -1212,8 +1218,9 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     auto loc = op.getLoc();
     SmallVector<Value> convertedArgs;
     ArrayAttr templateArgs = op.getTemplateArgsAttr();
+    const bool isReset = op.getCallee() == kResetDataflowBuffersCallee;
 
-    if (op.getCallee() == kResetDataflowBuffersCallee) {
+    if (isReset) {
       if (!templateArgs || templateArgs.empty()) {
         return rewriter.notifyMatchFailure(
             op, "is missing the reset synchronization-word runtime-arg offset");
@@ -1244,6 +1251,9 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
 
     for (auto [origArg, adaptedArg] :
          llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
+      if (isReset) {
+        break;
+      }
       Type origTy = origArg.getType();
 
       // CB -> i32 cb index via get_compile_time_arg_val.
@@ -1255,6 +1265,10 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         }
         auto cbVal = ttk::GetCompileArgValOp::create(
             rewriter, loc, rewriter.getI32Type(), *cbIdx);
+        if (auto logicalIndex = getLogicalCBIndex(origArg)) {
+          cbVal->setAttr(kDFBLogicalIndexAttrName,
+                         rewriter.getI64IntegerAttr(*logicalIndex));
+        }
         convertedArgs.push_back(cbVal);
         continue;
       }
@@ -1294,6 +1308,12 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
         convertedArgs, templateArgs);
+    if (auto resetEpoch = op->getAttr("ttl.dfb_reset_epoch")) {
+      newOp->setAttr("ttl.dfb_reset_epoch", resetEpoch);
+    }
+    if (auto preserved = op->getAttr(kDFBResetPreservedIndicesAttrName)) {
+      newOp->setAttr(kDFBResetPreservedIndicesAttrName, preserved);
+    }
     rewriter.replaceOp(op, newOp.getResults());
     return success();
   }

@@ -889,7 +889,14 @@ class TTLGenericCompiler(TTCompilerBase):
             cb.block_count,
         )
         # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
-        return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
+        return ttl.bind_cb(
+            cb_type,
+            cb._cb_index,
+            block_count=cb.block_count,
+            address_scope=(
+                StringAttr.get(cb.address_scope) if cb.address_scope is not None else None
+            ),
+        )
 
     def _emit_pipe_from_capture(
         self, pipe, pipe_net_name=None, source_file=None, source_line=None

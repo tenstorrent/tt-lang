@@ -112,6 +112,14 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
                          << cbTy.getBlockCount() << ")";
   }
 
+  if (auto scope = getAddressScopeAttr()) {
+    if (scope.getValue() != "local" &&
+        scope.getValue() != "remote_uniform") {
+      return emitOpError()
+             << "address_scope must be either 'local' or 'remote_uniform'";
+    }
+  }
+
   return mlir::success();
 }
 

@@ -63,7 +63,10 @@ def compile_ttl_to_ttkernel(
 
     specialize_passes = ""
     if specialize_cores:
-        specialize_passes = "ttkernel-specialize-cores,canonicalize,cse,"
+        specialize_passes = (
+            "ttkernel-specialize-cores,canonicalize,cse,"
+            "ttkernel-analyze-dfb-resources,"
+        )
 
     pipeline_str = (
         f"builtin.module("

@@ -58,7 +58,7 @@ def make_reset_dataflow_buffers_typecast(tile_count, iterations):
                     f32_out[tile_index : tile_index + 1, 0:1],
                 ).wait()
 
-            ttl.reset_dataflow_buffers()
+            ttl.reset_dataflow_buffers(preserve=())
 
             for tile_index in range(tile_count):
                 second_read = second_in.reserve()
@@ -70,7 +70,7 @@ def make_reset_dataflow_buffers_typecast(tile_count, iterations):
                     bf16_out[tile_index : tile_index + 1, 0:1],
                 ).wait()
 
-            ttl.reset_dataflow_buffers()
+            ttl.reset_dataflow_buffers(preserve=())
 
     return operation
 

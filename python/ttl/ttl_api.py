@@ -75,6 +75,8 @@ from .dataflow_buffer import (
     CompilerAllocatedDFBConfig,
     DataflowBuffer,
     EpochPhysicalDFBConfig,
+    _PerCoreDFBConfig,
+    _PerCoreDFBGroup,
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
@@ -574,6 +576,7 @@ class CompiledTTNNKernel:
         opaque_include_paths=None,
         runtime_resource_factory=None,
         runtime_dfb_reconfiguration=False,
+        _compiler_dfb_groups=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -629,6 +632,7 @@ class CompiledTTNNKernel:
         self._pipe_global_semaphore_lifetime = []
         self.runtime_resource_factory = runtime_resource_factory
         self.runtime_dfb_reconfiguration = runtime_dfb_reconfiguration
+        self._compiler_dfb_groups = tuple(_compiler_dfb_groups or ())
         self._runtime_resource_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
         self._hang_key = hang.program_key(kernel_paths) if kernel_paths else ""
@@ -685,6 +689,7 @@ class CompiledTTNNKernel:
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
             runtime_resource_factory=self.runtime_resource_factory,
             runtime_resource_lifetime=self._runtime_resource_lifetime,
+            _compiler_dfb_groups=self._compiler_dfb_groups,
         )
 
 
@@ -721,6 +726,7 @@ class _CompiledTTNNKernelTemplate:
         self.num_reset_sync_words = kernel.num_reset_sync_words
         self.opaque_include_paths = list(kernel.opaque_include_paths)
         self.runtime_dfb_reconfiguration = kernel.runtime_dfb_reconfiguration
+        self._compiler_dfb_groups = tuple(kernel._compiler_dfb_groups)
 
     @staticmethod
     def _detach_cb(config):
@@ -760,6 +766,7 @@ class _CompiledTTNNKernelTemplate:
             opaque_include_paths=list(self.opaque_include_paths),
             runtime_resource_factory=runtime_resource_factory,
             runtime_dfb_reconfiguration=self.runtime_dfb_reconfiguration,
+            _compiler_dfb_groups=self._compiler_dfb_groups,
         )
 
 
@@ -1013,6 +1020,7 @@ def _compile_ttnn_kernel(
     opaque_include_paths: Optional[List[str]] = None,
     runtime_resource_factory=None,
     runtime_dfb_reconfiguration: bool = False,
+    _compiler_dfb_groups=(),
     dynamic_noc: bool = False,
 ):
     """
@@ -1297,6 +1305,7 @@ def _compile_ttnn_kernel(
         opaque_include_paths=opaque_include_paths or [],
         runtime_resource_factory=runtime_resource_factory,
         runtime_dfb_reconfiguration=runtime_dfb_reconfiguration,
+        _compiler_dfb_groups=_compiler_dfb_groups,
     )
 
     # Recorded at compile time, not per launch: the hang collector needs the
@@ -1605,6 +1614,59 @@ def _extract_dfb_epoch_physical_configs(module):
             )
         )
     return configs
+
+
+def _extract_compiler_dfb_groups(module):
+    """Read the compiler-owned per-core physical DFB resource plan."""
+    attr = module.operation.attributes.get("ttl.per_core_dfb_configs", None)
+    if attr is None:
+        return ()
+
+    groups = []
+    covered = set()
+    for group_attr in attr:
+        coords = []
+        for coord_attr in group_attr["core_coords"]:
+            if len(coord_attr) != 2:
+                raise ValueError("per-core DFB coordinate must have two dimensions")
+            coord = (int(coord_attr[0]), int(coord_attr[1]))
+            if min(coord) < 0 or coord in covered:
+                raise ValueError(f"invalid or repeated per-core DFB coordinate {coord}")
+            covered.add(coord)
+            coords.append(coord)
+        if not coords:
+            raise ValueError("per-core DFB group must contain at least one core")
+
+        configs = []
+        seen_indices = set()
+        for config_attr in group_attr["configs"]:
+            dfb_index = int(config_attr["dfb_index"])
+            num_pages = int(config_attr["num_pages"])
+            address_scope = StringAttr(config_attr["address_scope"]).value
+            if dfb_index < 0 or dfb_index in seen_indices or num_pages <= 0:
+                raise ValueError(
+                    "per-core DFB configs require unique non-negative indices "
+                    "and positive page counts"
+                )
+            if address_scope not in ("legacy", "local", "remote_uniform"):
+                raise ValueError(
+                    f"unknown per-core DFB address scope {address_scope!r}"
+                )
+            seen_indices.add(dfb_index)
+            configs.append(
+                _PerCoreDFBConfig(
+                    dfb_index=dfb_index,
+                    num_pages=num_pages,
+                    address_scope=address_scope,
+                )
+            )
+        groups.append(
+            _PerCoreDFBGroup(
+                core_coords=tuple(coords),
+                configs=tuple(configs),
+            )
+        )
+    return tuple(groups)
 
 
 def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
@@ -2301,6 +2363,7 @@ def _lower_program_to_kernel(
                 "ttkernel-specialize-cores",
                 "canonicalize",
                 "cse",
+                "ttkernel-analyze-dfb-resources",
             ]
         pipeline_passes += [
             "func.func(convert-ttkernel-to-emitc)",
@@ -2379,6 +2442,7 @@ def _lower_program_to_kernel(
         cb_configs = _apply_dfb_epoch_physical_configs(
             cb_configs, epoch_physical_configs
         )
+        compiler_dfb_groups = _extract_compiler_dfb_groups(module)
         write_cb_table(
             cb_configs,
             cb_names,
@@ -2421,6 +2485,7 @@ def _lower_program_to_kernel(
             opaque_include_paths=opaque_include_paths,
             runtime_resource_factory=runtime_resource_factory,
             runtime_dfb_reconfiguration=epoch_physical_configs is not None,
+            _compiler_dfb_groups=compiler_dfb_groups,
             dynamic_noc=compiler_options.dynamic_noc,
         )
         return compiled_kernel

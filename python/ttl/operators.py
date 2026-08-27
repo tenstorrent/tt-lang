@@ -601,19 +601,20 @@ def copy(src, dst) -> CopyTransferHandler:
 
 
 @syntax("reset_dataflow_buffers")
-def reset_dataflow_buffers():
+def reset_dataflow_buffers(*, preserve):
     """Synchronously start a new physical dataflow-buffer allocation epoch.
 
     Valid either at kernel top level or as an unconditional direct child of the
     one top-level resident loop. Every worker RISC must use the same fixed reset
-    order, and a cyclic loop must have at least two reset calls. No dataflow
-    buffer, acquired block, or pending buffer transaction crosses a boundary.
+    order, and a cyclic loop must have at least two reset calls. DFBs named in
+    ``preserve`` retain their contents and ring state across this boundary; no
+    other dataflow buffer, acquired block, or pending transaction may cross it.
     """
     ttl.opaque_call(
         [],
         "ttlang::reset_dataflow_buffers",
         "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h",
-        [],
+        list(preserve),
     )
 
 

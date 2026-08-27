@@ -14,6 +14,7 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
+import hashlib
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -34,7 +35,11 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dataflow_buffer import CompilerAllocatedDFBConfig, EpochPhysicalDFBConfig
+from .dataflow_buffer import (
+    CompilerAllocatedDFBConfig,
+    EpochPhysicalDFBConfig,
+    _PerCoreDFBGroup,
+)
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
@@ -215,6 +220,83 @@ def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     return args
 
 
+def _is_per_core_allocated(tensor: Any) -> bool:
+    probe = getattr(tensor, "is_per_core_allocated", None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception as exc:
+        raise ValueError("failed to query tensor per-core allocation") from exc
+
+
+def _resolve_per_core_tensor_addresses(
+    tensors: List[Any],
+) -> Tuple[Dict[int, Dict[Tuple[int, int], int]], Tuple[Any, ...]]:
+    """Resolve cross-device-consistent local addresses for per-core tensors."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    addresses_by_tensor = {}
+    signature = []
+    for tensor_index, tensor in enumerate(tensors):
+        if not _is_per_core_allocated(tensor):
+            continue
+        try:
+            shard_grid = tensor.memory_config().shard_spec.grid
+        except Exception as exc:
+            raise ValueError(
+                f"per-core tensor {tensor_index} must expose a shard grid"
+            ) from exc
+        core_coordinates = _core_range_coordinates(
+            shard_grid, label=f"per-core tensor {tensor_index} shard grid"
+        )
+        try:
+            device_tensors = list(ttnn.get_device_tensors(tensor))
+        except Exception as exc:
+            raise ValueError(
+                f"failed to enumerate device shards for per-core tensor {tensor_index}"
+            ) from exc
+        if not device_tensors:
+            raise ValueError(f"per-core tensor {tensor_index} has no device shards")
+        for device_index, device_tensor in enumerate(device_tensors):
+            if not _is_per_core_allocated(device_tensor):
+                raise ValueError(
+                    f"per-core tensor {tensor_index} device shard {device_index} "
+                    "is not per-core allocated"
+                )
+
+        core_addresses = {}
+        for x, y in sorted(core_coordinates, key=lambda core: (core[1], core[0])):
+            core = ttnn.CoreCoord(x, y)
+            addresses = []
+            for device_index, device_tensor in enumerate(device_tensors):
+                try:
+                    address = int(
+                        device_tensor.experimental_per_core_buffer_address(core)
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"failed to resolve per-core tensor {tensor_index} on "
+                        f"device shard {device_index}, core {(x, y)}"
+                    ) from exc
+                addresses.append(address)
+            if len(set(addresses)) != 1:
+                raise ValueError(
+                    f"per-core tensor {tensor_index} has different addresses "
+                    f"across devices on core {(x, y)}: {addresses}"
+                )
+            core_addresses[(x, y)] = addresses[0]
+
+        addresses_by_tensor[tensor_index] = core_addresses
+        signature.append(
+            (tensor_index, tuple(sorted(core_addresses.items())))
+        )
+
+    return addresses_by_tensor, tuple(signature)
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -227,6 +309,9 @@ def build_kernel_descriptors(
     expected_extra_common_runtime_args: Optional[int] = None,
     runtime_args_by_thread: Optional[Dict[str, List[Tuple[Any, List[int]]]]] = None,
     defines_by_thread: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    _per_core_tensor_addresses: Optional[
+        Dict[int, Dict[Tuple[int, int], int]]
+    ] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -270,15 +355,12 @@ def build_kernel_descriptors(
 
     runtime_args_by_thread = runtime_args_by_thread or {}
     defines_by_thread = defines_by_thread or {}
+    if _per_core_tensor_addresses is None:
+        _per_core_tensor_addresses, _signature = (
+            _resolve_per_core_tensor_addresses(tensors)
+        )
 
     for spec in kernel_specs:
-        # Build common_runtime_args using tensor_indices.
-        # C++ indexes by function-local position, we provide addresses in that order.
-        common_runtime_args = [
-            tensors[idx].buffer_address() for idx in spec.tensor_indices
-        ]
-        common_runtime_args.extend(extra_args)
-
         # Compute kernels only need CB indices.
         # DM kernels need CB indices + TensorAccessorArgs config.
         if spec.thread_type == "compute":
@@ -291,6 +373,58 @@ def build_kernel_descriptors(
         kernel_ranges = (
             spec.core_ranges if spec.core_ranges is not None else core_ranges
         )
+        per_core_indices = {
+            index
+            for index in spec.tensor_indices
+            if index in _per_core_tensor_addresses
+        }
+        if per_core_indices:
+            kernel_coordinates = _core_range_coordinates(
+                kernel_ranges, label=f"kernel {spec.path} core ranges"
+            )
+            common_args_to_cores = {}
+            lockstep_addresses = {
+                index: int(tensors[index].buffer_address())
+                for index in spec.tensor_indices
+                if index not in per_core_indices
+            }
+            for core in kernel_coordinates:
+                common_args = []
+                for index in spec.tensor_indices:
+                    if index in per_core_indices:
+                        address = _per_core_tensor_addresses[index].get(core)
+                        if address is None:
+                            # Core specialization can erase a guarded tensor
+                            # access while retaining its common-argument slot.
+                            address = 0
+                        common_args.append(address)
+                    else:
+                        common_args.append(lockstep_addresses[index])
+                common_args.extend(extra_args)
+                common_args_to_cores.setdefault(tuple(common_args), set()).add(core)
+            descriptor_plans = []
+            for common_args, coordinates in sorted(
+                common_args_to_cores.items(),
+                key=lambda item: min(
+                    item[1], key=lambda core: (core[1], core[0])
+                ),
+            ):
+                descriptor_ranges = (
+                    kernel_ranges
+                    if coordinates == kernel_coordinates
+                    else _core_ranges_from_coordinates(coordinates)
+                )
+                descriptor_plans.append(
+                    (descriptor_ranges, list(common_args), True)
+                )
+        else:
+            common_runtime_args = [
+                tensors[index].buffer_address() for index in spec.tensor_indices
+            ]
+            common_runtime_args.extend(extra_args)
+            descriptor_plans = [
+                (kernel_ranges, common_runtime_args, spec.core_ranges is not None)
+            ]
 
         if spec.thread_type == "compute":
             thread_name = "trisc"
@@ -299,17 +433,6 @@ def build_kernel_descriptors(
         else:
             thread_name = "brisc"
 
-        thread_runtime_args = runtime_args_by_thread.get(thread_name, [])
-        if spec.core_ranges is not None:
-            # A specialized descriptor may cover only one core or one logical
-            # row. TTNN requires every per-core runtime-argument entry to fall
-            # inside that descriptor's CoreRangeSet.
-            thread_runtime_args = [
-                entry
-                for entry in thread_runtime_args
-                if kernel_ranges.contains(entry[0])
-            ]
-
         kernel_define_names = {name for name, _ in spec.defines}
         kernel_defines = [
             define
@@ -317,17 +440,28 @@ def build_kernel_descriptors(
             if define[0] not in kernel_define_names
         ]
         kernel_defines.extend(spec.defines)
-        kernel_desc = ttnn.KernelDescriptor(
-            kernel_source=spec.path,
-            core_ranges=kernel_ranges,
-            compile_time_args=kernel_compile_time_args,
-            defines=kernel_defines,
-            runtime_args=thread_runtime_args,
-            common_runtime_args=common_runtime_args,
-            config=spec.config,
-            compiler_include_paths=spec.compiler_include_paths,
-        )
-        kernel_descriptors.append(kernel_desc)
+        for descriptor_ranges, common_runtime_args, filter_runtime_args in (
+            descriptor_plans
+        ):
+            thread_runtime_args = runtime_args_by_thread.get(thread_name, [])
+            if filter_runtime_args:
+                thread_runtime_args = [
+                    entry
+                    for entry in thread_runtime_args
+                    if descriptor_ranges.contains(entry[0])
+                ]
+            kernel_descriptors.append(
+                ttnn.KernelDescriptor(
+                    kernel_source=spec.path,
+                    core_ranges=descriptor_ranges,
+                    compile_time_args=kernel_compile_time_args,
+                    defines=kernel_defines,
+                    runtime_args=thread_runtime_args,
+                    common_runtime_args=common_runtime_args,
+                    config=spec.config,
+                    compiler_include_paths=spec.compiler_include_paths,
+                )
+            )
 
     return kernel_descriptors
 
@@ -493,6 +627,38 @@ def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
     if program_hash is None:
         return None
     return int(program_hash) & ((1 << 64) - 1)
+
+
+def _program_hash_with_resource_plan(
+    program_hash: Optional[int],
+    groups: Tuple[_PerCoreDFBGroup, ...],
+    per_core_tensor_signature: Tuple[Any, ...],
+) -> Optional[int]:
+    """Mix exact per-core resources into a caller-provided cache key."""
+    normalized = normalize_program_hash(program_hash)
+    if normalized is None or (not groups and not per_core_tensor_signature):
+        return normalized
+    dfb_signature = tuple(
+        (
+            tuple(sorted(group.core_coords)),
+            tuple(
+                sorted(
+                    (
+                        config.dfb_index,
+                        config.num_pages,
+                        config.address_scope,
+                    )
+                    for config in group.configs
+                )
+            ),
+        )
+        for group in groups
+    )
+    signature = (dfb_signature, per_core_tensor_signature)
+    digest = hashlib.blake2b(digest_size=8, person=b"ttl-rsrc")
+    digest.update(normalized.to_bytes(8, byteorder="little", signed=False))
+    digest.update(repr(signature).encode("utf-8"))
+    return int.from_bytes(digest.digest(), byteorder="little", signed=False)
 
 
 @dataclass(frozen=True)
@@ -668,6 +834,7 @@ def validate_cb_descriptors_override(
     program_core_ranges: Any,
     tensors: List[Any],
     num_cbs: int,
+    allow_missing_ids: bool = False,
 ) -> List[Any]:
     """Validate an exact, possibly per-core CB descriptor replacement.
 
@@ -788,7 +955,7 @@ def validate_cb_descriptors_override(
             claim_sizes_by_core[core].append((descriptor_label, total_size))
 
     missing_ids = sorted(set(range(num_cbs)) - set(format_by_id))
-    if missing_ids:
+    if missing_ids and not allow_missing_ids:
         raise ValueError(
             "CB descriptor override does not describe every configured CB id; "
             f"missing {missing_ids}"
@@ -1008,6 +1175,128 @@ def build_cb_descriptors_by_core(
     )
 
 
+def _build_compiler_cb_descriptors_by_core(
+    tensors: List[Any],
+    cb_configs: List[Any],
+    core_ranges: Any,
+    groups: Tuple[_PerCoreDFBGroup, ...],
+) -> List[Any]:
+    """Build the exact per-core DFB layout selected after specialization."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if not groups:
+        return build_cb_descriptors(tensors, cb_configs, core_ranges)
+
+    geometries = [cb_geometry(i, cb) for i, cb in enumerate(cb_configs)]
+    program_cores = _core_range_coordinates(core_ranges, label="program core ranges")
+    covered = set()
+    group_entries = []
+    scopes_by_index = {}
+    max_pages_by_index = {}
+    for group_index, group in enumerate(groups):
+        coords = set(group.core_coords)
+        if not coords or coords & covered or not coords <= program_cores:
+            raise ValueError(
+                f"compiler DFB group {group_index} has invalid or overlapping cores"
+            )
+        covered.update(coords)
+        by_index = {}
+        for config in group.configs:
+            index = int(config.dfb_index)
+            pages = int(config.num_pages)
+            scope = config.address_scope
+            if index < 0 or index >= len(geometries) or pages <= 0:
+                raise ValueError(
+                    f"compiler DFB group {group_index} has invalid CB[{index}] capacity"
+                )
+            if index in by_index:
+                raise ValueError(
+                    f"compiler DFB group {group_index} repeats CB[{index}]"
+                )
+            previous_scope = scopes_by_index.setdefault(index, scope)
+            if previous_scope != scope:
+                raise ValueError(f"compiler DFB CB[{index}] changes address scope")
+            by_index[index] = pages
+            max_pages_by_index[index] = max(max_pages_by_index.get(index, 0), pages)
+        group_entries.append(
+            (by_index, coords, _core_ranges_from_coordinates(coords))
+        )
+    if covered != program_cores:
+        raise ValueError(
+            "compiler DFB groups do not cover the program grid; missing "
+            f"{sorted(program_cores - covered)}"
+        )
+
+    for index, pages in max_pages_by_index.items():
+        if pages != geometries[index].num_pages:
+            raise ValueError(
+                f"compiler DFB CB[{index}] must preserve the global maximum "
+                f"of {geometries[index].num_pages} pages; got {pages}"
+            )
+
+    descriptors = []
+    legacy_indices = sorted(
+        index for index, scope in scopes_by_index.items() if scope == "legacy"
+    )
+    remote_indices = sorted(
+        index
+        for index, scope in scopes_by_index.items()
+        if scope == "remote_uniform"
+    )
+    local_indices = sorted(
+        index for index, scope in scopes_by_index.items() if scope == "local"
+    )
+
+    for index in legacy_indices:
+        geometry = geometries[index]
+        descriptors.append(
+            _cb_descriptor(
+                index,
+                geometry,
+                max_pages_by_index[index] * geometry.page_size,
+                core_ranges,
+            )
+        )
+
+    for index in remote_indices:
+        geometry = geometries[index]
+        participants = set()
+        for by_index, coords, _partition_ranges in group_entries:
+            if index in by_index:
+                participants.update(coords)
+        descriptors.append(
+            _cb_descriptor(
+                index,
+                geometry,
+                max_pages_by_index[index] * geometry.page_size,
+                _core_ranges_from_coordinates(participants),
+            )
+        )
+
+    for index in local_indices:
+        geometry = geometries[index]
+        for by_index, _coords, partition_ranges in group_entries:
+            pages = by_index.get(index)
+            if pages is None:
+                continue
+            descriptors.append(
+                _cb_descriptor(
+                    index,
+                    geometry,
+                    pages * geometry.page_size,
+                    partition_ranges,
+                )
+            )
+    return validate_cb_descriptors_override(
+        descriptors=descriptors,
+        program_core_ranges=core_ranges,
+        tensors=tensors,
+        num_cbs=len(cb_configs),
+        allow_missing_ids=True,
+    )
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
@@ -1081,6 +1370,7 @@ def run_kernel_on_device(
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_lifetime: Optional[List[Any]] = None,
+    _compiler_dfb_groups: Tuple[_PerCoreDFBGroup, ...] = (),
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -1117,6 +1407,10 @@ def run_kernel_on_device(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
+    per_core_tensor_addresses, per_core_tensor_signature = (
+        _resolve_per_core_tensor_addresses(tensors)
+    )
+
     # Build tensor accessor args.
     tensor_accessor_args = build_tensor_accessor_args(tensors)
 
@@ -1150,13 +1444,22 @@ def run_kernel_on_device(
     if runtime_resource_lifetime is not None:
         runtime_resource_lifetime[:] = program_resources.lifetimes
 
-    if any(isinstance(cb, EpochPhysicalDFBConfig) for cb in cb_configs) and (
+    compiler_dfb_plan_active = any(
+        config.address_scope != "legacy"
+        for group in _compiler_dfb_groups
+        for config in group.configs
+    )
+
+    if (
+        any(isinstance(cb, EpochPhysicalDFBConfig) for cb in cb_configs)
+        or compiler_dfb_plan_active
+    ) and (
         program_resources.cb_descriptors_override is not None
         or program_resources.cb_pages_by_core
     ):
         raise ValueError(
             "ProgramRuntimeResources cannot override compiler-selected "
-            "epoch dataflow-buffer descriptors"
+            "dataflow-buffer descriptors"
         )
 
     # Build kernel descriptors.
@@ -1174,6 +1477,7 @@ def run_kernel_on_device(
         ),
         runtime_args_by_thread=program_resources.runtime_args_by_thread,
         defines_by_thread=program_resources.defines_by_thread,
+        _per_core_tensor_addresses=per_core_tensor_addresses,
     )
 
     # Build CB descriptors, unless this operation supplied an exact per-core
@@ -1187,7 +1491,14 @@ def run_kernel_on_device(
             "ProgramRuntimeResources cannot set both cb_descriptors_override "
             "and cb_pages_by_core"
         )
-    if program_resources.cb_descriptors_override is not None:
+    if compiler_dfb_plan_active:
+        cb_descriptors = _build_compiler_cb_descriptors_by_core(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            groups=tuple(_compiler_dfb_groups),
+        )
+    elif program_resources.cb_descriptors_override is not None:
         cb_descriptors = validate_cb_descriptors_override(
             descriptors=program_resources.cb_descriptors_override,
             program_core_ranges=core_ranges,
@@ -1220,7 +1531,11 @@ def run_kernel_on_device(
         cbs=cb_descriptors,
         semaphores=semaphore_descriptors,
     )
-    normalized_program_hash = normalize_program_hash(program_hash)
+    normalized_program_hash = _program_hash_with_resource_plan(
+        program_hash,
+        tuple(_compiler_dfb_groups) if compiler_dfb_plan_active else (),
+        per_core_tensor_signature,
+    )
     if normalized_program_hash is not None:
         program.custom_program_hash = normalized_program_hash
 

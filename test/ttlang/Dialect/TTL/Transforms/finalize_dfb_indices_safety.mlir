@@ -3,7 +3,7 @@
 
 // Different consumer threads must keep distinct physical CB state even when
 // the common producer handles the DFBs sequentially.
-// CHECK-LABEL: module {
+// CHECK-LABEL: module
 // CHECK-NOT: ttl.dfb_index_map
 // CHECK-LABEL: func.func @different_consumer_producer
 // CHECK: ttl.bind_cb{cb_index = 0,
@@ -155,7 +155,7 @@ func.func @different_page_types()
 // Compiler-generated DFBs never share user arena slots, even when the static
 // intervals look disjoint. Their lowering-specific allocation contract is
 // preserved independently.
-// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 4 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]}
+// CHECK: ttl.compiler_allocated_dfbs = [{block_count = 4 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]
 // CHECK-LABEL: func.func @user_compiler_capacity_merge
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
 // CHECK: ttl.bind_cb{cb_index = 0,

@@ -907,6 +907,32 @@ def TTKernelSpecializeCores
   ];
 }
 
+def TTKernelAnalyzeDFBResources
+    : Pass<"ttkernel-analyze-dfb-resources", "::mlir::ModuleOp"> {
+  let summary = "Publish physical DFB capacities for specialized cores";
+  let description = [{
+    Reads the logical DFB configuration table retained by
+    `ttl-finalize-dfb-indices` and the logical identity markers on lowered
+    compile-time argument reads. After core specialization and canonicalization
+    remove untaken paths, unions the surviving DFB uses across all RISC
+    functions for each launch coordinate and publishes grouped physical DFB
+    page capacities in `ttl.per_core_dfb_configs`.
+
+    Reset calls retain their target epoch through lowering. The pass removes
+    inactive epoch records from each specialized clone and bounds every
+    retained record by that core's published backing capacity.
+
+    Logical configurations without an explicit address scope retain their
+    conservative whole-grid capacity. `remote_uniform` configurations retain
+    a common backing address across their surviving participant cores;
+    `local` configurations may vary both presence and capacity.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelCombinePackTiles
     : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
   let summary = "Combine consecutive pack_tile ops into pack_tile_block";

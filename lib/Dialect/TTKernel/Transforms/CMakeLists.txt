@@ -4,6 +4,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   TTKernelInsertInits.cpp
   TTKernelInsertL1Accumulation.cpp
   TTKernelLowerScalarFpTypes.cpp
+  TTKernelAnalyzeDFBResources.cpp
   TTKernelSpecializeCores.cpp
 
   DEPENDS
@@ -16,6 +17,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRTransforms
+  MLIRTTCoreDialect
   MLIRTTKernelDialect
   MLIRTTLDialect
 )

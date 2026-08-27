@@ -72,6 +72,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createTTKernelSpecializeCores());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
+    pm.addPass(createTTKernelAnalyzeDFBResources());
   }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());

@@ -130,3 +130,24 @@ func.func @phase_b_thread()
   }
   return
 }
+
+// -----
+
+// A reset ordinal has one card-wide preserve set.
+
+func.func @preserve_zero_thread()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.opaque_call "ttlang::reset_dataflow_buffers"(%cb0) {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+  return
+}
+
+func.func @preserve_one_thread()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  // expected-error @below {{must preserve the same dataflow buffers at reset ordinal 0 as every other kernel thread}}
+  ttl.opaque_call "ttlang::reset_dataflow_buffers"(%cb1) {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+  return
+}
