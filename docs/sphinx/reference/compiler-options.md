@@ -201,7 +201,6 @@ concrete strategy selection.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `tensor` | Scope formation kind. Supported value: `tensor`. `dfb` is reserved. |
 | `strategy` | string | `auto` | Tensor recurrence accumulation strategy used to filter scopes. Supported values: `auto`, `dst`, `l1-pack`. |
 
 ```bash

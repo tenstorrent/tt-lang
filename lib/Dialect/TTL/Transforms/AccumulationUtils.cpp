@@ -118,17 +118,18 @@ static bool hasOwnedReleaseBeforeUse(CBWaitOp wait, Operation *use,
   DFBReleaseSearch releaseSearch =
       findOwnedDFBReleases(interval, lastOwnedUse, consumerReleases);
 
-  for (Operation *release : releaseSearch.sameLevelReleases) {
-    if (mayExecuteBefore(release, use)) {
-      return true;
+  auto hasReleaseBeforeUse = [&](ArrayRef<Operation *> releases) {
+    for (Operation *release : releases) {
+      if (mayExecuteBefore(release, use)) {
+        return true;
+      }
     }
-  }
-  for (Operation *release : releaseSearch.nestedReleases) {
-    if (mayExecuteBefore(release, use)) {
-      return true;
-    }
-  }
-  return false;
+    return false;
+  };
+  return hasReleaseBeforeUse(releaseSearch.sameLevelReleases) ||
+         hasReleaseBeforeUse(releaseSearch.nestedReleases) ||
+         hasReleaseBeforeUse(releaseSearch.guardedLocalReleases) ||
+         hasReleaseBeforeUse(releaseSearch.releasesBeforeOwnedUses);
 }
 
 /// Check that deleting the source loop will not drop work other than the

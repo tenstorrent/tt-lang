@@ -21,7 +21,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -228,7 +227,7 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
   MLIRContext *context = loop.getContext();
   SmallVector<Value, 2> outputs;
   SmallVector<Attribute, 2> initialModes;
-  llvm::DenseSet<Value> seenOutputs;
+  SmallVector<Value, 2> seenOutputs;
   std::optional<AccumulationInitialMode> loopMode;
 
   for (StoreOp store : *stores) {
@@ -248,13 +247,16 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
           "accumulation loop; move the reserve before the loop");
     }
 
-    if (!seenOutputs.insert(store.getView()).second) {
+    if (llvm::any_of(seenOutputs, [&](Value output) {
+          return isSameStoredView(output, store.getView());
+        })) {
       hadFailure = true;
       return store.emitOpError(
           "multiple accumulating stores to the same output view in one loop "
           "are not supported; combine the updates before storing or split them "
           "into separate loops");
     }
+    seenOutputs.push_back(store.getView());
 
     FailureOr<AccumulationInitialMode> mode =
         getInitialModeForAccumulatingStore(store, loop);

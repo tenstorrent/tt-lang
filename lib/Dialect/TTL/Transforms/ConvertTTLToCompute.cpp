@@ -204,12 +204,14 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
     waitedMutation = &mutation;
   }
   bool isWaitedMutation = waitedMutation != nullptr;
-  assert(isWaitedMutation == isa<CBWaitOp>(findCBAcquireOp(store.getView())) &&
+  assert(isWaitedMutation == isa<CBWaitOp>(findCBAcquireOp(
+                                 store.getView(), store.getOperation())) &&
          "wait-backed tile store must consume a proved mutation plan");
   if (isWaitedMutation) {
     CBWaitOp waitedAcquire = waitedMutation->wait;
     CBPopOp waitedRelease = waitedMutation->release;
-    assert(waitedAcquire == findCBAcquireOp(store.getView()) &&
+    assert(waitedAcquire ==
+               findCBAcquireOp(store.getView(), store.getOperation()) &&
            waitedAcquire.getCb() == waitedMutation->dfb &&
            waitedRelease.getCb() == waitedMutation->dfb &&
            waitedMutation->transactionTiles ==

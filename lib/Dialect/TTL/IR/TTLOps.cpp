@@ -1995,7 +1995,7 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  Operation *acquire = findCBAcquireOp(getView());
+  Operation *acquire = findCBAcquireOp(getView(), getOperation());
   if (!acquire) {
     return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
   }
@@ -2021,7 +2021,7 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
                          << ") must match tile type (" << tileType << ")";
   }
 
-  Operation *acquire = findCBAcquireOp(getView());
+  Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
       !isWaitBacked) {

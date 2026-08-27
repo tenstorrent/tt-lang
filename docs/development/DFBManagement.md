@@ -1068,6 +1068,14 @@ Uses inside descendant regions are projected to their ancestor operation in the
 acquire's block. This conservatively places the release after the enclosing
 structured op when the exact use is nested in an `scf.for` or `scf.if` body.
 
+Conditionally yielded acquires have one additional rule. `scf.yield`
+propagates the acquired tensor value, but it is not a storage access. When all
+owned uses remain inside the acquiring then-region, the inserted release also
+remains in that region after the last local use. When the yielded tensor is
+used after the acquiring `scf.if`, each use must execute under the same
+condition as the acquire, and the inserted release is emitted under that
+condition after the last escaped use.
+
 ### Ownership
 
 A use `U` is *owned by* `acquire` if `U` accesses the slot `acquire` acquired.
@@ -1223,7 +1231,19 @@ planReleases(acquires, releases, releaseOp):
 
     matching = same-block operation with the required release effect
     nested = nested operations with the required release effect
+    reject if matching precedes an owned use
     if matching:
+      continue
+
+    if acquire is conditionally yielded:
+      reject if an owned use is not under the acquire condition
+      if all owned uses are local to the acquiring then-region:
+        keep an existing local release, or insert releaseOp after the local use
+      else:
+        reject if a local release is an external effect summary
+        plan erasure of local concrete releases
+        plan insertion of scf.if acquire.condition { releaseOp(dfb) }
+        after liveEnd
       continue
 
     reject if a nested release is an external effect summary

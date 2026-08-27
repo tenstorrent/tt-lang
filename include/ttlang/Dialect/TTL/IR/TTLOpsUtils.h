@@ -187,48 +187,71 @@ inline bool isInactiveGuardedDFBYield(mlir::Value value) {
          cast->hasAttr("ttl.inactive_guarded_dfb");
 }
 
+/// Trace a tensor value through view-preserving operations to its DFB acquire
+/// when `use` is executed under the condition that makes a guarded acquire
+/// active.
+inline mlir::Operation *findCBAcquireOp(mlir::Value tensor,
+                                        mlir::Operation *use) {
+  while (true) {
+    tensor = traceUnrealizedCasts(tensor);
+    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+      tensor = attach.getTensor();
+      continue;
+    }
+    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      tensor = slice.getSource();
+      continue;
+    }
+    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+      tensor = extract.getTensor();
+      continue;
+    }
+    mlir::Operation *definition = tensor.getDefiningOp();
+    if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
+      return definition;
+    }
+
+    auto result = mlir::dyn_cast<mlir::OpResult>(tensor);
+    if (!result) {
+      return nullptr;
+    }
+    auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner());
+    if (!ifOp || ifOp.getElseRegion().empty() ||
+        !isOperationInThenRegionGuardedBy(use, ifOp.getCondition())) {
+      return nullptr;
+    }
+
+    unsigned resultIndex = result.getResultNumber();
+    auto thenYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+        ifOp.getThenRegion().front().getTerminator());
+    auto elseYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+        ifOp.getElseRegion().front().getTerminator());
+    if (!thenYield || !elseYield ||
+        resultIndex >= thenYield.getResults().size() ||
+        resultIndex >= elseYield.getResults().size() ||
+        !isInactiveGuardedDFBYield(elseYield.getResults()[resultIndex])) {
+      return nullptr;
+    }
+    tensor = thenYield.getResults()[resultIndex];
+  }
+}
+
 /// Returns the reserve that produced `view` when `use` is executed under the
 /// same condition as a conditionally yielded reserve.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view,
                                                        mlir::Operation *use) {
-  if (auto reserve = findCBReserveForView(view)) {
-    return reserve;
-  }
-
-  view = traceUnrealizedCasts(view);
-  if (auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    return findCBReserveForView(slice.getSource(), use);
-  }
-  if (auto extract = view.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return findCBReserveForView(extract.getTensor(), use);
-  }
-  auto result = mlir::dyn_cast<mlir::OpResult>(view);
-  if (!result) {
-    return nullptr;
-  }
-  auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner());
-  if (!ifOp || ifOp.getElseRegion().empty() ||
-      !isOperationInThenRegionGuardedBy(use, ifOp.getCondition())) {
-    return nullptr;
-  }
-
-  unsigned resultIndex = result.getResultNumber();
-  auto thenYield = mlir::dyn_cast<mlir::scf::YieldOp>(
-      ifOp.getThenRegion().front().getTerminator());
-  auto elseYield = mlir::dyn_cast<mlir::scf::YieldOp>(
-      ifOp.getElseRegion().front().getTerminator());
-  if (!thenYield || !elseYield ||
-      resultIndex >= thenYield.getResults().size() ||
-      resultIndex >= elseYield.getResults().size() ||
-      !isInactiveGuardedDFBYield(elseYield.getResults()[resultIndex])) {
-    return nullptr;
-  }
-  return findCBReserveForView(thenYield.getResults()[resultIndex], use);
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view, use));
 }
 
-/// Return the user reserve that produced a pipe receive destination block.
+/// Return the reserve that produced an unguarded pipe receive destination.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
+}
+
+/// Return the reserve that produced a pipe receive destination used here.
+inline mlir::tt::ttl::CBReserveOp
+findCBReserveForPipeReceive(mlir::Value dst, mlir::Operation *use) {
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst, use));
 }
 
 /// Returns the DFB declaration reached through unrealized conversion casts.

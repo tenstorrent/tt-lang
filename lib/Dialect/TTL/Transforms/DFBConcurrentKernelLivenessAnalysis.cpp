@@ -944,9 +944,11 @@ releaseFollowsOwnedUses(Operation *acquire, Operation *release,
                         const StructuralOperationOrder &structuralOrder) {
   DFBAcquireInterval interval =
       makeDFBAcquireInterval(acquire, sameKindAcquires);
-  Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  return lastOwnedUse == acquire ||
-         structuralOrder.precedes(lastOwnedUse, release);
+  SmallVector<Operation *> ownedUses;
+  collectDFBAcquireOwnedUses(interval, ownedUses);
+  return llvm::all_of(ownedUses, [&](Operation *use) {
+    return structuralOrder.precedes(use, release);
+  });
 }
 
 // Finds every access without a proved predecessor so all possible lifetime
