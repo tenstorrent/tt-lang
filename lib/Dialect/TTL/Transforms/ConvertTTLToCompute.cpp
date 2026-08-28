@@ -195,6 +195,9 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
 
   TileStoreOp tileStore = createTileOpWithPlaceholderDstIndex<TileStoreOp>(
       rewriter, loc, tileResult, store.getView(), indices);
+  if (store.getRowPrefix()) {
+    tileStore->setAttr("row_prefix", store.getRowPrefixAttr());
+  }
   const WaitedDFBMutationPlan *waitedMutation = nullptr;
   for (const WaitedDFBMutationPlan &mutation : creation.waitedMutations) {
     if (mutation.store != store) {
@@ -1149,7 +1152,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
           op, "store operands changed after ComputeOp creation analysis");
     }
     Value input = plan.input;
-    RankedTensorType inputType = plan.tensorType;
+    RankedTensorType inputType = plan.inputTensorType;
+    RankedTensorType outputType = plan.outputTensorType;
 
     Location loc = op.getLoc();
     SmallVector<Attribute> maps = {
@@ -1158,26 +1162,29 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Attribute> iteratorTypes =
         buildIteratorTypeAttributes(rewriter, plan.iteration.iteratorTypes);
 
-    Value init = buildInitTensor(rewriter, loc, inputType, input);
+    Value init = buildInitTensor(rewriter, loc, outputType, plan.outputView);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, plan.outputDFB);
 
     auto computeOp = ComputeOp::create(
-        rewriter, loc, TypeRange{inputType}, ValueRange{input},
+        rewriter, loc, TypeRange{outputType}, ValueRange{input},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iteratorTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
-    body->addArgument(plan.tileType, loc);
-    body->addArgument(plan.tileType, loc);
+    body->addArgument(plan.inputTileType, loc);
+    body->addArgument(plan.outputTileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
     SmallVector<Value> iterIndices =
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
         applyIndexingMap(rewriter, loc, plan.iteration.outputMap, iterIndices);
-    createTileOpWithPlaceholderDstIndex<TileStoreOp>(
+    TileStoreOp tileStore = createTileOpWithPlaceholderDstIndex<TileStoreOp>(
         rewriter, loc, body->getArgument(0), plan.outputView, storeIndices);
+    if (op.getRowPrefix()) {
+      tileStore->setAttr("row_prefix", op.getRowPrefixAttr());
+    }
     YieldOp::create(rewriter, loc);
 
     for (AttachCBOp association : plan.outputAssociations) {
