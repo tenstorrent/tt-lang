@@ -126,11 +126,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
   func.func @wait_any_selected_and_static_candidates()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %send_dfb = ttl.bind_cb {cb_index = 4, block_count = 1}
+    %send_dfb = ttl.bind_cb {cb_index = 4, block_count = 1} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %static_receive_dfb = ttl.bind_cb {cb_index = 5, block_count = 1}
+    %static_receive_dfb = ttl.bind_cb {cb_index = 5, block_count = 1} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %selected_receive_dfb = ttl.bind_cb {cb_index = 6, block_count = 1}
+    %selected_receive_dfb = ttl.bind_cb {cb_index = 6, block_count = 1} {dfb_id = 6 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     %static_pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 3
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 3>

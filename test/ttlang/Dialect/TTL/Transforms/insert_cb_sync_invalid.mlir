@@ -195,6 +195,8 @@ module {
     }
     return
   }
+}
+
 // -----
 
 // Wait-any proves one candidate complete, not every candidate.
