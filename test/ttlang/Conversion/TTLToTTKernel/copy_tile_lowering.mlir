@@ -7,9 +7,9 @@
 // CHECK-LABEL: func.func @copy_tile_in_compute
 // CHECK:       %[[CB_TTK:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, f32>>
 // CHECK:       ttkernel.cb_reserve_back
+// CHECK:       ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
 // CHECK:       scf.for
 // CHECK:         scf.for
-// CHECK:           ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
 // CHECK:           ttkernel.copy_tile(%[[CB_TTK]], %{{.*}}, %{{.*}}) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
 // CHECK:           ttkernel.pack_tile
 // CHECK-NOT:   ttl.copy_tile

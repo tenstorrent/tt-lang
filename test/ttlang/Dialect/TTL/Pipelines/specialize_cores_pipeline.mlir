@@ -13,6 +13,7 @@
 // SUBPIPELINE-NEXT: canonicalize{{.*}},
 // SUBPIPELINE-NEXT: ttkernel-unroll-static-pipenet-record-loops,
 // SUBPIPELINE-NEXT: canonicalize{{.*}},
+// SUBPIPELINE-NEXT: ttkernel-cleanup,
 // SUBPIPELINE-NEXT: cse,
 // SUBPIPELINE-NEXT: ttkernel-annotate-dfb-use
 // SUBPIPELINE-NOT:  ttkernel-specialize-cores
@@ -27,6 +28,7 @@
 // ENABLED-NEXT: canonicalize{{.*}},
 // ENABLED-NEXT: ttkernel-unroll-static-pipenet-record-loops,
 // ENABLED-NEXT: canonicalize{{.*}},
+// ENABLED-NEXT: ttkernel-cleanup,
 // ENABLED-NEXT: cse,
 // ENABLED-NEXT: ttkernel-annotate-dfb-use
 

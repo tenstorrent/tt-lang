@@ -13,7 +13,8 @@
 // TTKERNEL-NOT: ttkernel.pack_waited_tile
 // TTKERNEL-NOT: ttkernel.cb_push_back(%[[STATE]],
 // TTKERNEL: ttkernel.cb_reserve_back(%[[OUTPUT]],
-// TTKERNEL: ttkernel.pack_tile_block({{.*}}, %[[OUTPUT]],
+// TTKERNEL: ttkernel.pack_block_contiguous_init(%[[OUTPUT]])
+// TTKERNEL: ttkernel.pack_block_contiguous({{.*}}, %[[OUTPUT]],
 // TTKERNEL: ttkernel.cb_push_back(%[[OUTPUT]],
 // TTKERNEL: ttkernel.cb_pop_front(%[[STATE]],
 
