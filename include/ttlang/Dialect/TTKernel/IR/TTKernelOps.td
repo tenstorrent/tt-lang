@@ -4305,8 +4305,8 @@ def TTKernel_ConstantTableLookupOp
     let description = [{
       Returns the element at `index` from the non-empty `values` table. Every
       table value must be non-negative. A constant index is verified to be
-      within the table bounds and canonicalizes to the selected constant; a
-      dynamic index must satisfy the same precondition.
+      within the table bounds and folds to the selected constant; a dynamic
+      index must satisfy the same precondition.
     }];
 
     let arguments = (ins Index:$index, DenseI64ArrayAttr:$values);
@@ -4315,6 +4315,7 @@ def TTKernel_ConstantTableLookupOp
     let assemblyFormat = [{
       $index `,` $values attr-dict `:` type($index)
     }];
+    let hasFolder = 1;
     let hasCanonicalizer = 1;
     let hasVerifier = 1;
 }

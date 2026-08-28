@@ -631,6 +631,26 @@ void MyLogicalYOp::inferResultRanges(
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
 }
 
+static std::optional<int64_t>
+getConstantTableElement(const APInt &indexValue, ArrayRef<int64_t> values) {
+  int64_t index = indexValue.getSExtValue();
+  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+    return std::nullopt;
+  }
+  return values[index];
+}
+
+OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
+  auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
+  if (!indexAttr) {
+    return {};
+  }
+  std::optional<int64_t> element =
+      getConstantTableElement(indexAttr.getValue(), getValues());
+  return element ? IntegerAttr::get(getResult().getType(), *element)
+                 : Attribute();
+}
+
 void ConstantTableLookupOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(+[](ConstantTableLookupOp op,
@@ -639,12 +659,12 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
     if (!matchPattern(op.getIndex(), m_ConstantInt(&indexValue))) {
       return rewriter.notifyMatchFailure(op, "index is not constant");
     }
-    int64_t index = indexValue.getSExtValue();
-    ArrayRef<int64_t> values = op.getValues();
-    if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+    std::optional<int64_t> element =
+        getConstantTableElement(indexValue, op.getValues());
+    if (!element) {
       return rewriter.notifyMatchFailure(op, "index is outside table bounds");
     }
-    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, values[index]);
+    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, *element);
     return success();
   });
 }
