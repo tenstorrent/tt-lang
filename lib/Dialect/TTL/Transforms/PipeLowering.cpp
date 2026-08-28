@@ -2788,9 +2788,17 @@ struct ComputedAddressPlan {
 };
 
 static ComputedAddressPlan
-buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
+buildComputedAddressPlan(ModuleOp module,
+                         MutableArrayRef<PipeTransferAllocationUnit> units,
                          const PipeGraph &pipeGraph) {
   ComputedAddressPlan plan;
+
+  llvm::SmallSetVector<int64_t, 4> tensorBackedDFBIndices;
+  module.walk([&](BindCBOp bind) {
+    if (bind.getTensorBackingAttr()) {
+      tensorBackedDFBIndices.insert(bind.getCbIndex().getSExtValue());
+    }
+  });
 
   /// One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
@@ -2817,6 +2825,11 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
       continue;
     }
     const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
+    // One common runtime argument supplies the physical DFB base. An index
+    // reused by tensor-backed storage can require a different base by epoch.
+    if (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex)) {
+      continue;
+    }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =
         getComputedAddressInfo(*receiverEndpoint);
     if (!maybeComputedAddress) {
@@ -2928,7 +2941,7 @@ LogicalResult buildPipeResourcePlan(
       assignLiveIntervalColors(units, dominanceInfo);
   ComputedAddressPlan computedAddressPlan;
   if (enableComputedAddresses) {
-    computedAddressPlan = buildComputedAddressPlan(units, pipeGraph);
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph);
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
