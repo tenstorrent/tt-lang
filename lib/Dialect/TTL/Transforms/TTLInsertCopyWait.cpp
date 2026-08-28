@@ -21,6 +21,7 @@
 #include "mlir/Analysis/DataFlow/DenseAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/SliceWalk.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -29,6 +30,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -488,6 +490,8 @@ getImplicitWaitAnchor(CopyOp copy, const CopyCompletionIndex &index,
 
   // Receive completion uses a monotonic threshold. A fallback after nested
   // role regions covers entered and bypassed nodes without preceding sends.
+  llvm::SetVector<Operation *> destinationDependentOperations;
+  getForwardSlice(copy.getDst(), &destinationDependentOperations);
   Operation *latestAnchor = copy.getOperation();
   for (Operation *completion : index.getCompletions(copy.getOperation())) {
     Operation *ancestor = completion;
@@ -501,7 +505,13 @@ getImplicitWaitAnchor(CopyOp copy, const CopyCompletionIndex &index,
     }
     for (Operation *crossed = copy->getNextNode(); crossed != ancestor;
          crossed = crossed->getNextNode()) {
-      if (isMemoryEffectFree(crossed)) {
+      bool dependsOnDestination = llvm::any_of(
+          destinationDependentOperations,
+          [crossed](Operation *destinationDependentOperation) {
+            return crossed == destinationDependentOperation ||
+                   crossed->isAncestor(destinationDependentOperation);
+          });
+      if (isMemoryEffectFree(crossed) && !dependsOnDestination) {
         continue;
       }
       InFlightDiagnostic diagnostic = copy.emitOpError(
