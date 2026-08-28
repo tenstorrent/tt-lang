@@ -451,7 +451,12 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
     contains one operand for each output whose initial mode is `init`, in output
     order.
 
-    The body uses one block argument per output and yields one value per output.
+    The body uses one state block argument per output and yields one updated
+    state value per output. An `init` state has the init operand's type; an
+    `overwrite` or `accumulate_existing` state has the output's type. Keeping
+    init state distinct from destination storage permits an explicit store in
+    the body to publish through a type-changing packing operation.
+
     This form makes
     cross-output data dependence an SSA property: if the yielded value for one
     output uses another output's updated value, normal SSA use-def edges encode
