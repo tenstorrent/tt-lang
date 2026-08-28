@@ -281,7 +281,7 @@ lowerStatefulTensorAccumulationScope(AccumulationScopeOp scope,
   for (auto [output, yieldedValue] :
        llvm::zip_equal(scope.getOutputs(), yield.getValues())) {
     StoreOp::create(rewriter, yield.getLoc(), yieldedValue, output,
-                    /*accumulate=*/nullptr);
+                    /*accumulate=*/nullptr, /*row_prefix=*/nullptr);
   }
   eraseAccumulationScopeWrapper(scope, rewriter,
                                 getScopeBlockArgumentReplacements(scope));

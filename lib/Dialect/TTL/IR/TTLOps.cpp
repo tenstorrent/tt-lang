@@ -2385,12 +2385,15 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
-static LogicalResult verifyRowPrefixStore(Operation *operation,
-                                          RankedTensorType sourceType,
-                                          RankedTensorType destinationType) {
-  auto sourceTile = dyn_cast<ttcore::TileType>(sourceType.getElementType());
+static mlir::LogicalResult
+verifyRowPrefixStore(mlir::Operation *operation,
+                     mlir::RankedTensorType sourceType,
+                     mlir::RankedTensorType destinationType) {
+  auto sourceTile = mlir::dyn_cast<mlir::tt::ttcore::TileType>(
+      sourceType.getElementType());
   auto destinationTile =
-      dyn_cast<ttcore::TileType>(destinationType.getElementType());
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(
+          destinationType.getElementType());
   if (!sourceTile || !destinationTile) {
     return operation->emitOpError(
         "row_prefix requires tiled source and destination tensors");
@@ -2404,8 +2407,8 @@ static LogicalResult verifyRowPrefixStore(Operation *operation,
     return operation->emitOpError()
            << "row_prefix source and destination data types must match";
   }
-  if (sourceTile.getDataType() != ttcore::DataType::BFloat16 &&
-      sourceTile.getDataType() != ttcore::DataType::Float32) {
+  if (sourceTile.getDataType() != mlir::tt::ttcore::DataType::BFloat16 &&
+      sourceTile.getDataType() != mlir::tt::ttcore::DataType::Float32) {
     return operation->emitOpError(
         "row_prefix supports only bf16 and f32 tile data types");
   }
@@ -2441,7 +2444,7 @@ static LogicalResult verifyRowPrefixStore(Operation *operation,
            << "row_prefix requires between 1 and 64 hardware rows, got "
            << hardwareRows;
   }
-  return success();
+  return mlir::success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
