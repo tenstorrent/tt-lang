@@ -79,6 +79,7 @@ class CopyTransaction:
         self,
         src: CopyEndpoint,
         dst: CopyEndpoint,
+        byte_count: Optional[int] = None,
         user_location: Optional[Tuple[str, int]] = None,
     ):
         """
@@ -87,6 +88,8 @@ class CopyTransaction:
         Args:
             src: Source data (tensor, Block, or Pipe)
             dst: Destination (tensor, Block, or Pipe)
+            byte_count: Positive byte count for DFB block-to-block and pipe
+                transfers.
             user_location: Pre-captured ``(filename, lineno)`` for the user
                 code initiating this copy.  Passed in by :func:`copy` so that
                 ``Block.mark_copy_as_{source,dest}`` can skip the per-call
@@ -98,6 +101,14 @@ class CopyTransaction:
         """
         self._src = src
         self._dst = dst
+        if isinstance(byte_count, bool) or (
+            byte_count is not None
+            and (not isinstance(byte_count, int) or byte_count <= 0)
+        ):
+            raise ValueError(
+                f"copy() byte_count must be a positive int, got {byte_count}"
+            )
+        self._byte_count = byte_count
         self._completed = False
         self._transfer_performed = False
         # Stable trace label, computed once at construction so the scheduler
@@ -123,18 +134,19 @@ class CopyTransaction:
                 pass
 
         # Validate immediately - let exceptions propagate to scheduler for context
-        handler.validate(src, dst)
+        handler.validate(src, dst, byte_count)
 
         if TRACE.enabled:
             trace(
                 "copy_start",
                 src=type(src).__name__,
                 dst=type(dst).__name__,
+                byte_count=byte_count,
                 **_copy_trace_fields(src, dst),
             )
 
         if self._starts_on_copy():
-            self._handler.transfer(self._src, self._dst)
+            self._handler.transfer(self._src, self._dst, self._byte_count)
             self._transfer_performed = True
 
     def _starts_on_copy(self) -> bool:
@@ -193,7 +205,7 @@ class CopyTransaction:
             # bookkeeping so pipe sequencing is exercised symmetrically. The
             # block state transitions below always fire so structural checks
             # (state machine, deadlock) remain fully exercised.
-            self._handler.transfer(self._src, self._dst)
+            self._handler.transfer(self._src, self._dst, self._byte_count)
             self._transfer_performed = True
         self._completed = True
 
@@ -214,6 +226,7 @@ class CopyTransaction:
                 "copy_end",
                 src=type(self._src).__name__,
                 dst=type(self._dst).__name__,
+                byte_count=self._byte_count,
                 **_copy_trace_fields(self._src, self._dst),
             )
 
@@ -229,7 +242,7 @@ class CopyTransaction:
         Returns:
             True if wait() can proceed without blocking
         """
-        return self._handler.can_wait(self._src, self._dst)
+        return self._handler.can_wait(self._src, self._dst, self._byte_count)
 
     @property
     def is_completed(self) -> bool:
@@ -280,6 +293,8 @@ class GroupTransfer:
 def copy(
     src: CopyEndpoint,
     dst: CopyEndpoint,
+    *,
+    byte_count: Optional[int] = None,
 ) -> CopyTransaction:
     """
     Create a copy transaction from source to destination.
@@ -296,6 +311,8 @@ def copy(
     Args:
         src: Source data (tensor, Block, or Pipe)
         dst: Destination (tensor, Block, or Pipe)
+        byte_count: Positive byte count for DFB block-to-block and pipe
+            transfers.
 
     Returns:
         CopyTransaction object that can be waited on
@@ -326,7 +343,9 @@ def copy(
     frame = sys._getframe(1)
     user_location: Tuple[str, int] = (frame.f_code.co_filename, frame.f_lineno)
 
-    handle = CopyTransaction(src, dst, user_location=user_location)
+    handle = CopyTransaction(
+        src, dst, byte_count=byte_count, user_location=user_location
+    )
 
     # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
     # The AST analysis in analyze_kernel_function identifies these call sites

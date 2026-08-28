@@ -62,6 +62,7 @@ class PipeMessage:
 
     grid_shape: Shape
     data: Optional[Tensor] = None
+    byte_count: Optional[int] = None
 
 
 class PipeEntry(TypedDict):

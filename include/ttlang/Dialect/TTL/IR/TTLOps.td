@@ -132,7 +132,7 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Asynchronous copy between tensor slice and circular buffer";
+  let summary = "Asynchronous tensor, dataflow-buffer, or pipe copy";
   let description = [{
     `ttl.copy` initiates an asynchronous transfer and returns a transfer handle
     (`!ttl.transfer_handle`) that can be synchronized with `ttl.wait`.
@@ -140,15 +140,28 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
 
-    Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
-    must be a ranked tensor (the result of a tensor slice) with TTL layout
-    encoding. The copy transfers the complete tensor in row-major tile order.
+    Tensor transfers require exactly one circular-buffer operand (`!ttl.cb`).
+    The other operand is a ranked tensor-slice result with TTL layout encoding.
+    The copy transfers the complete tensor in row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
     integer multiple of the block's innermost dimension. All outer dimensions
     remain equal to the block shape. The span must not exceed the dataflow
     buffer's block count.
+
+    An explicit positive `byte_count` permits a byte-preserving copy between
+    two acquired dataflow-buffer blocks with different tile geometry. The
+    source must be the exact block returned by `ttl.cb_wait`, and the
+    destination must be the exact block returned by `ttl.cb_reserve`. Both
+    dataflow buffers must use the same element data format, and the count must
+    fit both acquired blocks. Bytes beyond the count in the destination are
+    unchanged.
+
+    Pipe copies may also specify `byte_count` to transfer a valid prefix of one
+    source block. The sender and every receiver must specify the same count,
+    and the count must fit both endpoint blocks. Omitting `byte_count`
+    preserves the complete-block transfer contract.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
@@ -172,7 +185,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
   let arguments = (ins
     AnyType:$src,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$byte_count
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$src `,` $dst attr-dict `:` functional-type(operands, results)";
@@ -924,11 +938,13 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     Registers the receiver-owned destination DFB slot for a pipe transfer and
     returns the token that represents receiver-side completion. The selected
     address and synchronization protocols determine whether lowering publishes
-    the address or signals sender readiness.
+    the address or signals sender readiness. `byte_count`, when present, is the
+    valid byte prefix of each posted destination block.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$byte_count
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
@@ -941,11 +957,13 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     Waits until the selected synchronization condition is satisfied, then
     writes the source DFB payload to the receiver-owned destination storage and
     signals receiver completion. The returned write handle preserves the
-    existing `ttl.wait` ordering contract for send-side code.
+    existing `ttl.wait` ordering contract for send-side code. `byte_count`,
+    when present, is the valid byte prefix of each source block.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    TTL_CircularBuffer:$src
+    TTL_CircularBuffer:$src,
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$byte_count
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
