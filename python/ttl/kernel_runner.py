@@ -3031,10 +3031,13 @@ def build_cb_descriptors(
             raise ValueError(f"DFB[{dfb_index}] has conflicting hidden backing tensors")
         backing_tensors[dfb_index] = tensor
     for dfb_index in pipe_backing_tensors:
-        if cb_configs[dfb_index].storage_segments:
+        if any(
+            segment.is_tensor_backed
+            for segment in cb_configs[dfb_index].storage_segments
+        ):
             raise ValueError(
                 f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
-                "storage with finalized storage segments"
+                "backing with tensor-backed storage segments"
             )
     _validate_tensor_backing_aliases(tensors, cb_configs)
 

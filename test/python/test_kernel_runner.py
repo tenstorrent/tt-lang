@@ -4591,32 +4591,51 @@ def test_pipe_runtime_resources_allocate_compiler_computed_address_storage(
         allocate_backing,
     )
     config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_segments)
+    program_core_ranges = _FakeCoreRanges((((0, 0), (2, 0)),))
 
     resources = kernel_runner.build_pipe_runtime_resources(
         tensors=[_FakeTensor(object())],
-        core_ranges=_FakeCoreRanges(),
+        core_ranges=program_core_ranges,
         cb_configs=[config],
         pipe_computed_address_dfb_indices=[0],
     )
     descriptors = kernel_runner.build_cb_descriptors(
         tensors=[_FakeTensor(object())],
         cb_configs=[config],
-        core_ranges=_FakeCoreRanges(),
+        core_ranges=program_core_ranges,
         pipe_computed_address_backing_tensors=(resources.computed_address_dfb_tensors),
     )
 
     assert resources.computed_address_dfb_tensors == {0: backing_tensor}
     assert resources.computed_address_base_addresses == {0: 0x6000}
     assert descriptors[0].backing_desc["tensor"] is backing_tensor
+    allocated_cores = _descriptor_cores(
+        SimpleNamespace(core_ranges=allocated_core_ranges[0])
+    )
     if storage_segments:
-        assert allocated_core_ranges[0].num_cores() == 2
-        descriptor_ranges = descriptors[0].core_ranges.ranges
-        assert [(item.start.x, item.start.y) for item in descriptor_ranges] == [
-            (0, 0),
-            (2, 0),
-        ]
+        assert allocated_cores == {(0, 0), (2, 0)}
+        assert _descriptor_cores(descriptors[0]) == {(0, 0), (2, 0)}
     else:
-        assert isinstance(allocated_core_ranges[0], _FakeCoreRanges)
+        assert allocated_cores == {(0, 0), (1, 0), (2, 0)}
+
+
+def test_cb_descriptors_reject_pipe_backing_with_tensor_storage(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = _tensor_backing_config(0, nodes=((0, 0),))
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "cannot combine PipeNet computed-address backing with "
+            "tensor-backed storage segments"
+        ),
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_backing_tensors={0: _FakeTensor(object())},
+        )
 
 
 def test_pipe_runtime_resources_reject_mixed_computed_address_storage(
