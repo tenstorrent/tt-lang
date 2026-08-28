@@ -20,7 +20,7 @@ pytestmark = pytest.mark.multi_device
 TILE_SIZE = 32
 
 
-def _make_ping_pong_operation(mesh_shape):
+def _make_ping_pong_operation(mesh_shape, compiler_options):
     device_domain = ttl.DeviceDomain(mesh_shape)
     root_device = tuple(0 for _extent in mesh_shape)
     remote_device = tuple(extent - 1 for extent in mesh_shape)
@@ -35,7 +35,7 @@ def _make_ping_pong_operation(mesh_shape):
         )
     )
 
-    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    @ttl.operation(grid=(1, 1), device_domain=device_domain, options=compiler_options)
     def ping_pong(inp, out):
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         forward_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -87,12 +87,19 @@ def _make_ping_pong_operation(mesh_shape):
         pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
     ],
 )
-def test_ping_pong(torch_dtype, ttnn_dtype, rtol, atol):
+# Global-only mode omits local manager-ownership handoffs, so the forward and
+# return intervals require one shared physical manager lifetime.
+@pytest.mark.parametrize(
+    "compiler_options",
+    [None, "--ttl-pipe-global-semaphores-only"],
+    ids=["local-first", "global-only"],
+)
+def test_ping_pong(torch_dtype, ttnn_dtype, rtol, atol, compiler_options):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 2:
         pytest.skip("requires multiple devices")
-    ping_pong = _make_ping_pong_operation(mesh_shape)
+    ping_pong = _make_ping_pong_operation(mesh_shape, compiler_options)
 
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
