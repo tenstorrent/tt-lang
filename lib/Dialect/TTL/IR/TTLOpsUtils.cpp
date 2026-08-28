@@ -995,6 +995,7 @@ llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop) {
   loop->walk([&](ttk::PackBlockContiguousOp packOp) {
     cbs.insert(packOp.getOutCb());
   });
+  loop->walk([&](ttk::PackRowsOp packOp) { cbs.insert(packOp.getOutCb()); });
   return cbs;
 }
 

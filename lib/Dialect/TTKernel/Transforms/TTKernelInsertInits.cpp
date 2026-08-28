@@ -437,6 +437,8 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
                      dyn_cast<ttk::PackBlockContiguousOp>(inner)) {
         collectOutputCB(packBlock.getOutCb(), packBlock);
         result.hasContiguousPack = true;
+      } else if (auto packRows = dyn_cast<ttk::PackRowsOp>(inner)) {
+        collectOutputCB(packRows.getOutCb(), packRows);
       }
     });
   }
@@ -524,6 +526,8 @@ static bool canShareCopyKernelInit(func::FuncOp funcOp,
       packCB = pack.getOutCb();
     } else if (auto pack =
                    dyn_cast<ttk::PackBlockContiguousOp>(operation)) {
+      packCB = pack.getOutCb();
+    } else if (auto pack = dyn_cast<ttk::PackRowsOp>(operation)) {
       packCB = pack.getOutCb();
     }
     if (packCB && packCB != outputCB) {

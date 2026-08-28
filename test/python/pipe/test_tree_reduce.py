@@ -80,8 +80,6 @@ def _make_tree_reduce(data_format, bytes_per_element):
 
         @ttl.datamovement()
         def exchange():
-            node_x, node_y = ttl.node(dims=2)
-
             def receive(pipe):
                 with receive_dfb.reserve() as receive_block:
                     ttl.copy(
@@ -102,24 +100,24 @@ def _make_tree_reduce(data_format, bytes_per_element):
 
             tree_net.if_src(send)
 
-            if node_x == root_x and node_y == root_y:
-                with accumulator_dfb.wait() as accumulator_block:
-                    with output_dfb.reserve() as output_block:
-                        ttl.copy(
-                            accumulator_block,
-                            output_block,
-                            byte_count=payload_size_bytes,
-                        ).wait()
-
         @ttl.compute()
         def compute():
-            with accumulator_dfb.reserve() as accumulator_block:
-                with staged_input_dfb.wait() as staged_input_block:
-                    accumulator_block.store(staged_input_block)
-                if tree_net.is_dst():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == root_x and node_y == root_y:
+                with output_dfb.reserve() as output_block:
+                    with staged_input_dfb.wait() as staged_input_block:
+                        output_block.store_rows(staged_input_block)
                     for receive_index in range(tree_net.destination_count()):
                         with receive_dfb.wait() as receive_block:
-                            accumulator_block += receive_block
+                            output_block.accumulate_rows(receive_block)
+            else:
+                with accumulator_dfb.reserve() as accumulator_block:
+                    with staged_input_dfb.wait() as staged_input_block:
+                        accumulator_block.store(staged_input_block)
+                    if tree_net.is_dst():
+                        for receive_index in range(tree_net.destination_count()):
+                            with receive_dfb.wait() as receive_block:
+                                accumulator_block += receive_block
 
     return tree_reduce
 

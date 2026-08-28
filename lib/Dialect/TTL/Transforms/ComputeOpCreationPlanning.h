@@ -641,11 +641,17 @@ struct PassthroughStorePlan {
   /// DFB associated with `outputView`.
   Value outputDFB;
 
-  /// Tensor type shared by the passthrough input and result.
-  RankedTensorType tensorType;
+  /// Tensor type read by the passthrough compute.
+  RankedTensorType inputTensorType;
 
-  /// Exact tile type shared by the passthrough input and result.
-  ttcore::TileType tileType;
+  /// Tensor type associated with the output dataflow buffer.
+  RankedTensorType outputTensorType;
+
+  /// Tile read into DST by the passthrough compute.
+  ttcore::TileType inputTileType;
+
+  /// Tile type used by the output dataflow buffer.
+  ttcore::TileType outputTileType;
 
   /// Identity iteration used by the passthrough compute.
   ComputeIterationPlan iteration;
