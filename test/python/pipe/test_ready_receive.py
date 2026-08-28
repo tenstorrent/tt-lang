@@ -16,7 +16,7 @@ pytestmark = pytest.mark.requires_device
 
 
 @ttl.operation(grid=(1, 1))
-def ready_receive_rotating_tie(inp, landing0, landing1, landing2, landing3, out):
+def ready_receive_ascending_tie(inp, landing0, landing1, landing2, landing3, out):
     pipe0 = ttl.Pipe(src=(0, 0), dst=(0, 0))
     pipe1 = ttl.Pipe(src=(0, 0), dst=(0, 0))
     pipe2 = ttl.Pipe(src=(0, 0), dst=(0, 0))
@@ -56,43 +56,46 @@ def ready_receive_rotating_tie(inp, landing0, landing1, landing2, landing3, out)
         request2 = ttl.copy(pipe2, block2)
         request3 = ttl.copy(pipe3, block3)
 
-        input0 = input_dfb.wait()
-        ttl.copy(input0, pipe0).wait()
-        input0.pop()
-        input1 = input_dfb.wait()
-        ttl.copy(input1, pipe1).wait()
-        input1.pop()
-        input2 = input_dfb.wait()
-        ttl.copy(input2, pipe2).wait()
-        input2.pop()
-        input3 = input_dfb.wait()
-        ttl.copy(input3, pipe3).wait()
-        input3.pop()
+        input_for_pipe1 = input_dfb.wait()
+        ttl.copy(input_for_pipe1, pipe1).wait()
+        input_for_pipe1.pop()
+        input_for_pipe3 = input_dfb.wait()
+        ttl.copy(input_for_pipe3, pipe3).wait()
+        input_for_pipe3.pop()
 
-        ready = ttl.wait_any((request0, request1, request2, request3), start=3)
+        ready = ttl.wait_any((request0, request1, request2, request3), start=0)
         selected = ready.index()
+
+        input_for_pipe0 = input_dfb.wait()
+        ttl.copy(input_for_pipe0, pipe0).wait()
+        input_for_pipe0.pop()
+        input_for_pipe2 = input_dfb.wait()
+        ttl.copy(input_for_pipe2, pipe2).wait()
+        input_for_pipe2.pop()
+
+        request0.wait()
+        block0.push()
+        request1.wait()
+        block1.push()
+        request2.wait()
+        block2.push()
+        request3.wait()
+        block3.push()
+
         if selected == 0:
-            request0.wait()
-            block0.push()
             result0 = landing_dfb0.wait()
             ttl.copy(result0, out[0, 0]).wait()
             result0.pop()
         elif selected == 1:
-            request1.wait()
-            block1.push()
             result1 = landing_dfb1.wait()
             ttl.copy(result1, out[0, 0]).wait()
             result1.pop()
         elif selected == 2:
-            request2.wait()
-            block2.push()
             result2 = landing_dfb2.wait()
             ttl.copy(result2, out[0, 0]).wait()
             result2.pop()
         else:
             if selected == 3:
-                request3.wait()
-                block3.push()
                 result3 = landing_dfb3.wait()
                 ttl.copy(result3, out[0, 0]).wait()
                 result3.pop()
@@ -120,23 +123,32 @@ def _to_height_sharded(torch_tensor, device):
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
-def test_ready_receive_rotating_tie(device, torch_dtype):
-    """Selection begins at index three when every receive has completed."""
+def test_ready_receive_ascending_tie(device, torch_dtype):
+    """Selection scans upward when candidates one and three are complete."""
     torch.manual_seed(0)
     input_torch = torch.rand((32, 128), dtype=torch_dtype)
-    expected = input_torch[:, 96:128]
+    expected = input_torch[:, :32]
     inp = _to_height_sharded(input_torch, device)
     landing_tensors = [
         _to_height_sharded(torch.zeros_like(expected), device) for _ in range(4)
     ]
     out = to_dram(torch.zeros_like(expected), device)
 
-    ready_receive_rotating_tie(inp, *landing_tensors, out)
+    ready_receive_ascending_tie(inp, *landing_tensors, out)
 
     actual_landing = torch.cat(
         [ttnn.to_torch(landing) for landing in landing_tensors], dim=1
     )
     actual = ttnn.to_torch(out)
     threshold = 0.999 if torch_dtype == torch.bfloat16 else 0.99999
-    assert_pcc(input_torch.float(), actual_landing.float(), threshold=threshold)
+    expected_landing = torch.cat(
+        [
+            input_torch[:, 64:96],
+            input_torch[:, :32],
+            input_torch[:, 96:128],
+            input_torch[:, 32:64],
+        ],
+        dim=1,
+    )
+    assert_pcc(expected_landing.float(), actual_landing.float(), threshold=threshold)
     assert_pcc(expected.float(), actual.float(), threshold=threshold)
