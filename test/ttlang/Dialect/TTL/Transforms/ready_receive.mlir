@@ -55,6 +55,7 @@
 // LOCAL-LABEL: func.func @ready_receive
 // LOCAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1, 2, 3, 4>
 // LOCAL: %[[COUNT:.*]] = arith.constant 4 : i32
+// LOCAL-COUNT-4: ttkernel.noc_async_write_multicast_loopback_src
 // LOCAL: %[[START_I32:.*]] = arith.index_cast %{{.*}} : index to i32
 // LOCAL: %[[REMAINDER:.*]] = arith.remsi %[[START_I32]], %[[COUNT]] : i32
 // LOCAL: %[[NONNEGATIVE:.*]] = arith.addi %[[REMAINDER]], %[[COUNT]] : i32
@@ -87,8 +88,8 @@
 
 // PUBLISHED-LABEL: func.func @ready_receive
 // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
-// PUBLISHED-COUNT-4: ttkernel.store_to_l1
-// PUBLISHED-COUNT-4: ttkernel.load_from_l1
+// PUBLISHED-COUNT-4: ttkernel.noc_inline_dw_write
+// PUBLISHED-COUNT-4: ttkernel.noc_async_write_multicast_loopback_src
 // PUBLISHED: scf.while
 // PUBLISHED-COUNT-4: ttkernel.experimental.semaphore_reached
 
@@ -180,6 +181,97 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     ttl.cb_push %landing3
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return %selected : index
+  }
+}
+
+// -----
+
+// Capacity-eligible point-to-point candidates verify that wait-any preserves
+// sender capacity acquisition and receiver capacity release.
+// LOCAL-LABEL: func.func @ready_receive_capacity
+// LOCAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1, 2>
+// LOCAL-DAG: %[[CAPACITY0:.*]] = arith.constant 2 : index
+// LOCAL-DAG: %[[CAPACITY1:.*]] = arith.constant 3 : index
+// LOCAL: %[[CAPACITY0_INIT_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY0]])
+// LOCAL-NEXT: %[[CAPACITY0_INIT:.*]] = ttkernel.reinterpret_cast(%[[CAPACITY0_INIT_SEM]])
+// LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[CAPACITY0_INIT]]
+// LOCAL: %[[CAPACITY1_INIT_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY1]])
+// LOCAL-NEXT: %[[CAPACITY1_INIT:.*]] = ttkernel.reinterpret_cast(%[[CAPACITY1_INIT_SEM]])
+// LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[CAPACITY1_INIT]]
+// LOCAL: %[[CAPACITY0_ACQUIRE_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY0]])
+// LOCAL-NEXT: %[[CAPACITY0_ACQUIRE:.*]] = ttkernel.reinterpret_cast(%[[CAPACITY0_ACQUIRE_SEM]])
+// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[CAPACITY0_ACQUIRE]]
+// LOCAL: ttkernel.noc_async_write
+// LOCAL: %[[CAPACITY1_ACQUIRE_SEM:.*]] = ttkernel.get_semaphore(%[[CAPACITY1]])
+// LOCAL-NEXT: %[[CAPACITY1_ACQUIRE:.*]] = ttkernel.reinterpret_cast(%[[CAPACITY1_ACQUIRE_SEM]])
+// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[CAPACITY1_ACQUIRE]]
+// LOCAL: ttkernel.noc_async_write
+// LOCAL: scf.while
+// LOCAL: ttkernel.cb_pop_front
+// LOCAL: ttkernel.noc_semaphore_inc
+// LOCAL: ttkernel.cb_pop_front
+// LOCAL: ttkernel.noc_semaphore_inc
+// LOCAL-NOT: ttkernel.noc_inline_dw_write
+// LOCAL: return
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @ready_receive_capacity(%start: index) -> index
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+    %dst0 = ttl.cb_reserve %landing0
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %dst1 = ttl.cb_reserve %landing1
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %request0 = ttl.copy %pipe0, %dst0
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    %request1 = ttl.copy %pipe1, %dst1
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    %send0 = ttl.copy %source, %pipe0
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send0 : !ttl.transfer_handle<write>
+    %send1 = ttl.copy %source, %pipe1
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send1 : !ttl.transfer_handle<write>
+    %ready = ttl.wait_any %request0, %request1 start %start
+        : (!ttl.receive_request, !ttl.receive_request, index)
+        -> !ttl.ready_receive
+    %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+    ttl.wait %request0 : !ttl.receive_request
+    ttl.wait %request1 : !ttl.receive_request
+    ttl.cb_push %landing0
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.cb_push %landing1
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %block0 = ttl.cb_wait %landing0
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %landing0
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %block1 = ttl.cb_wait %landing1
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %landing1
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     func.return %selected : index
   }
 }

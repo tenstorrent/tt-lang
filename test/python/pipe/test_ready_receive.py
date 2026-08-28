@@ -63,7 +63,7 @@ def ready_receive_ascending_tie(inp, landing0, landing1, landing2, landing3, out
         ttl.copy(input_for_pipe3, pipe3).wait()
         input_for_pipe3.pop()
 
-        ready = ttl.wait_any((request0, request1, request2, request3), start=0)
+        ready = ttl.wait_any((request0, request1, request2, request3), start=2)
         selected = ready.index()
 
         input_for_pipe0 = input_dfb.wait()
@@ -124,10 +124,10 @@ def _to_height_sharded(torch_tensor, device):
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
 def test_ready_receive_ascending_tie(device, torch_dtype):
-    """Selection scans upward when candidates one and three are complete."""
+    """Selection scans upward from index two when one and three are complete."""
     torch.manual_seed(0)
     input_torch = torch.rand((32, 128), dtype=torch_dtype)
-    expected = input_torch[:, :32]
+    expected = input_torch[:, 32:64]
     inp = _to_height_sharded(input_torch, device)
     landing_tensors = [
         _to_height_sharded(torch.zeros_like(expected), device) for _ in range(4)
