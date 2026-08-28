@@ -62,7 +62,7 @@ From a TT-Lang source checkout, select the `emule` backend to compile the
 program and execute the resulting kernels through tt-metal and tt-emule:
 
 ```bash
-./bin/tt-lang-sim test/python/dram_interleaved_add.py --backend emule
+./bin/tt-lang-sim examples/eltwise_add.py --backend emule
 ```
 
 This is not the Python simulator with a different tensor implementation. The
@@ -84,9 +84,9 @@ Virtualization.framework VM. If Rosetta cannot be installed, an x86-64 QEMU VM
 also works but is substantially slower and requires `brew install qemu`.
 
 The first invocation builds a pinned tt-emule/tt-metal image and then builds
-TT-Lang. Both the TT-Lang build directory and tt-metal JIT cache live in named
-Docker volumes, so subsequent source edits rebuild incrementally. Set
-`TTLANG_EMULE_REBUILD=1` to rebuild the runtime image, or
+TT-Lang. The TT-Lang build directory and the tt-metal and tt-emule JIT caches
+live in named Docker volumes, so subsequent source edits rebuild incrementally.
+Set `TTLANG_EMULE_REBUILD=1` to rebuild the runtime image, or
 `TTLANG_EMULE_JOBS=N` to limit build parallelism.
 
 The initial supported target is a single emulated Wormhole N150 device. Options
