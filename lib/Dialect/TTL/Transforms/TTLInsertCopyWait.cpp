@@ -481,13 +481,26 @@ struct CopyWaitPlan {
   Location location;
 };
 
-static bool allCopiesHaveImmediateWait(func::FuncOp func) {
+static FailureOr<SmallVector<CopyWaitPlan>>
+tryPlanImmediateCopyWaits(func::FuncOp func) {
+  SmallVector<CopyWaitPlan> plans;
   WalkResult result = func.walk([&](CopyOp copy) {
     auto wait = dyn_cast_or_null<WaitOp>(copy->getNextNode());
-    return wait && wait.getXf() == copy.getXf() ? WalkResult::advance()
-                                                : WalkResult::interrupt();
+    if (wait && wait.getXf() == copy.getXf()) {
+      return WalkResult::advance();
+    }
+    if (!isa<ReceiveRequestType>(copy.getXf().getType()) &&
+        copy.getXf().use_empty()) {
+      plans.push_back(
+          {copy.getXf(), copy.getOperation(), nullptr, copy.getLoc()});
+      return WalkResult::advance();
+    }
+    return WalkResult::interrupt();
   });
-  return !result.wasInterrupted();
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+  return plans;
 }
 
 static FailureOr<Operation *>
@@ -548,11 +561,45 @@ static bool hasEquivalentPlan(ArrayRef<CopyWaitPlan> plans,
   });
 }
 
+static void applyCopyWaitPlans(func::FuncOp func,
+                               ArrayRef<CopyWaitPlan> plans) {
+  OpBuilder builder(func.getContext());
+  DenseMap<Operation *, Operation *> lastInsertionAfter;
+  DenseMap<Operation *, Operation *> lastInsertionBefore;
+  for (const CopyWaitPlan &plan : plans) {
+    if (plan.insertAfter) {
+      Operation *anchor = plan.insertAfter;
+      auto previous = lastInsertionAfter.find(anchor);
+      if (previous != lastInsertionAfter.end()) {
+        builder.setInsertionPointAfter(previous->second);
+      } else {
+        builder.setInsertionPointAfter(anchor);
+      }
+      WaitOp wait = WaitOp::create(builder, plan.location, plan.handle);
+      lastInsertionAfter[anchor] = wait.getOperation();
+      continue;
+    }
+
+    assert(plan.insertBefore && "copy wait plan requires an anchor");
+    auto previous = lastInsertionBefore.find(plan.insertBefore);
+    if (previous != lastInsertionBefore.end()) {
+      builder.setInsertionPointAfter(previous->second);
+    } else {
+      builder.setInsertionPoint(plan.insertBefore);
+    }
+    WaitOp wait = WaitOp::create(builder, plan.location, plan.handle);
+    lastInsertionBefore[plan.insertBefore] = wait.getOperation();
+  }
+}
+
 struct TTLInsertCopyWaitPass
     : public impl::TTLInsertCopyWaitBase<TTLInsertCopyWaitPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    if (allCopiesHaveImmediateWait(func)) {
+    FailureOr<SmallVector<CopyWaitPlan>> immediatePlans =
+        tryPlanImmediateCopyWaits(func);
+    if (succeeded(immediatePlans)) {
+      applyCopyWaitPlans(func, *immediatePlans);
       return;
     }
 
@@ -630,33 +677,7 @@ struct TTLInsertCopyWaitPass
       }
     }
 
-    OpBuilder builder(func.getContext());
-    DenseMap<Operation *, Operation *> lastInsertionAfter;
-    DenseMap<Operation *, Operation *> lastInsertionBefore;
-    for (const CopyWaitPlan &plan : plans) {
-      if (plan.insertAfter) {
-        Operation *anchor = plan.insertAfter;
-        auto previous = lastInsertionAfter.find(anchor);
-        if (previous != lastInsertionAfter.end()) {
-          builder.setInsertionPointAfter(previous->second);
-        } else {
-          builder.setInsertionPointAfter(anchor);
-        }
-        WaitOp wait = WaitOp::create(builder, plan.location, plan.handle);
-        lastInsertionAfter[anchor] = wait.getOperation();
-        continue;
-      }
-
-      assert(plan.insertBefore && "copy wait plan requires an anchor");
-      auto previous = lastInsertionBefore.find(plan.insertBefore);
-      if (previous != lastInsertionBefore.end()) {
-        builder.setInsertionPointAfter(previous->second);
-      } else {
-        builder.setInsertionPoint(plan.insertBefore);
-      }
-      WaitOp wait = WaitOp::create(builder, plan.location, plan.handle);
-      lastInsertionBefore[plan.insertBefore] = wait.getOperation();
-    }
+    applyCopyWaitPlans(func, plans);
   }
 };
 
