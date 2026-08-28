@@ -92,13 +92,14 @@ class InjectionPoint:
     executes, so ``tx.wait()`` runs before the next statement after the copy.
 
     When ``trigger_on_return`` is ``True``, the callback fires on the
-    function's ``return`` event instead. This covers a final copy and cleanup
-    deferred until after a multi-request receive selection.
+    function's ``return`` event instead. ``wait_any_cleanup`` restricts a line
+    trigger to requests retained by a prior multi-request selection.
     """
 
     var_name: str
     trigger_lineno: Optional[int]  # None when trigger_on_return is True
     trigger_on_return: bool = False
+    wait_any_cleanup: bool = False
 
 
 @dataclass
@@ -118,11 +119,15 @@ class KernelAnalysis:
     ``violations`` is the set of unsupported patterns found during static
     analysis.  A non-empty set causes the simulator to print diagnostics and
     abort before running the kernel.
+
+    ``cleanup_wait_any_on_return`` completes retained nonselected requests at
+    every normal function return.
     """
 
     injection_points: tuple[InjectionPoint, ...]
     bare_copy_linenos: frozenset[int]
     violations: tuple["PatternViolation", ...] = ()
+    cleanup_wait_any_on_return: bool = False
 
 
 @dataclass
@@ -220,16 +225,15 @@ def _line_belongs_to_assignment(
 def _find_copy_records(
     stmts: list[ast.stmt],
     file_start_line: int,
-) -> tuple[list[tuple[str, int | None]], list[int]]:
+) -> tuple[list[tuple[str, int | None, bool]], list[int]]:
     """Find ttl.copy() calls that need automatic wait() insertion.
 
     Scans ``stmts`` (flat list from ``_all_stmts_flat``) for two patterns:
 
     * **Case B** — ``tx = ttl.copy(...)`` with no subsequent ``tx.wait()``:
-      returned as ``(var_name, trigger_lineno)`` pairs in
-      ``assigned_no_wait``. A `None` trigger defers cleanup until function
-      return. Multi-request selection defers cleanup until return or until the
-      request variable is reassigned.
+      returned as records containing the variable, trigger line, and whether
+      the trigger applies only to retained wait-any requests. A `None` trigger
+      defers ordinary cleanup until function return.
     * **Case A** — bare ``ttl.copy(...)`` expression with no assignment:
       returned as absolute line numbers in ``bare_linenos``.
 
@@ -281,7 +285,12 @@ def _find_copy_records(
         _update_request_tuple_bindings(stmt, request_tuple_bindings)
 
     statement_linenos = [file_start_line + stmt.lineno - 1 for stmt in stmts]
-    assigned_no_wait: list[tuple[str, int | None]] = []
+    assigned_no_wait: list[tuple[str, int | None, bool]] = []
+    assignment_linenos_by_name: dict[str, set[int]] = {}
+    for assignment_name, assignment_lineno in assigned:
+        assignment_linenos_by_name.setdefault(assignment_name, set()).add(
+            assignment_lineno
+        )
     for var_name, copy_lineno in assigned:
         next_assignment_lineno = next(
             (
@@ -306,7 +315,8 @@ def _find_copy_records(
             )
         ]
         if selection_linenos:
-            trigger_lineno = next_assignment_lineno
+            for trigger_lineno in sorted(assignment_linenos_by_name[var_name]):
+                assigned_no_wait.append((var_name, trigger_lineno, True))
         else:
             trigger_lineno = next(
                 (
@@ -316,7 +326,7 @@ def _find_copy_records(
                 ),
                 None,
             )
-        assigned_no_wait.append((var_name, trigger_lineno))
+            assigned_no_wait.append((var_name, trigger_lineno, False))
     return assigned_no_wait, bare_linenos
 
 
@@ -493,17 +503,26 @@ def _analyze_func_def_node(
 
     assigned_no_wait, bare_linenos = _find_copy_records(stmts, file_start_line)
     injection_points: list[InjectionPoint] = []
-    for var_name, trigger_lineno in assigned_no_wait:
+    recorded_injections: set[tuple[str, int | None, bool]] = set()
+    for var_name, trigger_lineno, wait_any_cleanup in assigned_no_wait:
+        identity = (var_name, trigger_lineno, wait_any_cleanup)
+        if identity in recorded_injections:
+            continue
+        recorded_injections.add(identity)
         injection_points.append(
             InjectionPoint(
                 var_name=var_name,
                 trigger_lineno=trigger_lineno,
                 trigger_on_return=trigger_lineno is None,
+                wait_any_cleanup=wait_any_cleanup,
             )
         )
     return KernelAnalysis(
         injection_points=tuple(injection_points),
         bare_copy_linenos=frozenset(bare_linenos),
+        cleanup_wait_any_on_return=any(
+            injection.wait_any_cleanup for injection in injection_points
+        ),
     )
 
 
@@ -546,6 +565,7 @@ def _make_analysis_with_violations(
         violations=tuple(
             _violations_for_func_def(func_def, file_start_line, source_file, func_name)
         ),
+        cleanup_wait_any_on_return=base.cleanup_wait_any_on_return,
     )
 
 
@@ -683,9 +703,27 @@ def _fire_injection(frame: types.FrameType, ip: InjectionPoint) -> None:
     from .copy import CopyTransaction
 
     handle = frame.f_locals.get(ip.var_name)
-    if not isinstance(handle, CopyTransaction) or handle.is_completed:
+    if not isinstance(handle, CopyTransaction):
+        return
+    if ip.wait_any_cleanup:
+        from .context import get_context
+
+        pending = get_context().pending_wait_any_requests.get(id(frame), [])
+        if not any(request is handle for request in pending):
+            return
+        pending[:] = [request for request in pending if request is not handle]
+    if handle.is_completed:
         return
     handle.wait()
+
+
+def _complete_pending_wait_any_requests(frame: types.FrameType) -> None:
+    from .context import get_context
+
+    pending = get_context().pending_wait_any_requests.pop(id(frame), [])
+    for request in pending:
+        if not request.is_completed:
+            request.wait()
 
 
 def _report_injection_error(exc: Exception) -> None:
@@ -762,11 +800,14 @@ def _return_callback(
     if entry is None:
         return None
     _, return_ips = entry
-    if return_ips:
+    cleanup_wait_any = id(code) in get_context().wait_any_cleanup_codes
+    if return_ips or cleanup_wait_any:
         frame = sys._getframe(1)
         try:
             for ip in return_ips:
                 _fire_injection(frame, ip)
+            if cleanup_wait_any:
+                _complete_pending_wait_any_requests(frame)
         except Exception as exc:
             _report_injection_error(exc)
     return None
@@ -796,9 +837,9 @@ def install_copy_wait_hooks(
     """
     # Build a map of code -> injection_points, skipping empty analyses.
     active_map = {
-        code: analysis.injection_points
+        code: analysis
         for code, analysis in injection_map.items()
-        if analysis.injection_points
+        if analysis.injection_points or analysis.cleanup_wait_any_on_return
     }
     monitoring = _monitoring_api() if active_map else None
 
@@ -827,19 +868,21 @@ def install_copy_wait_hooks(
     # id(code) is used as the dict key so that lookup in the callbacks is
     # identity-based; two distinct code objects with identical bytecode cannot
     # collide the way they would with code-object equality as the key.
-    for code, ips in active_map.items():
+    for code, analysis in active_map.items():
         by_lineno: dict[int, list[InjectionPoint]] = {}
         return_ips: list[InjectionPoint] = []
-        for ip in ips:
+        for ip in analysis.injection_points:
             if ip.trigger_on_return:
                 return_ips.append(ip)
             else:
                 by_lineno.setdefault(ip.trigger_lineno, []).append(ip)  # type: ignore[arg-type]
         ctx.active_hooks[id(code)] = (by_lineno, return_ips)
+        if analysis.cleanup_wait_any_on_return:
+            ctx.wait_any_cleanup_codes.add(id(code))
 
         ev = monitoring.events.NO_EVENTS
         if by_lineno:
             ev |= monitoring.events.LINE
-        if return_ips:
+        if return_ips or analysis.cleanup_wait_any_on_return:
             ev |= monitoring.events.PY_RETURN
         monitoring.set_local_events(tool_id, code, ev)

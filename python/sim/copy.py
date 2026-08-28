@@ -290,6 +290,14 @@ def wait_any(requests: tuple[ReceiveRequest, ...], start: int = 0) -> ReadyRecei
     if selected_index is None:
         raise RuntimeError("scheduler resumed ttl.wait_any() without a ready request")
     requests[selected_index].wait()
+    caller_frame = sys._getframe(1)
+    context = get_context()
+    if id(caller_frame.f_code) in context.wait_any_cleanup_codes:
+        pending = context.pending_wait_any_requests.setdefault(id(caller_frame), [])
+        for request in requests:
+            if request.is_completed or any(existing is request for existing in pending):
+                continue
+            pending.append(request)
     return ReadyReceive(selected_index)
 
 
