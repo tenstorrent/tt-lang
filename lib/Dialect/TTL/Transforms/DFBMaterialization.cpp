@@ -74,7 +74,7 @@ StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder) {
 
   auto reserve = CBReserveOp::create(builder, loc, tensorType, dfb);
   return StoreOp::create(builder, loc, tensor, reserve.getResult(),
-                         /*accumulate=*/nullptr);
+                         /*accumulate=*/nullptr, /*row_prefix=*/nullptr);
 }
 
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
