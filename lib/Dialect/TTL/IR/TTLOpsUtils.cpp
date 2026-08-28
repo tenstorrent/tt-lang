@@ -179,6 +179,42 @@ FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
   return bitWidth / 8;
 }
 
+FailureOr<uint64_t> getDFBBlockSizeBytes(CircularBufferType type) {
+  FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(type);
+  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(type);
+  if (failed(pagesPerBlock) || failed(pageSizeBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> blockSizeBytes =
+      llvm::checkedMulUnsigned(*pagesPerBlock, *pageSizeBytes);
+  if (!blockSizeBytes) {
+    return failure();
+  }
+  return *blockSizeBytes;
+}
+
+FailureOr<uint64_t> getDFBViewSizeBytes(Value view) {
+  auto viewType = dyn_cast<RankedTensorType>(view.getType());
+  Value dfb = getAttachedCB(view);
+  if (!viewType || !viewType.hasStaticShape() || !dfb) {
+    return failure();
+  }
+  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+  if (!dfbType || viewType.getNumElements() < 0) {
+    return failure();
+  }
+  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+  if (failed(pageSizeBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> viewSizeBytes = llvm::checkedMulUnsigned(
+      static_cast<uint64_t>(viewType.getNumElements()), *pageSizeBytes);
+  if (!viewSizeBytes) {
+    return failure();
+  }
+  return *viewSizeBytes;
+}
+
 LogicalResult verifyDFBOperandIdentities(
     ModuleOp moduleOp, StringRef consumerPass,
     llvm::function_ref<bool(Operation *)> operationFilter,

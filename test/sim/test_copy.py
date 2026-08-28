@@ -52,25 +52,6 @@ class TestCopyTransaction:
         ):
             CopyTransaction(tensor1, tensor2)
 
-        # Block → Block not supported
-        block1 = Block(
-            make_rand_tensor(64, 32),
-            shape=(2, 1),
-            acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelKind.DATA_MOVEMENT,
-        )
-        block2 = Block(
-            make_rand_tensor(64, 32),
-            shape=(2, 1),
-            acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelKind.DATA_MOVEMENT,
-        )
-        with pytest.raises(
-            ValueError, match="No copy handler registered for \\(Block, Block\\)"
-        ):
-            CopyTransaction(block1, block2)
-
-
 class TestTensorToBlockCopy:
     """Test copy operations from tensor to Block."""
 
@@ -380,6 +361,72 @@ class TestCopyWithStateMachine:
             block_data = block.to_list()
             for i in range(4):
                 assert tensors_equal(block_data[i], source[i : i + 1, 0:1])
+
+    def test_byte_counted_block_copy_preserves_destination_tail(self) -> None:
+        """Copy only the declared byte prefix between acquired DFB blocks."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(64, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                destination_block.raw_tensor.to_torch().fill_(-7.0)
+                bytes_per_tile = source_block.raw_tensor.size_in_bytes(32 * 32)
+                copy(
+                    source_block,
+                    destination_block,
+                    byte_count=bytes_per_tile,
+                ).wait()
+
+                result = destination_block.raw_tensor.to_torch().reshape(-1)
+                expected = source.to_torch().reshape(-1)
+                assert torch.equal(result[: 32 * 32], expected[: 32 * 32])
+                assert torch.all(result[32 * 32 :] == -7.0)
+
+    def test_byte_counted_pipe_copy_preserves_destination_tail(self) -> None:
+        """Use the same byte count on pipe send and receive."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(64, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+        pipe = Pipe(212, 213)
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                destination_block.raw_tensor.to_torch().fill_(-11.0)
+                bytes_per_tile = source_block.raw_tensor.size_in_bytes(32 * 32)
+                copy(source_block, pipe, byte_count=bytes_per_tile).wait()
+                copy(pipe, destination_block, byte_count=bytes_per_tile).wait()
+
+                result = destination_block.raw_tensor.to_torch().reshape(-1)
+                expected = source.to_torch().reshape(-1)
+                assert torch.equal(result[: 32 * 32], expected[: 32 * 32])
+                assert torch.all(result[32 * 32 :] == -11.0)
 
     def test_copy_with_pipe_single_tile(self) -> None:
         """Test Block -> Pipe -> Block copy with single tile."""

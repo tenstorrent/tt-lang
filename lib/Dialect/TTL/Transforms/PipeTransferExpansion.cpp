@@ -443,7 +443,7 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), *expansion.pipeNetId),
-        transfer, copyOp.getDst());
+        transfer, copyOp.getDst(), copyOp.getByteCountAttr());
     auto handleCast = UnrealizedConversionCastOp::create(
         builder, copyOp.getLoc(), copyOp.getResult().getType(),
         ValueRange{postOp.getToken()});
@@ -459,7 +459,8 @@ applyPipeTransferExpansionPlan(ModuleOp module,
         expansion.deviceTransfer, transferByDirectCreatePipe);
     auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
                                              copyOp.getResult().getType(),
-                                             transfer, copyOp.getSrc());
+                                             transfer, copyOp.getSrc(),
+                                             copyOp.getByteCountAttr());
     copyOp.getResult().replaceAllUsesWith(sendOp.getXf());
     copyOp->erase();
   }

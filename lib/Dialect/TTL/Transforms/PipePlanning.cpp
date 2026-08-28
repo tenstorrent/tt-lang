@@ -133,6 +133,17 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
     return failure();
   }
 
+  if (IntegerAttr byteCountAttr = sendOp.getByteCountAttr()) {
+    int64_t byteCount = byteCountAttr.getInt();
+    std::optional<int64_t> maybeSizeBytes =
+        llvm::checkedMul(byteCount, blockSpan);
+    if (!maybeSizeBytes) {
+      sendOp.emitError("byte-counted pipe transfer payload exceeds int64_t");
+      return failure();
+    }
+    return PipeTransferPayload{blockSpan, byteCount, *maybeSizeBytes};
+  }
+
   std::optional<int64_t> maybeElementCount =
       llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
   if (!maybeElementCount) {

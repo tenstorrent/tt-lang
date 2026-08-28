@@ -803,6 +803,69 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyByteCountFitsDFBBlock(
+    mlir::Operation *operation, mlir::Value dfb, uint64_t byteCount,
+    llvm::StringRef endpoint) {
+  auto dfbType = mlir::dyn_cast<mlir::tt::ttl::CircularBufferType>(dfb.getType());
+  if (!dfbType) {
+    return operation->emitOpError()
+           << endpoint << " operand is not a dataflow buffer";
+  }
+  mlir::FailureOr<uint64_t> blockSizeBytes =
+      mlir::tt::ttl::getDFBBlockSizeBytes(dfbType);
+  if (mlir::failed(blockSizeBytes)) {
+    return operation->emitOpError()
+           << "cannot determine " << endpoint << " dataflow-buffer block size";
+  }
+  if (byteCount > *blockSizeBytes) {
+    return operation->emitOpError()
+           << "byte_count " << byteCount << " exceeds " << endpoint
+           << " dataflow-buffer block capacity " << *blockSizeBytes;
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyByteCountFitsAcquiredView(
+    mlir::Operation *operation, mlir::Value view, uint64_t byteCount,
+    llvm::StringRef endpoint) {
+  mlir::FailureOr<uint64_t> viewSizeBytes =
+      mlir::tt::ttl::getDFBViewSizeBytes(view);
+  if (mlir::failed(viewSizeBytes)) {
+    return operation->emitOpError()
+           << "cannot determine " << endpoint
+           << " acquired dataflow-buffer view size";
+  }
+  if (byteCount > *viewSizeBytes) {
+    return operation->emitOpError()
+           << "byte_count " << byteCount << " exceeds " << endpoint
+           << " acquired dataflow-buffer view capacity " << *viewSizeBytes;
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyByteCopyDataFormats(
+    mlir::Operation *operation, mlir::Value srcDFB, mlir::Value dstDFB) {
+  auto srcType =
+      mlir::cast<mlir::tt::ttl::CircularBufferType>(srcDFB.getType());
+  auto dstType =
+      mlir::cast<mlir::tt::ttl::CircularBufferType>(dstDFB.getType());
+  auto srcTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(srcType.getElementType());
+  auto dstTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(dstType.getElementType());
+  if (!srcTile || !dstTile) {
+    return operation->emitOpError(
+        "byte-counted dataflow-buffer copies require tiled element types");
+  }
+  if (srcTile.getDataType() != dstTile.getDataType()) {
+    return operation->emitOpError()
+           << "byte-counted copy data formats must match; got source "
+           << srcType.getElementType() << " and destination "
+           << dstType.getElementType();
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();
@@ -815,6 +878,50 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(srcTy);
   const bool dstIsPipe =
       mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(dstTy);
+  Value srcAttachedDFB = getAttachedCB(getSrc());
+  Value dstAttachedDFB = getAttachedCB(getDst());
+  IntegerAttr byteCountAttr = getByteCountAttr();
+  uint64_t byteCount =
+      byteCountAttr ? static_cast<uint64_t>(byteCountAttr.getInt()) : 0;
+
+  if (srcAttachedDFB && dstAttachedDFB) {
+    if (!byteCountAttr) {
+      return emitOpError(
+          "dataflow-buffer block copies require an explicit byte_count");
+    }
+    auto srcAttach = getSrc().getDefiningOp<AttachCBOp>();
+    auto dstAttach = getDst().getDefiningOp<AttachCBOp>();
+    mlir::Operation *srcAcquire =
+        srcAttach ? traceUnrealizedCasts(srcAttach.getTensor()).getDefiningOp()
+                  : nullptr;
+    mlir::Operation *dstAcquire =
+        dstAttach ? traceUnrealizedCasts(dstAttach.getTensor()).getDefiningOp()
+                  : nullptr;
+    if (!mlir::isa_and_nonnull<CBWaitOp>(srcAcquire)) {
+      return emitOpError(
+          "dataflow-buffer copy source must be the exact view returned by "
+          "ttl.cb_wait");
+    }
+    if (!mlir::isa_and_nonnull<CBReserveOp>(dstAcquire)) {
+      return emitOpError(
+          "dataflow-buffer copy destination must be the exact view returned "
+          "by ttl.cb_reserve");
+    }
+    if (srcAttachedDFB == dstAttachedDFB) {
+      return emitOpError(
+          "byte-counted copy requires distinct source and destination "
+          "dataflow buffers");
+    }
+    if (failed(verifyByteCopyDataFormats(getOperation(), srcAttachedDFB,
+                                         dstAttachedDFB)) ||
+        failed(verifyByteCountFitsAcquiredView(getOperation(), getSrc(),
+                                               byteCount, "source")) ||
+        failed(verifyByteCountFitsAcquiredView(getOperation(), getDst(),
+                                               byteCount, "destination"))) {
+      return failure();
+    }
+    return success();
+  }
 
   if (srcIsPipe || dstIsPipe) {
     if (srcIsPipe && dstIsPipe) {
@@ -838,7 +945,10 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
         return emitOpError()
                << "pipe send requires !ttl.transfer_handle<write> result";
       }
-      return success();
+      return byteCountAttr
+                 ? verifyByteCountFitsDFBBlock(getOperation(), getSrc(),
+                                               byteCount, "source")
+                 : success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
@@ -847,7 +957,16 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       return emitOpError()
              << "pipe receive requires !ttl.receive_request result";
     }
-    return success();
+    return byteCountAttr
+               ? verifyByteCountFitsAcquiredView(getOperation(), getDst(),
+                                                 byteCount, "destination")
+               : success();
+  }
+
+  if (byteCountAttr) {
+    return emitOpError(
+        "byte_count is supported only for dataflow-buffer block copies and "
+        "pipe copies");
   }
 
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
