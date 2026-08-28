@@ -713,13 +713,9 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
   rewriter.eraseOp(loop);
 }
 
-LogicalResult lowerTensorAccumulationToL1Pack(
-    const TensorAccumulationMatch &match, int64_t scopeId,
-    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter) {
-  if (failed(analyzeTensorAccumulationForL1Pack(match, &dfbIndex))) {
-    return failure();
-  }
-
+void lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
+                                     int64_t scopeId,
+                                     RewriterBase &rewriter) {
   scf::ForOp loop = match.loop;
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&
@@ -775,7 +771,6 @@ LogicalResult lowerTensorAccumulationToL1Pack(
     rewriter.eraseOp(attach);
   }
   rewriter.eraseOp(loop);
-  return success();
 }
 
 } // namespace mlir::tt::ttl
