@@ -180,6 +180,34 @@ static bool insideKernelFunction(mlir::Operation *op) {
   return success();
 }
 
+::mlir::LogicalResult PackRowsOp::verify() {
+  auto dfbType = getOutCb().getType();
+  auto tileType = dyn_cast<ttcore::TileType>(dfbType.getElementType());
+  if (!tileType) {
+    return emitOpError("output dataflow buffer must contain tile elements");
+  }
+  if (tileType.getDataType() != ttcore::DataType::BFloat16 &&
+      tileType.getDataType() != ttcore::DataType::Float32) {
+    return emitOpError("supports only bf16 and f32 output data types");
+  }
+  if (getRowCount() > 64) {
+    return emitOpError() << "row_count must be at most 64, got "
+                         << getRowCount();
+  }
+  uint64_t scalarCount = static_cast<uint64_t>(tileType.getHeight()) *
+                         static_cast<uint64_t>(tileType.getWidth());
+  uint64_t scalarBytes = tileType.getSizeBytes() / scalarCount;
+  uint64_t packedBytes = static_cast<uint64_t>(getRowCount()) * 16 * scalarBytes;
+  uint64_t capacityBytes = static_cast<uint64_t>(dfbType.getNumElements()) *
+                           tileType.getSizeBytes();
+  if (packedBytes > capacityBytes) {
+    return emitOpError() << "packed prefix requires " << packedBytes
+                         << " bytes, but output dataflow buffer capacity is "
+                         << capacityBytes << " bytes";
+  }
+  return success();
+}
+
 static std::string verifyTilizeUntilizeCBs(CBType tilizedCB, CBType scalarCB) {
   if (mlir::isa<ttcore::TileType>(scalarCB.getElementType())) {
     return "Input to TilizeOp or Output to UntilizeOp must have scalar "
