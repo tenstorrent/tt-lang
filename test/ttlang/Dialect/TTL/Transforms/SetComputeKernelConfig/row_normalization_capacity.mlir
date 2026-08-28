@@ -1,6 +1,6 @@
 // Verifies that fixed-block destination residency participates in kernel
 // configuration selection.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled dst-full-sync-en=auto reduce-full-fp32=0 matmul-full-fp32=0 enable-fpu-binary-ops=0}))' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled dst-full-sync-en=auto reduce-full-fp32=0 matmul-full-fp32=0 enable-fpu-binary-ops=0})' | FileCheck %s
 
 #identity = affine_map<(row, column) -> (row, column)>
 
