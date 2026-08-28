@@ -434,6 +434,13 @@ class _FakeTTNN:
         def bounding_box(self):
             return _FakeBoundingBox(self._ranges)
 
+        def contains(self, coordinate):
+            return any(
+                core_range.start.x <= coordinate.x <= core_range.end.x
+                and core_range.start.y <= coordinate.y <= core_range.end.y
+                for core_range in self._ranges
+            )
+
     @staticmethod
     def corerange_to_cores(core_range_set, max_cores=None, row_wise=False):
         cores = []
@@ -451,13 +458,6 @@ class _FakeTTNN:
             if max_cores is not None and len(cores) >= max_cores:
                 return cores[:max_cores]
         return cores
-
-        def contains(self, coordinate):
-            return any(
-                core_range.start.x <= coordinate.x <= core_range.end.x
-                and core_range.start.y <= coordinate.y <= core_range.end.y
-                for core_range in self.ranges
-            )
 
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
@@ -5460,6 +5460,32 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
 
 
 # An exact empty allocation domain installs no runtime descriptor.
+def test_allocation_nodes_scope_unspecialized_segmented_dfb_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+                allocation_nodes=((1, 0),),
+            )
+        ],
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(1, 0)}
+
+
 def test_empty_allocation_nodes_omit_dfb_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))

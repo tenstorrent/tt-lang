@@ -2863,6 +2863,8 @@ def _resolve_dfb_placements(
                             f"on core {core}"
                         )
                     candidates[core] = source
+        # The compiler's allocation domain restricts conservative whole-grid
+        # kernel use even when per-kernel use metadata is unavailable.
         used_cores = {
             core
             for core, indices in used_by_core.items()
