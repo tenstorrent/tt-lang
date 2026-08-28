@@ -150,6 +150,18 @@ EOF
     assert_output "argv=program.py"
 }
 
+@test "emule environment default does not intercept global help" {
+    make_layout "$ROOT" source
+    make_mock_python "$MOCK_PY"
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER="$runner" \
+        PYTHON="$MOCK_PY" PYTHONPATH="" \
+        run -0 "$ROOT/bin/tt-lang-sim" --help
+    assert_line --index 2 "argv=sim.ttlang_sim"
+    assert_line --index 3 "argv=--help"
+}
+
 @test "backend-looking script argument after separator is preserved" {
     make_layout "$ROOT" source
     make_mock_python "$MOCK_PY"

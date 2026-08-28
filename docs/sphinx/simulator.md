@@ -1,11 +1,15 @@
 # Simulation backends
 
-`tt-lang-sim` has two complementary backends:
+The source-tree `./bin/tt-lang-sim` launcher has two complementary backends:
 
 | Backend | Execution path | Best suited to |
 |---|---|---|
 | `python` (default) | Python interpreter with torch-backed tensors | Fast kernel iteration, Python debugging, and native macOS use |
 | `emule` | TT-Lang compiler, tt-metal, and tt-emule | Testing generated kernels and runtime behavior without silicon |
+
+The `tt-lang-sim` console command installed by either PyPI package contains
+only the `python` backend. The `emule` backend requires a source checkout and
+must be selected through `./bin/tt-lang-sim`.
 
 The Python backend runs operations without requiring Tenstorrent hardware or
 the full compiler stack. Use it to validate kernel logic and iterate quickly

@@ -80,7 +80,11 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
     && nm -DC "$TT_METAL_BUILD_DIR/tt_metal/libtt_metal.so" \
         > /tmp/tt-metal-symbols.txt \
     && grep -q 'emule::execute_program_emulated' /tmp/tt-metal-symbols.txt \
-    && rm /tmp/tt-metal-symbols.txt
+    && rm /tmp/tt-metal-symbols.txt \
+    && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
+       PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \
+       /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'
 
 COPY tt-lang-emule-entrypoint.sh /usr/local/bin/tt-lang-emule-entrypoint
 RUN chmod +x /usr/local/bin/tt-lang-emule-entrypoint \

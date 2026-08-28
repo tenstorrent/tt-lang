@@ -15,6 +15,10 @@ if [ "$#" -eq 0 ]; then
     echo "tt-lang emule container: no Python script was provided." >&2
     exit 2
 fi
+if [ ! -f "$1" ]; then
+    echo "tt-lang emule container: script not found: $1" >&2
+    exit 2
+fi
 
 export TT_METAL_EMULE_MODE=1
 export TT_METAL_SLOW_DISPATCH_MODE=1

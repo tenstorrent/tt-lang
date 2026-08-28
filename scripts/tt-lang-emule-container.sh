@@ -38,6 +38,13 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
+_SCRIPT_ARGUMENT="$1"
+shift
+if [ ! -f "$_SCRIPT_ARGUMENT" ]; then
+    echo "tt-lang-sim: script not found: ${_SCRIPT_ARGUMENT}" >&2
+    exit 2
+fi
+
 if ! command -v "$_DOCKER" >/dev/null 2>&1; then
     echo "tt-lang-sim: Docker CLI not found: ${_DOCKER}" >&2
     echo "Install Docker Desktop or Colima, then retry." >&2
@@ -50,17 +57,10 @@ if ! "$_DOCKER" info >/dev/null 2>&1; then
     exit 1
 fi
 
-_SCRIPT_ARGUMENT="$1"
-shift
-if [ ! -f "$_SCRIPT_ARGUMENT" ]; then
-    echo "tt-lang-sim: script not found: ${_SCRIPT_ARGUMENT}" >&2
-    exit 2
-fi
-
 _HOST_CWD="$(pwd -P)"
-_SCRIPT_DIR_HOST="$(cd "$(dirname "$_SCRIPT_ARGUMENT")" && pwd -P)"
-_SCRIPT_BASENAME="$(basename "$_SCRIPT_ARGUMENT")"
-_SCRIPT_ABSOLUTE="${_SCRIPT_DIR_HOST}/${_SCRIPT_BASENAME}"
+_SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
+_SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
+_SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
 
 _RUN_ARGS=(
     run

@@ -16,7 +16,7 @@ Do not conflate them:
 | What it is | TT-Lang operations as pure Python (torch-backed) | Real TT-Lang compiler and tt-metal dispatch, with kernels executed by tt-emule | Simulates the Tensix/RISC-V device; loaded by tt-metal via `TT_METAL_SIMULATOR` |
 | Needs tt-metal? | No | Yes | Yes |
 | macOS execution | Native | Linux amd64 container | Linux VM |
-| Docs | [simulator.md](simulator.md) | [simulator.md](simulator.md#compiler-backed-emulation) | this page |
+| Docs | [simulator.md](simulator.md) | [simulator.md](simulator.md) | this page |
 
 This page is about the hardware simulator. For both `tt-lang-sim` backends, see
 [simulator.md](simulator.md).

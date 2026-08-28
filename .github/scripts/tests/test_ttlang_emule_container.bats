@@ -91,6 +91,26 @@ EOF
     run -1 grep -F -- "git clone" "$DOCKERFILE"
 }
 
+@test "emule image verifies that the built ttnn binding is importable" {
+    run -0 grep -F -- \
+        "/opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'" "$DOCKERFILE"
+}
+
+@test "CMake device detection recognizes emule mode" {
+    local probe="$BATS_TEST_TMPDIR/emule-device-probe.cmake"
+    cat > "$probe" <<EOF
+include("$TTLANG_REPO_ROOT/cmake/modules/TTLangUtils.cmake")
+ttlang_check_device_available(has_device)
+if(NOT has_device)
+  message(FATAL_ERROR "emule mode was not detected")
+endif()
+EOF
+
+    run env -u TT_METAL_SIMULATOR TT_METAL_EMULE_MODE=1 cmake -P "$probe"
+    assert_success
+    assert_output --partial "Tenstorrent device: emule mode"
+}
+
 @test "existing image runs a repository script through the mounted checkout" {
     local source_id
     source_id="$(printf '%s' "$TTLANG_REPO_ROOT" | cksum | awk '{print $1}')"
@@ -135,12 +155,13 @@ EOF
     refute_log_line "run"
 }
 
-@test "a missing script fails before image lookup" {
+@test "a missing script fails before any Docker call" {
     cd "$TTLANG_REPO_ROOT"
-    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -2 "$RUNNER" missing.py
+    MOCK_DOCKER_INFO_STATUS=1 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -2 "$RUNNER" missing.py
 
     assert_output --partial "script not found: missing.py"
-    refute_log_line "image"
+    run -1 test -e "$MOCK_DOCKER_LOG"
 }
 
 @test "a script outside the working directory gets a dedicated mount" {
@@ -159,15 +180,33 @@ EOF
     assert_log_line "/ttlang-script/program.py"
 }
 
+@test "a script symlink outside the working directory mounts its target" {
+    local link_dir="$BATS_TEST_TMPDIR/links"
+    local target_dir="$BATS_TEST_TMPDIR/external"
+    local target_dir_physical
+    mkdir -p "$link_dir" "$target_dir"
+    touch "$target_dir/program.py"
+    ln -s "../external/program.py" "$link_dir/program.py"
+    target_dir_physical="$(cd "$target_dir" && pwd -P)"
+    cd "$link_dir"
+
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" program.py
+
+    assert_log_line \
+        "type=bind,src=${target_dir_physical},dst=/ttlang-script"
+    assert_log_line "/ttlang-script/program.py"
+}
+
 @test "entrypoint configures, builds, and runs with emule runtime state" {
     local mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
     local build_dir="$BATS_TEST_TMPDIR/build"
     local cluster="$BATS_TEST_TMPDIR/wormhole_N150.yaml"
+    local program="$BATS_TEST_TMPDIR/program.py"
     MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
     export MOCK_ENTRYPOINT_LOG
     make_mock_entrypoint_commands "$mock_bin"
     mkdir -p "$build_dir/env"
-    touch "$build_dir/env/activate" "$cluster"
+    touch "$build_dir/env/activate" "$cluster" "$program"
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
@@ -175,7 +214,7 @@ EOF
         TTLANG_SIM_ONLY=1 \
         TTLANG_EMULE_BUILD_DIR="$build_dir" \
         TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        run -0 "$ENTRYPOINT" /workspace/program.py "argument with spaces"
+        run -0 "$ENTRYPOINT" "$program" "argument with spaces"
 
     assert_line "emule=1"
     assert_line "slow_dispatch=1"
@@ -183,7 +222,7 @@ EOF
     assert_line "mesh=N150"
     assert_line "compile_only="
     assert_line "sim_only="
-    assert_line "python=/workspace/program.py"
+    assert_line "python=$program"
     assert_line "python=argument with spaces"
     run -0 grep -F -x -- "cmake=--parallel" "$MOCK_ENTRYPOINT_LOG"
     run -0 grep -F -x -- "cmake=4" "$MOCK_ENTRYPOINT_LOG"
@@ -197,9 +236,16 @@ EOF
     assert_output --partial "no Python script was provided"
 }
 
+@test "entrypoint rejects a missing script before configuring" {
+    run -2 "$ENTRYPOINT" "$BATS_TEST_TMPDIR/missing.py"
+    assert_output --partial "script not found: $BATS_TEST_TMPDIR/missing.py"
+}
+
 @test "entrypoint rejects a missing cluster descriptor before configuring" {
     local missing_cluster="$BATS_TEST_TMPDIR/missing.yaml"
+    local program="$BATS_TEST_TMPDIR/program.py"
+    touch "$program"
     TT_METAL_MOCK_CLUSTER_DESC_PATH="$missing_cluster" \
-        run -1 "$ENTRYPOINT" /workspace/program.py
+        run -1 "$ENTRYPOINT" "$program"
     assert_output --partial "cluster descriptor not found: $missing_cluster"
 }

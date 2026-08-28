@@ -396,6 +396,24 @@ class TestScriptMustBeFirstArgument:
         assert result.returncode == 0
         assert "tt-lang-sim" in result.stdout
 
+    def test_python_entrypoint_rejects_source_only_emule_backend(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                str(self._REPO / "examples" / "broadcast_demo.py"),
+                "--backend",
+                "emule",
+            ],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "emule backend requires a TT-Lang source checkout" in result.stderr
+
 
 class TestMaxDfbsCommandLineOption:
     """Test --max-dfbs command-line option in tt-lang-sim."""

@@ -47,6 +47,14 @@ while [ "$#" -gt 0 ]; do
 done
 set -- "${_FORWARD_ARGS[@]}"
 
+# Help and version describe the launcher as a whole and never require a
+# backend runtime. Preserve the existing no-argument help path as well.
+case "${1:-}" in
+    ""|-h|--help|--version)
+        _BACKEND=python
+        ;;
+esac
+
 if [ "$_BACKEND" = "emule" ]; then
     # Unlike the Python backend, emule has no intermediate argparse layer to
     # consume the launcher/script separator before invoking the user program.
