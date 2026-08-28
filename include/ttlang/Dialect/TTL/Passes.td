@@ -161,11 +161,15 @@ def TTLFormPipeTransports
 
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
-  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let summary = "Complete ttl.copy operations without a guaranteed wait";
   let description = [{
-    Finds `ttl.copy` ops whose result has no `ttl.wait` or `ttl.wait_any` user
-    and inserts a `ttl.wait` immediately after the copy. Explicit
-    synchronization calls are preserved.
+    Proves copy completion across every reachable continuation, including
+    structured regions and block control flow. An uncovered copy receives an
+    implicit `ttl.wait`. When a request participates in a multi-request
+    `ttl.wait_any`, cleanup occurs at the end of a control-flow scope that
+    follows every readiness observation. The inserted wait therefore cannot
+    alter the selected request or precede work that completes pending
+    candidates. A single-request `ttl.wait_any` completes its sole request.
   }];
 
   let dependentDialects = [];

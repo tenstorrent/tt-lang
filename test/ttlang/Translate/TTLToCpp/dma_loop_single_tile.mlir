@@ -22,7 +22,8 @@
 // CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
 // CHECK-NEXT:   noc0.async_read([[ACCESSOR0]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACCESSOR0]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
-// CHECK-NEXT:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
+// CHECK:   noc0.async_read_barrier();
+// CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
 // In-loop copy: reuse the hoisted runtime arg and tensor accessor.
 // CHECK:     noc0.async_read([[ACCESSOR0]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACCESSOR0]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
 // CHECK:     noc0.async_read_barrier();
