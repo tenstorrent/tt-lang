@@ -2931,6 +2931,30 @@ public:
   }
 };
 
+class TTKernelToEmitCPackBlockContiguousRewriter
+    : public OpConversionPattern<ttkernel::PackBlockContiguousOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::PackBlockContiguousOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::PackBlockContiguousOp op,
+                  ttkernel::PackBlockContiguousOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    // The hardware primitive advances this pointer, while the combined op
+    // represents pack_tile calls whose output indices start at tile zero.
+    rewriter.create<emitc::VerbatimOp>(
+        op->getLoc(),
+        rewriter.getStringAttr(
+            "PACK((get_local_cb_interface({}).fifo_wr_tile_ptr = 0));"),
+        ValueRange{adaptor.getOutCb()});
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "pack_block_contiguous", nullptr, ArrayAttr(),
+        adaptor.getOperands());
+    return success();
+  }
+};
+
 // PackReconfigL1AccOp must be wrapped in the PACK((...)) macro to ensure it
 // only executes on the TRISC_PACK thread.
 class TTKernelToEmitCPackReconfigL1AccToEmitCRewriter
@@ -3175,7 +3199,7 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyBlockMatmulPartialsOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackBlockContiguousInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::PackBlockContiguousOp>,
+        TTKernelToEmitCPackBlockContiguousRewriter,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,

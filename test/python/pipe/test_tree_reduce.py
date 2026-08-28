@@ -11,7 +11,6 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram  # noqa: E402
 from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
@@ -45,6 +44,7 @@ def _make_tree_reduce(data_format, bytes_per_element):
     )
     payload_size_bytes = VALID_ROWS * TILE_WIDTH * bytes_per_element
     stage_count = (CORE_COUNT - 1).bit_length()
+    root_x, root_y = ROOT
 
     @ttl.operation(grid=(CORE_COUNT, 1), options="--ttl-specialize-cores")
     def tree_reduce(source, output):
@@ -102,7 +102,7 @@ def _make_tree_reduce(data_format, bytes_per_element):
 
             tree_net.if_src(send)
 
-            if node_x == ROOT[0] and node_y == ROOT[1]:
+            if node_x == root_x and node_y == root_y:
                 with accumulator_dfb.wait() as accumulator_block:
                     with output_dfb.reserve() as output_block:
                         ttl.copy(
@@ -148,10 +148,24 @@ def _height_sharded_memory_config(nodes):
     )
 
 
+def _height_sharded_tensor(torch_tensor, device, nodes, ttnn_dtype):
+    # Direct construction preserves the 1x32 physical tile; memory-config
+    # conversion allocates a default 32x32 destination tile.
+    return ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn_dtype,
+        layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile(COMPACT_TILE),
+        device=device,
+        memory_config=_height_sharded_memory_config(nodes),
+    )
+
+
 TREE_REDUCE_CASES = [
     pytest.param(
         _make_tree_reduce("bf16", 2),
         torch.bfloat16,
+        ttnn.bfloat16,
         5e-2,
         1.0,
         id="bf16",
@@ -159,6 +173,7 @@ TREE_REDUCE_CASES = [
     pytest.param(
         _make_tree_reduce("float32", 4),
         torch.float32,
+        ttnn.float32,
         1e-5,
         1e-5,
         id="fp32",
@@ -167,25 +182,27 @@ TREE_REDUCE_CASES = [
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype", "rtol", "atol"), TREE_REDUCE_CASES
+    ("operation", "dtype", "ttnn_dtype", "rtol", "atol"),
+    TREE_REDUCE_CASES,
 )
-def test_tree_reduce(device, operation, dtype, rtol, atol):
+def test_tree_reduce(device, operation, dtype, ttnn_dtype, rtol, atol):
     torch.manual_seed(0)
     source_host = torch.randn(
         CORE_COUNT * VALID_ROWS, TILE_WIDTH, dtype=dtype
     )
     output_host = torch.zeros(VALID_ROWS, TILE_WIDTH, dtype=dtype)
 
-    source_dram = to_dram(source_host, device, tile=COMPACT_TILE)
-    output_dram = to_dram(output_host, device, tile=COMPACT_TILE)
-    source = ttnn.to_memory_config(
-        source_dram,
-        _height_sharded_memory_config(
-            tuple((node_x, 0) for node_x in range(CORE_COUNT))
-        ),
+    source = _height_sharded_tensor(
+        source_host,
+        device,
+        tuple((node_x, 0) for node_x in range(CORE_COUNT)),
+        ttnn_dtype,
     )
-    output = ttnn.to_memory_config(
-        output_dram, _height_sharded_memory_config((ROOT,))
+    output = _height_sharded_tensor(
+        output_host,
+        device,
+        (ROOT,),
+        ttnn_dtype,
     )
 
     operation(source, output)
@@ -200,5 +217,5 @@ def test_tree_reduce(device, operation, dtype, rtol, atol):
     assert_pcc(expected, actual, threshold=0.999)
     assert_allclose(actual, expected, rtol=rtol, atol=atol)
 
-    for tensor in (source, output, source_dram, output_dram):
+    for tensor in (source, output):
         ttnn.deallocate(tensor)
