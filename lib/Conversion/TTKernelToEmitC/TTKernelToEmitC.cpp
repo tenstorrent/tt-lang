@@ -3174,6 +3174,8 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyBlockMatmulPartialsOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::PackBlockContiguousInitOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::PackBlockContiguousOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,

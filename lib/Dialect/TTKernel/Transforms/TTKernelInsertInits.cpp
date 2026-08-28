@@ -331,6 +331,7 @@ struct SyncRegionAnalysis {
   bool hasMatmul = false;
   bool hasCopy = false;
   bool hasOnlyCopyCompute = true;
+  bool hasContiguousPack = false;
   // For matmul: block dimensions from the first matmul_block op found.
   Value matmulTranspose, matmulCt, matmulRt, matmulKt;
 };
@@ -432,6 +433,10 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         collectOutputCB(pack.getOutCb(), pack);
       } else if (auto packBlock = dyn_cast<ttk::PackTileBlockOp>(inner)) {
         collectOutputCB(packBlock.getOutCb(), packBlock);
+      } else if (auto packBlock =
+                     dyn_cast<ttk::PackBlockContiguousOp>(inner)) {
+        collectOutputCB(packBlock.getOutCb(), packBlock);
+        result.hasContiguousPack = true;
       }
     });
   }
@@ -517,6 +522,9 @@ static bool canShareCopyKernelInit(func::FuncOp funcOp,
       packCB = pack.getOutCb();
     } else if (auto pack = dyn_cast<ttk::PackTileBlockOp>(operation)) {
       packCB = pack.getOutCb();
+    } else if (auto pack =
+                   dyn_cast<ttk::PackBlockContiguousOp>(operation)) {
+      packCB = pack.getOutCb();
     }
     if (packCB && packCB != outputCB) {
       homogeneousCopyKernel = false;
@@ -528,7 +536,8 @@ static bool canShareCopyKernelInit(func::FuncOp funcOp,
 }
 
 static void insertSharedCopyKernelInit(func::FuncOp funcOp,
-                                       CommonInitSite &firstSite) {
+                                       CommonInitSite &firstSite,
+                                       bool hasContiguousPack) {
   Block &entryBlock = funcOp.getBody().front();
   Operation *latestDefinition = nullptr;
   for (Value operand : {firstSite.inputCB, firstSite.outputCB}) {
@@ -545,6 +554,10 @@ static void insertSharedCopyKernelInit(func::FuncOp funcOp,
   builder.setInsertionPointAfter(latestDefinition);
   ttk::InitSFPUOp::create(builder, firstSite.acquireOp.getLoc(),
                           firstSite.inputCB, firstSite.outputCB);
+  if (hasContiguousPack) {
+    ttk::PackBlockContiguousInitOp::create(
+        builder, firstSite.acquireOp.getLoc(), firstSite.outputCB);
+  }
 }
 
 /// Find the outermost enclosing insertion point by walking up through
@@ -664,7 +677,11 @@ static LogicalResult insertCommonInits(
 
     bool shareCopyInit = canShareCopyKernelInit(funcOp, sites, computeToInit);
     if (shareCopyInit) {
-      insertSharedCopyKernelInit(funcOp, sites.front());
+      bool hasContiguousPack = llvm::any_of(
+          sites, [](const CommonInitSite &site) {
+            return site.analysis.hasContiguousPack;
+          });
+      insertSharedCopyKernelInit(funcOp, sites.front(), hasContiguousPack);
     }
 
     for (const CommonInitSite &site : sites) {
@@ -727,6 +744,9 @@ static LogicalResult insertCommonInits(
                                           outputCB);
       } else if (inputCB) {
         ttk::InitSFPUOp::create(builder, loc, inputCB, outputCB);
+      }
+      if (analysis.hasContiguousPack) {
+        ttk::PackBlockContiguousInitOp::create(builder, loc, outputCB);
       }
     }
   });

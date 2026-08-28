@@ -185,6 +185,8 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"nez_tile_int32",                                 {"api/compute/eltwise_unary/comp.h", ""}},
         {"pack_reconfig_data_format",                      {"api/compute/pack.h", ""}},
         {"pack_reconfig_l1_acc",                           {"api/compute/pack.h", ""}},
+        {"pack_block_contiguous",                          {"api/compute/experimental/pack_block.h", ""}},
+        {"pack_block_contiguous_init",                     {"api/compute/experimental/pack_block.h", ""}},
         {"pack_tile",                                      {"api/compute/pack.h", ""}},
         {"pack_tile_block",                                {"api/compute/pack.h", ""}},
         {"pack_untilize_init",                             {"api/compute/pack_untilize.h", ""}},

@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -43,20 +44,43 @@ static bool extendsRun(ttk::PackTileOp op, Value runDFB, int64_t expectedDst,
          *cb == expectedDfbIdx;
 }
 
-/// Replace a run of 2+ consecutive pack_tile ops with a single
-/// pack_tile_block.
-static void replaceRun(ArrayRef<ttk::PackTileOp> run) {
-  ttk::PackTileOp first = run.front();
+struct PackRun {
+  SmallVector<ttk::PackTileOp> operations;
+  bool useContiguousPack = false;
+};
+
+static void replaceRun(const PackRun &run) {
+  ArrayRef<ttk::PackTileOp> operations = run.operations;
+  ttk::PackTileOp first = operations.front();
   OpBuilder builder(first);
   Location loc = first.getLoc();
 
-  Value ntiles = arith::ConstantIndexOp::create(builder, loc, run.size());
-  ttk::PackTileBlockOp::create(builder, loc, first.getDstIndex(),
-                               first.getOutCb(), ntiles);
-
-  for (ttk::PackTileOp op : run) {
-    op->erase();
+  Value ntiles =
+      arith::ConstantIndexOp::create(builder, loc, operations.size());
+  if (run.useContiguousPack) {
+    ttk::PackBlockContiguousOp::create(
+        builder, loc, first.getDstIndex(), first.getOutCb(), ntiles);
+  } else {
+    ttk::PackTileBlockOp::create(builder, loc, first.getDstIndex(),
+                                 first.getOutCb(), ntiles);
   }
+
+  for (ttk::PackTileOp packOp : operations) {
+    packOp->erase();
+  }
+}
+
+static bool isInsideAccumulationLoop(Block *block) {
+  for (Operation *parent = block->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      if (forOp->hasAttr(kReductionLoopAttrName) ||
+          forOp->hasAttr(kL1AccLoopAttrName)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 struct TTKernelCombinePackTilesPass
@@ -64,28 +88,35 @@ struct TTKernelCombinePackTilesPass
   using TTKernelCombinePackTilesBase::TTKernelCombinePackTilesBase;
 
   void runOnOperation() override {
-    getOperation().walk([](Block *block) {
-      // pack_tile_block is incompatible with pack_reconfig_l1_acc, which
-      // requires individual pack_tile calls.
-      for (Operation *parent = block->getParentOp(); parent;
-           parent = parent->getParentOp()) {
-        if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-          if (forOp->hasAttr(kReductionLoopAttrName) ||
-              forOp->hasAttr(kL1AccLoopAttrName)) {
-            return;
-          }
-        }
+    func::FuncOp function = getOperation();
+    std::string failureReason;
+    FailureOr<std::optional<ttcore::Arch>> targetArch =
+        resolveTargetArch(function, failureReason);
+    if (failed(targetArch)) {
+      function.emitOpError(failureReason);
+      signalPassFailure();
+      return;
+    }
+    bool useContiguousPack =
+        *targetArch && **targetArch == ttcore::Arch::Blackhole;
+
+    function.walk([&](Block *block) {
+      bool insideAccumulationLoop = isInsideAccumulationLoop(block);
+      if (insideAccumulationLoop && !useContiguousPack) {
+        return;
       }
+
       // Replacing during iteration would invalidate the block list, so
       // collect all combinable runs first.
-      SmallVector<SmallVector<ttk::PackTileOp>> runs;
+      SmallVector<PackRun> runs;
       SmallVector<ttk::PackTileOp> run;
 
-      // Finalize the current run: save it for replacement if combinable
-      // (2+ ops), then clear for the next group.
       auto finalizeRun = [&]() {
-        if (run.size() >= 2) {
-          runs.push_back(std::move(run));
+        bool canUseContiguousPack =
+            useContiguousPack && !run.empty() && run.size() <= 8;
+        bool canUseGenericPack = !insideAccumulationLoop && run.size() >= 2;
+        if (canUseContiguousPack || canUseGenericPack) {
+          runs.push_back({std::move(run), canUseContiguousPack});
         }
         run.clear();
       };
@@ -120,8 +151,8 @@ struct TTKernelCombinePackTilesPass
 
       finalizeRun();
 
-      for (auto &r : runs) {
-        replaceRun(r);
+      for (const PackRun &packRun : runs) {
+        replaceRun(packRun);
       }
     });
   }

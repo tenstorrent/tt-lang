@@ -116,11 +116,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     ttkOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
-  pm.addPass(createTTKernelInsertInits());
-  pm.addPass(createTTKernelInsertL1Accumulation());
   if (options.combinePackTiles) {
     pm.addNestedPass<func::FuncOp>(createTTKernelCombinePackTiles());
   }
+  pm.addPass(createTTKernelInsertInits());
+  pm.addPass(createTTKernelInsertL1Accumulation());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   if (options.specializeCores) {

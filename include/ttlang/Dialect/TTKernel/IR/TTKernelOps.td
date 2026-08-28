@@ -192,6 +192,46 @@ def TTKernel_PackTileBlockOp : TTKernel_Op<"pack_tile_block"> {
     }];
 }
 
+def TTKernel_PackBlockContiguousInitOp : TTKernel_InitOp<"pack_block_contiguous_init"> {
+    let summary = "Configure Blackhole contiguous block packing";
+    let description = [{
+      Configures the Blackhole packer MOP used by `pack_block_contiguous` for
+      the output dataflow buffer. The packer data format and address modifiers
+      must already be initialized for the output tile type. The configuration
+      remains valid until another packer initialization changes the MOP or tile
+      dimensions.
+    }];
+
+    let arguments = (ins TTKernel_CB:$out_cb);
+
+    let assemblyFormat = [{
+      `(` $out_cb `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_PackBlockContiguousOp : TTKernel_Op<"pack_block_contiguous"> {
+    let summary = "Pack a contiguous block of Blackhole DST tiles";
+    let description = [{
+      Packs between one and eight consecutive sparse 32x32 DST slots starting
+      at `dst_index` to contiguous storage in the output dataflow buffer. The
+      destination registers must be acquired, output space must be reserved,
+      and `pack_block_contiguous_init` must have configured the packer after
+      the most recent packer initialization.
+
+      This operation is available only on Blackhole and supports packer L1
+      accumulation without changing its accumulation semantics.
+    }];
+
+    let arguments = (ins IndexLike:$dst_index, TTKernel_CB:$out_cb,
+                         IndexLike:$ntiles);
+
+    let assemblyFormat = [{
+      `(` $dst_index `,` $out_cb `,` $ntiles `)` attr-dict `:` functional-type(operands, results)
+    }];
+
+    let hasVerifier = 1;
+}
+
 def TTKernel_PackReconfigL1AccOp : TTKernel_Op<"pack_reconfig_l1_acc"> {
     let summary = "Reconfigure packer to L1 accumulation mode.";
     let description = [{

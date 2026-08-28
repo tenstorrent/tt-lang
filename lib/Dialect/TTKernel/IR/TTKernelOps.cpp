@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -24,6 +25,24 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.cpp.inc"
 
 namespace mlir::tt::ttkernel {
+
+::mlir::LogicalResult PackBlockContiguousOp::verify() {
+  std::optional<int64_t> tileCount = getConstantIntValue(getNtiles());
+  if (tileCount && (*tileCount < 1 || *tileCount > 8)) {
+    return emitOpError("ntiles must be in the range [1, 8]");
+  }
+
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(getOperation(), failureReason);
+  if (failed(targetArch)) {
+    return emitOpError(failureReason);
+  }
+  if (!*targetArch || **targetArch != ttcore::Arch::Blackhole) {
+    return emitOpError("is available only when targeting Blackhole");
+  }
+  return success();
+}
 
 void ComputeKernelHWStartupOp::print(::mlir::OpAsmPrinter &printer) {
   printer << "(" << getIcb0();

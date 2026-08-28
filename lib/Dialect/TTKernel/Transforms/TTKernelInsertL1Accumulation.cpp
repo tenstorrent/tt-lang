@@ -154,6 +154,9 @@ static bool packsToAnyCB(Operation *operation,
   if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
     return packCBs.contains(packOp.getOutCb());
   }
+  if (auto packOp = dyn_cast<ttk::PackBlockContiguousOp>(operation)) {
+    return packCBs.contains(packOp.getOutCb());
+  }
   return false;
 }
 
@@ -169,7 +172,8 @@ static void addScopeOutputCBs(Operation *operation,
 static bool containsAnyPack(Operation *operation) {
   bool found = false;
   operation->walk([&](Operation *nested) {
-    if (isa<ttk::PackTileOp, ttk::PackTileBlockOp>(nested)) {
+    if (isa<ttk::PackTileOp, ttk::PackTileBlockOp,
+            ttk::PackBlockContiguousOp>(nested)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -298,6 +302,12 @@ static void insertNonScopePackL1AccGuards(
       if (!scopeOutputCBs.contains(packOp.getOutCb())) {
         nonScopePacks.push_back(operation);
       }
+      return;
+    }
+    if (auto packOp = dyn_cast<ttk::PackBlockContiguousOp>(operation)) {
+      if (!scopeOutputCBs.contains(packOp.getOutCb())) {
+        nonScopePacks.push_back(operation);
+      }
     }
   });
 
@@ -353,6 +363,9 @@ static LogicalResult verifyL1AccumulationPackFormats(
       return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
     }
     if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+      return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
+    }
+    if (auto packOp = dyn_cast<ttk::PackBlockContiguousOp>(operation)) {
       return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
     }
     return WalkResult::advance();

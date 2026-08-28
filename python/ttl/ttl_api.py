@@ -2862,12 +2862,12 @@ def _lower_program_to_kernel(
                 f"l1-budget-override={l1_budget_override}}}"
             ),
             "func.func(ttkernel-lower-scalar-fp-types)",
-            "ttkernel-insert-inits",
-            "ttkernel-insert-l1-accumulation",
         ]
         if compiler_options.combine_pack_tiles:
             pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")
         pipeline_passes += [
+            "ttkernel-insert-inits",
+            "ttkernel-insert-l1-accumulation",
             "canonicalize",
             "cse",
             "lower-affine",
