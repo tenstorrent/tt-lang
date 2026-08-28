@@ -30,6 +30,7 @@ from sim.analysis import (
     validate_kernel_function,
 )
 from sim.context import get_context, reset_context
+from sim.copy import ReceiveRequest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -41,6 +42,45 @@ def _reset():
     reset_context()
     yield
     reset_context()
+
+
+class _ControlledReceiveRequest(ReceiveRequest):
+    def __init__(self, name: str, events: list[str], ready: bool = True):
+        self.name = name
+        self.events = events
+        self.ready = ready
+        self._completed = False
+
+    def can_wait(self) -> bool:
+        return self.ready
+
+    def wait(self) -> None:
+        if not self.ready:
+            raise RuntimeError("early wait for pending request")
+        if not self._completed:
+            self.events.append(self.name)
+            self._completed = True
+
+
+def _install_controlled_receive_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+    request_specs: tuple[tuple[str, bool], ...],
+) -> list[_ControlledReceiveRequest]:
+    requests = [
+        _ControlledReceiveRequest(name, events, ready) for name, ready in request_specs
+    ]
+    request_iterator = iter(requests)
+    copy_module = importlib.import_module("sim.copy")
+
+    def create_request(_src, _dst):
+        request = next(request_iterator)
+        copy_module._register_deferred_copy_wait(sys._getframe(1), request)
+        return request
+
+    monkeypatch.setattr(ttl, "copy", create_request)
+    monkeypatch.setattr(copy_module, "block_if_needed", lambda _obj, _operation: None)
+    return requests
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +501,9 @@ class TestCopyWaitAnalysis:
 
         analysis = analyze_kernel_function(dm)
         assert analysis.injection_points == ()
-        assert analysis.cleanup_wait_any_on_return
+        assert analysis.deferred_copy_wait_linenos == frozenset(
+            {dm.__code__.co_firstlineno + 1, dm.__code__.co_firstlineno + 2}
+        )
 
     def test_wait_any_tuple_binding_defers_copy_wait_injection(self):
         """A named request tuple retains the same selection boundary."""
@@ -474,7 +516,9 @@ class TestCopyWaitAnalysis:
 
         analysis = analyze_kernel_function(dm)
         assert analysis.injection_points == ()
-        assert analysis.cleanup_wait_any_on_return
+        assert analysis.deferred_copy_wait_linenos == frozenset(
+            {dm.__code__.co_firstlineno + 1, dm.__code__.co_firstlineno + 2}
+        )
 
     def test_single_request_wait_any_completes_request(self):
         """A single candidate is the request completed by wait_any."""
@@ -496,7 +540,7 @@ class TestCopyWaitAnalysis:
 
         analysis = analyze_kernel_function(dm)
         assert analysis.injection_points == ()
-        assert analysis.cleanup_wait_any_on_return
+        assert len(analysis.deferred_copy_wait_linenos) == 2
 
     def test_wait_any_cleanup_does_not_use_reassignment(self):
         """Retained requests do not depend on their original local names."""
@@ -514,38 +558,23 @@ class TestCopyWaitAnalysis:
         ]
         assert len(request_points) == 1
         assert request_points[0].trigger_on_return
-        assert analysis.cleanup_wait_any_on_return
+        assert len(analysis.deferred_copy_wait_linenos) == 2
 
     @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
     def test_wait_any_cleanup_retains_each_loop_iteration(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """Each loop iteration completes its own nonselected request."""
-        from sim.copy import ReceiveRequest
-
         completed: list[str] = []
-
-        class TestRequest(ReceiveRequest):
-            def __init__(self, name: str):
-                self.name = name
-                self._completed = False
-
-            def can_wait(self) -> bool:
-                return True
-
-            def wait(self) -> None:
-                if not self._completed:
-                    completed.append(self.name)
-                    self._completed = True
-
-        requests = iter(
-            TestRequest(name)
-            for name in ("selected0", "pending0", "selected1", "pending1")
-        )
-        monkeypatch.setattr(ttl, "copy", lambda _src, _dst: next(requests))
-        copy_module = importlib.import_module("sim.copy")
-        monkeypatch.setattr(
-            copy_module, "block_if_needed", lambda _obj, _operation: None
+        _install_controlled_receive_requests(
+            monkeypatch,
+            completed,
+            (
+                ("selected0", True),
+                ("pending0", True),
+                ("selected1", True),
+                ("pending1", True),
+            ),
         )
 
         def dm():
@@ -566,31 +595,14 @@ class TestCopyWaitAnalysis:
         self, monkeypatch: pytest.MonkeyPatch, reassign: bool
     ):
         """A skipped reassignment retains cleanup at function return."""
-        from sim.copy import ReceiveRequest
-
         completed: list[str] = []
-
-        class TestRequest(ReceiveRequest):
-            def __init__(self, name: str):
-                self.name = name
-                self._completed = False
-
-            def can_wait(self) -> bool:
-                return True
-
-            def wait(self) -> None:
-                if not self._completed:
-                    completed.append(self.name)
-                    self._completed = True
-
         names = ["pending", "selected"]
         if reassign:
             names.append("replacement")
-        requests = iter(TestRequest(name) for name in names)
-        monkeypatch.setattr(ttl, "copy", lambda _src, _dst: next(requests))
-        copy_module = importlib.import_module("sim.copy")
-        monkeypatch.setattr(
-            copy_module, "block_if_needed", lambda _obj, _operation: None
+        _install_controlled_receive_requests(
+            monkeypatch,
+            completed,
+            tuple((name, True) for name in names),
         )
 
         def dm():
@@ -613,39 +625,17 @@ class TestCopyWaitAnalysis:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """Request reassignment does not precede producer progress."""
-        from sim.copy import ReceiveRequest
-
         events: list[str] = []
-
-        class TestRequest(ReceiveRequest):
-            def __init__(self, name: str, ready: bool):
-                self.name = name
-                self.ready = ready
-                self._completed = False
-
-            def can_wait(self) -> bool:
-                return self.ready
-
-            def wait(self) -> None:
-                if not self.ready:
-                    raise RuntimeError("early wait for pending request")
-                if not self._completed:
-                    events.append(self.name)
-                    self._completed = True
-
-        pending = TestRequest("pending", ready=False)
-        requests = iter(
+        requests = _install_controlled_receive_requests(
+            monkeypatch,
+            events,
             (
-                pending,
-                TestRequest("selected", ready=True),
-                TestRequest("replacement", ready=True),
-            )
+                ("pending", False),
+                ("selected", True),
+                ("replacement", True),
+            ),
         )
-        monkeypatch.setattr(ttl, "copy", lambda _src, _dst: next(requests))
-        copy_module = importlib.import_module("sim.copy")
-        monkeypatch.setattr(
-            copy_module, "block_if_needed", lambda _obj, _operation: None
-        )
+        pending = requests[0]
 
         def make_pending_ready():
             events.append("progress")
@@ -664,6 +654,139 @@ class TestCopyWaitAnalysis:
         dm()
 
         assert events == ["selected", "replacement", "progress", "pending"]
+
+    @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
+    def test_wait_any_cleanup_preserves_external_requests(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Automatic cleanup retains ownership of managed requests only."""
+        events: list[str] = []
+        _install_controlled_receive_requests(
+            monkeypatch,
+            events,
+            (("local_pending", True), ("local_selected", True)),
+        )
+        external_selected = _ControlledReceiveRequest(
+            "external_selected", events, ready=True
+        )
+        external_pending = _ControlledReceiveRequest(
+            "external_pending", events, ready=True
+        )
+
+        def dm():
+            local_pending = ttl.copy(None, None)
+            local_selected = ttl.copy(None, None)
+            ttl.wait_any((local_pending, local_selected), start=1)
+            ttl.wait_any((external_selected, external_pending))
+
+        analysis = analyze_kernel_function(dm)
+        assert len(analysis.deferred_copy_wait_linenos) == 2
+        install_copy_wait_hooks({dm.__code__: analysis})
+        dm()
+
+        assert events == ["local_selected", "external_selected", "local_pending"]
+        assert not external_pending.is_completed
+
+    @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
+    @pytest.mark.parametrize("use_local_request", [False, True])
+    def test_wait_any_cleanup_tracks_conditional_copy_origin(
+        self, monkeypatch: pytest.MonkeyPatch, use_local_request: bool
+    ):
+        """Only requests created by deferred copy sites are completed."""
+        events: list[str] = []
+        request_specs = (
+            (("local_pending", True), ("local_selected", True))
+            if use_local_request
+            else (("local_selected", True),)
+        )
+        _install_controlled_receive_requests(monkeypatch, events, request_specs)
+        external_pending = _ControlledReceiveRequest(
+            "external_pending", events, ready=True
+        )
+
+        def dm():
+            if use_local_request:
+                pending = ttl.copy(None, None)
+            else:
+                pending = external_pending
+            selected = ttl.copy(None, None)
+            ttl.wait_any((pending, selected), start=1)
+
+        analysis = analyze_kernel_function(dm)
+        assert len(analysis.deferred_copy_wait_linenos) == 2
+        install_copy_wait_hooks({dm.__code__: analysis})
+        dm()
+
+        expected = (
+            ["local_selected", "local_pending"]
+            if use_local_request
+            else ["local_selected"]
+        )
+        assert events == expected
+        assert not external_pending.is_completed
+
+    @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
+    def test_wait_any_cleanup_supports_multiline_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Deferred requests do not depend on the wait_any source line."""
+        events: list[str] = []
+        _install_controlled_receive_requests(
+            monkeypatch,
+            events,
+            (("local_pending", True), ("local_selected", True)),
+        )
+
+        def dm():
+            pending = ttl.copy(
+                None,
+                None,
+            )
+            selected = ttl.copy(
+                None,
+                None,
+            )
+            ready = ttl.wait_any(
+                (
+                    pending,
+                    selected,
+                ),
+                start=1,
+            )
+            return ready
+
+        analysis = analyze_kernel_function(dm)
+        assert len(analysis.deferred_copy_wait_linenos) == 2
+        install_copy_wait_hooks({dm.__code__: analysis})
+        dm()
+
+        assert events == ["local_selected", "local_pending"]
+
+    @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
+    def test_wait_any_cleanup_survives_skipped_explicit_wait(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A conditional exact wait does not suppress deferred cleanup."""
+        events: list[str] = []
+        _install_controlled_receive_requests(
+            monkeypatch,
+            events,
+            (("local_pending", True), ("local_selected", True)),
+        )
+
+        def dm(wait_pending: bool):
+            pending = ttl.copy(None, None)
+            selected = ttl.copy(None, None)
+            ttl.wait_any((pending, selected), start=1)
+            if wait_pending:
+                pending.wait()
+
+        analysis = analyze_kernel_function(dm)
+        assert len(analysis.deferred_copy_wait_linenos) == 2
+        install_copy_wait_hooks({dm.__code__: analysis})
+        dm(False)
+
+        assert events == ["local_selected", "local_pending"]
 
     def test_outer_copy_waited_in_nested_callback_not_detected(self):
         """A transaction waited by a nested callback is explicitly waited."""

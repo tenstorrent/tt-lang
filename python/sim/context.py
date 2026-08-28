@@ -106,8 +106,9 @@ def cleanup_run_context() -> None:
     ctx.kernel_dfb_count = 0
     ctx.kernel_l1_bytes = 0
     ctx.active_hooks.clear()
-    ctx.wait_any_cleanup_codes.clear()
-    ctx.pending_wait_any_requests.clear()
+    ctx.deferred_copy_wait_codes.clear()
+    ctx.deferred_copy_wait_sites.clear()
+    ctx.deferred_copy_wait_requests.clear()
     ctx.auto_wait_copy_lines.clear()
     _free_monitoring_tool_id()
 

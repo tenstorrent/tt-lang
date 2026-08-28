@@ -118,14 +118,14 @@ class KernelAnalysis:
     analysis.  A non-empty set causes the simulator to print diagnostics and
     abort before running the kernel.
 
-    ``cleanup_wait_any_on_return`` completes retained nonselected requests at
-    every normal function return.
+    ``deferred_copy_wait_linenos`` identifies copy call sites whose dynamic
+    requests require automatic waits at normal function return.
     """
 
     injection_points: tuple[InjectionPoint, ...]
     bare_copy_linenos: frozenset[int]
     violations: tuple["PatternViolation", ...] = ()
-    cleanup_wait_any_on_return: bool = False
+    deferred_copy_wait_linenos: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -223,7 +223,7 @@ def _line_belongs_to_assignment(
 def _find_copy_records(
     stmts: list[ast.stmt],
     file_start_line: int,
-) -> tuple[list[tuple[str, int | None]], list[int], bool]:
+) -> tuple[list[tuple[str, int | None]], list[int], frozenset[int]]:
     """Find ttl.copy() calls that need automatic wait() insertion.
 
     Scans ``stmts`` (flat list from ``_all_stmts_flat``) for two patterns:
@@ -234,23 +234,23 @@ def _find_copy_records(
     * **Case A** — bare ``ttl.copy(...)`` expression with no assignment:
       returned as absolute line numbers in ``bare_linenos``.
 
-    The third result reports whether a multi-request wait requires retained
-    request cleanup at function return.
+    The third result identifies copy call sites requiring deferred waits after
+    a multi-request selection.
     """
-    # Collect all assigned copy vars and their linenos.
-    assigned: list[tuple[str, int]] = []  # (var_name, abs_lineno)
+    assigned: list[tuple[str, int, int]] = []
     bare_linenos: list[int] = []
 
     for stmt in stmts:
-        abs_lineno = file_start_line + stmt.lineno - 1
+        statement_lineno = file_start_line + stmt.lineno - 1
 
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             target = stmt.targets[0]
             if isinstance(target, ast.Name) and _is_ttl_copy_call(stmt.value):
-                assigned.append((target.id, abs_lineno))
+                copy_lineno = file_start_line + stmt.value.lineno - 1
+                assigned.append((target.id, statement_lineno, copy_lineno))
 
         elif isinstance(stmt, ast.Expr) and _is_ttl_copy_call(stmt.value):
-            bare_linenos.append(abs_lineno)
+            bare_linenos.append(file_start_line + stmt.value.lineno - 1)
 
     # Record exact completion separately from multi-request observations,
     # which only delay automatic cleanup.
@@ -284,32 +284,32 @@ def _find_copy_records(
 
     statement_linenos = [file_start_line + stmt.lineno - 1 for stmt in stmts]
     assigned_no_wait: list[tuple[str, int | None]] = []
-    cleanup_wait_any_on_return = False
-    for var_name, copy_lineno in assigned:
+    deferred_copy_wait_linenos: set[int] = set()
+    for var_name, assignment_lineno, copy_lineno in assigned:
         next_assignment_lineno = next(
             (
-                assignment_lineno
-                for assignment_name, assignment_lineno in assigned
-                if assignment_name == var_name and assignment_lineno > copy_lineno
+                candidate_lineno
+                for assignment_name, candidate_lineno, _ in assigned
+                if assignment_name == var_name and candidate_lineno > assignment_lineno
             ),
             None,
         )
-        if any(
-            _line_belongs_to_assignment(
-                wait_lineno, copy_lineno, next_assignment_lineno
-            )
-            for wait_lineno in wait_abs_linenos.get(var_name, [])
-        ):
-            continue
         selection_linenos = [
             selection_lineno
             for selection_lineno in wait_any_abs_linenos.get(var_name, [])
             if _line_belongs_to_assignment(
-                selection_lineno, copy_lineno, next_assignment_lineno
+                selection_lineno, assignment_lineno, next_assignment_lineno
             )
         ]
         if selection_linenos:
-            cleanup_wait_any_on_return = True
+            deferred_copy_wait_linenos.add(copy_lineno)
+        elif any(
+            _line_belongs_to_assignment(
+                wait_lineno, assignment_lineno, next_assignment_lineno
+            )
+            for wait_lineno in wait_abs_linenos.get(var_name, [])
+        ):
+            continue
         else:
             trigger_lineno = next(
                 (
@@ -320,7 +320,7 @@ def _find_copy_records(
                 None,
             )
             assigned_no_wait.append((var_name, trigger_lineno))
-    return assigned_no_wait, bare_linenos, cleanup_wait_any_on_return
+    return assigned_no_wait, bare_linenos, frozenset(deferred_copy_wait_linenos)
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +494,7 @@ def _analyze_func_def_node(
     if not stmts:
         return KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
 
-    assigned_no_wait, bare_linenos, cleanup_wait_any_on_return = _find_copy_records(
+    assigned_no_wait, bare_linenos, deferred_copy_wait_linenos = _find_copy_records(
         stmts, file_start_line
     )
     injection_points: list[InjectionPoint] = []
@@ -514,7 +514,7 @@ def _analyze_func_def_node(
     return KernelAnalysis(
         injection_points=tuple(injection_points),
         bare_copy_linenos=frozenset(bare_linenos),
-        cleanup_wait_any_on_return=cleanup_wait_any_on_return,
+        deferred_copy_wait_linenos=deferred_copy_wait_linenos,
     )
 
 
@@ -557,7 +557,7 @@ def _make_analysis_with_violations(
         violations=tuple(
             _violations_for_func_def(func_def, file_start_line, source_file, func_name)
         ),
-        cleanup_wait_any_on_return=base.cleanup_wait_any_on_return,
+        deferred_copy_wait_linenos=base.deferred_copy_wait_linenos,
     )
 
 
@@ -702,11 +702,11 @@ def _fire_injection(frame: types.FrameType, ip: InjectionPoint) -> None:
     handle.wait()
 
 
-def _complete_pending_wait_any_requests(frame: types.FrameType) -> None:
+def _complete_deferred_copy_waits(frame: types.FrameType) -> None:
     from .context import get_context
 
-    pending = get_context().pending_wait_any_requests.pop(id(frame), [])
-    for request in pending:
+    requests = get_context().deferred_copy_wait_requests.pop(frame, [])
+    for request in requests:
         if not request.is_completed:
             request.wait()
 
@@ -785,14 +785,14 @@ def _return_callback(
     if entry is None:
         return None
     _, return_ips = entry
-    cleanup_wait_any = id(code) in get_context().wait_any_cleanup_codes
-    if return_ips or cleanup_wait_any:
+    complete_deferred_copy_waits = id(code) in get_context().deferred_copy_wait_codes
+    if return_ips or complete_deferred_copy_waits:
         frame = sys._getframe(1)
         try:
             for ip in return_ips:
                 _fire_injection(frame, ip)
-            if cleanup_wait_any:
-                _complete_pending_wait_any_requests(frame)
+            if complete_deferred_copy_waits:
+                _complete_deferred_copy_waits(frame)
         except Exception as exc:
             _report_injection_error(exc)
     return None
@@ -824,7 +824,7 @@ def install_copy_wait_hooks(
     active_map = {
         code: analysis
         for code, analysis in injection_map.items()
-        if analysis.injection_points or analysis.cleanup_wait_any_on_return
+        if analysis.injection_points or analysis.deferred_copy_wait_linenos
     }
     monitoring = _monitoring_api() if active_map else None
 
@@ -837,6 +837,8 @@ def install_copy_wait_hooks(
     for code, analysis in injection_map.items():
         for lineno in analysis.bare_copy_linenos:
             ctx.auto_wait_copy_lines.add((code, lineno))
+        for lineno in analysis.deferred_copy_wait_linenos:
+            ctx.deferred_copy_wait_sites.add((id(code), lineno))
 
     if not active_map:
         return
@@ -862,12 +864,12 @@ def install_copy_wait_hooks(
             else:
                 by_lineno.setdefault(ip.trigger_lineno, []).append(ip)  # type: ignore[arg-type]
         ctx.active_hooks[id(code)] = (by_lineno, return_ips)
-        if analysis.cleanup_wait_any_on_return:
-            ctx.wait_any_cleanup_codes.add(id(code))
+        if analysis.deferred_copy_wait_linenos:
+            ctx.deferred_copy_wait_codes.add(id(code))
 
         ev = monitoring.events.NO_EVENTS
         if by_lineno:
             ev |= monitoring.events.LINE
-        if return_ips or analysis.cleanup_wait_any_on_return:
+        if return_ips or analysis.deferred_copy_wait_linenos:
             ev |= monitoring.events.PY_RETURN
         monitoring.set_local_events(tool_id, code, ev)
