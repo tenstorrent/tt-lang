@@ -1397,9 +1397,12 @@ private:
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
   WaitLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const llvm::SmallPtrSetImpl<Operation *> &completedPipeSends)
+               const llvm::SmallPtrSetImpl<Operation *> &completedPipeSends,
+               const llvm::SmallPtrSetImpl<Operation *>
+                   &writerNocDFBBlockCopyWaits)
       : OpConversionPattern(typeConverter, context),
-        completedPipeSends(completedPipeSends) {}
+        completedPipeSends(completedPipeSends),
+        writerNocDFBBlockCopyWaits(writerNocDFBBlockCopyWaits) {}
 
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
@@ -1434,7 +1437,12 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     Value nocVal =
         arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI8Type(),
                                   rewriter.getI8IntegerAttr(nocIndex));
-    if (*kind == TransferKind::read) {
+    // Writer kernels implement local DFB block copies with an async write.
+    // Their logical handle remains read-typed because both operands are local
+    // DFB views, so select the barrier from the physical transfer operation.
+    TransferKind completionKind =
+        writerNocDFBBlockCopyWaits.contains(op) ? TransferKind::write : *kind;
+    if (completionKind == TransferKind::read) {
       ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), nocVal);
     } else {
       ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), nocVal);
@@ -1445,6 +1453,7 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
 
 private:
   const llvm::SmallPtrSetImpl<Operation *> &completedPipeSends;
+  const llvm::SmallPtrSetImpl<Operation *> &writerNocDFBBlockCopyWaits;
 };
 
 //===----------------------------------------------------------------------===//
@@ -2461,6 +2470,15 @@ static LogicalResult lowerTTLOpsToTTKernel(
   initializePipeTransportSlotCounters(pipeTransportPlan, transportSlotCounters);
   materializePipeTransportCompletionBarriers(pipeTransportPlan);
 
+  llvm::SmallPtrSet<Operation *, 8> writerNocDFBBlockCopyWaits;
+  mod.walk([&](WaitOp waitOp) {
+    CopyOp copyOp = waitOp.getXf().getDefiningOp<CopyOp>();
+    if (copyOp && getNocIndex(copyOp) == 1 && getAttachedCB(copyOp.getSrc()) &&
+        getAttachedCB(copyOp.getDst())) {
+      writerNocDFBBlockCopyWaits.insert(waitOp);
+    }
+  });
+
   RewritePatternSet patterns(&ctx);
   scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
                                                        target);
@@ -2482,7 +2500,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeModulePlan,
                                          pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx,
-                             pipeModulePlan.getCompletedPipeSendWaits());
+                             pipeModulePlan.getCompletedPipeSendWaits(),
+                             writerNocDFBBlockCopyWaits);
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
       typeConverter, &ctx, pipeTransportPlan);
   patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
