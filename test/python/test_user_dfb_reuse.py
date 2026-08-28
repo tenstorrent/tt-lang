@@ -2249,8 +2249,13 @@ def test_allocation_group_reuses_interleaved_reset_epochs(
 
     final_mlir_path = tmp_path / "interleaved_allocation_group_epochs.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+    l1_budget = 11000 if dtype == torch.bfloat16 else 20000
     for _ in range(2):
-        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+        operation(
+            input_tensor,
+            output_tensor,
+            options=f"--ttl-reuse-user-dfbs --ttl-l1-budget {l1_budget}",
+        )
 
     assert _count_final_dfb_allocations(final_mlir_path) == 1
     actual = ttnn.to_torch(output_tensor).float()

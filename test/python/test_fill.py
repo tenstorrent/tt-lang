@@ -10,6 +10,8 @@ Tests:
 - Fill fused with elementwise add (fill(1.0) + input)
 """
 
+import inspect
+
 import pytest
 import torch
 import ttl
@@ -18,6 +20,16 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import assert_allclose, to_dram, to_l1
 from utils.correctness import assert_allclose as assert_result_allclose
+
+
+_FILL_TAKES_DTYPE = "dtype" in inspect.signature(ttl.block.fill).parameters
+
+
+def _fill(value, shape):
+    """Mirror the compatibility wrapper used by generated Blacksmith kernels."""
+    if _FILL_TAKES_DTYPE:
+        return ttl.block.fill(value, shape=shape, dtype=torch.float32)
+    return ttl.block.fill(value, shape=shape)
 
 
 @ttl.operation(grid=(1, 1))
@@ -118,6 +130,37 @@ def test_fill_f32_dtype_kwarg(device):
     result = ttnn.to_torch(out).float()
 
     expected = torch.full((32, 32), 2.5, dtype=torch.float32)
+    assert_allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+
+@ttl.operation(grid=(1, 1))
+def fill_module_helper_kernel(out):
+    """Fill through a module-level compatibility helper."""
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_dfb.reserve() as o:
+            o.store(_fill(4.5, o.shape))
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0, 0]).wait()
+
+
+def test_fill_through_module_helper(device):
+    """Module-level wrappers can emit TT-Lang syntax while tracing."""
+    out = to_l1(torch.zeros((32, 32), dtype=torch.float32), device)
+
+    fill_module_helper_kernel(out)
+    result = ttnn.to_torch(out).float()
+
+    expected = torch.full((32, 32), 4.5, dtype=torch.float32)
     assert_allclose(result, expected, rtol=1e-5, atol=1e-5)
 
 

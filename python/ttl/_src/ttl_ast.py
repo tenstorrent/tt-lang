@@ -454,6 +454,15 @@ class TTLGenericCompiler(TTCompilerBase):
             )
             self._current_signpost_line = None
 
+    def _visit_module_helper_call(self, node, helper):
+        """Evaluate a module-level Python helper while tracing a thread."""
+        args = [self._load_func_arg(self.visit(arg), arg, node) for arg in node.args]
+        kwargs = {
+            kw.arg: self._load_func_arg(self.visit(kw.value), kw.value, node)
+            for kw in node.keywords
+        }
+        return helper(*args, **kwargs)
+
     def _on_scope_exit(self):
         self._close_final_signpost()
 
@@ -525,6 +534,20 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Check for PipeNet.is_src/is_dst/is_active predicate calls
                 if self._is_pipenet_predicate_call(node):
                     return self._handle_pipenet_predicate(node)
+
+                # Module-level helpers are useful for small compatibility
+                # wrappers around TT-Lang syntax, such as selecting an
+                # optional keyword based on an introspected API signature.
+                # Evaluate those helpers while tracing, after resolving their
+                # arguments through the same path as built-in syntax calls.
+                if isinstance(node.func, ast.Name):
+                    helper = self.fn_globals.get(node.func.id)
+                    module_name = self.fn_globals.get("__name__")
+                    if inspect.isfunction(helper) and helper.__module__ == module_name:
+                        return self._try_emit_auto_signposts(
+                            node,
+                            lambda: self._visit_module_helper_call(node, helper),
+                        )
 
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
