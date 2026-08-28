@@ -103,11 +103,12 @@ def _make_tree_reduce(data_format, bytes_per_element):
         @ttl.compute()
         def compute():
             node_x, node_y = ttl.node(dims=2)
+            destination_count = tree_net.destination_count()
             if node_x == root_x and node_y == root_y:
                 with output_dfb.reserve() as output_block:
                     with staged_input_dfb.wait() as staged_input_block:
                         output_block.store_rows(staged_input_block)
-                    for receive_index in range(tree_net.destination_count()):
+                    for receive_index in range(destination_count):
                         with receive_dfb.wait() as receive_block:
                             output_block.accumulate_rows(receive_block)
             else:
@@ -115,7 +116,7 @@ def _make_tree_reduce(data_format, bytes_per_element):
                     with staged_input_dfb.wait() as staged_input_block:
                         accumulator_block.store(staged_input_block)
                     if tree_net.is_dst():
-                        for receive_index in range(tree_net.destination_count()):
+                        for receive_index in range(destination_count):
                             with receive_dfb.wait() as receive_block:
                                 accumulator_block += receive_block
 
