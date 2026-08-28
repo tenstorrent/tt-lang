@@ -1003,38 +1003,11 @@ struct TTLFormPipeTransportsPass
       }
       return std::make_pair(*resources, *semaphoreBytes);
     };
-    auto validateConservativeResources =
-        [&](const ConservativePipeResources &resources,
-            const DFBLogicalIdentityAnalysis &identities) -> LogicalResult {
-      FailureOr<DFBAllocationFootprint> allocationFootprint =
-          getLogicalDFBAllocationFootprint(module, identities);
-      std::optional<uint64_t> scratchBytes =
-          llvm::checkedAddUnsigned(resources.scratchBytes, *resetStateBytes);
-      if (failed(allocationFootprint) || !scratchBytes) {
-        module.emitOpError("combined L1 allocation size is not representable");
-        return failure();
-      }
-      return validateCombinedDFBResourceL1Bytes(
-          module, *allocationFootprint, *scratchBytes,
-          resources.globalSemaphoreCount, overrideBytes);
-    };
     if (groupSize == 1) {
       FailureOr<std::pair<ConservativePipeResources, uint64_t>> plan =
           planConservativeResources();
       if (failed(plan)) {
         module.emitOpError("conservative PipeNet L1 size is not representable");
-        signalPassFailure();
-        return;
-      }
-      DFBLogicalIdentityAnalysis identities(module);
-      if (!identities.succeeded()) {
-        Operation *errorOperation = identities.getErrorOperation();
-        (errorOperation ? errorOperation : module.getOperation())
-            ->emitOpError(identities.getErrorMessage());
-        signalPassFailure();
-        return;
-      }
-      if (failed(validateConservativeResources(plan->first, identities))) {
         signalPassFailure();
         return;
       }
@@ -1098,12 +1071,6 @@ struct TTLFormPipeTransportsPass
       signalPassFailure();
       return;
     }
-    if (failed(validateConservativeResources(conservativePipeResources,
-                                             identities))) {
-      signalPassFailure();
-      return;
-    }
-
     llvm::MapVector<Operation *, SmallVector<const PipeTransferNode *>>
         transfersByLoop;
     for (const PipeTransferNode &transfer : pipeGraph.getPipeTransferNodes()) {
