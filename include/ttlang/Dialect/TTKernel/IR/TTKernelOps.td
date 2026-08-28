@@ -192,6 +192,31 @@ def TTKernel_PackTileBlockOp : TTKernel_Op<"pack_tile_block"> {
     }];
 }
 
+def TTKernel_PackRowsInitOp : TTKernel_InitOp<"pack_rows_init"> {
+    let summary = "Configure contiguous DST row packing";
+    let description = [{
+      Configures the packer to write `row_count` contiguous hardware rows from
+      a DST tile. The configuration remains active until `pack_rows_uninit`.
+      `row_count` must be in the range 1 through 64.
+    }];
+
+    let arguments = (ins
+      ConfinedAttr<I64Attr, [IntPositive, IntMaxValue<64>]>:$row_count
+    );
+
+    let assemblyFormat = [{ attr-dict }];
+}
+
+def TTKernel_PackRowsUninitOp : TTKernel_Op<"pack_rows_uninit"> {
+    let summary = "Restore the packer after contiguous DST row packing";
+    let description = [{
+      Restores the standard packer configuration after one or more
+      `pack_rows` operations.
+    }];
+
+    let assemblyFormat = [{ attr-dict }];
+}
+
 def TTKernel_PackRowsOp : TTKernel_Op<"pack_rows"> {
     let summary = "Pack a contiguous prefix of DST rows";
     let description = [{
@@ -200,10 +225,10 @@ def TTKernel_PackRowsOp : TTKernel_Op<"pack_rows"> {
       hardware row contains 16 datums, so two hardware rows represent one
       logical 32-datum tile row. `row_count` must be in the range 1 through 64.
 
-      The destination pages must be reserved before this operation. Lowering
-      initializes the row-packing configuration, performs the pack, and
-      restores the normal packer configuration. The operation is available on
-      Wormhole and Blackhole compute engines.
+      The destination pages must be reserved before this operation. A
+      dominating `pack_rows_init` must configure the same `row_count`, and a
+      subsequent `pack_rows_uninit` must restore the packer configuration.
+      The operation is available on Wormhole and Blackhole compute engines.
     }];
 
     let arguments = (ins

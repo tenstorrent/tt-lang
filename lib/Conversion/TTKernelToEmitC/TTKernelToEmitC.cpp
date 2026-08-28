@@ -2954,28 +2954,22 @@ public:
   }
 };
 
-class TTKernelToEmitCPackRowsRewriter
-    : public OpConversionPattern<ttkernel::PackRowsOp> {
+class TTKernelToEmitCPackRowsInitRewriter
+    : public OpConversionPattern<ttkernel::PackRowsInitOp> {
 public:
-  using OpConversionPattern<ttkernel::PackRowsOp>::OpConversionPattern;
+  using OpConversionPattern<ttkernel::PackRowsInitOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(ttkernel::PackRowsOp op,
-                  ttkernel::PackRowsOp::Adaptor adaptor,
+  matchAndRewrite(ttkernel::PackRowsInitOp op,
+                  ttkernel::PackRowsInitOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     Location location = op.getLoc();
     Value rowCount = emitc::LiteralOp::create(
         rewriter, location, rewriter.getI32Type(),
         rewriter.getStringAttr((Twine(op.getRowCount()) + "U").str()));
-    emitc::CallOpaqueOp::create(rewriter, location, TypeRange{},
-                                "pack_rows_init", nullptr, ArrayAttr(),
-                                ValueRange{rowCount});
-    emitc::CallOpaqueOp::create(rewriter, location, TypeRange{}, "pack_rows",
-                                nullptr, ArrayAttr(), adaptor.getOperands());
-    emitc::CallOpaqueOp::create(rewriter, location, TypeRange{},
-                                "pack_rows_uninit", nullptr, ArrayAttr(),
-                                ValueRange{});
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "pack_rows_init", nullptr, ArrayAttr(),
+        ValueRange{rowCount});
     return success();
   }
 };
@@ -3263,7 +3257,9 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyBlockMatmulPartialsOp>,
-        TTKernelToEmitCPackRowsRewriter,
+        TTKernelToEmitCPackRowsInitRewriter,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::PackRowsUninitOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::PackRowsOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,
