@@ -913,3 +913,96 @@ func.func @branch_local_block_argument_wait_any(%condition: i1) {
   }
   func.return
 }
+
+// -----
+
+// A nested source iteration completes a request issued by the destination
+// iteration when both roles contain the same launch node.
+
+// CHECK-LABEL: func.func @self_loop_foreach_wait
+// CHECK: ttl.pipenet_foreach_dst
+// CHECK: %[[REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: ttl.pipenet_foreach_src
+// CHECK: %[[SEND:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
+// CHECK-NEXT: ttl.wait %[[SEND]]
+func.func @self_loop_foreach_wait() {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.pipenet_foreach_dst attributes {
+      records = #ttl.pipenet_records<net 0 name "net" pipes[
+        <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+         dstEndX = 0, dstEndY = 0>
+      ]>} {
+  ^bb0(%selected_dst: !ttl.selected_pipe_dst):
+    %request = ttl.copy %selected_dst, %dst
+        : (!ttl.selected_pipe_dst,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "net" pipes[
+          <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+           dstEndX = 0, dstEndY = 0>
+        ]>} {
+    ^bb0(%selected_src: !ttl.selected_pipe_src):
+      %send = ttl.copy %source, %selected_src
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.selected_pipe_src)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %request : !ttl.receive_request
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+  }
+  func.return
+}
+
+// -----
+
+// A source iteration on a different node cannot complete the destination
+// node's request, so an implicit wait remains necessary.
+
+// CHECK-LABEL: func.func @disjoint_foreach_wait
+// CHECK: ttl.pipenet_foreach_dst
+// CHECK: %[[REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
+// CHECK-NEXT: ttl.pipenet_foreach_src
+// CHECK: ttl.wait %[[REQUEST]]
+func.func @disjoint_foreach_wait() {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.pipenet_foreach_dst attributes {
+      records = #ttl.pipenet_records<net 0 name "net" pipes[
+        <srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 0,
+         dstEndX = 0, dstEndY = 0>
+      ]>} {
+  ^bb0(%selected_dst: !ttl.selected_pipe_dst):
+    %request = ttl.copy %selected_dst, %dst
+        : (!ttl.selected_pipe_dst,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "net" pipes[
+          <srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 0,
+           dstEndX = 0, dstEndY = 0>
+        ]>} {
+    ^bb0(%selected_src: !ttl.selected_pipe_src):
+      %send = ttl.copy %source, %selected_src
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.selected_pipe_src)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %request : !ttl.receive_request
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+  }
+  func.return
+}

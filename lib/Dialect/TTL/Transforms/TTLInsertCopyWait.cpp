@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/DenseAnalysis.h"
@@ -261,6 +262,34 @@ private:
   DenseSet<Operation *> possiblyOutstandingCopies;
 };
 
+static std::optional<LaunchNodeDomain>
+getPipeNetIterationDomain(Operation *operation) {
+  if (auto foreachSrc = dyn_cast<PipeNetForeachSrcOp>(operation)) {
+    return getPipeRecordsRoleLaunchNodeDomain(foreachSrc.getRecords(),
+                                              PipeRole::Source);
+  }
+  if (auto foreachDst = dyn_cast<PipeNetForeachDstOp>(operation)) {
+    return getPipeRecordsRoleLaunchNodeDomain(foreachDst.getRecords(),
+                                              PipeRole::Destination);
+  }
+  return std::nullopt;
+}
+
+static std::optional<LaunchNodeDomain>
+getEnclosingPipeNetIterationDomain(Operation *operation) {
+  std::optional<LaunchNodeDomain> domain;
+  for (Operation *ancestor = operation->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    std::optional<LaunchNodeDomain> ancestorDomain =
+        getPipeNetIterationDomain(ancestor);
+    if (!ancestorDomain) {
+      continue;
+    }
+    domain = domain ? domain->intersectWith(*ancestorDomain) : ancestorDomain;
+  }
+  return domain;
+}
+
 // Propagate possible outstanding-copy state through region and block control
 // flow. A copy is complete only when no reachable function exit retains it.
 class CopyCompletionDataFlow
@@ -296,6 +325,35 @@ public:
     }
     propagateIfChanged(after, after->join(before.isInitialized(), transferred));
     return success();
+  }
+
+  void visitRegionBranchControlFlowTransfer(
+      RegionBranchOpInterface branch, std::optional<unsigned> regionFrom,
+      std::optional<unsigned> regionTo, const CopyCompletionLattice &before,
+      CopyCompletionLattice *after) override {
+    if (regionFrom || regionTo) {
+      propagateIfChanged(after, after->join(before));
+      return;
+    }
+
+    std::optional<LaunchNodeDomain> iterationDomain =
+        getPipeNetIterationDomain(branch.getOperation());
+    if (!iterationDomain) {
+      propagateIfChanged(after, after->join(before));
+      return;
+    }
+
+    // The parent-to-parent edge represents nodes with no matching record. A
+    // copy restricted to the iteration domain cannot be outstanding there.
+    DenseSet<Operation *> transferred(before.getPossiblyOutstandingCopies());
+    for (Operation *copyOperation : before.getPossiblyOutstandingCopies()) {
+      std::optional<LaunchNodeDomain> copyDomain =
+          getEnclosingPipeNetIterationDomain(copyOperation);
+      if (copyDomain && copyDomain->isSubsetOf(*iterationDomain)) {
+        transferred.erase(copyOperation);
+      }
+    }
+    propagateIfChanged(after, after->join(before.isInitialized(), transferred));
   }
 
 private:
