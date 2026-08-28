@@ -481,6 +481,15 @@ struct CopyWaitPlan {
   Location location;
 };
 
+static bool allCopiesHaveImmediateWait(func::FuncOp func) {
+  WalkResult result = func.walk([&](CopyOp copy) {
+    auto wait = dyn_cast_or_null<WaitOp>(copy->getNextNode());
+    return wait && wait.getXf() == copy.getXf() ? WalkResult::advance()
+                                                : WalkResult::interrupt();
+  });
+  return !result.wasInterrupted();
+}
+
 static FailureOr<Operation *>
 getImplicitWaitAnchor(CopyOp copy, const CopyCompletionIndex &index,
                       const LaunchNodeDomain &baseDomain) {
@@ -543,6 +552,10 @@ struct TTLInsertCopyWaitPass
     : public impl::TTLInsertCopyWaitBase<TTLInsertCopyWaitPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+    if (allCopiesHaveImmediateWait(func)) {
+      return;
+    }
+
     LaunchNodeDomainState launchNodeDomains;
     launchNodeDomains.initialize(func->getParentOfType<ModuleOp>());
     ValueOriginAnalysis valueOrigins(func);
