@@ -2172,7 +2172,6 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
   auto outputTileType =
       dyn_cast<ttcore::TileType>(outputTensorType.getElementType());
   assert(outputTileType && "verified store output must contain tiles");
-  plan.inputTensorType = tensorType;
   plan.outputTensorType = outputTensorType;
   plan.inputTileType = tileType;
   plan.outputTileType = outputTileType;

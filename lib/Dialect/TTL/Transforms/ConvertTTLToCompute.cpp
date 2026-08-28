@@ -1150,7 +1150,6 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
           op, "store operands changed after ComputeOp creation analysis");
     }
     Value input = plan.input;
-    RankedTensorType inputType = plan.inputTensorType;
     RankedTensorType outputType = plan.outputTensorType;
 
     Location loc = op.getLoc();
