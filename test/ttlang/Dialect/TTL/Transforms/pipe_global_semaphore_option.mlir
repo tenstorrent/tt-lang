@@ -24,10 +24,12 @@
 // LOCAL: %[[LOCAL_READY_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_READY_COUNTER]])
 // LOCAL: %[[LOCAL_COMPLETION_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
-// LOCAL: %[[LOCAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}})
+// LOCAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // LOCAL: ttkernel.experimental.semaphore_wait(%[[LOCAL_READY_PTR]]
 // LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[LOCAL_READY_PTR]]
-// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
+// LOCAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 
 // GLOBAL-LABEL: module attributes
 // GLOBAL-SAME: ttl.pipe_global_semaphore_count = 2 : i64
@@ -44,10 +46,12 @@
 // GLOBAL: %[[GLOBAL_READY_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_READY_COUNTER]])
 // GLOBAL: %[[GLOBAL_COMPLETION_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
-// GLOBAL: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}})
+// GLOBAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // GLOBAL: ttkernel.experimental.semaphore_wait(%[[GLOBAL_READY_PTR]]
 // GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_READY_PTR]]
-// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
+// GLOBAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,

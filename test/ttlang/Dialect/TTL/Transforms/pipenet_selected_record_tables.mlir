@@ -59,11 +59,11 @@
 // CHECK-NEXT: %[[REVERSE_CONNECTION_ARG_INDEX:.*]] = arith.addi %[[REVERSE_FABRIC_BASE]], %[[REVERSE_CONNECTION_RELATIVE_INDEX]] : index
 // CHECK-NEXT: %[[REVERSE_CONNECTION:.*]] = ttkernel.get_arg_val(%[[REVERSE_CONNECTION_ARG_INDEX]]) : (index) -> i32
 // CHECK: %[[COMPLETION_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
-// CHECK-NEXT: %[[COMPLETION_STATE_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
-// CHECK-NEXT: ttkernel.get_common_arg_val(%[[COMPLETION_STATE_ARG_INDEX]]) : (index) -> i32
+// CHECK-NEXT: %[[COMPLETION_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_COUNTER]]) : (index) -> i32
+// CHECK-NEXT: %[[COMPLETION_POINTER:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION_ADDRESS]])
 // CHECK: scf.if
 // CHECK: ttkernel.routing_plane.atomic_inc({{.*}}, %[[REVERSE_CONNECTION]], %[[REVERSE_DEVICE]], %[[REVERSE_MESH]], %[[REVERSE_HOPS]],
-// CHECK: memref.load {{.*}}[%[[COMPLETION_COUNTER]]]
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_POINTER]], {{.*}})
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [3]>>
 #records = #ttl.pipenet_records<net 0 name "selected_tables" pipes [

@@ -38,7 +38,7 @@ func.func private @foreach_src_send_direct_receiver()
 
 // CHECK-LABEL: func.func @foreach_src_send_direct
 // CHECK-NOT: scf.for
-// CHECK-COUNT-4: ttkernel.noc_async_write %
+// CHECK-COUNT-4: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
 // CHECK-NOT: scf.for
 // CHECK-NOT: ttl.pipenet_foreach_src
 // CHECK-NOT: ttl.select_pipe_src
@@ -303,10 +303,10 @@ func.func private @foreach_dst_receive_table_driven_sender()
 }
 
 // CHECK-LABEL: func.func @foreach_dst_receive_table_driven
-// CHECK: memref.alloca
+// CHECK-NOT: memref.alloca
 // CHECK: scf.for
 // CHECK-NOT: ttkernel.noc_inline_dw_write(
-// CHECK-COUNT-1: ttkernel.experimental.semaphore_wait_min(
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[ONE:.*]])
 // CHECK-NOT: ttl.pipenet_foreach_dst
 // CHECK-NOT: ttl.select_pipe_dst
 // CHECK: return

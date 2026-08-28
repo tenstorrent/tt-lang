@@ -7,7 +7,8 @@
 // CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
 // CHECK-DAG: %[[SEM_A:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[SEM_B:.*]] = arith.constant 1 : index
-// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<2xi32>
+// CHECK-DAG: %[[ONE:.*]] = arith.constant 1 : i32
+// CHECK-NOT: memref.alloca
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
 // CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
@@ -15,10 +16,7 @@
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[V1:.*]] = memref.load %[[COUNTERS]][%[[SEM_A]]]
-// CHECK: %[[N1:.*]] = arith.addi %[[V1]]
-// CHECK: memref.store %[[N1]], %[[COUNTERS]][%[[SEM_A]]]
-// CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[ONE]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 // CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
 // CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
@@ -26,10 +24,7 @@
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[V2:.*]] = memref.load %[[COUNTERS]][%[[SEM_B]]]
-// CHECK: %[[N2:.*]] = arith.addi %[[V2]]
-// CHECK: memref.store %[[N2]], %[[COUNTERS]][%[[SEM_B]]]
-// CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[ONE]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
   func.func @overlap_two_receives_use_distinct_completion()
@@ -95,16 +90,10 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 
 // Transfers with disjoint physical receivers may reuse one semaphore index.
 // CHECK-LABEL: func.func @disjoint_receivers_reuse_completion
-// CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
+// CHECK-DAG: %[[ONE:.*]] = arith.constant 1 : i32
 // CHECK-NOT: memref.alloca
-// CHECK: %[[VA:.*]] = memref.load %[[CTR]]
-// CHECK: %[[NA:.*]] = arith.addi %[[VA]]
-// CHECK: memref.store %[[NA]], %[[CTR]]
-// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NA]])
-// CHECK: %[[VB:.*]] = memref.load %[[CTR]]
-// CHECK: %[[NB:.*]] = arith.addi %[[VB]]
-// CHECK: memref.store %[[NB]], %[[CTR]]
-// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NB]])
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[ONE]])
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[ONE]])
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
   func.func @disjoint_receivers_reuse_completion()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {

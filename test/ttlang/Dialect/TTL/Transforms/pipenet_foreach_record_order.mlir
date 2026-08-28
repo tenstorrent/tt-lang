@@ -20,9 +20,11 @@
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: %[[SEND_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[SEND_DFB]])
-// CHECK: ttkernel.noc_async_write %[[SEND_WRITE_PTR]], core[{{.*}}]
-// CHECK: ttkernel.noc_async_write_barrier
-// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.noc_async_write %[[SEND_WRITE_PTR]], core[{{.*}}]{{.*}} posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+// CHECK-NOT: ttkernel.noc_async_write_barrier
+// CHECK-NOT: ttkernel.noc_async_atomic_barrier
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: ttkernel.cb_push_back(%[[RECEIVER_DFB]], %[[ONE_I32]])
 // CHECK-NEXT: ttkernel.cb_wait_front(%[[RECEIVER_DFB]], %[[ONE_I32]])

@@ -26,10 +26,11 @@
 // LOCAL: %[[LOCAL_CAPACITY_ACQUIRE:.*]] = ttkernel.get_semaphore(%[[LOCAL_CAPACITY_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_CAPACITY_ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast(%[[LOCAL_CAPACITY_ACQUIRE]])
 // LOCAL: %[[LOCAL_COMPLETION_SIGNAL:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
-// LOCAL: %[[LOCAL_COMPLETION_SIGNAL_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION_SIGNAL]],
+// LOCAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_CAPACITY_ACQUIRE_PTR]],
-// LOCAL: ttkernel.noc_async_write
-// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_SIGNAL_NOC]],
+// LOCAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[LOCAL_COMPLETION_SIGNAL]], {{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 
 // Global-only mode preserves the same two-counter plan and uses no local ids.
 // GLOBAL-LABEL: module attributes
@@ -51,10 +52,11 @@
 // GLOBAL: %[[GLOBAL_CAPACITY_ACQUIRE:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_CAPACITY_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_CAPACITY_ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast(%[[GLOBAL_CAPACITY_ACQUIRE]])
 // GLOBAL: %[[GLOBAL_COMPLETION_SIGNAL:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
-// GLOBAL: %[[GLOBAL_COMPLETION_SIGNAL_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION_SIGNAL]],
+// GLOBAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_CAPACITY_ACQUIRE_PTR]],
-// GLOBAL: ttkernel.noc_async_write
-// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_SIGNAL_NOC]],
+// GLOBAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[GLOBAL_COMPLETION_SIGNAL]], {{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @select_capacity_counter_storage()
