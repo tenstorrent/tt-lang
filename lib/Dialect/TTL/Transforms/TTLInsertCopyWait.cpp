@@ -20,11 +20,13 @@
 #include "mlir/Analysis/DataFlow/DenseAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Analysis/SliceWalk.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttl-insert-copy-wait"
@@ -36,20 +38,58 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// Return whether the operand denotes this copy whenever the copy executes.
-// Branch-local origins are correlated with the selected scf.if alternative;
-// an outside origin must be preserved by every alternative.
-static bool completionOperandSelectsCopy(Value completionOperand, CopyOp copy) {
+static bool completionOperandSelectsCopyImpl(Value completionOperand,
+                                             CopyOp copy,
+                                             DenseSet<Value> &activeValues) {
   if (completionOperand == copy.getXf()) {
     return true;
   }
+  if (!activeValues.insert(completionOperand).second) {
+    return false;
+  }
+  auto removeActiveValue =
+      llvm::scope_exit([&] { activeValues.erase(completionOperand); });
 
   if (auto cast =
           completionOperand.getDefiningOp<UnrealizedConversionCastOp>()) {
     if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
       return false;
     }
-    return completionOperandSelectsCopy(cast.getInputs().front(), copy);
+    return completionOperandSelectsCopyImpl(cast.getInputs().front(), copy,
+                                            activeValues);
+  }
+
+  if (auto blockArgument = dyn_cast<BlockArgument>(completionOperand)) {
+    Block *argumentBlock = blockArgument.getOwner();
+    if (argumentBlock->isEntryBlock() ||
+        argumentBlock->getParent() != copy->getParentRegion()) {
+      return false;
+    }
+    std::optional<SmallVector<Value>> predecessors =
+        getControlFlowPredecessors(completionOperand);
+    if (!predecessors) {
+      return false;
+    }
+    SmallVector<Block *> predecessorBlocks(argumentBlock->getPredecessors());
+    if (predecessorBlocks.size() != predecessors->size()) {
+      return false;
+    }
+
+    bool hasContinuationFromCopy = false;
+    for (auto [predecessorBlock, predecessorValue] :
+         llvm::zip(predecessorBlocks, *predecessors)) {
+      // A mutually exclusive predecessor cannot carry a value from this copy.
+      if (copy->getBlock() != predecessorBlock &&
+          !copy->getBlock()->isReachable(predecessorBlock)) {
+        continue;
+      }
+      hasContinuationFromCopy = true;
+      if (!completionOperandSelectsCopyImpl(predecessorValue, copy,
+                                            activeValues)) {
+        return false;
+      }
+    }
+    return hasContinuationFromCopy;
   }
 
   auto result = dyn_cast<OpResult>(completionOperand);
@@ -79,14 +119,22 @@ static bool completionOperandSelectsCopy(Value completionOperand, CopyOp copy) {
   Value elseValue = elseYield.getResults()[resultIndex];
   Region *copyRegion = copy->getParentRegion();
   if (ifOp.getThenRegion().isAncestor(copyRegion)) {
-    return completionOperandSelectsCopy(thenValue, copy);
+    return completionOperandSelectsCopyImpl(thenValue, copy, activeValues);
   }
   if (ifOp.getElseRegion().isAncestor(copyRegion)) {
-    return completionOperandSelectsCopy(elseValue, copy);
+    return completionOperandSelectsCopyImpl(elseValue, copy, activeValues);
   }
 
-  return completionOperandSelectsCopy(thenValue, copy) &&
-         completionOperandSelectsCopy(elseValue, copy);
+  return completionOperandSelectsCopyImpl(thenValue, copy, activeValues) &&
+         completionOperandSelectsCopyImpl(elseValue, copy, activeValues);
+}
+
+// Return whether the operand denotes this copy on every continuation from the
+// copy to the operand.
+static bool completionOperandSelectsCopy(Value completionOperand, CopyOp copy) {
+  DenseSet<Value> activeValues;
+  return completionOperandSelectsCopyImpl(completionOperand, copy,
+                                          activeValues);
 }
 
 class CopyCompletionIndex {
@@ -223,7 +271,17 @@ private:
   const CopyCompletionIndex &completionIndex;
 };
 
-static FailureOr<DenseSet<Operation *>>
+struct CopyCompletionResult {
+  struct ReturnState {
+    Operation *returnOperation;
+    DenseSet<Operation *> outstandingCopies;
+  };
+
+  DenseSet<Operation *> completedCopies;
+  SmallVector<ReturnState> returnStates;
+};
+
+static FailureOr<CopyCompletionResult>
 findCopiesCompletedOnAllContinuations(func::FuncOp func,
                                       const CopyCompletionIndex &index) {
   DataFlowSolver solver;
@@ -233,9 +291,11 @@ findCopiesCompletedOnAllContinuations(func::FuncOp func,
     return failure();
   }
 
-  DenseSet<Operation *> coveredCopies(index.getCopies().begin(),
-                                      index.getCopies().end());
+  CopyCompletionResult result;
+  result.completedCopies.insert(index.getCopies().begin(),
+                                index.getCopies().end());
   bool foundReachableReturn = false;
+  bool missingReturnState = false;
   func.walk([&](func::ReturnOp returnOp) {
     ProgramPoint *blockStart =
         solver.getProgramPointBefore(returnOp->getBlock());
@@ -249,17 +309,23 @@ findCopiesCompletedOnAllContinuations(func::FuncOp func,
     const auto *lattice =
         solver.lookupState<CopyCompletionLattice>(beforeReturn);
     if (!lattice || !lattice->isInitialized()) {
-      coveredCopies.clear();
+      missingReturnState = true;
       return;
     }
+    CopyCompletionResult::ReturnState returnState{returnOp, {}};
     for (Operation *copy : lattice->getPossiblyOutstandingCopies()) {
-      coveredCopies.erase(copy);
+      returnState.outstandingCopies.insert(copy);
+      result.completedCopies.erase(copy);
     }
+    result.returnStates.push_back(std::move(returnState));
   });
-  if (!foundReachableReturn) {
-    coveredCopies.clear();
+  if (missingReturnState) {
+    return failure();
   }
-  return coveredCopies;
+  if (!foundReachableReturn) {
+    result.completedCopies.clear();
+  }
+  return result;
 }
 
 struct ReceiveSelectionObservation {
@@ -297,73 +363,6 @@ struct CopyWaitPlan {
   Location location;
 };
 
-static Operation *findAncestorInBlock(Operation *operation, Block *block) {
-  for (Operation *ancestor = operation; ancestor;
-       ancestor = ancestor->getParentOp()) {
-    if (ancestor->getBlock() == block) {
-      return ancestor;
-    }
-  }
-  return nullptr;
-}
-
-static std::optional<CopyWaitPlan> planAfterSelectionObservations(
-    CopyOp copy, ArrayRef<ReceiveSelectionObservation> observations,
-    const DominanceInfo &dominanceInfo,
-    const PostDominanceInfo &postDominanceInfo) {
-  Block *copyBlock = copy->getBlock();
-  bool copyBlockContainsEveryObservation = llvm::all_of(
-      observations, [&](const ReceiveSelectionObservation &observation) {
-        Operation *ancestor =
-            findAncestorInBlock(observation.waitAny, copyBlock);
-        return ancestor && copy->isBeforeInBlock(ancestor);
-      });
-  if (copyBlockContainsEveryObservation) {
-    return CopyWaitPlan{copy.getXf(), nullptr, copyBlock->getTerminator(),
-                        copy.getLoc()};
-  }
-
-  for (const ReceiveSelectionObservation &candidate : observations) {
-    if (!candidate.requestSelectsCopy) {
-      continue;
-    }
-    Operation *candidateWaitAny = candidate.waitAny;
-    if (!postDominanceInfo.postDominates(candidateWaitAny,
-                                         copy.getOperation())) {
-      continue;
-    }
-    bool followsEveryObservation = llvm::all_of(
-        observations, [&](const ReceiveSelectionObservation &observation) {
-          return observation.waitAny == candidate.waitAny ||
-                 postDominanceInfo.postDominates(candidateWaitAny,
-                                                 observation.waitAny);
-        });
-    if (followsEveryObservation) {
-      return CopyWaitPlan{candidate.request, nullptr,
-                          candidateWaitAny->getBlock()->getTerminator(),
-                          copy.getLoc()};
-    }
-  }
-
-  Block *commonPostDominator = copyBlock;
-  for (const ReceiveSelectionObservation &observation : observations) {
-    commonPostDominator = postDominanceInfo.findNearestCommonDominator(
-        commonPostDominator, observation.waitAny->getBlock());
-    if (!commonPostDominator) {
-      return std::nullopt;
-    }
-  }
-  if (commonPostDominator == copyBlock || commonPostDominator->empty()) {
-    return std::nullopt;
-  }
-
-  Operation *terminator = commonPostDominator->getTerminator();
-  if (!dominanceInfo.dominates(copy.getXf(), terminator)) {
-    return std::nullopt;
-  }
-  return CopyWaitPlan{copy.getXf(), nullptr, terminator, copy.getLoc()};
-}
-
 static bool hasEquivalentPlan(ArrayRef<CopyWaitPlan> plans,
                               const CopyWaitPlan &candidate) {
   return llvm::any_of(plans, [&](const CopyWaitPlan &plan) {
@@ -379,9 +378,9 @@ struct TTLInsertCopyWaitPass
     func::FuncOp func = getOperation();
     ValueOriginAnalysis valueOrigins(func);
     CopyCompletionIndex completionIndex(func, valueOrigins);
-    FailureOr<DenseSet<Operation *>> maybeCoveredCopies =
+    FailureOr<CopyCompletionResult> maybeCompletionResult =
         findCopiesCompletedOnAllContinuations(func, completionIndex);
-    if (failed(maybeCoveredCopies)) {
+    if (failed(maybeCompletionResult)) {
       func.emitOpError("failed to analyze copy completion coverage");
       signalPassFailure();
       return;
@@ -390,10 +389,9 @@ struct TTLInsertCopyWaitPass
     DenseMap<Operation *, SmallVector<ReceiveSelectionObservation>>
         observations = indexReceiveSelectionObservations(func, valueOrigins);
     DominanceInfo dominanceInfo(func);
-    PostDominanceInfo postDominanceInfo(func);
     SmallVector<CopyWaitPlan> plans;
     for (Operation *copyOperation : completionIndex.getCopies()) {
-      if (maybeCoveredCopies->contains(copyOperation)) {
+      if (maybeCompletionResult->completedCopies.contains(copyOperation)) {
         continue;
       }
       auto copy = cast<CopyOp>(copyOperation);
@@ -403,33 +401,42 @@ struct TTLInsertCopyWaitPass
         continue;
       }
 
-      std::optional<CopyWaitPlan> plan = planAfterSelectionObservations(
-          copy, found->second, dominanceInfo, postDominanceInfo);
-      if (!plan) {
-        bool plannedAtReturn = false;
-        func.walk([&](func::ReturnOp returnOp) {
-          if (!dominanceInfo.dominates(copy.getXf(), returnOp)) {
-            return;
-          }
-          plannedAtReturn = true;
-          CopyWaitPlan returnPlan{copy.getXf(), nullptr,
-                                  returnOp.getOperation(), copy.getLoc()};
-          if (!hasEquivalentPlan(plans, returnPlan)) {
-            plans.push_back(returnPlan);
-          }
-        });
-        if (!plannedAtReturn) {
-          copy.emitOpError(
-              "cannot place an implicit wait after every wait_any "
-              "observation; add explicit waits after the final selection on "
-              "each continuation");
-          signalPassFailure();
-          return;
+      bool hasUnplannedReturn = false;
+      for (const CopyCompletionResult::ReturnState &returnState :
+           maybeCompletionResult->returnStates) {
+        if (!returnState.outstandingCopies.contains(copyOperation)) {
+          continue;
         }
-        continue;
+        Operation *returnOperation = returnState.returnOperation;
+        Value completionHandle;
+        for (const ReceiveSelectionObservation &observation : found->second) {
+          if (observation.requestSelectsCopy &&
+              dominanceInfo.dominates(observation.request, returnOperation)) {
+            completionHandle = observation.request;
+            break;
+          }
+        }
+        if (!completionHandle &&
+            dominanceInfo.dominates(copy.getXf(), returnOperation)) {
+          completionHandle = copy.getXf();
+        }
+        if (!completionHandle) {
+          hasUnplannedReturn = true;
+          continue;
+        }
+        CopyWaitPlan returnPlan{completionHandle, nullptr, returnOperation,
+                                copy.getLoc()};
+        if (!hasEquivalentPlan(plans, returnPlan)) {
+          plans.push_back(returnPlan);
+        }
       }
-      if (!hasEquivalentPlan(plans, *plan)) {
-        plans.push_back(*plan);
+      if (hasUnplannedReturn) {
+        copy.emitOpError(
+            "cannot place an implicit wait after every wait_any observation; "
+            "add explicit waits after the final selection on each "
+            "continuation");
+        signalPassFailure();
+        return;
       }
     }
 

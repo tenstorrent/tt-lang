@@ -370,8 +370,8 @@ func.func @repeated_multi_request_wait_any() {
 // CHECK: cf.br ^[[SELECT:.+]](%[[REQUEST0]], %[[REQUEST1]]
 // CHECK: ^[[SELECT]](%[[CANDIDATE0:.+]]: !ttl.receive_request, %[[CANDIDATE1:.+]]: !ttl.receive_request):
 // CHECK: ttl.wait_any %[[CANDIDATE0]], %[[CANDIDATE1]]
-// CHECK-NEXT: ttl.wait %[[REQUEST0]]
-// CHECK-NEXT: ttl.wait %[[REQUEST1]]
+// CHECK-NEXT: ttl.wait %[[CANDIDATE0]]
+// CHECK-NEXT: ttl.wait %[[CANDIDATE1]]
 // CHECK: return
 func.func @block_argument_multi_request_wait_any() {
   %landing0 = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -628,5 +628,195 @@ func.func @cfg_branch_union_wait(%condition: i1)
   ttl.wait %handle : !ttl.receive_request
   cf.br ^return
 ^return:
+  func.return
+}
+
+// -----
+
+// Selection cleanup follows producer work in successor blocks.
+
+// CHECK-LABEL: func.func @wait_any_successor_producer
+// CHECK: %[[REQUEST0:.+]] = ttl.copy
+// CHECK: %[[REQUEST1:.+]] = ttl.copy
+// CHECK: %[[SEND0:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[SEND0]]
+// CHECK: ttl.wait_any %[[REQUEST0]], %[[REQUEST1]]
+// CHECK-NEXT: cf.br
+// CHECK: ^[[PROGRESS:.+]]:
+// CHECK-NEXT: %[[SEND1:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[SEND1]]
+// CHECK-NEXT: ttl.wait %[[REQUEST0]]
+// CHECK-NEXT: ttl.wait %[[REQUEST1]]
+// CHECK-NEXT: return
+func.func @wait_any_successor_producer() {
+  %landing0 = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %landing1 = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source0 = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source1 = ttl.bind_cb {cb_index = 3, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+  %dst0 = ttl.cb_reserve %landing0
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %dst1 = ttl.cb_reserve %landing1
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %request0 = ttl.copy %pipe0, %dst0
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  %request1 = ttl.copy %pipe1, %dst1
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  %send0 = ttl.copy %source0, %pipe0
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+         !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %start = arith.constant 0 : index
+  %ready = ttl.wait_any %request0, %request1 start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  cf.br ^progress
+^progress:
+  %send1 = ttl.copy %source1, %pipe1
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+         !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// An exact wait through a single-predecessor block argument completes the
+// original request.
+
+// CHECK-LABEL: func.func @block_argument_exact_wait
+// CHECK: %[[REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: cf.br ^[[COMPLETE:.+]](%[[REQUEST]]
+// CHECK: ^[[COMPLETE]](%[[CANDIDATE:.+]]: !ttl.receive_request):
+// CHECK-NEXT: %[[SEND:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[SEND]]
+// CHECK-NEXT: ttl.wait %[[CANDIDATE]]
+// CHECK-NEXT: return
+func.func @block_argument_exact_wait() {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %request = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  cf.br ^complete(%request : !ttl.receive_request)
+^complete(%candidate: !ttl.receive_request):
+  %send = ttl.copy %source, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+         !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.wait %candidate : !ttl.receive_request
+  func.return
+}
+
+// -----
+
+// A block argument provides the cleanup handle for mutually exclusive
+// branch-local requests.
+
+// CHECK-LABEL: func.func @branch_local_block_argument_wait_any
+// CHECK: %[[STATIC:.+]] = ttl.copy
+// CHECK: cf.cond_br
+// CHECK: ^[[LEFT:.+]]:
+// CHECK: %[[LEFT_REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: cf.br ^[[SELECT:.+]](%[[LEFT_REQUEST]]
+// CHECK: ^[[RIGHT:.+]]:
+// CHECK: %[[RIGHT_REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: cf.br ^[[SELECT]](%[[RIGHT_REQUEST]]
+// CHECK: ^[[SELECT]](%[[MERGED:.+]]: !ttl.receive_request):
+// CHECK: ttl.wait_any %[[STATIC]], %[[MERGED]]
+// CHECK: scf.if
+// CHECK: ttl.wait %[[STATIC]]
+// CHECK-NEXT: ttl.wait %[[MERGED]]
+// CHECK-NEXT: return
+func.func @branch_local_block_argument_wait_any(%condition: i1) {
+  %static_landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %branch_landing = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source0 = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source1 = ttl.bind_cb {cb_index = 3, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %source2 = ttl.bind_cb {cb_index = 4, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+  %pipe2 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 2
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 2>
+  %static_dst = ttl.cb_reserve %static_landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %static_request = ttl.copy %pipe0, %static_dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  cf.cond_br %condition, ^left, ^right
+^left:
+  %left_dst = ttl.cb_reserve %branch_landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %left_request = ttl.copy %pipe1, %left_dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  cf.br ^select(%left_request : !ttl.receive_request)
+^right:
+  %right_dst = ttl.cb_reserve %branch_landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %right_request = ttl.copy %pipe2, %right_dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 2>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  cf.br ^select(%right_request : !ttl.receive_request)
+^select(%merged_request: !ttl.receive_request):
+  %send0 = ttl.copy %source0, %pipe0
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+         !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %start = arith.constant 0 : index
+  %ready = ttl.wait_any %static_request, %merged_request start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  scf.if %condition {
+    %send1 = ttl.copy %source1, %pipe1
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send1 : !ttl.transfer_handle<write>
+  } else {
+    %send2 = ttl.copy %source2, %pipe2
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 2>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send2 : !ttl.transfer_handle<write>
+  }
   func.return
 }

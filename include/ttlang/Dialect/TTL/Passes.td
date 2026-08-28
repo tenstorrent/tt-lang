@@ -166,10 +166,10 @@ def TTLInsertCopyWait
     Proves copy completion across every reachable continuation, including
     structured regions and block control flow. An uncovered copy receives an
     implicit `ttl.wait`. When a request participates in a multi-request
-    `ttl.wait_any`, cleanup occurs at the end of a control-flow scope that
-    follows every readiness observation. The inserted wait therefore cannot
-    alter the selected request or precede work that completes pending
-    candidates. A single-request `ttl.wait_any` completes its sole request.
+    `ttl.wait_any`, uncovered cleanup occurs at each reachable function exit.
+    The inserted wait therefore cannot alter the selected request or precede
+    work that completes pending candidates. A single-request `ttl.wait_any`
+    completes its sole request.
   }];
 
   let dependentDialects = [];
