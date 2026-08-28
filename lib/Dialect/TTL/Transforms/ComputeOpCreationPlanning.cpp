@@ -2172,7 +2172,13 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
   auto outputTileType =
       dyn_cast<ttcore::TileType>(outputTensorType.getElementType());
   assert(outputTileType && "verified store output must contain tiles");
-  plan.outputTensorType = outputTensorType;
+  if (store.getRowPrefix()) {
+    SmallVector<int64_t> singlePackShape(outputTensorType.getRank(), 1);
+    plan.computeOutputTensorType = RankedTensorType::get(
+        singlePackShape, outputTileType, outputTensorType.getEncoding());
+  } else {
+    plan.computeOutputTensorType = outputTensorType;
+  }
   plan.inputTileType = tileType;
   plan.outputTileType = outputTileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
@@ -2199,6 +2205,11 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
         plan.outputAssociations.push_back(association);
       }
     }
+  }
+  if (store.getRowPrefix() && !plan.outputAssociations.empty()) {
+    failureReason =
+        "row-prefix store output cannot replace an existing tensor association";
+    return failure();
   }
   return plan;
 }

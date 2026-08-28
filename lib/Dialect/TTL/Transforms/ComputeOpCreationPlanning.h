@@ -670,8 +670,12 @@ struct PassthroughStorePlan {
   /// DFB associated with `outputView`.
   Value outputDFB;
 
-  /// Tensor type associated with the output dataflow buffer.
-  RankedTensorType outputTensorType;
+  /// Formal output type that defines the passthrough compute iteration.
+  ///
+  /// A row-prefix store performs one bulk pack into a multi-page destination,
+  /// so its formal output has one element per destination dimension. The
+  /// `outputView` retains the complete destination block type for pack sizing.
+  RankedTensorType computeOutputTensorType;
 
   /// Tile read into DST by the passthrough compute.
   ttcore::TileType inputTileType;
