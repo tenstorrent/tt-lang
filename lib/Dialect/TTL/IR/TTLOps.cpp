@@ -2293,22 +2293,20 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " init modes";
   }
 
-  // The operand segment contains only init operands. This preserves the
-  // output-to-policy correspondence without unused operands for overwrite and
-  // accumulate-existing outputs.
+  // The operand segment contains only init operands. An init-mode state is
+  // seeded by its init operand, while other modes read or overwrite the
+  // destination and therefore use its type as their state type.
   size_t initIndex = 0;
+  mlir::SmallVector<mlir::Type> stateTypes;
+  stateTypes.reserve(outputCount);
   for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
+    mlir::Value output = getOutputs()[outputIndex];
     if (mode != AccumulationInitialMode::Init) {
+      stateTypes.push_back(output.getType());
       continue;
     }
-    mlir::Value output = getOutputs()[outputIndex];
     mlir::Value init = getInits()[initIndex++];
-    if (output.getType() != init.getType()) {
-      return emitOpError("init operand ")
-             << (initIndex - 1) << " type " << init.getType()
-             << " must match output " << outputIndex << " type "
-             << output.getType();
-    }
+    stateTypes.push_back(init.getType());
   }
 
   if (getBody().getBlocks().size() != 1) {
@@ -2337,20 +2335,19 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " outputs";
   }
 
-  for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
-    mlir::Type expectedType = output.getType();
+  for (auto [outputIndex, stateType] : llvm::enumerate(stateTypes)) {
     mlir::Type bodyArgType = bodyBlock.getArgument(outputIndex).getType();
-    if (bodyArgType != expectedType) {
+    if (bodyArgType != stateType) {
       return emitOpError("body argument ")
              << outputIndex << " type " << bodyArgType
-             << " must match output type " << expectedType;
+             << " must match state type " << stateType;
     }
 
     mlir::Value yieldedValue = yield.getValues()[outputIndex];
-    if (yieldedValue.getType() != expectedType) {
+    if (yieldedValue.getType() != stateType) {
       return emitOpError("yielded value ")
              << outputIndex << " type " << yieldedValue.getType()
-             << " must match output type " << expectedType;
+             << " must match state type " << stateType;
     }
   }
 

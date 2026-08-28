@@ -84,20 +84,26 @@ def _make_tree_reduce(fp32):
             node_x, node_y = ttl.node(dims=2)
             destination_count = tree_net.destination_count()
             if node_x == root_x and node_y == root_y:
-                with output_dfb.reserve() as output_block:
-                    with staged_input_dfb.wait() as staged_input_block:
-                        output_block.store_rows(staged_input_block)
+                with staged_input_dfb.wait() as root_accumulator:
                     for receive_index in range(destination_count):
                         with receive_dfb.wait() as receive_block:
-                            output_block.accumulate_rows(receive_block)
+                            root_accumulator = root_accumulator + receive_block
+                    with output_dfb.reserve() as output_block:
+                        output_block.store_rows(root_accumulator)
             else:
-                with accumulator_dfb.reserve() as accumulator_block:
-                    with staged_input_dfb.wait() as staged_input_block:
-                        accumulator_block.store(staged_input_block)
-                    if tree_net.is_dst():
+                if tree_net.is_dst():
+                    with staged_input_dfb.wait() as node_accumulator:
                         for receive_index in range(destination_count):
                             with receive_dfb.wait() as receive_block:
-                                accumulator_block += receive_block
+                                node_accumulator = (
+                                    node_accumulator + receive_block
+                                )
+                        with accumulator_dfb.reserve() as accumulator_block:
+                            accumulator_block.store(node_accumulator)
+                else:
+                    with accumulator_dfb.reserve() as accumulator_block:
+                        with staged_input_dfb.wait() as staged_input_block:
+                            accumulator_block.store(staged_input_block)
 
         @ttl.datamovement()
         def store_output():
