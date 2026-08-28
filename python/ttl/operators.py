@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 from ttl.dialects import arith, ttl
 from ttl.ir import (
@@ -1329,7 +1329,7 @@ def exp(
     approx: bool = False,
     scale: Optional[float] = None,
     skip_clamp_check: bool = False,
-    iterations: int = 8,
+    iterations: Literal[8] = 8,
 ) -> TensorBlock:
     """Element-wise exponential.
 
@@ -1346,7 +1346,7 @@ def exp(
             inputs (``InputClamping::None``): faster, but inputs below ~-88.5
             produce incorrect (guaranteed-negative) outputs. Only meaningful
             with ``approx=True``. Defaults to ``False`` (``ClampToNegative``).
-        iterations: Number of SFPU lane iterations (default 8).
+        iterations: Number of SFPU lane iterations. Only 8 is supported.
 
     Returns:
         Result tensor with the same shape and dtype as ``input``.
@@ -1362,13 +1362,14 @@ def exp(
     skip_clamp_b = _get_constant_bool(skip_clamp_check)
     iterations_i = _get_constant_int(iterations)
     scale_f = None if scale is None else _get_constant_float(scale)
+    if iterations_i != 8:
+        raise ValueError(f"ttl.math.exp iterations must be 8, got {iterations_i}")
 
     # Pass None for any flag left at its default so the op keeps its plain
     # spelling (the ODS default applies). input_clamping is an integer-backed
     # enum attribute (built like ttl.reduce's reduce_type); None=0,
     # ClampToNegative=1.
     approx_attr = BoolAttr.get(True) if approx_b else None
-    iterations_attr = IntegerAttr.get(i32, iterations_i) if iterations_i != 8 else None
     clamping_attr = IntegerAttr.get(i32, 0) if skip_clamp_b else None
     scale_attr = None if scale_f is None else FloatAttr.get(F32Type.get(ctx), scale_f)
 
@@ -1377,7 +1378,7 @@ def exp(
         approx=approx_attr,
         scale=scale_attr,
         input_clamping=clamping_attr,
-        iterations=iterations_attr,
+        iterations=None,
     )
 
 

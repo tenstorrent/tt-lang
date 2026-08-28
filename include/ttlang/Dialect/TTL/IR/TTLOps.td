@@ -1335,7 +1335,7 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 //                     exp(s * x) (sets scale_en at the TTKernel level).
 //   input_clamping  - clamp behaviour for very negative inputs (only relevant
 //                     for approximate mode); defaults to ClampToNegative.
-//   iterations      - number of SFPU lane iterations (default 8).
+//   iterations      - number of SFPU lane iterations. Only 8 is supported.
 
 // Shared flag arguments for both the tensor and tile exp ops.
 defvar TTL_ExpFlags = (ins
@@ -1343,7 +1343,7 @@ defvar TTL_ExpFlags = (ins
     OptionalAttr<F32Attr>:$scale,
     DefaultValuedAttr<TTL_InputClampingAttr,
         "::mlir::tt::ttl::InputClamping::ClampToNegative">:$input_clamping,
-    DefaultValuedAttr<I32Attr, "8">:$iterations);
+    DefaultValuedAttr<ConfinedAttr<I32Attr, [IntIsOneOf<[8]>]>, "8">:$iterations);
 
 def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
   let description = [{
