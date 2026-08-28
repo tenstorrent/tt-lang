@@ -969,9 +969,10 @@ func.func @self_loop_foreach_wait() {
 // CHECK-LABEL: func.func @disjoint_foreach_wait
 // CHECK: ttl.pipenet_foreach_dst
 // CHECK: %[[REQUEST:.+]] = ttl.copy
-// CHECK-NEXT: ttl.wait %[[REQUEST]]
 // CHECK-NEXT: ttl.pipenet_foreach_src
 // CHECK: ttl.wait %[[REQUEST]]
+// CHECK: }
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
 func.func @disjoint_foreach_wait() {
   %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -1005,4 +1006,101 @@ func.func @disjoint_foreach_wait() {
     }
   }
   func.return
+}
+
+// -----
+
+// A collective source region completes the request on the source node. The
+// implicit wait after that region completes it on receiver-only nodes.
+
+// CHECK-LABEL: func.func @partial_foreach_domain_wait
+// CHECK: ttl.pipenet_foreach_dst
+// CHECK: %[[REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: arith.constant
+// CHECK-NEXT: ttl.pipenet_foreach_src
+// CHECK: %[[SEND:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
+// CHECK-NEXT: ttl.wait %[[SEND]]
+// CHECK: }
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @partial_foreach_domain_wait() {
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "net" pipes[
+          <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+           dstEndX = 1, dstEndY = 0, isCollective = true>
+        ]>} {
+    ^bb0(%selected_dst: !ttl.selected_pipe_dst):
+      %request = ttl.copy %selected_dst, %dst
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      %c0 = arith.constant 0 : index
+      ttl.pipenet_foreach_src attributes {
+          records = #ttl.pipenet_records<net 0 name "net" pipes[
+            <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+             dstEndX = 1, dstEndY = 0, isCollective = true>
+          ]>} {
+      ^bb0(%selected_src: !ttl.selected_pipe_src):
+        %send = ttl.copy %source, %selected_src
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.selected_pipe_src)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %request : !ttl.receive_request
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Static if_src and if_dst regions use the same launch-node completion proof
+// as PipeNet iteration regions.
+
+// CHECK-LABEL: func.func @self_loop_if_wait
+// CHECK: ttl.if_dst
+// CHECK: %[[REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: ttl.if_src
+// CHECK: %[[SEND:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
+// CHECK-NEXT: ttl.wait %[[SEND]]
+// CHECK-NOT: ttl.wait %[[REQUEST]]
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @self_loop_if_wait() {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+      %request = ttl.copy %pipe, %dst
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        %send = ttl.copy %source, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %request : !ttl.receive_request
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
 }

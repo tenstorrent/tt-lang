@@ -1,5 +1,5 @@
-// Verifies that ttl-insert-copy-wait rejects receive lifetimes that cannot be
-// completed for every dynamic copy execution.
+// Verifies that ttl-insert-copy-wait rejects receive lifetimes whose implicit
+// completion cannot be placed safely for every execution.
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(ttl-insert-copy-wait))' --verify-diagnostics
 
@@ -44,6 +44,51 @@ module {
     %ready = ttl.wait_any %final_request, %static_request start %start
         : (!ttl.receive_request, !ttl.receive_request, index)
         -> !ttl.ready_receive
+    func.return
+  }
+}
+
+// -----
+
+// DFB publication cannot move before receive completion to permit a later
+// nested send.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @publication_before_nested_send() {
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "net" pipes[
+          <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+           dstEndX = 1, dstEndY = 0, isCollective = true>
+        ]>} {
+    ^bb0(%selected_dst: !ttl.selected_pipe_dst):
+      // expected-error @below {{cannot place an implicit receive wait across an operation that may access its destination}}
+      %request = ttl.copy %selected_dst, %dst
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      // expected-note @below {{operation prevents safe implicit wait placement}}
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.pipenet_foreach_src attributes {
+          records = #ttl.pipenet_records<net 0 name "net" pipes[
+            <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+             dstEndX = 1, dstEndY = 0, isCollective = true>
+          ]>} {
+      ^bb0(%selected_src: !ttl.selected_pipe_src):
+        %send = ttl.copy %source, %selected_src
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.selected_pipe_src)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %request : !ttl.receive_request
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
     func.return
   }
 }

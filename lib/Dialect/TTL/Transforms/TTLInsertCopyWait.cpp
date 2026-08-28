@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -181,6 +182,7 @@ public:
         if (copy && completionOperandSelectsCopy(completionOperand, copy) &&
             preservesCopyExecutionCorrespondence(copy, completion)) {
           completedCopies[completion].push_back(copy.getOperation());
+          completionsByCopy[copy.getOperation()].push_back(completion);
         }
       }
     };
@@ -207,9 +209,18 @@ public:
     return found->second;
   }
 
+  ArrayRef<Operation *> getCompletions(Operation *copy) const {
+    auto found = completionsByCopy.find(copy);
+    if (found == completionsByCopy.end()) {
+      return {};
+    }
+    return found->second;
+  }
+
 private:
   SmallVector<Operation *> copies;
   DenseMap<Operation *, SmallVector<Operation *>> completedCopies;
+  DenseMap<Operation *, SmallVector<Operation *>> completionsByCopy;
 };
 
 class CopyCompletionLattice : public dataflow::AbstractDenseLattice {
@@ -263,7 +274,16 @@ private:
 };
 
 static std::optional<LaunchNodeDomain>
-getPipeNetIterationDomain(Operation *operation) {
+getPipeRoleRegionDomain(Operation *operation,
+                        const LaunchNodeDomain &baseDomain) {
+  if (auto ifSrc = dyn_cast<IfSrcOp>(operation)) {
+    return getPipeSourceLaunchNodeDomain(
+        cast<PipeType>(ifSrc.getPipe().getType()));
+  }
+  if (auto ifDst = dyn_cast<IfDstOp>(operation)) {
+    return getPipeDestinationLaunchNodeDomain(
+        cast<PipeType>(ifDst.getPipe().getType()), baseDomain);
+  }
   if (auto foreachSrc = dyn_cast<PipeNetForeachSrcOp>(operation)) {
     return getPipeRecordsRoleLaunchNodeDomain(foreachSrc.getRecords(),
                                               PipeRole::Source);
@@ -276,12 +296,13 @@ getPipeNetIterationDomain(Operation *operation) {
 }
 
 static std::optional<LaunchNodeDomain>
-getEnclosingPipeNetIterationDomain(Operation *operation) {
+getEnclosingPipeRoleDomain(Operation *operation,
+                           const LaunchNodeDomain &baseDomain) {
   std::optional<LaunchNodeDomain> domain;
   for (Operation *ancestor = operation->getParentOp(); ancestor;
        ancestor = ancestor->getParentOp()) {
     std::optional<LaunchNodeDomain> ancestorDomain =
-        getPipeNetIterationDomain(ancestor);
+        getPipeRoleRegionDomain(ancestor, baseDomain);
     if (!ancestorDomain) {
       continue;
     }
@@ -298,9 +319,11 @@ public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CopyCompletionDataFlow)
 
   CopyCompletionDataFlow(DataFlowSolver &solver, func::FuncOp func,
-                         const CopyCompletionIndex &completionIndex)
+                         const CopyCompletionIndex &completionIndex,
+                         const LaunchNodeDomainState &launchNodeDomains)
       : DenseForwardDataFlowAnalysis(solver), func(func),
-        completionIndex(completionIndex) {}
+        completionIndex(completionIndex), launchNodeDomains(launchNodeDomains) {
+  }
 
   void setToEntryState(CopyCompletionLattice *lattice) override {
     ProgramPoint *point = lattice->getAnchor().dyn_cast<ProgramPoint *>();
@@ -336,20 +359,20 @@ public:
       return;
     }
 
-    std::optional<LaunchNodeDomain> iterationDomain =
-        getPipeNetIterationDomain(branch.getOperation());
-    if (!iterationDomain) {
+    std::optional<LaunchNodeDomain> regionDomain = getPipeRoleRegionDomain(
+        branch.getOperation(), launchNodeDomains.baseDomain);
+    if (!regionDomain) {
       propagateIfChanged(after, after->join(before));
       return;
     }
 
-    // The parent-to-parent edge represents nodes with no matching record. A
-    // copy restricted to the iteration domain cannot be outstanding there.
+    // The parent-to-parent edge represents nodes that do not enter the role
+    // region. A copy restricted to that region cannot be outstanding there.
     DenseSet<Operation *> transferred(before.getPossiblyOutstandingCopies());
     for (Operation *copyOperation : before.getPossiblyOutstandingCopies()) {
-      std::optional<LaunchNodeDomain> copyDomain =
-          getEnclosingPipeNetIterationDomain(copyOperation);
-      if (copyDomain && copyDomain->isSubsetOf(*iterationDomain)) {
+      std::optional<LaunchNodeDomain> copyDomain = getEnclosingPipeRoleDomain(
+          copyOperation, launchNodeDomains.baseDomain);
+      if (copyDomain && copyDomain->isSubsetOf(*regionDomain)) {
         transferred.erase(copyOperation);
       }
     }
@@ -359,6 +382,7 @@ public:
 private:
   func::FuncOp func;
   const CopyCompletionIndex &completionIndex;
+  const LaunchNodeDomainState &launchNodeDomains;
 };
 
 struct CopyCompletionResult {
@@ -373,10 +397,11 @@ struct CopyCompletionResult {
 
 static FailureOr<CopyCompletionResult>
 findCopiesCompletedOnAllContinuations(func::FuncOp func,
-                                      const CopyCompletionIndex &index) {
+                                      const CopyCompletionIndex &index,
+                                      const LaunchNodeDomainState &domains) {
   DataFlowSolver solver;
   dataflow::loadBaselineAnalyses(solver);
-  solver.load<CopyCompletionDataFlow>(func, index);
+  solver.load<CopyCompletionDataFlow>(func, index, domains);
   if (failed(solver.initializeAndRun(func))) {
     return failure();
   }
@@ -454,6 +479,47 @@ struct CopyWaitPlan {
   Location location;
 };
 
+static FailureOr<Operation *>
+getImplicitWaitAnchor(CopyOp copy, const CopyCompletionIndex &index,
+                      const LaunchNodeDomain &baseDomain) {
+  if (!isa<ReceiveRequestType>(copy.getXf().getType())) {
+    return copy.getOperation();
+  }
+
+  // Receive completion uses a monotonic threshold. A fallback after nested
+  // role regions covers entered and bypassed nodes without preceding sends.
+  Operation *latestAnchor = copy.getOperation();
+  for (Operation *completion : index.getCompletions(copy.getOperation())) {
+    Operation *ancestor = completion;
+    while (ancestor && ancestor->getParentRegion() != copy->getParentRegion()) {
+      ancestor = ancestor->getParentOp();
+    }
+    if (!ancestor || ancestor->getBlock() != copy->getBlock() ||
+        !getPipeRoleRegionDomain(ancestor, baseDomain) ||
+        !copy->isBeforeInBlock(ancestor)) {
+      continue;
+    }
+    for (Operation *crossed = copy->getNextNode(); crossed != ancestor;
+         crossed = crossed->getNextNode()) {
+      if (isMemoryEffectFree(crossed)) {
+        continue;
+      }
+      InFlightDiagnostic diagnostic = copy.emitOpError(
+          "cannot place an implicit receive wait across an operation that "
+          "may access its destination; add an explicit wait after the "
+          "matching send and before the destination is used");
+      diagnostic.attachNote(crossed->getLoc())
+          << "operation prevents safe implicit wait placement";
+      return failure();
+    }
+    if (latestAnchor == copy.getOperation() ||
+        latestAnchor->isBeforeInBlock(ancestor)) {
+      latestAnchor = ancestor;
+    }
+  }
+  return latestAnchor;
+}
+
 static bool hasEquivalentPlan(ArrayRef<CopyWaitPlan> plans,
                               const CopyWaitPlan &candidate) {
   return llvm::any_of(plans, [&](const CopyWaitPlan &plan) {
@@ -467,10 +533,13 @@ struct TTLInsertCopyWaitPass
     : public impl::TTLInsertCopyWaitBase<TTLInsertCopyWaitPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+    LaunchNodeDomainState launchNodeDomains;
+    launchNodeDomains.initialize(func->getParentOfType<ModuleOp>());
     ValueOriginAnalysis valueOrigins(func);
     CopyCompletionIndex completionIndex(func, valueOrigins);
     FailureOr<CopyCompletionResult> maybeCompletionResult =
-        findCopiesCompletedOnAllContinuations(func, completionIndex);
+        findCopiesCompletedOnAllContinuations(func, completionIndex,
+                                              launchNodeDomains);
     if (failed(maybeCompletionResult)) {
       func.emitOpError("failed to analyze copy completion coverage");
       signalPassFailure();
@@ -488,7 +557,13 @@ struct TTLInsertCopyWaitPass
       auto copy = cast<CopyOp>(copyOperation);
       auto found = observations.find(copyOperation);
       if (found == observations.end()) {
-        plans.push_back({copy.getXf(), copyOperation, nullptr, copy.getLoc()});
+        FailureOr<Operation *> maybeAnchor = getImplicitWaitAnchor(
+            copy, completionIndex, launchNodeDomains.baseDomain);
+        if (failed(maybeAnchor)) {
+          signalPassFailure();
+          return;
+        }
+        plans.push_back({copy.getXf(), *maybeAnchor, nullptr, copy.getLoc()});
         continue;
       }
 
