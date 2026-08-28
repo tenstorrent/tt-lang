@@ -86,10 +86,10 @@ def _make_tree_reduce(fp32):
             if node_x == root_x and node_y == root_y:
                 with output_dfb.reserve() as output_block:
                     with staged_input_dfb.wait() as staged_input_block:
-                        output_block.store(staged_input_block)
+                        output_block.store_rows(staged_input_block)
                     for receive_index in range(destination_count):
                         with receive_dfb.wait() as receive_block:
-                            output_block += receive_block
+                            output_block.accumulate_rows(receive_block)
             else:
                 with accumulator_dfb.reserve() as accumulator_block:
                     with staged_input_dfb.wait() as staged_input_block:

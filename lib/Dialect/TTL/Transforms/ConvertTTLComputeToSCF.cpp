@@ -357,7 +357,8 @@ static scf::LoopNest generateAccumulatingLoops(
                                                            storeInfo.dstIndex);
           TileStoreOp::create(storeBuilder, parLoc, placeholder,
                               storeInfo.store.getView(), storeIndices,
-                              dstIdxVal, storeInfo.store.getStoreKind());
+                              dstIdxVal, storeInfo.store.getStoreKind(),
+                              storeInfo.store.getRowPrefixAttr());
         }
 
         return {};

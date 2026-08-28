@@ -192,6 +192,33 @@ def TTKernel_PackTileBlockOp : TTKernel_Op<"pack_tile_block"> {
     }];
 }
 
+def TTKernel_PackRowsOp : TTKernel_Op<"pack_rows"> {
+    let summary = "Pack a contiguous prefix of DST rows";
+    let description = [{
+      Packs `row_count` hardware rows from one 32x32 DST tile into contiguous
+      storage beginning at `out_index` in the output dataflow buffer. Each
+      hardware row contains 16 datums, so two hardware rows represent one
+      logical 32-datum tile row. `row_count` must be in the range 1 through 64.
+
+      The destination pages must be reserved before this operation. Lowering
+      initializes the row-packing configuration, performs the pack, and
+      restores the normal packer configuration. The operation is available on
+      Wormhole and Blackhole compute engines.
+    }];
+
+    let arguments = (ins
+      IndexLike:$dst_index,
+      TTKernel_CB:$out_cb,
+      IndexLike:$out_index,
+      ConfinedAttr<I64Attr, [IntPositive]>:$row_count
+    );
+
+    let assemblyFormat = [{
+      `(` $dst_index `,` $out_cb `,` $out_index `)` attr-dict `:`
+      functional-type(operands, results)
+    }];
+    let hasVerifier = 1;
+}
 def TTKernel_PackReconfigL1AccOp : TTKernel_Op<"pack_reconfig_l1_acc"> {
     let summary = "Reconfigure packer to L1 accumulation mode.";
     let description = [{
