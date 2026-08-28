@@ -25,6 +25,18 @@ source build/env/activate
 python examples/<example_name>.py
 ```
 
+### With the Compiler and tt-emule
+
+Examples that use compiler-only APIs can run without hardware through the
+compiler-backed tt-emule backend:
+
+```bash
+tt-lang-sim examples/compiler_only_external_call.py --backend emule
+```
+
+Docker is required. The first run builds the pinned compiler and tt-emule
+runtime image; later runs reuse that image and persistent build caches.
+
 ## Example Categories
 
 ### Element-wise Operations
@@ -55,6 +67,12 @@ python examples/<example_name>.py
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
 | `demo_one.py` | Comprehensive demo with auto grid and bounds checking | ✓ | ✓ |
+
+### Compiler-only Features
+
+| Example | Description | Python Sim | Emule |
+|---------|-------------|:----------:|:-----:|
+| `compiler_only_external_call.py` | Calls user-provided C++ from a compiled compute kernel and checks the tensor result | ✗ | ✓ |
 
 ### Error Examples (Negative Tests)
 
