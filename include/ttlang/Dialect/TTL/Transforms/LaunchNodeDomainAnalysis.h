@@ -37,11 +37,15 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
 /// Module attribute containing the two-dimensional launch grid extent.
 inline constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
+
+/// Return the positive X/Y extents of the enclosing module launch grid.
+std::optional<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op);
 
 /// `ttl.pipenet_scope` attribute listing the PipeNet ids selected by a scope.
 inline constexpr llvm::StringLiteral kPipeNetIdsAttrName = "ttl.pipe_net_ids";

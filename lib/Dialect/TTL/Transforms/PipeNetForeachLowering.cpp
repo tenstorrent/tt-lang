@@ -45,30 +45,6 @@ struct GridMajorPipeRecordIndexTables {
   SmallVector<int64_t> destinationDeviceIndices;
 };
 
-static std::optional<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op) {
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  if (!module) {
-    return std::nullopt;
-  }
-  Attribute gridAttr = module->getAttr(kLaunchGridAttrName);
-  SmallVector<int64_t, 2> extents;
-  if (auto dense = mlir::dyn_cast_if_present<DenseI64ArrayAttr>(gridAttr)) {
-    extents.append(dense.asArrayRef().begin(), dense.asArrayRef().end());
-  } else if (auto array = mlir::dyn_cast_if_present<ArrayAttr>(gridAttr)) {
-    for (Attribute extentAttr : array) {
-      auto extent = mlir::dyn_cast<IntegerAttr>(extentAttr);
-      if (!extent) {
-        return std::nullopt;
-      }
-      extents.push_back(extent.getInt());
-    }
-  }
-  if (extents.size() != 2 || extents[0] <= 0 || extents[1] <= 0) {
-    return std::nullopt;
-  }
-  return std::make_pair(extents[0], extents[1]);
-}
-
 static std::optional<int64_t> getDeviceCount(DeviceDomainAttr domain) {
   std::uint64_t deviceCount = 1;
   for (DeviceDomainComponentAttr component : domain.getComponents()) {

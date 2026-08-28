@@ -1217,8 +1217,8 @@ static LogicalResult collectLogicalDFBs(
       return WalkResult::interrupt();
     }
     dependsOnLaunchNode |=
-        isa<CoreXOp, CoreYOp, CreatePipeOp, PipeNetPredicateOpInterface>(
-            operation);
+        isa<CoreXOp, CoreYOp, CreatePipeOp, PipeNetPredicateOpInterface,
+            PipeNetDestinationCountOp>(operation);
     if (auto getId = dyn_cast<GetDfbIdOp>(operation);
         getId && failed(verifyPhysicalIndexUses(getId, identityAnalysis,
                                                 analysisFailure))) {

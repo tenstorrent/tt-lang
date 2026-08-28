@@ -54,6 +54,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
+| 0.22 | 08/27/2026 | Add `ttl.PipeNet.destination_count()` |
 
 
 ## Introduction
