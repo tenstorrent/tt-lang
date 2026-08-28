@@ -734,6 +734,99 @@ func.func @block_argument_exact_wait() {
 
 // -----
 
+// A loop-carried replacement does not change which dynamic request the
+// explicit wait completes.
+
+// CHECK-LABEL: func.func @loop_carried_replacement_exact_wait
+// CHECK: %[[SEED:.+]] = ttl.copy
+// CHECK-NEXT: cf.br ^[[LOOP:.+]](%[[SEED]]
+// CHECK: ^[[LOOP]](%[[CANDIDATE:.+]]: !ttl.receive_request):
+// CHECK-NEXT: %[[SEND:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[SEND]]
+// CHECK-NEXT: ttl.wait %[[CANDIDATE]]
+// CHECK-NEXT: cf.cond_br
+// CHECK: ^[[NEXT:.+]]:
+// CHECK-NEXT: %[[NEXT_DST:.+]] = ttl.cb_reserve
+// CHECK-NEXT: %[[NEXT_REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: cf.br ^[[LOOP]](%[[NEXT_REQUEST]]
+func.func @loop_carried_replacement_exact_wait(%repeat: i1) {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %source = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %seed_dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %seed = ttl.copy %pipe, %seed_dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  cf.br ^loop(%seed : !ttl.receive_request)
+^loop(%candidate: !ttl.receive_request):
+  %send = ttl.copy %source, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+         !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.wait %candidate : !ttl.receive_request
+  cf.cond_br %repeat, ^next, ^exit
+^next:
+  %next_dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %next_request = ttl.copy %pipe, %next_dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  cf.br ^loop(%next_request : !ttl.receive_request)
+^exit:
+  func.return
+}
+
+// -----
+
+// A wait on the final loop result does not complete requests from earlier
+// loop iterations.
+
+// CHECK-LABEL: func.func @final_loop_request_wait
+// CHECK: ^[[LOOP:.+]](%[[INDEX:.+]]: index):
+// CHECK: %[[REQUEST:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[REQUEST]]
+// CHECK-NEXT: %[[NEXT_INDEX:.+]] = arith.addi
+// CHECK: cf.cond_br
+// CHECK: ^[[EXIT:.+]](%[[FINAL_REQUEST:.+]]: !ttl.receive_request):
+// CHECK-NEXT: ttl.wait %[[FINAL_REQUEST]]
+// CHECK-NEXT: return
+func.func @final_loop_request_wait() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  cf.br ^loop(%c0 : index)
+^loop(%index: index):
+  %dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %request = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  %next_index = arith.addi %index, %c1 : index
+  %repeat = arith.cmpi ult, %next_index, %c2 : index
+  cf.cond_br %repeat, ^loop(%next_index : index),
+      ^exit(%request : !ttl.receive_request)
+^exit(%final_request: !ttl.receive_request):
+  ttl.wait %final_request : !ttl.receive_request
+  func.return
+}
+
+// -----
+
 // A block argument provides the cleanup handle for mutually exclusive
 // branch-local requests.
 

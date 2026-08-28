@@ -27,6 +27,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttl-insert-copy-wait"
@@ -78,10 +79,13 @@ static bool completionOperandSelectsCopyImpl(Value completionOperand,
     bool hasContinuationFromCopy = false;
     for (auto [predecessorBlock, predecessorValue] :
          llvm::zip(predecessorBlocks, *predecessors)) {
-      // A mutually exclusive predecessor cannot carry a value from this copy.
-      if (copy->getBlock() != predecessorBlock &&
-          !copy->getBlock()->isReachable(predecessorBlock)) {
-        continue;
+      if (copy->getBlock() != predecessorBlock) {
+        llvm::SmallPtrSet<Block *, 16> excludedBlocks;
+        excludedBlocks.insert(argumentBlock);
+        if (!copy->getBlock()->isReachable(predecessorBlock,
+                                           std::move(excludedBlocks))) {
+          continue;
+        }
       }
       hasContinuationFromCopy = true;
       if (!completionOperandSelectsCopyImpl(predecessorValue, copy,
@@ -137,6 +141,33 @@ static bool completionOperandSelectsCopy(Value completionOperand, CopyOp copy) {
                                           activeValues);
 }
 
+// Every copy execution must reach its completion before the same copy
+// operation can execute again.
+static bool preservesCopyExecutionCorrespondence(CopyOp copy,
+                                                 Operation *completion) {
+  if (copy->getParentRegion() != completion->getParentRegion() ||
+      copy->getBlock() == completion->getBlock()) {
+    return true;
+  }
+
+  Block *copyBlock = copy->getBlock();
+  Block *completionBlock = completion->getBlock();
+  for (Block *successor : copyBlock->getSuccessors()) {
+    if (successor == completionBlock) {
+      continue;
+    }
+    if (successor == copyBlock) {
+      return false;
+    }
+    llvm::SmallPtrSet<Block *, 16> excludedBlocks;
+    excludedBlocks.insert(completionBlock);
+    if (successor->isReachable(copyBlock, std::move(excludedBlocks))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 class CopyCompletionIndex {
 public:
   CopyCompletionIndex(func::FuncOp func, ValueOriginAnalysis &valueOrigins) {
@@ -146,7 +177,8 @@ public:
                                       Value completionOperand) {
       for (Value origin : valueOrigins.getOrigins(completionOperand)) {
         auto copy = origin.getDefiningOp<CopyOp>();
-        if (copy && completionOperandSelectsCopy(completionOperand, copy)) {
+        if (copy && completionOperandSelectsCopy(completionOperand, copy) &&
+            preservesCopyExecutionCorrespondence(copy, completion)) {
           completedCopies[completion].push_back(copy.getOperation());
         }
       }
@@ -348,7 +380,8 @@ indexReceiveSelectionObservations(func::FuncOp func,
         if (copy) {
           observations[copy.getOperation()].push_back(
               {waitAny.getOperation(), request,
-               completionOperandSelectsCopy(request, copy)});
+               completionOperandSelectsCopy(request, copy) &&
+                   preservesCopyExecutionCorrespondence(copy, waitAny)});
         }
       }
     }
@@ -417,6 +450,7 @@ struct TTLInsertCopyWaitPass
           }
         }
         if (!completionHandle &&
+            preservesCopyExecutionCorrespondence(copy, returnOperation) &&
             dominanceInfo.dominates(copy.getXf(), returnOperation)) {
           completionHandle = copy.getXf();
         }
