@@ -11,6 +11,7 @@ from ttl import ttl_api
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+from ttlang_test_utils import to_dram, to_l1  # noqa: E402
 from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 TILE_WIDTH = 32
@@ -291,21 +292,12 @@ FIVE_TILE_FP32_KERNEL = make_rmsnorm_kernel(
     fp32_dest_acc_en=True,
 )
 MATERIALIZED_RMSNORM_KERNEL = make_materialized_rmsnorm_kernel(16, 3)
+TENSOR_FACTORIES = (to_dram, to_l1)
 
 
-def to_dram_with_tile(torch_tensor, device, tile_height):
-    """Create a tiled bf16 tensor with the benchmark's physical tile height."""
-    return ttnn.from_torch(
-        torch_tensor,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        tile=ttnn.Tile((tile_height, TILE_WIDTH)),
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-
-
-def run_rmsnorm(device, tile_height, num_tiles, width, gamma_mode, kernel):
+def run_rmsnorm(
+    device, tile_height, num_tiles, width, gamma_mode, kernel, tensor_factory
+):
     """Run one RMSNorm kernel and return its result and reference."""
     shape = (tile_height, num_tiles * TILE_WIDTH)
     assert shape[0] * shape[1] == width
@@ -316,9 +308,10 @@ def run_rmsnorm(device, tile_height, num_tiles, width, gamma_mode, kernel):
     gamma_torch = torch.randn(gamma_shape, dtype=torch.bfloat16)
     output_torch = torch.zeros(shape, dtype=torch.bfloat16)
 
-    input_tensor = to_dram_with_tile(input_torch, device, tile_height)
-    gamma_tensor = to_dram_with_tile(gamma_torch, device, tile_height)
-    output_tensor = to_dram_with_tile(output_torch, device, tile_height)
+    tile = (tile_height, TILE_WIDTH)
+    input_tensor = tensor_factory(input_torch, device, tile=tile)
+    gamma_tensor = tensor_factory(gamma_torch, device, tile=tile)
+    output_tensor = tensor_factory(output_torch, device, tile=tile)
 
     kernel(input_tensor, gamma_tensor, output_tensor)
     result = ttnn.to_torch(output_tensor).float()
@@ -346,7 +339,8 @@ def assert_rmsnorm_close(result, expected):
     ids=[str(row_case[2]) for row_case in ROW_CASES],
 )
 @pytest.mark.parametrize("gamma_mode", GAMMA_MODES)
-def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
+@pytest.mark.parametrize("tensor_factory", TENSOR_FACTORIES, ids=("dram", "l1"))
+def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode, tensor_factory):
     """Validate RMSNorm semantics at benchmark widths and gamma modes."""
     # The specialized hardware operation intentionally accepts bf16 tiles only.
     # Column-broadcast gamma exercises ordinary compute creation because the
@@ -360,6 +354,7 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
         width,
         gamma_mode,
         RMSNORM_KERNELS[(tile_height, num_tiles, gamma_mode)],
+        tensor_factory,
     )
     assert_rmsnorm_close(result, expected)
 
@@ -369,7 +364,10 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
     KERNEL_CONFIGS,
     ids=["bf16-half", "fp32-half", "bf16-full", "fp32-full"],
 )
-def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
+@pytest.mark.parametrize("tensor_factory", TENSOR_FACTORIES, ids=("dram", "l1"))
+def test_rmsnorm_kernel_config(
+    device, fp32_dest_acc_en, dst_full_sync_en, tensor_factory
+):
     """Exercise the fused LLK under every DST register configuration."""
     require_row_normalization_schedule(device)
     result, expected = run_rmsnorm(
@@ -379,14 +377,17 @@ def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
         width=4096,
         gamma_mode="none",
         kernel=CONFIG_RMSNORM_KERNELS[(fp32_dest_acc_en, dst_full_sync_en)],
+        tensor_factory=tensor_factory,
     )
     assert_rmsnorm_close(result, expected)
 
 
+@pytest.mark.parametrize("tensor_factory", TENSOR_FACTORIES, ids=("dram", "l1"))
 def test_rmsnorm_five_tile_fp32_dest(
     device,
     monkeypatch,
     tmp_path,
+    tensor_factory,
 ):
     """Select full synchronization when FP32 destination needs five slots."""
     require_row_normalization_schedule(device)
@@ -399,12 +400,14 @@ def test_rmsnorm_five_tile_fp32_dest(
         width=5120,
         gamma_mode="none",
         kernel=FIVE_TILE_FP32_KERNEL,
+        tensor_factory=tensor_factory,
     )
     assert_rmsnorm_close(result, expected)
     assert final_mlir.read_text().count("tile_regs_acquire") == 1
 
 
-def test_rmsnorm_matches_materialized(device):
+@pytest.mark.parametrize("tensor_factory", TENSOR_FACTORIES, ids=("dram", "l1"))
+def test_rmsnorm_matches_materialized(device, tensor_factory):
     """Compare scalar-retaining fusion with explicit DFB materialization."""
     tile_height = 16
     num_tiles = 3
@@ -414,11 +417,12 @@ def test_rmsnorm_matches_materialized(device):
     output_torch = torch.zeros(shape, dtype=torch.bfloat16)
     materialized_output_torch = torch.zeros(shape, dtype=torch.bfloat16)
 
-    input_tensor = to_dram_with_tile(input_torch, device, tile_height)
-    gamma_tensor = to_dram_with_tile(gamma_torch, device, tile_height)
-    output_tensor = to_dram_with_tile(output_torch, device, tile_height)
-    materialized_output_tensor = to_dram_with_tile(
-        materialized_output_torch, device, tile_height
+    tile = (tile_height, TILE_WIDTH)
+    input_tensor = tensor_factory(input_torch, device, tile=tile)
+    gamma_tensor = tensor_factory(gamma_torch, device, tile=tile)
+    output_tensor = tensor_factory(output_torch, device, tile=tile)
+    materialized_output_tensor = tensor_factory(
+        materialized_output_torch, device, tile=tile
     )
 
     RMSNORM_KERNELS[(tile_height, num_tiles, "none")](
