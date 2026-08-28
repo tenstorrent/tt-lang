@@ -46,7 +46,15 @@ def _make_tree_reduce(data_format, bytes_per_element):
     stage_count = (CORE_COUNT - 1).bit_length()
     root_x, root_y = ROOT
 
-    @ttl.operation(grid=(CORE_COUNT, 1), options="--ttl-specialize-cores")
+    @ttl.operation(
+        grid=(CORE_COUNT, 1),
+        options=(
+            "--ttl-specialize-cores --ttl-accumulation-strategy=l1-pack"
+            if data_format == "float32"
+            else "--ttl-specialize-cores"
+        ),
+        fp32_dest_acc_en=data_format == "float32",
+    )
     def tree_reduce(source, output):
         source_dfb = ttl.make_tensor_backed_dfb(
             source, shape=(1, VALID_ROWS), block_count=1
@@ -105,20 +113,26 @@ def _make_tree_reduce(data_format, bytes_per_element):
             node_x, node_y = ttl.node(dims=2)
             destination_count = tree_net.destination_count()
             if node_x == root_x and node_y == root_y:
-                with output_dfb.reserve() as output_block:
-                    with staged_input_dfb.wait() as staged_input_block:
-                        output_block.store_rows(staged_input_block)
+                with staged_input_dfb.wait() as root_accumulator:
                     for receive_index in range(destination_count):
                         with receive_dfb.wait() as receive_block:
-                            output_block.accumulate_rows(receive_block)
+                            root_accumulator = root_accumulator + receive_block
+                    with output_dfb.reserve() as output_block:
+                        output_block.store_rows(root_accumulator)
             else:
-                with accumulator_dfb.reserve() as accumulator_block:
-                    with staged_input_dfb.wait() as staged_input_block:
-                        accumulator_block.store(staged_input_block)
-                    if tree_net.is_dst():
+                if tree_net.is_dst():
+                    with staged_input_dfb.wait() as node_accumulator:
                         for receive_index in range(destination_count):
                             with receive_dfb.wait() as receive_block:
-                                accumulator_block += receive_block
+                                node_accumulator = (
+                                    node_accumulator + receive_block
+                                )
+                        with accumulator_dfb.reserve() as accumulator_block:
+                            accumulator_block.store(node_accumulator)
+                else:
+                    with accumulator_dfb.reserve() as accumulator_block:
+                        with staged_input_dfb.wait() as staged_input_block:
+                            accumulator_block.store(staged_input_block)
 
     return tree_reduce
 

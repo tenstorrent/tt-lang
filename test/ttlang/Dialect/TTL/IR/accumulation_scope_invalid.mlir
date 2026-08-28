@@ -45,11 +45,11 @@ func.func @missing_init() {
 
 // -----
 
-// Init operands must have the same tensor type as their outputs.
-func.func @init_type_mismatch() {
+// Init-mode body state must have the init operand's tensor type.
+func.func @init_state_type_mismatch() {
   %out = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
   %init = tensor.empty() : tensor<2x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{'ttl.accumulation_scope' op init operand 0 type}}
+  // expected-error @below {{'ttl.accumulation_scope' op body argument 0 type}}
   ttl.accumulation_scope outs(%out : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<2x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%acc: tensor<1x1x!ttcore.tile<32x32, bf16>>):

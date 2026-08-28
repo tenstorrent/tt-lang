@@ -123,9 +123,10 @@ The verifier is structural:
 
 - initial-mode count equals output count;
 - init modes have matching init operands;
-- init operand types match their corresponding outputs;
+- each `init` body state type matches its init operand; other body state types
+  match their corresponding outputs;
 - the body has one block argument and one yielded value per output;
-- body arguments and yielded values match their output types;
+- body arguments and yielded values match their state types;
 - nested `ttl.accumulation_scope` is rejected until nested accumulation
   semantics are defined.
 
@@ -142,7 +143,8 @@ Initial modes have these meanings:
   participates in the result. For L1 packer accumulation, iteration 0 must
   pack with L1 accumulation enabled.
 - `init`: an init operand seeds the accumulator, independent of the final
-  output location.
+  output location. Its state type may differ from the output type when an
+  explicit store in the scope performs the publication conversion.
 
 Tensor recurrence scope form:
 
