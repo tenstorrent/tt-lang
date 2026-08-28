@@ -1,6 +1,7 @@
-// Verifies that transport grouping rejects combined DFB and runtime storage
-// that exceeds the configured L1 budget.
-// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=25919})'
+// Verifies exact combined-resource validation accepts the packed allocation
+// and rejects a one-byte-short budget.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21760},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21760},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21760})' -o /dev/null
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21759},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21759},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21759})'
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
@@ -10,10 +11,10 @@
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
-// DFB storage (24576), Pipe scratch (64), global semaphores (192), and
-// boundary state (1088) each fit separately, but their combined allocation
-// does not.
-// expected-error @below {{combined DFB and runtime resources require 25920 L1 bytes but the budget is 25919 (DFB=24576, scratch=64, global semaphores=192, reconfiguration state=1088)}}
+// Physical DFB storage on the busiest launch node (20480), PipeNet scratch
+// (64), two global semaphores (128), and boundary state (1088) fit separately,
+// but their 21760-byte total exceeds the budget by one byte.
+// expected-error @below {{combined DFB and runtime resources require 21760 L1 bytes but the budget is 21759 (DFB=20480, scratch=64, global semaphores=128, reconfiguration state=1088)}}
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,
   ttl.target_arch = #ttcore.arch<blackhole>
@@ -24,9 +25,11 @@ module attributes {
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1],
                   ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #writer, ttl.noc_index = 1 : i32} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 5} {dfb_id = 0 : index}
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 5}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 5>
-    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
