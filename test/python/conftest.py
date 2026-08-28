@@ -47,7 +47,6 @@ from ttlang_test_utils import (
     pin_xdist_worker_to_device,
 )
 
-
 pin_xdist_worker_to_device()
 
 # =============================================================================
@@ -107,7 +106,7 @@ def ttnn_device():
         _ttnn_import_failed = True
         raise
 
-    if os.environ.get("TT_METAL_SIMULATOR"):
+    if os.environ.get("TT_METAL_SIMULATOR") or os.environ.get("TT_METAL_EMULE_MODE"):
         device = ttnn.open_device(device_id=0)
     else:
         dispatch_core_config = ttnn.DispatchCoreConfig(ttnn.DispatchCoreType.WORKER)

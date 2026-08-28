@@ -31,7 +31,9 @@ def _has_tenstorrent_device_node() -> bool:
     return bool(glob.glob("/dev/tenstorrent/*") or glob.glob("/dev/tenstorrent[0-9]*"))
 
 
-if os.environ.get("TT_METAL_SIMULATOR"):
+if os.environ.get("TT_METAL_EMULE_MODE"):
+    _hardware_available = True
+elif os.environ.get("TT_METAL_SIMULATOR"):
     _hardware_available = True
 elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
     _hardware_available = True
@@ -91,12 +93,13 @@ def is_hardware_available() -> bool:
     Check if Tenstorrent hardware is available.
 
     Checks in order:
-    1. TT_METAL_SIMULATOR environment variable (simulation mode)
-    2. TTLANG_HAS_DEVICE environment variable (set by CMake)
-    3. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
-    4. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
+    1. TT_METAL_EMULE_MODE environment variable (emulation mode)
+    2. TT_METAL_SIMULATOR environment variable (simulation mode)
+    3. TTLANG_HAS_DEVICE environment variable (set by CMake)
+    4. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
+    5. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
 
-    Step 3 precedes step 4 so an installed light wheel, built with no device
+    Step 4 precedes step 5 so an installed light wheel, built with no device
     and therefore HAS_TT_DEVICE=False, still runs on a host that has a chip.
 
     Returns:

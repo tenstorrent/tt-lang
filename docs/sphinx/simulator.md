@@ -1,6 +1,15 @@
-# Functional Simulator
+# Simulation backends
 
-TT-Lang includes a functional simulator that runs operations as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and iterate quickly during development.
+`tt-lang-sim` has two complementary backends:
+
+| Backend | Execution path | Best suited to |
+|---|---|---|
+| `python` (default) | Python interpreter with torch-backed tensors | Fast kernel iteration, Python debugging, and native macOS use |
+| `emule` | TT-Lang compiler, tt-metal, and tt-emule | Testing generated kernels and runtime behavior without silicon |
+
+The Python backend runs operations without requiring Tenstorrent hardware or
+the full compiler stack. Use it to validate kernel logic and iterate quickly
+during development.
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage.
 
@@ -41,6 +50,48 @@ If you have already built the full TT-Lang compiler (`source build/env/activate`
 
 ```bash
 tt-lang-sim examples/eltwise_add.py
+```
+
+### Compiler-backed emulation
+
+From a TT-Lang source checkout, select the `emule` backend to compile the
+program and execute the resulting kernels through tt-metal and tt-emule:
+
+```bash
+./bin/tt-lang-sim test/python/dram_interleaved_add.py --backend emule
+```
+
+This is not the Python simulator with a different tensor implementation. The
+script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
+operation, and tt-metal dispatches the generated kernels to tt-emule.
+
+The backend requires a working Docker-compatible daemon. Its image is Linux
+amd64 because tt-emule JITs x86-64 shared objects. On Apple Silicon, use Docker
+Desktop with x86 emulation enabled, or start an x86-64 Colima VM:
+
+```bash
+brew install colima docker
+softwareupdate --install-rosetta --agree-to-license
+colima start --vm-type vz --vz-rosetta --cpus 8 --memory 12
+```
+
+The Colima command uses Rosetta to run amd64 containers in an Apple
+Virtualization.framework VM. If Rosetta cannot be installed, an x86-64 QEMU VM
+also works but is substantially slower and requires `brew install qemu`.
+
+The first invocation builds a pinned tt-emule/tt-metal image and then builds
+TT-Lang. Both the TT-Lang build directory and tt-metal JIT cache live in named
+Docker volumes, so subsequent source edits rebuild incrementally. Set
+`TTLANG_EMULE_REBUILD=1` to rebuild the runtime image, or
+`TTLANG_EMULE_JOBS=N` to limit build parallelism.
+
+The initial supported target is a single emulated Wormhole N150 device. Options
+specific to the Python backend, such as `--grid`, `--trace`, and
+`--no-float32-promotion`, do not apply to compiler-backed emulation. Arguments
+after `--` are always passed to the user script:
+
+```bash
+./bin/tt-lang-sim program.py --backend emule -- --program-option value
 ```
 
 Run the simulator test suite:

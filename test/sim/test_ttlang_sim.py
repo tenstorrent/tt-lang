@@ -372,6 +372,7 @@ class TestScriptMustBeFirstArgument:
         )
         assert result.returncode == 0
         assert "SCRIPT.py" in result.stdout
+        assert "--backend emule" in result.stdout
 
     def test_short_help_without_script(self):
         result = subprocess.run(

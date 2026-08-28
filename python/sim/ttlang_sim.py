@@ -250,7 +250,9 @@ def main() -> None:
         epilog="Examples:\n"
         "  tt-lang-sim examples/eltwise_add.py\n"
         "  tt-lang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
-        "  tt-lang-sim examples/eltwise_add.py --max-l1 1572864",
+        "  tt-lang-sim examples/eltwise_add.py --max-l1 1572864\n\n"
+        "Compiler-backed emulation (source checkout only):\n"
+        "  ./bin/tt-lang-sim program.py --backend emule",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )

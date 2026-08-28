@@ -19,6 +19,7 @@ __pycache__/
 .Python
 
 # Virtual environments (but keep env/ source templates)
+.venv/
 venv/
 ENV/
 build/env/

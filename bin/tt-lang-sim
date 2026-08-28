@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # TT-Lang Simulator launcher (tt-lang-sim)
 #
-# Runs tt-lang kernels on the simulator backend without code changes.
-# Usage: tt-lang-sim <file.py|module> [args...]
+# Runs tt-lang kernels on a simulator backend without code changes.
+# Usage: tt-lang-sim <file.py|module> [args...] [--backend python|emule]
 
 PYTHON="${PYTHON:-python}"
 
@@ -13,6 +13,59 @@ PYTHON="${PYTHON:-python}"
 # when invoked as ./bin/tt-lang-sim or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+
+# Extract the launcher-owned option before forwarding the remaining arguments.
+# The simulator CLI already uses `--` to separate its options from script
+# arguments, so stop scanning there as well.
+_BACKEND="${TTLANG_SIM_BACKEND:-python}"
+_FORWARD_ARGS=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --backend)
+            if [ "$#" -lt 2 ]; then
+                echo "tt-lang-sim: --backend requires python or emule." >&2
+                exit 2
+            fi
+            _BACKEND="$2"
+            shift 2
+            ;;
+        --backend=*)
+            _BACKEND="${1#--backend=}"
+            shift
+            ;;
+        --)
+            _FORWARD_ARGS+=("$@")
+            break
+            ;;
+        *)
+            _FORWARD_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${_FORWARD_ARGS[@]}"
+
+if [ "$_BACKEND" = "emule" ]; then
+    if [ -n "${TTLANG_EMULE_RUNNER:-}" ]; then
+        _EMULE_RUNNER="$TTLANG_EMULE_RUNNER"
+    else
+        _EMULE_RUNNER="${_REPO_ROOT}/scripts/tt-lang-emule-container.sh"
+    fi
+
+    if [ ! -x "$_EMULE_RUNNER" ]; then
+        echo "tt-lang-sim: cannot locate the tt-emule runner." >&2
+        echo "  expected: ${_EMULE_RUNNER}" >&2
+        echo "  The emule backend currently requires a tt-lang source checkout." >&2
+        exit 1
+    fi
+
+    exec "$_EMULE_RUNNER" "$@"
+fi
+
+if [ "$_BACKEND" != "python" ]; then
+    echo "tt-lang-sim: unknown backend '${_BACKEND}'; expected python or emule." >&2
+    exit 2
+fi
 
 # Sources: python/sim; installed ttlang: python_packages/ttl/sim.
 if [ -f "${_REPO_ROOT}/python/sim/ttlang_sim.py" ]; then
