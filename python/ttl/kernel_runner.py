@@ -59,13 +59,14 @@ def _cb_data_format(cb):
 def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
-    TTNN reports ``cb_limit`` and L1 ``page_address`` as absolute addresses,
-    not byte counts. Static CBs grow upward from
-    ``address_at_first_l1_cb_buffer``, while tensor pages occupy the region
-    above them. The safe budget is therefore the address interval from the CB
-    base to the lowest allocated L1 page, or to ``cb_limit`` when no L1 tensor
-    exists. Using page placement also accounts for allocator alignment and
-    fragmentation instead of assuming packed tensor pages.
+    TTNN reports ``cb_limit`` as the byte capacity above
+    ``address_at_first_l1_cb_buffer`` and L1 ``page_address`` as an absolute
+    address. Static CBs grow upward from that base, while tensor pages occupy
+    the region above them. The safe budget is therefore the address interval
+    from the CB base to the lowest allocated L1 page, or the full ``cb_limit``
+    capacity when no L1 tensor exists. Using page placement also accounts for
+    allocator alignment and fragmentation instead of assuming packed tensor
+    pages.
     """
     _ensure_ttnn()
     if ttnn is None:
@@ -73,7 +74,7 @@ def get_min_remaining_l1_for_device(device):
 
     info = ttnn._ttnn.reports.get_device_info(device)
     cb_base = int(info.address_at_first_l1_cb_buffer)
-    first_occupied = int(info.cb_limit)
+    first_occupied = cb_base + int(info.cb_limit)
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type == ttnn.BufferType.L1:
             first_occupied = min(first_occupied, int(page.page_address))
@@ -96,8 +97,10 @@ def get_remaining_l1_by_core_for_device(device, core_coordinates):
 
     info = ttnn._ttnn.reports.get_device_info(device)
     cb_base = int(info.address_at_first_l1_cb_buffer)
-    cb_limit = int(info.cb_limit)
-    first_occupied = {tuple(core): cb_limit for core in core_coordinates}
+    cb_limit_address = cb_base + int(info.cb_limit)
+    first_occupied = {
+        tuple(core): cb_limit_address for core in core_coordinates
+    }
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type != ttnn.BufferType.L1:
             continue
@@ -525,6 +528,7 @@ def build_pipe_global_semaphores(
     core_ranges: Any,
     count: int,
     device: Optional[Any] = None,
+    buffer_type: Optional[Any] = None,
 ) -> Tuple[List[Any], List[int]]:
     """Allocate initialized GlobalSemaphore-backed per-core L1 words.
 
@@ -544,8 +548,12 @@ def build_pipe_global_semaphores(
     device = device if device is not None else _first_device(tensors)
     # [Device 2.0] Keep this allocation behind the compiler resource plan so future
     # typed semaphore objects replace only this host/runtime binding.
+    semaphore_args = (device, core_ranges, 0)
     semaphores = [
-        ttnn.create_global_semaphore(device, core_ranges, 0) for _ in range(count)
+        ttnn.create_global_semaphore(*semaphore_args)
+        if buffer_type is None
+        else ttnn.create_global_semaphore(*semaphore_args, buffer_type)
+        for _ in range(count)
     ]
     addresses = [int(ttnn.get_global_semaphore_address(sem)) for sem in semaphores]
     return semaphores, addresses
@@ -585,6 +593,7 @@ def build_pipe_runtime_resources(
         core_ranges=core_ranges,
         count=num_reset_sync_words,
         device=resource_device,
+        buffer_type=ttnn.BufferType.L1_SMALL,
     )
     # Keep this order in sync with lowering: optional PipeNet SRAM scratch,
     # PipeNet ready counters, then DFB-reset synchronization words.
@@ -1239,13 +1248,36 @@ def _build_compiler_cb_descriptors_by_core(
     legacy_indices = sorted(
         index for index, scope in scopes_by_index.items() if scope == "legacy"
     )
+    # Allocate wider uniform domains first so a narrow earlier allocation
+    # cannot force padding onto every participant of a later remote DFB.
     remote_indices = sorted(
-        index
-        for index, scope in scopes_by_index.items()
-        if scope == "remote_uniform"
+        (
+            index
+            for index, scope in scopes_by_index.items()
+            if scope == "remote_uniform"
+        ),
+        key=lambda index: (
+            -sum(
+                len(coords)
+                for by_index, coords, _partition_ranges in group_entries
+                if index in by_index
+            ),
+            index,
+        ),
     )
     local_indices = sorted(
         index for index, scope in scopes_by_index.items() if scope == "local"
+    )
+
+    # TT-Metal keeps one allocation cursor per exact CoreRange. Keep every
+    # descriptor on this common disjoint partition so overlapping ranges do
+    # not introduce padding between otherwise adjacent per-core allocations.
+    program_partition_ranges = ttnn.CoreRangeSet(
+        [
+            core_range
+            for _by_index, _coords, partition_ranges in group_entries
+            for core_range in partition_ranges.ranges()
+        ]
     )
 
     for index in legacy_indices:
@@ -1255,22 +1287,22 @@ def _build_compiler_cb_descriptors_by_core(
                 index,
                 geometry,
                 max_pages_by_index[index] * geometry.page_size,
-                core_ranges,
+                program_partition_ranges,
             )
         )
 
     for index in remote_indices:
         geometry = geometries[index]
-        participants = set()
-        for by_index, coords, _partition_ranges in group_entries:
+        participant_ranges = []
+        for by_index, _coords, partition_ranges in group_entries:
             if index in by_index:
-                participants.update(coords)
+                participant_ranges.extend(partition_ranges.ranges())
         descriptors.append(
             _cb_descriptor(
                 index,
                 geometry,
                 max_pages_by_index[index] * geometry.page_size,
-                _core_ranges_from_coordinates(participants),
+                ttnn.CoreRangeSet(participant_ranges),
             )
         )
 
@@ -1426,6 +1458,17 @@ def run_kernel_on_device(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         num_reset_sync_words=num_reset_sync_words,
     )
+    if os.environ.get("TTLANG_DUMP_CB_LAYOUT"):
+        pipe_budgets = _remaining_cb_budgets_by_core(
+            tensors, _core_range_coordinates(core_ranges, label="program core ranges")
+        )
+        print(
+            "TTLANG_PIPE_RESOURCES "
+            f"scratch_bytes_per_core={pipe_sram_scratch_bytes} "
+            f"global_semaphores={num_pipe_global_semaphores} "
+            f"reset_sync_words={num_reset_sync_words} "
+            f"remaining_l1_min={min(pipe_budgets.values())}"
+        )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
 
@@ -1441,6 +1484,14 @@ def run_kernel_on_device(
                 "runtime_resource_factory must return ProgramRuntimeResources, "
                 f"got {type(program_resources).__name__}"
             )
+    if os.environ.get("TTLANG_DUMP_CB_LAYOUT"):
+        program_budgets = _remaining_cb_budgets_by_core(
+            tensors, _core_range_coordinates(core_ranges, label="program core ranges")
+        )
+        print(
+            "TTLANG_PROGRAM_RESOURCES "
+            f"remaining_l1_min={min(program_budgets.values())}"
+        )
     if runtime_resource_lifetime is not None:
         runtime_resource_lifetime[:] = program_resources.lifetimes
 

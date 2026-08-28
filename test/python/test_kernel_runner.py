@@ -203,6 +203,7 @@ class _FakeTTNN:
 
     class BufferType:
         L1 = object()
+        L1_SMALL = object()
 
     class DataMovementProcessor(Enum):
         RISCV_0 = 0
@@ -254,11 +255,14 @@ class _FakeTTNN:
     def get_device_tensors(tensor):
         return getattr(tensor, "device_tensors", [tensor])
 
-    def create_global_semaphore(self, device, core_ranges, initial_value):
+    def create_global_semaphore(
+        self, device, core_ranges, initial_value, buffer_type=None
+    ):
         semaphore = {
             "device": device,
             "core_ranges": core_ranges,
             "initial_value": initial_value,
+            "buffer_type": buffer_type,
             "address": self.next_address,
         }
         self.next_address += 0x20
@@ -295,12 +299,12 @@ def _fake_cb_descriptor(
     )
 
 
-def test_remaining_l1_uses_absolute_cb_and_page_addresses(monkeypatch):
+def test_remaining_l1_uses_cb_capacity_and_absolute_page_addresses(monkeypatch):
     l1 = object()
     reports = SimpleNamespace(
         get_device_info=lambda _device: SimpleNamespace(
             address_at_first_l1_cb_buffer=0x4A000,
-            cb_limit=0x130000,
+            cb_limit=0xE6000,
         ),
         get_buffer_pages=lambda _device: [
             SimpleNamespace(buffer_type=l1, page_address=0xEC000),
@@ -319,11 +323,11 @@ def test_remaining_l1_uses_absolute_cb_and_page_addresses(monkeypatch):
     )
 
 
-def test_remaining_l1_without_tensors_uses_cb_address_interval(monkeypatch):
+def test_remaining_l1_without_tensors_uses_cb_capacity(monkeypatch):
     reports = SimpleNamespace(
         get_device_info=lambda _device: SimpleNamespace(
             address_at_first_l1_cb_buffer=0x4A000,
-            cb_limit=0x130000,
+            cb_limit=0xE6000,
         ),
         get_buffer_pages=lambda _device: [],
     )
@@ -333,9 +337,7 @@ def test_remaining_l1_without_tensors_uses_cb_address_interval(monkeypatch):
     )
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    assert kernel_runner.get_min_remaining_l1_for_device(object()) == (
-        0x130000 - 0x4A000
-    )
+    assert kernel_runner.get_min_remaining_l1_for_device(object()) == 0xE6000
 
 
 def test_remaining_l1_by_core_does_not_conflate_tensor_placements(monkeypatch):
@@ -343,7 +345,7 @@ def test_remaining_l1_by_core_does_not_conflate_tensor_placements(monkeypatch):
     reports = SimpleNamespace(
         get_device_info=lambda _device: SimpleNamespace(
             address_at_first_l1_cb_buffer=0x4A000,
-            cb_limit=0x130000,
+            cb_limit=0xE6000,
         ),
         get_buffer_pages=lambda _device: [
             SimpleNamespace(
@@ -485,6 +487,14 @@ def test_reset_sync_words_do_not_consume_local_semaphore_ids(monkeypatch):
         range(16)
     )
     assert len(fake_ttnn.create_calls) == 6
+    assert [call["buffer_type"] for call in fake_ttnn.create_calls] == [
+        None,
+        None,
+        fake_ttnn.BufferType.L1_SMALL,
+        fake_ttnn.BufferType.L1_SMALL,
+        fake_ttnn.BufferType.L1_SMALL,
+        fake_ttnn.BufferType.L1_SMALL,
+    ]
     assert result["program"].kernels[0].common_runtime_args == [
         0x2000,
         0x1000,
@@ -1136,6 +1146,7 @@ def test_compiler_dfb_plan_builds_uniform_remote_descriptors(monkeypatch):
             configs=(
                 _PerCoreDFBConfig(0, 2, "legacy"),
                 _PerCoreDFBConfig(1, 4, "remote_uniform"),
+                _PerCoreDFBConfig(2, 2, "remote_uniform"),
                 _PerCoreDFBConfig(3, 2, "local"),
             ),
         ),
@@ -1157,14 +1168,14 @@ def test_compiler_dfb_plan_builds_uniform_remote_descriptors(monkeypatch):
 
     assert [descriptor.total_size for descriptor in descriptors] == [
         64,
-        128,
         96,
+        128,
         32,
         64,
     ]
     assert [
         descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
-    ] == [0, 1, 2, 3, 3]
+    ] == [0, 2, 1, 3, 3]
     assert [
         kernel_runner._core_range_coordinates(
             descriptor.core_ranges, label="descriptor"
@@ -1172,10 +1183,28 @@ def test_compiler_dfb_plan_builds_uniform_remote_descriptors(monkeypatch):
         for descriptor in descriptors
     ] == [
         {(0, 0), (1, 0), (2, 0)},
+        {(0, 0), (1, 0), (2, 0)},
         {(0, 0), (1, 0)},
-        {(0, 0), (2, 0)},
         {(0, 0)},
         {(1, 0)},
+    ]
+    assert [
+        [
+            (
+                core_range.start.x,
+                core_range.start.y,
+                core_range.end.x,
+                core_range.end.y,
+            )
+            for core_range in descriptor.core_ranges.ranges()
+        ]
+        for descriptor in descriptors
+    ] == [
+        [(0, 0, 0, 0), (1, 0, 1, 0), (2, 0, 2, 0)],
+        [(0, 0, 0, 0), (1, 0, 1, 0), (2, 0, 2, 0)],
+        [(0, 0, 0, 0), (1, 0, 1, 0)],
+        [(0, 0, 0, 0)],
+        [(1, 0, 1, 0)],
     ]
 
 

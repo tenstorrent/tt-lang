@@ -1092,7 +1092,16 @@ struct TTLFinalizeDFBIndicesPass
           builder.getNamedAttr(
               "unpack_to_dest_fp32",
               builder.getBoolAttr(
-                  unpackToDestFp32DFBs.contains(dfb.origIndex)))};
+                  unpackToDestFp32DFBs.contains(dfb.origIndex))),
+          builder.getNamedAttr("compiler_allocated",
+                               builder.getBoolAttr(dfb.compilerAllocated)),
+          builder.getNamedAttr(
+              "block_count",
+              builder.getI32IntegerAttr(static_cast<int32_t>(dfb.blockCount))),
+          builder.getNamedAttr(
+              "elems_per_block",
+              builder.getI32IntegerAttr(
+                  static_cast<int32_t>(dfb.elemsPerBlock)))};
       if (dfb.addressScope) {
         attrs.push_back(
             builder.getNamedAttr("address_scope", dfb.addressScope));
@@ -1332,6 +1341,7 @@ struct TTLFinalizeDFBIndicesPass
 
         auto func = cast<func::FuncOp>(funcOperation);
         auto prologue = cast<OpaqueCallOp>(calls.front()->clone());
+        prologue->setOperands(ValueRange{});
         appendConfiguration(prologue, 0, {});
         Block &entry = func.getBody().front();
         auto insertionPoint = entry.begin();

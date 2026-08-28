@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -45,6 +47,10 @@ constexpr llvm::StringLiteral kLogicalIndexAttrName =
     "ttl.dfb_logical_index";
 constexpr llvm::StringLiteral kPerCoreConfigsAttrName =
     "ttl.per_core_dfb_configs";
+constexpr llvm::StringLiteral kEpochPhysicalConfigsAttrName =
+    "ttl.dfb_epoch_physical_configs";
+constexpr llvm::StringLiteral kKernelUnpackToDestFp32AttrName =
+    "ttl.unpack_to_dest_fp32";
 constexpr llvm::StringLiteral kResetEpochAttrName = "ttl.dfb_reset_epoch";
 constexpr llvm::StringLiteral kResetPreservedIndicesAttrName =
     "ttl.dfb_reset_preserved_indices";
@@ -65,6 +71,11 @@ struct LogicalConfig {
   int64_t epoch;
   int64_t numPages;
   uint64_t pageBytes;
+  Type elementType;
+  bool unpackToDestFp32;
+  bool compilerAllocated;
+  int64_t blockCount;
+  int64_t elemsPerBlock;
   AddressScope scope;
 };
 
@@ -103,6 +114,27 @@ struct EpochPhysicalConfig {
     return !(*this == other);
   }
 };
+
+struct EpochSlotUse {
+  bool present = false;
+  bool active = false;
+  AddressScope scope = AddressScope::Local;
+  uint64_t pageBytes = 0;
+  SmallVector<uint64_t> bytesByCore;
+};
+
+struct PhysicalSlotUse {
+  bool present = false;
+  bool active = false;
+  AddressScope scope = AddressScope::Local;
+  uint64_t pageBytes = 0;
+  SmallVector<uint64_t> bytesByCore;
+};
+
+static uint64_t roundUpTo(uint64_t value, uint64_t alignment) {
+  assert(alignment > 0);
+  return (value / alignment + (value % alignment != 0)) * alignment;
+}
 
 static AddressScope joinScope(AddressScope lhs, AddressScope rhs) {
   if (lhs == AddressScope::RemoteUniform ||
@@ -230,6 +262,290 @@ static bool isMetadataOnlyResetUse(Operation *user) {
   return call && call.getCallee() == kResetCallee;
 }
 
+struct EpochRemapPlan {
+  int64_t localSlotCount = 0;
+  SmallVector<SmallVector<int64_t>> oldSlotByPhysical;
+
+  int64_t physicalIndex(int64_t epoch, int64_t oldPhysicalIndex) const {
+    if (oldPhysicalIndex >= localSlotCount || epoch < 0 ||
+        epoch >= static_cast<int64_t>(oldSlotByPhysical.size())) {
+      return oldPhysicalIndex;
+    }
+    const auto &assignment = oldSlotByPhysical[epoch];
+    for (auto [physicalIndex, oldIndex] : llvm::enumerate(assignment)) {
+      if (oldIndex == oldPhysicalIndex) {
+        return static_cast<int64_t>(physicalIndex);
+      }
+    }
+    return oldPhysicalIndex;
+  }
+};
+
+static EpochRemapPlan buildEpochRemapPlan(
+    const llvm::MapVector<int64_t, LogicalConfig> &logicalConfigs,
+    ArrayRef<llvm::SmallDenseSet<int64_t, 8>> logicalsByCore,
+    const llvm::SmallDenseSet<int64_t, 8> &pinnedPhysicalIndices) {
+  EpochRemapPlan plan;
+  int64_t maxEpoch = -1;
+  int64_t maxPhysicalIndex = -1;
+  for (const auto &[logicalIndex, logical] : logicalConfigs) {
+    (void)logicalIndex;
+    maxEpoch = std::max(maxEpoch, logical.epoch);
+    maxPhysicalIndex = std::max(maxPhysicalIndex, logical.physicalIndex);
+    if (!pinnedPhysicalIndices.contains(logical.physicalIndex)) {
+      plan.localSlotCount =
+          std::max(plan.localSlotCount, logical.physicalIndex + 1);
+    }
+  }
+  if (maxEpoch <= 0 || plan.localSlotCount <= 1) {
+    return plan;
+  }
+  for (int64_t pinned : pinnedPhysicalIndices) {
+    if (pinned < plan.localSlotCount) {
+      return EpochRemapPlan{};
+    }
+  }
+
+  const size_t coreCount = logicalsByCore.size();
+  SmallVector<SmallVector<EpochSlotUse>> epochUses;
+  epochUses.resize(static_cast<size_t>(maxEpoch + 1));
+  for (auto &uses : epochUses) {
+    uses.resize(static_cast<size_t>(plan.localSlotCount));
+  }
+  SmallVector<PhysicalSlotUse> pinnedUses;
+  pinnedUses.resize(static_cast<size_t>(maxPhysicalIndex + 1));
+
+  auto recordUse = [&](auto &use, const LogicalConfig &logical) {
+    if (!use.present) {
+      use.present = true;
+      use.pageBytes = logical.pageBytes;
+      use.bytesByCore.assign(coreCount, 0);
+    } else {
+      assert(use.pageBytes == logical.pageBytes &&
+             "one epoch slot must have one page size");
+    }
+    const uint64_t bytes =
+        static_cast<uint64_t>(logical.numPages) * logical.pageBytes;
+    if (logical.scope == AddressScope::Legacy) {
+      use.scope = use.active ? joinScope(use.scope, logical.scope)
+                             : logical.scope;
+      use.active = true;
+      for (uint64_t &coreBytes : use.bytesByCore) {
+        coreBytes = std::max(coreBytes, bytes);
+      }
+      return;
+    }
+    bool logicalIsActive = false;
+    for (size_t core = 0; core < coreCount; ++core) {
+      if (logicalsByCore[core].contains(logical.logicalIndex)) {
+        logicalIsActive = true;
+        use.bytesByCore[core] = std::max(use.bytesByCore[core], bytes);
+      }
+    }
+    if (logicalIsActive) {
+      use.scope = use.active ? joinScope(use.scope, logical.scope)
+                             : logical.scope;
+      use.active = true;
+    }
+  };
+
+  for (const auto &[logicalIndex, logical] : logicalConfigs) {
+    (void)logicalIndex;
+    if (pinnedPhysicalIndices.contains(logical.physicalIndex)) {
+      recordUse(pinnedUses[logical.physicalIndex], logical);
+      continue;
+    }
+    recordUse(epochUses[logical.epoch][logical.physicalIndex], logical);
+  }
+
+  plan.oldSlotByPhysical.resize(epochUses.size());
+  for (size_t epoch = 0; epoch < epochUses.size(); ++epoch) {
+    auto &assignment = plan.oldSlotByPhysical[epoch];
+    assignment.assign(static_cast<size_t>(plan.localSlotCount), -1);
+    for (int64_t oldIndex = 0; oldIndex < plan.localSlotCount; ++oldIndex) {
+      if (epochUses[epoch][oldIndex].present) {
+        assignment[oldIndex] = oldIndex;
+      }
+    }
+  }
+
+  auto evaluate = [&](const auto &assignments) {
+    SmallVector<PhysicalSlotUse> physicalUses;
+    physicalUses.resize(static_cast<size_t>(maxPhysicalIndex + 1));
+    auto mergeUse = [&](PhysicalSlotUse &physical,
+                        const auto &logicalUse) {
+      if (!logicalUse.present) {
+        return;
+      }
+      if (!physical.present) {
+        physical.present = true;
+        physical.pageBytes = logicalUse.pageBytes;
+        physical.bytesByCore.assign(coreCount, 0);
+      }
+      if (!logicalUse.active) {
+        return;
+      }
+      physical.scope = physical.active
+                           ? joinScope(physical.scope, logicalUse.scope)
+                           : logicalUse.scope;
+      physical.active = true;
+      for (size_t core = 0; core < coreCount; ++core) {
+        physical.bytesByCore[core] = std::max(
+            physical.bytesByCore[core], logicalUse.bytesByCore[core]);
+      }
+    };
+    for (size_t epoch = 0; epoch < assignments.size(); ++epoch) {
+      for (size_t physical = 0; physical < assignments[epoch].size();
+           ++physical) {
+        int64_t oldIndex = assignments[epoch][physical];
+        if (oldIndex >= 0) {
+          mergeUse(physicalUses[physical], epochUses[epoch][oldIndex]);
+        }
+      }
+    }
+    for (size_t physical = 0; physical < pinnedUses.size(); ++physical) {
+      mergeUse(physicalUses[physical], pinnedUses[physical]);
+    }
+
+    SmallVector<uint64_t> totals(coreCount, 0);
+    for (const PhysicalSlotUse &physical : physicalUses) {
+      if (!physical.active) {
+        continue;
+      }
+      if (physical.scope == AddressScope::Local) {
+        for (size_t core = 0; core < coreCount; ++core) {
+          totals[core] +=
+              roundUpTo(physical.bytesByCore[core], physical.pageBytes);
+        }
+        continue;
+      }
+      uint64_t uniformBytes = 0;
+      for (uint64_t coreBytes : physical.bytesByCore) {
+        uniformBytes = std::max(uniformBytes, coreBytes);
+      }
+      for (size_t core = 0; core < coreCount; ++core) {
+        if (physical.bytesByCore[core] != 0) {
+          totals[core] += roundUpTo(uniformBytes, physical.pageBytes);
+        }
+      }
+    }
+    llvm::sort(totals, std::greater<uint64_t>());
+    return totals;
+  };
+  auto isBetter = [](ArrayRef<uint64_t> lhs, ArrayRef<uint64_t> rhs) {
+    return std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(),
+                                        rhs.end());
+  };
+
+  const auto identityAssignments = plan.oldSlotByPhysical;
+  auto identityObjective = evaluate(identityAssignments);
+  auto greedyAssignments = identityAssignments;
+  for (size_t epoch = 1; epoch < greedyAssignments.size(); ++epoch) {
+    greedyAssignments[epoch].assign(
+        static_cast<size_t>(plan.localSlotCount), -1);
+  }
+  SmallVector<size_t> epochOrder;
+  for (size_t epoch = 1; epoch < epochUses.size(); ++epoch) {
+    epochOrder.push_back(epoch);
+  }
+  llvm::sort(epochOrder, [&](size_t lhs, size_t rhs) {
+    uint64_t lhsBytes = 0;
+    uint64_t rhsBytes = 0;
+    for (const EpochSlotUse &use : epochUses[lhs]) {
+      for (uint64_t bytes : use.bytesByCore) {
+        lhsBytes += bytes;
+      }
+    }
+    for (const EpochSlotUse &use : epochUses[rhs]) {
+      for (uint64_t bytes : use.bytesByCore) {
+        rhsBytes += bytes;
+      }
+    }
+    if (lhsBytes != rhsBytes) {
+      return lhsBytes > rhsBytes;
+    }
+    return lhs < rhs;
+  });
+  for (size_t epoch : epochOrder) {
+    SmallVector<int64_t> oldIndices;
+    for (int64_t oldIndex = 0; oldIndex < plan.localSlotCount; ++oldIndex) {
+      if (epochUses[epoch][oldIndex].present) {
+        oldIndices.push_back(oldIndex);
+      }
+    }
+    llvm::sort(oldIndices, [&](int64_t lhs, int64_t rhs) {
+      uint64_t lhsBytes = 0;
+      uint64_t rhsBytes = 0;
+      for (uint64_t bytes : epochUses[epoch][lhs].bytesByCore) {
+        lhsBytes = std::max(lhsBytes, bytes);
+      }
+      for (uint64_t bytes : epochUses[epoch][rhs].bytesByCore) {
+        rhsBytes = std::max(rhsBytes, bytes);
+      }
+      if (lhsBytes != rhsBytes) {
+        return lhsBytes > rhsBytes;
+      }
+      return lhs < rhs;
+    });
+    for (int64_t oldIndex : oldIndices) {
+      int64_t bestPhysical = -1;
+      SmallVector<uint64_t> bestObjective;
+      for (int64_t physical = 0; physical < plan.localSlotCount; ++physical) {
+        if (greedyAssignments[epoch][physical] >= 0) {
+          continue;
+        }
+        greedyAssignments[epoch][physical] = oldIndex;
+        auto objective = evaluate(greedyAssignments);
+        greedyAssignments[epoch][physical] = -1;
+        if (bestPhysical < 0 || isBetter(objective, bestObjective)) {
+          bestPhysical = physical;
+          bestObjective = std::move(objective);
+        }
+      }
+      assert(bestPhysical >= 0 && "epoch has more DFB slots than its arena");
+      greedyAssignments[epoch][bestPhysical] = oldIndex;
+    }
+  }
+
+  auto greedyObjective = evaluate(greedyAssignments);
+  if (isBetter(greedyObjective, identityObjective)) {
+    plan.oldSlotByPhysical = std::move(greedyAssignments);
+  }
+  auto currentObjective = evaluate(plan.oldSlotByPhysical);
+  while (true) {
+    int64_t bestEpoch = -1;
+    int64_t bestLhs = -1;
+    int64_t bestRhs = -1;
+    SmallVector<uint64_t> bestObjective = currentObjective;
+    for (size_t epoch = 1; epoch < plan.oldSlotByPhysical.size(); ++epoch) {
+      auto &assignment = plan.oldSlotByPhysical[epoch];
+      for (int64_t lhs = 0; lhs < plan.localSlotCount; ++lhs) {
+        for (int64_t rhs = lhs + 1; rhs < plan.localSlotCount; ++rhs) {
+          if (assignment[lhs] < 0 && assignment[rhs] < 0) {
+            continue;
+          }
+          std::swap(assignment[lhs], assignment[rhs]);
+          auto objective = evaluate(plan.oldSlotByPhysical);
+          std::swap(assignment[lhs], assignment[rhs]);
+          if (isBetter(objective, bestObjective)) {
+            bestEpoch = static_cast<int64_t>(epoch);
+            bestLhs = lhs;
+            bestRhs = rhs;
+            bestObjective = std::move(objective);
+          }
+        }
+      }
+    }
+    if (bestEpoch < 0) {
+      break;
+    }
+    std::swap(plan.oldSlotByPhysical[bestEpoch][bestLhs],
+              plan.oldSlotByPhysical[bestEpoch][bestRhs]);
+    currentObjective = std::move(bestObjective);
+  }
+  return plan;
+}
+
 struct TTKernelAnalyzeDFBResourcesPass
     : impl::TTKernelAnalyzeDFBResourcesBase<
           TTKernelAnalyzeDFBResourcesPass> {
@@ -251,7 +567,6 @@ struct TTKernelAnalyzeDFBResourcesPass
     auto [gridX, gridY] = *grid;
 
     llvm::MapVector<int64_t, LogicalConfig> logicalConfigs;
-    llvm::MapVector<int64_t, PhysicalInfo> physicalInfos;
     for (Attribute attr : configsAttr) {
       auto config = dyn_cast<DictionaryAttr>(attr);
       if (!config) {
@@ -266,11 +581,18 @@ struct TTKernelAnalyzeDFBResourcesPass
       FailureOr<int64_t> epoch = getInteger(config, "epoch");
       FailureOr<int64_t> numPages = getInteger(config, "num_pages");
       auto elementType = config.getAs<TypeAttr>("element_type");
+      auto unpackToDestFp32 =
+          config.getAs<BoolAttr>("unpack_to_dest_fp32");
+      auto compilerAllocated = config.getAs<BoolAttr>("compiler_allocated");
+      auto blockCount = config.getAs<IntegerAttr>("block_count");
+      auto elemsPerBlock = config.getAs<IntegerAttr>("elems_per_block");
       FailureOr<AddressScope> scope = parseScope(config);
       if (failed(logicalIndex) || failed(physicalIndex) || failed(epoch) ||
-          failed(numPages) || !elementType || failed(scope) ||
+          failed(numPages) || !elementType || !unpackToDestFp32 ||
+          failed(scope) ||
           *logicalIndex < 0 || *physicalIndex < 0 || *epoch < 0 ||
-          *numPages <= 0) {
+          *numPages <= 0 || (blockCount && blockCount.getInt() <= 0) ||
+          (elemsPerBlock && elemsPerBlock.getInt() <= 0)) {
         module.emitOpError() << "has malformed `" << kLogicalConfigsAttrName
                              << "` entry " << config;
         signalPassFailure();
@@ -291,26 +613,18 @@ struct TTKernelAnalyzeDFBResourcesPass
         return;
       }
 
-      LogicalConfig logical{*logicalIndex, *physicalIndex, *epoch, *numPages,
-                            *pageBytes, *scope};
+      LogicalConfig logical{*logicalIndex,
+                            *physicalIndex,
+                            *epoch,
+                            *numPages,
+                            *pageBytes,
+                            elementType.getValue(),
+                            unpackToDestFp32.getValue(),
+                            compilerAllocated && compilerAllocated.getValue(),
+                            blockCount ? blockCount.getInt() : 1,
+                            elemsPerBlock ? elemsPerBlock.getInt() : *numPages,
+                            *scope};
       logicalConfigs.insert({logical.logicalIndex, logical});
-
-      PhysicalInfo &physical = physicalInfos[logical.physicalIndex];
-      physical.scope = joinScope(physical.scope, logical.scope);
-      if (logical.epoch == physical.initialEpoch &&
-          logical.pageBytes != physical.initialPageBytes) {
-        module.emitOpError()
-            << "physical DFB " << logical.physicalIndex
-            << " has incompatible page sizes in initial epoch";
-        signalPassFailure();
-        return;
-      }
-      if (std::tie(logical.epoch, logical.logicalIndex) <
-          std::tie(physical.initialEpoch, physical.initialLogicalIndex)) {
-        physical.initialEpoch = logical.epoch;
-        physical.initialLogicalIndex = logical.logicalIndex;
-        physical.initialPageBytes = logical.pageBytes;
-      }
     }
 
     const size_t coreCount = static_cast<size_t>(gridX * gridY);
@@ -373,6 +687,297 @@ struct TTKernelAnalyzeDFBResourcesPass
       return;
     }
 
+    SmallVector<ttk::OpaqueCallOp> resetCalls;
+    llvm::SmallDenseSet<int64_t, 8> pinnedPhysicalIndices;
+    module.walk([&](ttk::OpaqueCallOp call) {
+      if (call.getCallee() != kResetCallee) {
+        return;
+      }
+      resetCalls.push_back(call);
+      FailureOr<llvm::SmallDenseSet<int64_t, 8>> preserved =
+          getPreservedPhysicalIndices(call);
+      if (failed(preserved)) {
+        call.emitOpError() << "has malformed `"
+                           << kResetPreservedIndicesAttrName << "`";
+        walkFailed = true;
+        return;
+      }
+      pinnedPhysicalIndices.insert(preserved->begin(), preserved->end());
+    });
+    if (walkFailed) {
+      signalPassFailure();
+      return;
+    }
+
+    EpochRemapPlan remapPlan;
+    if (!resetCalls.empty() &&
+        module->hasAttr(kEpochPhysicalConfigsAttrName)) {
+      remapPlan = buildEpochRemapPlan(logicalConfigs, logicalsByCore,
+                                      pinnedPhysicalIndices);
+    }
+    if (!remapPlan.oldSlotByPhysical.empty()) {
+      for (ttk::OpaqueCallOp call : resetCalls) {
+        auto epoch = call->getAttrOfType<IntegerAttr>(kResetEpochAttrName);
+        ArrayAttr oldArgs = call.getTemplateArgsAttr();
+        auto oldCount = oldArgs && !oldArgs.empty()
+                            ? dyn_cast<IntegerAttr>(oldArgs[0])
+                            : IntegerAttr();
+        if (!epoch || !oldCount || oldCount.getInt() < 0 ||
+            oldArgs.size() !=
+                1 + static_cast<size_t>(oldCount.getInt()) *
+                        kResetConfigWords) {
+          call.emitOpError()
+              << "has malformed reset metadata before DFB epoch packing";
+          signalPassFailure();
+          return;
+        }
+        SmallVector<Attribute> remappedArgs(oldArgs.begin(), oldArgs.end());
+        OpBuilder builder(call);
+        for (int64_t record = 0; record < oldCount.getInt(); ++record) {
+          size_t base = 1 + static_cast<size_t>(record) * kResetConfigWords;
+          auto oldPhysical = dyn_cast<IntegerAttr>(oldArgs[base]);
+          if (!oldPhysical) {
+            call.emitOpError() << "has a non-integer DFB reset slot";
+            signalPassFailure();
+            return;
+          }
+          remappedArgs[base] = builder.getI64IntegerAttr(
+              remapPlan.physicalIndex(epoch.getInt(), oldPhysical.getInt()));
+        }
+        call.setTemplateArgsAttr(builder.getArrayAttr(remappedArgs));
+      }
+
+      for (auto &[logicalIndex, logical] : logicalConfigs) {
+        (void)logicalIndex;
+        logical.physicalIndex =
+            remapPlan.physicalIndex(logical.epoch, logical.physicalIndex);
+      }
+      module.walk([&](ttk::GetCompileArgValOp argOp) {
+        auto logicalIndex =
+            argOp->getAttrOfType<IntegerAttr>(kLogicalIndexAttrName);
+        if (!logicalIndex) {
+          return;
+        }
+        auto config = logicalConfigs.find(logicalIndex.getInt());
+        if (config != logicalConfigs.end()) {
+          argOp.setArgIndex(
+              static_cast<uint32_t>(config->second.physicalIndex));
+        }
+      });
+      for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+        auto thread = func->getAttrOfType<ttk::ThreadTypeAttr>(
+            ttk::ThreadTypeAttr::name);
+        if (!thread || thread.getValue() != ttk::ThreadType::Compute) {
+          continue;
+        }
+        auto originalUnpackIndices =
+            func->getAttrOfType<DenseI32ArrayAttr>(
+                kKernelUnpackToDestFp32AttrName);
+        llvm::SmallDenseSet<int64_t, 8> originalUnpackSet;
+        if (originalUnpackIndices) {
+          for (int32_t index : originalUnpackIndices.asArrayRef()) {
+            originalUnpackSet.insert(index);
+          }
+        }
+        llvm::SmallDenseSet<int32_t, 8> unpackIndices;
+        func.walk([&](ttk::GetCompileArgValOp argOp) {
+          auto logicalIndex =
+              argOp->getAttrOfType<IntegerAttr>(kLogicalIndexAttrName);
+          if (!logicalIndex ||
+              !originalUnpackSet.contains(logicalIndex.getInt()) ||
+              llvm::all_of(argOp.getResult().getUsers(),
+                           isMetadataOnlyResetUse)) {
+            return;
+          }
+          auto config = logicalConfigs.find(logicalIndex.getInt());
+          if (config != logicalConfigs.end()) {
+            unpackIndices.insert(
+                static_cast<int32_t>(config->second.physicalIndex));
+          }
+        });
+        if (unpackIndices.empty()) {
+          func->removeAttr(kKernelUnpackToDestFp32AttrName);
+          continue;
+        }
+        SmallVector<int32_t> sortedUnpackIndices(unpackIndices.begin(),
+                                                 unpackIndices.end());
+        llvm::sort(sortedUnpackIndices);
+        func->setAttr(kKernelUnpackToDestFp32AttrName,
+                      DenseI32ArrayAttr::get(module.getContext(),
+                                             sortedUnpackIndices));
+      }
+
+      OpBuilder builder(module.getContext());
+      SmallVector<Attribute> remappedConfigs;
+      remappedConfigs.reserve(configsAttr.size());
+      for (Attribute attr : configsAttr) {
+        auto config = cast<DictionaryAttr>(attr);
+        int64_t logicalIndex =
+            config.getAs<IntegerAttr>("logical_index").getInt();
+        NamedAttrList fields(config.getValue());
+        fields.set("physical_index", builder.getI64IntegerAttr(
+                                         logicalConfigs[logicalIndex]
+                                             .physicalIndex));
+        remappedConfigs.push_back(fields.getDictionary(module.getContext()));
+      }
+      configsAttr = builder.getArrayAttr(remappedConfigs);
+      module->setAttr(kLogicalConfigsAttrName, configsAttr);
+
+      SmallVector<Attribute> indexMapEntries;
+      std::map<int64_t, const LogicalConfig *> compilerByPhysical;
+      for (const auto &[logicalIndex, logical] : logicalConfigs) {
+        if (!logical.compilerAllocated) {
+          if (logical.physicalIndex != logicalIndex) {
+            indexMapEntries.push_back(DictionaryAttr::get(
+                module.getContext(),
+                {builder.getNamedAttr(
+                     "old_index", builder.getI32IntegerAttr(logicalIndex)),
+                 builder.getNamedAttr(
+                     "new_index",
+                     builder.getI32IntegerAttr(logical.physicalIndex))}));
+          }
+          continue;
+        }
+        auto [it, inserted] =
+            compilerByPhysical.try_emplace(logical.physicalIndex, &logical);
+        if (!inserted) {
+          const uint64_t candidateBytes =
+              static_cast<uint64_t>(logical.numPages) * logical.pageBytes;
+          const uint64_t currentBytes =
+              static_cast<uint64_t>(it->second->numPages) *
+              it->second->pageBytes;
+          if (candidateBytes > currentBytes ||
+              (candidateBytes == currentBytes &&
+               logical.logicalIndex < it->second->logicalIndex)) {
+            it->second = &logical;
+          }
+        }
+      }
+      if (indexMapEntries.empty()) {
+        module->removeAttr(kDFBIndexMapAttrName);
+      } else {
+        module->setAttr(kDFBIndexMapAttrName,
+                        builder.getArrayAttr(indexMapEntries));
+      }
+
+      SmallVector<Attribute> compilerEntries;
+      for (const auto &[physicalIndex, logical] : compilerByPhysical) {
+        compilerEntries.push_back(DictionaryAttr::get(
+            module.getContext(),
+            {builder.getNamedAttr(
+                 "dfb_index", builder.getI32IntegerAttr(physicalIndex)),
+             builder.getNamedAttr(
+                 "num_tiles",
+                 builder.getI32IntegerAttr(logical->elemsPerBlock)),
+             builder.getNamedAttr("element_type",
+                                  TypeAttr::get(logical->elementType)),
+             builder.getNamedAttr(
+                 "block_count",
+                 builder.getI32IntegerAttr(logical->blockCount))}));
+      }
+      if (compilerEntries.empty()) {
+        module->removeAttr(kCompilerAllocatedDFBsAttrName);
+      } else {
+        module->setAttr(kCompilerAllocatedDFBsAttrName,
+                        builder.getArrayAttr(compilerEntries));
+      }
+    }
+
+    llvm::MapVector<int64_t, PhysicalInfo> physicalInfos;
+    for (const auto &[logicalIndex, logical] : logicalConfigs) {
+      (void)logicalIndex;
+      PhysicalInfo &physical = physicalInfos[logical.physicalIndex];
+      bool logicalIsActive = logical.scope == AddressScope::Legacy;
+      for (const auto &coreLogicals : logicalsByCore) {
+        logicalIsActive |= coreLogicals.contains(logical.logicalIndex);
+      }
+      if (logicalIsActive) {
+        physical.scope = joinScope(physical.scope, logical.scope);
+      }
+      if (logical.epoch == physical.initialEpoch &&
+          logical.pageBytes != physical.initialPageBytes) {
+        module.emitOpError()
+            << "physical DFB " << logical.physicalIndex
+            << " has incompatible page sizes in initial epoch";
+        signalPassFailure();
+        return;
+      }
+      if (std::tie(logical.epoch, logical.logicalIndex) <
+          std::tie(physical.initialEpoch, physical.initialLogicalIndex)) {
+        physical.initialEpoch = logical.epoch;
+        physical.initialLogicalIndex = logical.logicalIndex;
+        physical.initialPageBytes = logical.pageBytes;
+      }
+    }
+
+    if (!remapPlan.oldSlotByPhysical.empty() &&
+        module->hasAttr(kEpochPhysicalConfigsAttrName)) {
+      OpBuilder physicalBuilder(module.getContext());
+      int64_t physicalCount = 0;
+      for (const auto &[physicalIndex, physical] : physicalInfos) {
+        (void)physical;
+        physicalCount = std::max(physicalCount, physicalIndex + 1);
+      }
+      SmallVector<const LogicalConfig *> initialConfigs(physicalCount,
+                                                        nullptr);
+      SmallVector<uint64_t> maxBytes(physicalCount, 0);
+      llvm::SmallDenseSet<int64_t, 8> activeLogicals;
+      for (const auto &coreLogicals : logicalsByCore) {
+        activeLogicals.insert(coreLogicals.begin(), coreLogicals.end());
+      }
+      for (const auto &[logicalIndex, logical] : logicalConfigs) {
+        const size_t physical = static_cast<size_t>(logical.physicalIndex);
+        const LogicalConfig *initial = initialConfigs[physical];
+        if (!initial ||
+            std::tie(logical.epoch, logical.logicalIndex) <
+                std::tie(initial->epoch, initial->logicalIndex)) {
+          initialConfigs[physical] = &logical;
+        }
+        if (logical.scope == AddressScope::Legacy ||
+            activeLogicals.contains(logicalIndex)) {
+          maxBytes[physical] = std::max(
+              maxBytes[physical],
+              static_cast<uint64_t>(logical.numPages) * logical.pageBytes);
+        }
+      }
+      SmallVector<Attribute> physicalConfigs;
+      physicalConfigs.reserve(static_cast<size_t>(physicalCount));
+      for (int64_t physical = 0; physical < physicalCount; ++physical) {
+        const LogicalConfig *initial = initialConfigs[physical];
+        auto tileType =
+            initial ? dyn_cast<ttcore::TileType>(initial->elementType)
+                    : ttcore::TileType();
+        if (!initial || !tileType) {
+          module.emitOpError()
+              << "epoch DFB packing produced a sparse or non-tile slot "
+              << physical;
+          signalPassFailure();
+          return;
+        }
+        const uint64_t totalSize = roundUpTo(
+            std::max(maxBytes[physical], initial->pageBytes),
+            initial->pageBytes);
+        physicalConfigs.push_back(DictionaryAttr::get(
+            module.getContext(),
+            {physicalBuilder.getNamedAttr(
+                 "dfb_index", physicalBuilder.getI32IntegerAttr(physical)),
+             physicalBuilder.getNamedAttr(
+                 "element_type", TypeAttr::get(initial->elementType)),
+             physicalBuilder.getNamedAttr(
+                 "tile_height",
+                 physicalBuilder.getI32IntegerAttr(tileType.getHeight())),
+             physicalBuilder.getNamedAttr(
+                 "tile_width",
+                 physicalBuilder.getI32IntegerAttr(tileType.getWidth())),
+             physicalBuilder.getNamedAttr(
+                 "total_size",
+                 physicalBuilder.getI64IntegerAttr(
+                     static_cast<int64_t>(totalSize)))}));
+      }
+      module->setAttr(kEpochPhysicalConfigsAttrName,
+                      physicalBuilder.getArrayAttr(physicalConfigs));
+    }
+
     SmallVector<std::map<int64_t, uint64_t>> bytesByCore(coreCount);
     for (size_t core = 0; core < coreCount; ++core) {
       for (int64_t logicalIndex : logicalsByCore[core]) {
@@ -413,28 +1018,6 @@ struct TTKernelAnalyzeDFBResourcesPass
         configsByCore[core].push_back(PhysicalConfig{
             physicalIndex, static_cast<int64_t>(pages), physical.scope});
       }
-    }
-
-    SmallVector<ttk::OpaqueCallOp> resetCalls;
-    llvm::SmallDenseSet<int64_t, 8> pinnedPhysicalIndices;
-    module.walk([&](ttk::OpaqueCallOp call) {
-      if (call.getCallee() != kResetCallee) {
-        return;
-      }
-      resetCalls.push_back(call);
-      FailureOr<llvm::SmallDenseSet<int64_t, 8>> preserved =
-          getPreservedPhysicalIndices(call);
-      if (failed(preserved)) {
-        call.emitOpError() << "has malformed `"
-                           << kResetPreservedIndicesAttrName << "`";
-        walkFailed = true;
-        return;
-      }
-      pinnedPhysicalIndices.insert(preserved->begin(), preserved->end());
-    });
-    if (walkFailed) {
-      signalPassFailure();
-      return;
     }
 
     llvm::MapVector<int64_t, LogicalConfig> pinnedConfigs;
