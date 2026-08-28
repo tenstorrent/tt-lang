@@ -11,9 +11,9 @@ This module handles `ttl.copy()` calls that are missing the paired
   because the handle will be discarded and nothing else can wait on it.
 * **Assigned copies with no wait** (`tx = ttl.copy(...)` with no
   `tx.wait()`) — an injection point is inserted on the very next
-  statement. Requests observed by a multi-request `ttl.wait_any` are instead
-  completed when their variable is reassigned or the function returns, after
-  selection and subsequent progress work.
+  statement. Incomplete requests retained by a multi-request `ttl.wait_any`
+  are instead completed when the function returns, after subsequent progress
+  work.
 
 Push/pop injection for `dfb.reserve()` / `dfb.wait()` blocks is handled
 directly inside `DataflowBuffer` at runtime, not here:
@@ -92,14 +92,12 @@ class InjectionPoint:
     executes, so ``tx.wait()`` runs before the next statement after the copy.
 
     When ``trigger_on_return`` is ``True``, the callback fires on the
-    function's ``return`` event instead. ``wait_any_cleanup`` restricts a line
-    trigger to requests retained by a prior multi-request selection.
+    function's ``return`` event instead.
     """
 
     var_name: str
     trigger_lineno: Optional[int]  # None when trigger_on_return is True
     trigger_on_return: bool = False
-    wait_any_cleanup: bool = False
 
 
 @dataclass
@@ -108,8 +106,8 @@ class KernelAnalysis:
 
     ``injection_points`` covers copy-wait injection (Case B: assigned
     ``tx = ttl.copy(...)`` with no explicit ``tx.wait()``). Multi-request
-    receive selections defer the corresponding injection until reassignment
-    or function return.
+    receive selections retain incomplete request objects for cleanup at
+    function return.
 
     ``bare_copy_linenos`` is the set of absolute file line numbers of bare
     ``ttl.copy(...)`` calls whose return value is not assigned to any
@@ -225,19 +223,19 @@ def _line_belongs_to_assignment(
 def _find_copy_records(
     stmts: list[ast.stmt],
     file_start_line: int,
-) -> tuple[list[tuple[str, int | None, bool]], list[int]]:
+) -> tuple[list[tuple[str, int | None]], list[int], bool]:
     """Find ttl.copy() calls that need automatic wait() insertion.
 
     Scans ``stmts`` (flat list from ``_all_stmts_flat``) for two patterns:
 
     * **Case B** — ``tx = ttl.copy(...)`` with no subsequent ``tx.wait()``:
-      returned as records containing the variable, trigger line, and whether
-      the trigger applies only to retained wait-any requests. A `None` trigger
-      defers ordinary cleanup until function return.
+      returned as records containing the variable and trigger line. A `None`
+      trigger defers ordinary cleanup until function return.
     * **Case A** — bare ``ttl.copy(...)`` expression with no assignment:
       returned as absolute line numbers in ``bare_linenos``.
 
-    Returns ``(assigned_no_wait, bare_linenos)``.
+    The third result reports whether a multi-request wait requires retained
+    request cleanup at function return.
     """
     # Collect all assigned copy vars and their linenos.
     assigned: list[tuple[str, int]] = []  # (var_name, abs_lineno)
@@ -285,12 +283,8 @@ def _find_copy_records(
         _update_request_tuple_bindings(stmt, request_tuple_bindings)
 
     statement_linenos = [file_start_line + stmt.lineno - 1 for stmt in stmts]
-    assigned_no_wait: list[tuple[str, int | None, bool]] = []
-    assignment_linenos_by_name: dict[str, set[int]] = {}
-    for assignment_name, assignment_lineno in assigned:
-        assignment_linenos_by_name.setdefault(assignment_name, set()).add(
-            assignment_lineno
-        )
+    assigned_no_wait: list[tuple[str, int | None]] = []
+    cleanup_wait_any_on_return = False
     for var_name, copy_lineno in assigned:
         next_assignment_lineno = next(
             (
@@ -315,8 +309,7 @@ def _find_copy_records(
             )
         ]
         if selection_linenos:
-            for trigger_lineno in sorted(assignment_linenos_by_name[var_name]):
-                assigned_no_wait.append((var_name, trigger_lineno, True))
+            cleanup_wait_any_on_return = True
         else:
             trigger_lineno = next(
                 (
@@ -326,8 +319,8 @@ def _find_copy_records(
                 ),
                 None,
             )
-            assigned_no_wait.append((var_name, trigger_lineno, False))
-    return assigned_no_wait, bare_linenos
+            assigned_no_wait.append((var_name, trigger_lineno))
+    return assigned_no_wait, bare_linenos, cleanup_wait_any_on_return
 
 
 # ---------------------------------------------------------------------------
@@ -501,11 +494,13 @@ def _analyze_func_def_node(
     if not stmts:
         return KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
 
-    assigned_no_wait, bare_linenos = _find_copy_records(stmts, file_start_line)
+    assigned_no_wait, bare_linenos, cleanup_wait_any_on_return = _find_copy_records(
+        stmts, file_start_line
+    )
     injection_points: list[InjectionPoint] = []
-    recorded_injections: set[tuple[str, int | None, bool]] = set()
-    for var_name, trigger_lineno, wait_any_cleanup in assigned_no_wait:
-        identity = (var_name, trigger_lineno, wait_any_cleanup)
+    recorded_injections: set[tuple[str, int | None]] = set()
+    for var_name, trigger_lineno in assigned_no_wait:
+        identity = (var_name, trigger_lineno)
         if identity in recorded_injections:
             continue
         recorded_injections.add(identity)
@@ -514,15 +509,12 @@ def _analyze_func_def_node(
                 var_name=var_name,
                 trigger_lineno=trigger_lineno,
                 trigger_on_return=trigger_lineno is None,
-                wait_any_cleanup=wait_any_cleanup,
             )
         )
     return KernelAnalysis(
         injection_points=tuple(injection_points),
         bare_copy_linenos=frozenset(bare_linenos),
-        cleanup_wait_any_on_return=any(
-            injection.wait_any_cleanup for injection in injection_points
-        ),
+        cleanup_wait_any_on_return=cleanup_wait_any_on_return,
     )
 
 
@@ -705,13 +697,6 @@ def _fire_injection(frame: types.FrameType, ip: InjectionPoint) -> None:
     handle = frame.f_locals.get(ip.var_name)
     if not isinstance(handle, CopyTransaction):
         return
-    if ip.wait_any_cleanup:
-        from .context import get_context
-
-        pending = get_context().pending_wait_any_requests.get(id(frame), [])
-        if not any(request is handle for request in pending):
-            return
-        pending[:] = [request for request in pending if request is not handle]
     if handle.is_completed:
         return
     handle.wait()

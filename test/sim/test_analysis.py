@@ -460,9 +460,7 @@ class TestCopyWaitAnalysis:
             ttl.wait_any((request0, request1))
 
         analysis = analyze_kernel_function(dm)
-        ips = analysis.injection_points
-        assert {ip.var_name for ip in ips} == {"request0", "request1"}
-        assert all(ip.wait_any_cleanup for ip in ips)
+        assert analysis.injection_points == ()
         assert analysis.cleanup_wait_any_on_return
 
     def test_wait_any_tuple_binding_defers_copy_wait_injection(self):
@@ -475,9 +473,7 @@ class TestCopyWaitAnalysis:
             ttl.wait_any(requests)
 
         analysis = analyze_kernel_function(dm)
-        ips = analysis.injection_points
-        assert {ip.var_name for ip in ips} == {"request0", "request1"}
-        assert all(ip.wait_any_cleanup for ip in ips)
+        assert analysis.injection_points == ()
         assert analysis.cleanup_wait_any_on_return
 
     def test_single_request_wait_any_completes_request(self):
@@ -499,14 +495,11 @@ class TestCopyWaitAnalysis:
             consume_ready_index()  # noqa: F821
 
         analysis = analyze_kernel_function(dm)
-        ips = analysis.injection_points
-        assert {ip.var_name for ip in ips} == {"request0", "request1"}
-        assert all(ip.wait_any_cleanup for ip in ips)
+        assert analysis.injection_points == ()
         assert analysis.cleanup_wait_any_on_return
 
-    def test_wait_any_cleanup_precedes_request_reassignment(self):
-        """Deferred cleanup preserves the request before its name is reused."""
-        import inspect
+    def test_wait_any_cleanup_does_not_use_reassignment(self):
+        """Retained requests do not depend on their original local names."""
 
         def dm():
             request = ttl.copy(pipe0, block0)  # noqa: F821
@@ -515,18 +508,13 @@ class TestCopyWaitAnalysis:
             make_other_request_ready()  # noqa: F821
             request = ttl.copy(pipe2, block2)  # noqa: F821
 
-        ips = analyze_kernel_function(dm).injection_points
-        request_points = [ip for ip in ips if ip.var_name == "request"]
-        assert len(request_points) == 3
-        source_lines, start = inspect.getsourcelines(dm)
-        assignment_linenos = {
-            start + offset
-            for offset, line in enumerate(source_lines)
-            if "request = ttl.copy" in line
-        }
-        cleanup_points = [point for point in request_points if point.wait_any_cleanup]
-        assert {point.trigger_lineno for point in cleanup_points} == assignment_linenos
-        assert any(point.trigger_on_return for point in request_points)
+        analysis = analyze_kernel_function(dm)
+        request_points = [
+            point for point in analysis.injection_points if point.var_name == "request"
+        ]
+        assert len(request_points) == 1
+        assert request_points[0].trigger_on_return
+        assert analysis.cleanup_wait_any_on_return
 
     @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
     def test_wait_any_cleanup_retains_each_loop_iteration(
@@ -570,7 +558,7 @@ class TestCopyWaitAnalysis:
         install_copy_wait_hooks({dm.__code__: analysis})
         dm()
 
-        assert completed == ["selected0", "pending0", "selected1", "pending1"]
+        assert completed == ["selected0", "selected1", "pending0", "pending1"]
 
     @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
     @pytest.mark.parametrize("reassign", [False, True])
@@ -619,6 +607,63 @@ class TestCopyWaitAnalysis:
 
         assert "pending" in completed
         assert completed.index("selected") < completed.index("pending")
+
+    @pytest.mark.skipif(not hasattr(sys, "monitoring"), reason="requires Python 3.12")
+    def test_wait_any_cleanup_follows_reassignment_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Request reassignment does not precede producer progress."""
+        from sim.copy import ReceiveRequest
+
+        events: list[str] = []
+
+        class TestRequest(ReceiveRequest):
+            def __init__(self, name: str, ready: bool):
+                self.name = name
+                self.ready = ready
+                self._completed = False
+
+            def can_wait(self) -> bool:
+                return self.ready
+
+            def wait(self) -> None:
+                if not self.ready:
+                    raise RuntimeError("early wait for pending request")
+                if not self._completed:
+                    events.append(self.name)
+                    self._completed = True
+
+        pending = TestRequest("pending", ready=False)
+        requests = iter(
+            (
+                pending,
+                TestRequest("selected", ready=True),
+                TestRequest("replacement", ready=True),
+            )
+        )
+        monkeypatch.setattr(ttl, "copy", lambda _src, _dst: next(requests))
+        copy_module = importlib.import_module("sim.copy")
+        monkeypatch.setattr(
+            copy_module, "block_if_needed", lambda _obj, _operation: None
+        )
+
+        def make_pending_ready():
+            events.append("progress")
+            pending.ready = True
+
+        def dm():
+            request = ttl.copy(None, None)
+            selected = ttl.copy(None, None)
+            ttl.wait_any((request, selected), start=1)
+            request = ttl.copy(None, None)
+            make_pending_ready()
+            return request
+
+        analysis = analyze_kernel_function(dm)
+        install_copy_wait_hooks({dm.__code__: analysis})
+        dm()
+
+        assert events == ["selected", "replacement", "progress", "pending"]
 
     def test_outer_copy_waited_in_nested_callback_not_detected(self):
         """A transaction waited by a nested callback is explicitly waited."""
