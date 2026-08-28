@@ -35,7 +35,6 @@ func.func private @local_index_receiver()
 
 // CHECK-LABEL: func.func @local_index_sender
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK: %[[NODE_X:.*]] = ttkernel.my_logical_x
 // CHECK: %[[NODE_Y:.*]] = ttkernel.my_logical_y
@@ -46,7 +45,12 @@ func.func private @local_index_receiver()
 // CHECK: %[[UPPER:.*]] = ttkernel.experimental.constant_table_lookup %[[NEXT_NODE]]
 // CHECK: scf.for %[[ACTIVE_RECORD:.*]] = %[[LOWER]] to %[[UPPER]]
 // CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[ACTIVE_RECORD]]
-// CHECK: ttkernel.noc_async_write
+// CHECK: ttkernel.noc_async_write {{.*}} posted true :
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true :
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true :
+// CHECK-NOT: ttkernel.noc_async_write_barrier
+// CHECK-NOT: ttkernel.noc_async_atomic_barrier
+// CHECK: ttl.pipenet_local_record_loop
 // CHECK: return
 func.func @local_index_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

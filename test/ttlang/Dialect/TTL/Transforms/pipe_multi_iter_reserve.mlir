@@ -117,16 +117,17 @@ func.func @sender_uses_published_multicast_addresses_receiver() attributes { "tt
 // -----
 
 // Receiver lowering publishes the reserved DFB write pointer before waiting
-// for the sender's completion signal.
+// for the sender's completion signal. A one-shot transfer waits for value one
+// without allocating cumulative sequence state.
 // CHECK-LABEL: func.func @receiver_publishes_reserved_dfb_address
+// CHECK: %[[ONE:.+]] = arith.constant 1 : i32
+// CHECK-NOT: memref.alloca
 // CHECK: ttkernel.cb_reserve_back
 // CHECK: %[[DST_WP:.+]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[DST_WP]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[OLD:.+]] = memref.load
-// CHECK: %[[NEW:.+]] = arith.addi %[[OLD]]
-// CHECK: memref.store %[[NEW]]
-// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NEW]])
+// CHECK-NOT: memref.load
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[ONE]])
 // CHECK: ttkernel.cb_push_back
 func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %dst = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}

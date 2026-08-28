@@ -153,7 +153,39 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 
 // -----
 
-// -- Test 5: single-core launch grid is a legitimate no-op. ------------------
+// -- Test 5: coordinate-dependent loop bounds require specialization. -------
+// The table lookup is part of the loop bound rather than an scf.if condition.
+
+// CHECK-NOT:   func.func @kloop()
+// CHECK-LABEL: func.func @kloop_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_y_
+// CHECK-LABEL: func.func @kloop_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:     my_logical_y_
+
+// FOLDED-LABEL: func.func @kloop_c0_0
+// FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
+// FOLDED:         return
+// FOLDED-LABEL: func.func @kloop_c0_1
+// FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
+// FOLDED:         return
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @kloop() {
+    %lower = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %upper = ttkernel.experimental.constant_table_lookup %y, [1, 2] : index
+    scf.for %index = %lower to %upper step %step {
+    }
+    return
+  }
+}
+
+// -----
+
+// -- Test 6: single-core launch grid is a legitimate no-op. ------------------
 // A valid `ttl.launch_grid` whose product is <= 1 has nothing to specialize
 // CHECK-LABEL: func.func @ksingle
 // CHECK-NOT:     ttl.core_coord
@@ -178,7 +210,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// -- Test 6: functions with symbol uses are skipped, others still clone. -----
+// -- Test 7: functions with symbol uses are skipped, others still clone. -----
 // `kcallee` branches on a coordinate but is referenced by `kcaller`, so it is
 // left unspecialized (erasing it would leave a dangling call). `kleaf` has no
 // symbol uses and is still cloned per core.

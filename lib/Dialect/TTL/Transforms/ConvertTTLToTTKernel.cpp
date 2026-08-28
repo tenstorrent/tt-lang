@@ -1177,8 +1177,15 @@ static LogicalResult lowerDFBBlockCopy(
   Value srcX = ttk::MyXOp::create(rewriter, loc, noc);
   Value srcY = ttk::MyYOp::create(rewriter, loc, noc);
   Value size = arith::ConstantIntOp::create(rewriter, loc, byteCount, 32);
-  ttk::NocAsyncReadOp::create(rewriter, loc, ValueRange{srcX, srcY},
-                              ValueRange{}, srcAddress, dstAddress, size, noc);
+  if (nocIndex == 1) {
+    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddress,
+                                 ValueRange{srcX, srcY}, ValueRange{},
+                                 dstAddress, size, noc, BoolAttr());
+  } else {
+    ttk::NocAsyncReadOp::create(rewriter, loc, ValueRange{srcX, srcY},
+                                ValueRange{}, srcAddress, dstAddress, size,
+                                noc);
+  }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();

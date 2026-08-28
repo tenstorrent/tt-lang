@@ -584,17 +584,22 @@ void MyLogicalYOp::inferResultRanges(
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
 }
 
-OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
-  auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
-  if (!indexAttr) {
-    return {};
-  }
-  int64_t index = indexAttr.getInt();
-  ArrayRef<int64_t> values = getValues();
-  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
-    return {};
-  }
-  return IntegerAttr::get(getResult().getType(), values[index]);
+void ConstantTableLookupOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(+[](ConstantTableLookupOp op,
+                   PatternRewriter &rewriter) -> LogicalResult {
+    APInt indexValue;
+    if (!matchPattern(op.getIndex(), m_ConstantInt(&indexValue))) {
+      return rewriter.notifyMatchFailure(op, "index is not constant");
+    }
+    int64_t index = indexValue.getSExtValue();
+    ArrayRef<int64_t> values = op.getValues();
+    if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+      return rewriter.notifyMatchFailure(op, "index is outside table bounds");
+    }
+    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, values[index]);
+    return success();
+  });
 }
 
 LogicalResult ConstantTableLookupOp::verify() {

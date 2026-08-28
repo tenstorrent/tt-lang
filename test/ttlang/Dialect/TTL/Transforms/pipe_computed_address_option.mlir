@@ -8,9 +8,16 @@
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @point_to_point_pipe
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.noc_async_write
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true :
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.experimental.semaphore_wait(
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true :
+  // COMPUTED-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true :
+  // COMPUTED-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true :
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED-NOT: ttkernel.noc_async_atomic_barrier
   // COMPUTED-NOT: ttkernel.load_from_l1
   // COMPUTED: return
 
@@ -43,6 +50,63 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Reusing one physical destination slot across two executions has an invariant
+// address but still requires accumulated completion signaling. A zero address
+// stride is not proof that the transfer executes once.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  // COMPUTED-LABEL: func.func @repeated_single_slot_pipe
+  // COMPUTED-NOT: posted true
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state
+  // COMPUTED: scf.for
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state
+  // COMPUTED-NEXT: ttkernel.noc_async_write_barrier
+  // COMPUTED-NEXT: ttkernel.noc_semaphore_inc
+  // COMPUTED-NEXT: ttkernel.noc_async_atomic_barrier
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: return
+  func.func @repeated_single_slot_pipe()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %reserved = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %receive = ttl.copy %pipe, %reserved
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+        ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        %ready = ttl.cb_wait %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      }
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %src, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
     }
     func.return
   }
@@ -118,7 +182,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-DAG: %[[BLOCK_COUNT:.*]] = arith.constant 4 : i32
   // COMPUTED-DAG: %[[REPEAT_STRIDE:.*]] = arith.constant 2 : i32
   // COMPUTED-DAG: %[[BLOCK_BYTES:.*]] = arith.constant 4096 : i32
-  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[BLOCK_BYTES]]
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[BLOCK_BYTES]]{{.*}}) :
   // COMPUTED: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr
   // COMPUTED: %[[SLOT:.*]] = memref.load %[[SLOT_COUNTER:.*]]
   // COMPUTED-NEXT: %[[SLOT_OFFSET:.*]] = arith.muli %[[SLOT]], %[[BLOCK_BYTES]]
@@ -126,7 +190,10 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-NEXT: %[[ADVANCED_SLOT:.*]] = arith.addi %[[SLOT]], %[[REPEAT_STRIDE]]
   // COMPUTED-NEXT: %[[NEXT_SLOT:.*]] = arith.remui %[[ADVANCED_SLOT]], %[[BLOCK_COUNT]]
   // COMPUTED-NEXT: memref.store %[[NEXT_SLOT]], %[[SLOT_COUNTER]]
-  // COMPUTED-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[SRC_ADDR]], %[[DST_ADDR]]
+  // COMPUTED-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[SRC_ADDR]], %[[DST_ADDR]]{{.*}}) :
+  // COMPUTED-NEXT: ttkernel.noc_async_write_barrier
+  // COMPUTED-NEXT: ttkernel.noc_semaphore_inc
+  // COMPUTED-NEXT: ttkernel.noc_async_atomic_barrier
   // COMPUTED-NOT: ttkernel.load_from_l1
   // COMPUTED: return
 
@@ -214,8 +281,13 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // COMPUTED-LABEL: func.func @loopback_point_to_point
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.store_to_l1
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.noc_async_write
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true :
+  // COMPUTED: ttkernel.experimental.semaphore_wait(
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true :
+  // COMPUTED: ttkernel.noc_inline_dw_write({{.*}}) posted true :
+  // COMPUTED-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true :
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED-NOT: ttkernel.noc_async_atomic_barrier
   // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @loopback_point_to_point
@@ -264,8 +336,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
   // PUBLISHED-LABEL: func.func @loopback_collective
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
-  // PUBLISHED: %[[ZERO:.*]] = arith.constant 0 : index
-  // PUBLISHED-NEXT: %[[ZERO_I32:.*]] = arith.constant 0 : i32
+  // PUBLISHED-DAG: %[[ZERO:.*]] = arith.constant 0 : index
+  // PUBLISHED-DAG: %[[ZERO_I32:.*]] = arith.constant 0 : i32
   // PUBLISHED-DAG: %[[SOURCE_X:.*]] = ttkernel.experimental.convert_logical_x_to_translated(%[[ZERO]])
   // PUBLISHED-DAG: %[[SOURCE_Y:.*]] = ttkernel.experimental.convert_logical_y_to_translated(%[[ZERO]])
   // PUBLISHED-DAG: %[[TABLE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
@@ -436,7 +508,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @capacity_pipe
   // COMPUTED: ttkernel.experimental.semaphore_wait_min
   // COMPUTED-NOT: ttkernel.store_to_l1
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true :
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.experimental.semaphore_wait_min
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true :
+  // COMPUTED-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true :
+  // COMPUTED-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true :
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED-NOT: ttkernel.noc_async_atomic_barrier
   // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @capacity_pipe

@@ -341,7 +341,57 @@ func.func @copy_tile_init_per_cb() {
   func.return
 }
 
-// Test 13: Two reduces with the same dim/type -> one reduce_init.
+// Test 13: One invariant copy configuration in an accumulation loop shares a
+// single init across every iteration.
+// FPU-LABEL: func.func @copy_tile_init_hoisted_above_accumulation_loop
+// FPU-DAG: %[[INPUT:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU: ttkernel.copy_tile_init(%[[INPUT]])
+// FPU-NEXT: scf.for
+// FPU: ttkernel.tile_regs_acquire
+// FPU-NOT: ttkernel.copy_tile_init
+// FPU: ttkernel.copy_tile(%[[INPUT]],
+// FPU: ttkernel.tile_regs_release
+func.func @copy_tile_init_hoisted_above_accumulation_loop() {
+  %input = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %output = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %iter = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.copy_tile(%input, %iter, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+    ttkernel.pack_tile(%c0, %output, %iter, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  func.return
+}
+
+// Test 14: A compute init that changes MATH configuration requires copy
+// initialization inside every iteration.
+// FPU-LABEL: func.func @copy_tile_init_not_hoisted_across_init_change
+// FPU: scf.for
+// FPU: ttkernel.tile_regs_acquire
+// FPU-NEXT: ttkernel.copy_tile_init
+// FPU-NEXT: ttkernel.copy_tile
+// FPU: ttkernel.exp_tile_init
+// FPU-NEXT: ttkernel.exp_tile
+func.func @copy_tile_init_not_hoisted_across_init_change() {
+  %input = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %output = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %iter = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.copy_tile(%input, %iter, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+    ttkernel.exp_tile(%c0) : (index) -> ()
+    ttkernel.pack_tile(%c0, %output, %iter, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  func.return
+}
+
+// Test 15: Two reduces with the same dim/type -> one reduce_init.
 // FPU-LABEL: func.func @reduce_init_consolidates_same_dim
 // FPU: ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_row>)
 // FPU-NEXT: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>)

@@ -314,6 +314,10 @@ static bool tryLowerLocalPipeNetForeach(
       rewriter, loc, tables.recordOffsetsByNode, nextNode);
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+  forOp->setAttr(kPipeNetLocalRecordLoopAttrName, rewriter.getUnitAttr());
+  if (recordSelection == PipeNetRecordSelection::Destination) {
+    forOp->setAttr(kPipeNetReceiveRecordLoopAttrName, rewriter.getUnitAttr());
+  }
   foreachLoweringInfo.controlOps.push_back(forOp);
   foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
 

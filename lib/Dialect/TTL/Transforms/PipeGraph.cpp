@@ -875,13 +875,9 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
           });
       assert(endpointIt != transferNode.receiverEndpoints.end() &&
              "pipe transfer node is missing a receiver endpoint");
-      const PipeReceiverEndpoint &endpoint =
-          getPipeReceiverEndpoint(*endpointIt);
+      PipeReceiverEndpoint &endpoint = pipeReceiverEndpoints[*endpointIt];
       const ReceiverDFBInfo &receiverInfo = endpoint.receiverDFBInfo;
       const PipeReceiverDFBKey &receiverDFB = endpoint.receiverDFB;
-      if (invariantAddressReceiverDFBs.contains(receiverDFB)) {
-        continue;
-      }
       FailureOr<LaunchExecutionLocation> maybeLocation =
           getPipeGraphExecutionLocation(
               postOp.getOperation(), getLaunchNodeCoord(receiver),
@@ -892,6 +888,14 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       ActivePipeNetExecution activeExecution = evaluateActivePipeNetExecution(
           activeRecords, *maybeLocation, resolveRecordLoop);
       if (!activeExecution.mayExecute) {
+        continue;
+      }
+      std::optional<std::uint64_t> maybeExecutionCount =
+          getConcreteTransferExecutionCount(postOp.getOperation(),
+                                            *maybeLocation, *pipeRef,
+                                            activeRecordIndex, analysisState);
+      if (invariantAddressReceiverDFBs.contains(receiverDFB)) {
+        endpoint.addressSequence.executionCount = maybeExecutionCount;
         continue;
       }
       EndpointSlotAssignment &endpointAssignment =
@@ -925,10 +929,6 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       } else {
         slot = reserveIt->second;
       }
-      std::optional<std::uint64_t> maybeExecutionCount =
-          getConcreteTransferExecutionCount(postOp.getOperation(),
-                                            *maybeLocation, *pipeRef,
-                                            activeRecordIndex, analysisState);
       endpointAssignment.initialSlot = slot;
       endpointAssignment.executionCount = maybeExecutionCount;
     }

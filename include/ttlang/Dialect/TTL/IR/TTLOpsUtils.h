@@ -23,12 +23,21 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <optional>
 #include <string>
 
 namespace mlir::tt::ttl {
+
+/// Marks a table-driven loop over records local to one PipeNet launch node.
+inline constexpr llvm::StringLiteral kPipeNetLocalRecordLoopAttrName =
+    "ttl.pipenet_local_record_loop";
+
+/// Marks a local PipeNet record loop that enumerates receiver posts.
+inline constexpr llvm::StringLiteral kPipeNetReceiveRecordLoopAttrName =
+    "ttl.pipenet_receive_record_loop";
 
 /// Returns true if an operation has an attribute in the TTL namespace.
 inline bool hasTTLDialectAttribute(mlir::Operation *operation) {

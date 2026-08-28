@@ -329,13 +329,17 @@ static bool isSyncBoundary(Operation *op) {
 struct SyncRegionAnalysis {
   bool hasFPUBinary = false;
   bool hasMatmul = false;
+  bool hasCopy = false;
+  bool hasOnlyCopyCompute = true;
   // For matmul: block dimensions from the first matmul_block op found.
   Value matmulTranspose, matmulCt, matmulRt, matmulKt;
 };
 
 static FailureOr<SyncRegionAnalysis>
 analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
-                  Value &in0CB, Value &in1CB, Value &outputCB) {
+                  Value &in0CB, Value &in1CB, Value &outputCB,
+                  const llvm::DenseMap<mlir::TypeID, InitOpInfo>
+                      &computeToInit) {
   Block *block = acquireOp->getBlock();
   SyncRegionAnalysis result;
   bool foundRelease = false;
@@ -351,6 +355,7 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
     // Walk this op and all nested regions (e.g., scf.for bodies).
     (&*it)->walk([&](Operation *inner) {
       if (auto copy = dyn_cast<ttk::CopyTileOp>(inner)) {
+        result.hasCopy = true;
         // copy_tile always precedes SFPU ops -- data must enter DST from a
         // CB before any SFPU/bcast compute can operate on it.
         if (!inputCB) {
@@ -398,6 +403,10 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
           inputCB = transpose.getIcb();
         }
       }
+      if (computeToInit.contains(inner->getName().getTypeID()) &&
+          !isa<ttk::CopyTileOp>(inner)) {
+        result.hasOnlyCopyCompute = false;
+      }
       // Collect output CB from pack ops (both single-tile and block variants).
       auto collectOutputCB = [&](Value packCB, Operation *packOp) {
         if (!outputCB) {
@@ -438,6 +447,106 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
   return result;
 }
 
+struct CommonInitSite {
+  ttk::TileRegsAcquireOp acquireOp;
+  Value inputCB;
+  Value in0CB;
+  Value in1CB;
+  Value outputCB;
+  SyncRegionAnalysis analysis;
+};
+
+static Operation *hoistAboveCompilerLoops(Operation *op);
+
+static bool hasSameElementType(Value lhs, Value rhs) {
+  auto lhsType = dyn_cast<ttk::CBType>(lhs.getType());
+  auto rhsType = dyn_cast<ttk::CBType>(rhs.getType());
+  return lhsType && rhsType &&
+         lhsType.getElementType() == rhsType.getElementType();
+}
+
+/// Homogeneous copy kernels can configure copy semantics once before their
+/// first DFB wait. Source DFB identities may differ because each copy_tile_init
+/// selects its source; their tile type and the pack target must remain unchanged
+/// so no data-format reconfiguration is required.
+static bool canShareCopyKernelInit(func::FuncOp funcOp,
+                                   ArrayRef<CommonInitSite> sites,
+                                   const llvm::DenseMap<mlir::TypeID,
+                                                        InitOpInfo>
+                                       &computeToInit) {
+  if (sites.empty()) {
+    return false;
+  }
+
+  Block &entryBlock = funcOp.getBody().front();
+  Value firstInputCB = sites.front().inputCB;
+  Value outputCB = sites.front().outputCB;
+  if (!firstInputCB || !outputCB) {
+    return false;
+  }
+  for (Value operand : {firstInputCB, outputCB}) {
+    Operation *definition = operand.getDefiningOp();
+    if (!definition || definition->getBlock() != &entryBlock) {
+      return false;
+    }
+  }
+
+  for (const CommonInitSite &site : sites) {
+    if (!site.analysis.hasCopy || !site.analysis.hasOnlyCopyCompute ||
+        !site.inputCB || site.outputCB != outputCB ||
+        !hasSameElementType(firstInputCB, site.inputCB)) {
+      return false;
+    }
+  }
+
+  bool homogeneousCopyKernel = true;
+  funcOp.walk([&](Operation *operation) {
+    Value packCB;
+    if (auto copy = dyn_cast<ttk::CopyTileOp>(operation)) {
+      if (!hasSameElementType(firstInputCB, copy.getCb0())) {
+        homogeneousCopyKernel = false;
+        return WalkResult::interrupt();
+      }
+    } else if (computeToInit.contains(operation->getName().getTypeID()) ||
+               operation->hasTrait<ttk::TTKernelInitOpTrait>()) {
+      homogeneousCopyKernel = false;
+      return WalkResult::interrupt();
+    } else if (auto pack = dyn_cast<ttk::PackTileOp>(operation)) {
+      packCB = pack.getOutCb();
+    } else if (auto pack = dyn_cast<ttk::PackWaitedTileOp>(operation)) {
+      packCB = pack.getOutCb();
+    } else if (auto pack = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+      packCB = pack.getOutCb();
+    }
+    if (packCB && packCB != outputCB) {
+      homogeneousCopyKernel = false;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return homogeneousCopyKernel;
+}
+
+static void insertSharedCopyKernelInit(func::FuncOp funcOp,
+                                       CommonInitSite &firstSite) {
+  Block &entryBlock = funcOp.getBody().front();
+  Operation *latestDefinition = nullptr;
+  for (Value operand : {firstSite.inputCB, firstSite.outputCB}) {
+    Operation *definition = operand.getDefiningOp();
+    assert(
+        definition && definition->getBlock() == &entryBlock &&
+        "shared copy-kernel init operands must be defined in the entry block");
+    if (!latestDefinition || latestDefinition->isBeforeInBlock(definition)) {
+      latestDefinition = definition;
+    }
+  }
+
+  OpBuilder builder(latestDefinition);
+  builder.setInsertionPointAfter(latestDefinition);
+  ttk::InitSFPUOp::create(builder, firstSite.acquireOp.getLoc(),
+                          firstSite.inputCB, firstSite.outputCB);
+}
+
 /// Find the outermost enclosing insertion point by walking up through
 /// loops with invariant CB configurations: compiler-generated tile/subblock
 /// loops (ttl.tile_loop_stride, ttl.subblock_loop_stride) and L1
@@ -459,71 +568,166 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
   return insertBefore;
 }
 
+/// Return whether a value is defined inside `scope` and therefore cannot be
+/// used by an init placed before it.
+static bool isDefinedInside(Operation *scope, Value value) {
+  if (Operation *definingOp = value.getDefiningOp()) {
+    return scope->isProperAncestor(definingOp);
+  }
+  auto blockArgument = dyn_cast<BlockArgument>(value);
+  if (!blockArgument) {
+    return false;
+  }
+  Operation *parentOp = blockArgument.getOwner()->getParentOp();
+  return parentOp &&
+         (parentOp == scope || scope->isProperAncestor(parentOp));
+}
+
+/// Copy initialization remains valid across tile-register synchronization.
+/// Hoist it through compiler-generated loops only when every compute op in the
+/// loop uses the same init configuration. A different compute init would
+/// overwrite the MATH configuration before the next iteration.
+static bool copyInitIsLoopInvariant(
+    scf::ForOp forOp, const InitKey &copyKey,
+    const llvm::DenseMap<mlir::TypeID, InitOpInfo> &computeToInit) {
+  if (llvm::any_of(copyKey.operands,
+                   [&](Value operand) { return isDefinedInside(forOp, operand); })) {
+    return false;
+  }
+
+  bool foundCompute = false;
+  bool hasDifferentInit = false;
+  forOp.walk([&](Operation *nestedOp) {
+    if (nestedOp->hasTrait<ttk::TTKernelInitOpTrait>()) {
+      hasDifferentInit = true;
+      return WalkResult::interrupt();
+    }
+    auto mapIt = computeToInit.find(nestedOp->getName().getTypeID());
+    if (mapIt == computeToInit.end()) {
+      return WalkResult::advance();
+    }
+    foundCompute = true;
+    if (computeInitKey(nestedOp) != copyKey) {
+      hasDifferentInit = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return foundCompute && !hasDifferentInit;
+}
+
+/// Find the outermost compiler-generated loop that can share one copy init.
+static Operation *getPerOpInitInsertionPoint(
+    Operation *topOp, const InitKey &key,
+    const llvm::DenseMap<mlir::TypeID, InitOpInfo> &computeToInit) {
+  if (key.typeId != mlir::TypeID::get<ttk::CopyTileOp>()) {
+    return topOp;
+  }
+
+  Operation *insertBefore = topOp;
+  while (auto forOp = dyn_cast<scf::ForOp>(insertBefore->getParentOp())) {
+    if (!forOp->hasAttr(kTileLoopStrideAttrName) &&
+        !forOp->hasAttr(kSubblockLoopStrideAttrName) &&
+        !forOp->hasAttr(kL1AccLoopAttrName)) {
+      break;
+    }
+    if (!copyInitIsLoopInvariant(forOp, key, computeToInit)) {
+      break;
+    }
+    insertBefore = forOp;
+  }
+  return insertBefore;
+}
+
 /// Insert common init ops (init_sfpu or binary_op_init_common) before each
 /// sync region. These configure UNPACK + PACK data format routing.
-static LogicalResult insertCommonInits(ModuleOp moduleOp) {
+static LogicalResult insertCommonInits(
+    ModuleOp moduleOp,
+    const llvm::DenseMap<mlir::TypeID, InitOpInfo> &computeToInit) {
   bool hadError = false;
-  moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-    Value inputCB, in0CB, in1CB, outputCB;
-    auto analysisResult =
-        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
-    if (failed(analysisResult)) {
-      hadError = true;
+  moduleOp->walk([&](func::FuncOp funcOp) {
+    SmallVector<CommonInitSite> sites;
+    funcOp.walk([&](ttk::TileRegsAcquireOp acquireOp) {
+      Value inputCB, in0CB, in1CB, outputCB;
+      auto analysisResult = analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB,
+                                              outputCB, computeToInit);
+      if (failed(analysisResult)) {
+        hadError = true;
+        return;
+      }
+      sites.push_back({acquireOp, inputCB, in0CB, in1CB, outputCB,
+                       *analysisResult});
+    });
+    if (hadError) {
       return;
     }
-    SyncRegionAnalysis analysis = *analysisResult;
 
-    // No output CB means the sync region has no pack ops -- nothing to
-    // configure for UNPACK + PACK routing.
-    if (!outputCB) {
-      return;
+    bool shareCopyInit = canShareCopyKernelInit(funcOp, sites, computeToInit);
+    if (shareCopyInit) {
+      insertSharedCopyKernelInit(funcOp, sites.front());
     }
 
-    Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
-    OpBuilder builder(insertBefore);
-    Location loc = acquireOp->getLoc();
+    for (const CommonInitSite &site : sites) {
+      ttk::TileRegsAcquireOp acquireOp = site.acquireOp;
+      Value inputCB = site.inputCB;
+      Value in0CB = site.in0CB;
+      Value in1CB = site.in1CB;
+      Value outputCB = site.outputCB;
+      SyncRegionAnalysis analysis = site.analysis;
 
-    // Fill-only regions have no copy_tile or bcast; route both sides of
-    // init_sfpu through outputCB since fill writes directly to DST.
-    if (!inputCB && outputCB) {
-      inputCB = outputCB;
-    }
+      // No output CB means the sync region has no pack ops -- nothing to
+      // configure for UNPACK + PACK routing.
+      if (!outputCB || shareCopyInit) {
+        continue;
+      }
 
-    // Use init_short when sharing an output CB with a preceding sibling
-    // annotated loop: the full init reconfigures PACK and clobbers packer
-    // state (including L1 acc on Wormhole).
-    bool useInitShort = false;
-    if (analysis.hasMatmul) {
-      if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
-        if (forOp->hasAttr(kL1AccLoopAttrName) ||
-            forOp->hasAttr(kReductionLoopAttrName)) {
-          for (Operation *prev = forOp->getPrevNode(); prev;
-               prev = prev->getPrevNode()) {
-            if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
-              if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
-                   prevFor->hasAttr(kReductionLoopAttrName)) &&
-                  sharePackCB(prevFor, forOp)) {
-                useInitShort = true;
+      Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
+      OpBuilder builder(insertBefore);
+      Location loc = acquireOp->getLoc();
+
+      // Fill-only regions have no copy_tile or bcast; route both sides of
+      // init_sfpu through outputCB since fill writes directly to DST.
+      if (!inputCB && outputCB) {
+        inputCB = outputCB;
+      }
+
+      // Use init_short when sharing an output CB with a preceding sibling
+      // annotated loop: the full init reconfigures PACK and clobbers packer
+      // state (including L1 acc on Wormhole).
+      bool useInitShort = false;
+      if (analysis.hasMatmul) {
+        if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
+          if (forOp->hasAttr(kL1AccLoopAttrName) ||
+              forOp->hasAttr(kReductionLoopAttrName)) {
+            for (Operation *prev = forOp->getPrevNode(); prev;
+                 prev = prev->getPrevNode()) {
+              if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
+                if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
+                     prevFor->hasAttr(kReductionLoopAttrName)) &&
+                    sharePackCB(prevFor, forOp)) {
+                  useInitShort = true;
+                }
+                break;
               }
-              break;
             }
           }
         }
       }
-    }
 
-    if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
-      ttk::MatmulBlockInitShortOp::create(
-          builder, loc, in0CB, in1CB, analysis.matmulTranspose,
-          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
-    } else if (analysis.hasMatmul && in0CB && in1CB) {
-      ttk::MatmulBlockInitOp::create(
-          builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
-          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
-    } else if (analysis.hasFPUBinary && in0CB && in1CB) {
-      ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB, outputCB);
-    } else if (inputCB) {
-      ttk::InitSFPUOp::create(builder, loc, inputCB, outputCB);
+      if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
+        ttk::MatmulBlockInitShortOp::create(
+            builder, loc, in0CB, in1CB, analysis.matmulTranspose,
+            analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+      } else if (analysis.hasMatmul && in0CB && in1CB) {
+        ttk::MatmulBlockInitOp::create(
+            builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
+            analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+      } else if (analysis.hasFPUBinary && in0CB && in1CB) {
+        ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB,
+                                          outputCB);
+      } else if (inputCB) {
+        ttk::InitSFPUOp::create(builder, loc, inputCB, outputCB);
+      }
     }
   });
   return hadError ? failure() : success();
@@ -540,12 +744,12 @@ struct TTKernelInsertInitsPass
     auto moduleOp = getOperation();
     constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
-    if (failed(insertCommonInits(moduleOp))) {
+    auto computeToInit = buildComputeToInitMap();
+
+    if (failed(insertCommonInits(moduleOp, computeToInit))) {
       signalPassFailure();
       return;
     }
-
-    auto computeToInit = buildComputeToInitMap();
 
     auto emitReduceUninit = [](OpBuilder &builder, Location loc,
                                ttk::ReduceTileOp) {
@@ -578,7 +782,9 @@ struct TTKernelInsertInitsPass
             OpBuilder builder(&topOp);
             emitReduceUninit(builder, topOp.getLoc(), prevReduce);
           }
-          OpBuilder builder(&topOp);
+          Operation *insertBefore =
+              getPerOpInitInsertionPoint(&topOp, key, computeToInit);
+          OpBuilder builder(insertBefore);
           mapIt->second.createInit(builder, inner->getLoc(), inner);
         }
         prevKey = key;

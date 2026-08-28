@@ -1350,7 +1350,10 @@ def TTKernelInsertInits
     MATH pipeline for a specific operation type. An init is emitted
     whenever the op type changes from the previous compute op in
     linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    (`tile_regs_acquire`/`commit`/`wait`/`release`). `copy_tile_init` is
+    hoisted above compiler-generated loops when its dataflow buffer is
+    loop-invariant and no operation in the loop requires a different compute
+    init. The copy configuration then remains valid across loop iterations.
 
     Example (consecutive same-type ops share one init):
     ```mlir
@@ -1401,17 +1404,18 @@ def TTKernelInsertInits
 
 def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
-  let summary = "Clone kernels per core when control flow branches on a coordinate";
+  let summary = "Clone kernels per core when control flow depends on a coordinate";
   let description = [{
     Per-core specialization for TTKernel functions. Requires the
-    `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
+    `ttl.launch_grid` attribute; missing or malformed `ttl.launch_grid` is a
+    hard error.
 
-    For each kernel whose scf.if region branches on a core coordinate, clones
-    the function once per launch coordinate, replaces
-    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
-    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
-    serves). Downstream canonicalize / cse then fold the now-constant
-    branch conditions and delete untaken regions. The runtime bridge reads
+    For each kernel whose scf.if condition or scf.for bound depends on a core
+    coordinate, clones the function once per launch coordinate, replaces
+    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant
+    operations for that core, and tags the cloned function with ttl.core_coord
+    (the coordinate it serves). Downstream canonicalize / cse then fold the
+    now-constant branch conditions and delete untaken regions. The runtime bridge reads
     ttl.core_coord to build per-kernel core ranges for dispatch.
 
     NOTE: functions with symbol uses (e.g. `func.call` targets) are left
@@ -1468,6 +1472,75 @@ def TTKernelSpecializeCores
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::func::FuncDialect"
+  ];
+}
+
+def TTKernelUnrollStaticPipeNetRecordLoops
+    : Pass<"ttkernel-unroll-static-pipenet-record-loops",
+           "::mlir::ModuleOp"> {
+  let summary = "Unroll specialized local PipeNet record loops";
+  let description = [{
+    Fully unrolls `scf.for` operations marked
+    `ttl.pipenet_local_record_loop` when their bounds become static after
+    per-core specialization and canonicalization. The loop marker is emitted
+    only for table-driven local PipeNet record selection. Unrolling exposes
+    each record index to canonicalization, which replaces immutable record
+    table lookups with constants. Loops with dynamic bounds remain unchanged,
+    including unspecialized single-core and referenced kernels.
+
+    The marked loops do not carry values. Encountering loop-carried state is a
+    compiler invariant violation.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
+def TTKernelCleanup
+    : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
+  let summary = "Apply TTKernel command and control-flow cleanup patterns";
+  let description = [{
+    Applies TTKernel cleanup patterns after transformations that can expose new
+    optimization opportunities. In particular, per-core specialization and
+    static PipeNet record-loop unrolling can expose constant-size posted
+    unicast writes. The cleanup preconfigures their invariant one-packet NoC
+    command before a blocking wait and reuses that command for the payload.
+
+    Command-state interference analysis prevents preconfiguration across an
+    operation that can reprogram or consume the resident write command.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelBatchStaticPipeNetReceives
+    : Pass<"ttkernel-batch-static-pipenet-receives",
+           "::mlir::ModuleOp"> {
+  let summary = "Batch specialized PipeNet receiver posts";
+  let description = [{
+    Batches a specialized, table-driven local PipeNet receiver loop when its
+    bounds are static and its body is the computed-address receive protocol.
+    The rewrite reserves the complete destination group once, emits every
+    sender-ready increment, flushes those increments with one atomic barrier,
+    and then preserves the original completion-wait and per-record publication
+    order.
+
+    The pass requires exactly one reserve, sender-ready increment, completion
+    wait, and push per record. It does not transform receiver-published address
+    or fabric protocols, callbacks with additional observable operations, or
+    loops whose bounds remain dynamic.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 

@@ -919,7 +919,13 @@ public:
     } else if constexpr (std::is_same_v<SourceOp,
                                         ttkernel::NocSemaphoreIncOp> ||
                          std::is_same_v<SourceOp,
-                                        ttkernel::NocSemaphoreIncMulticastOp>) {
+                                        ttkernel::NocSemaphoreIncMulticastOp> ||
+                         std::is_same_v<
+                             SourceOp,
+                             ttkernel::NocAsyncWriteOnePacketSetStateOp> ||
+                         std::is_same_v<
+                             SourceOp,
+                             ttkernel::NocAsyncWriteOnePacketWithStateOp>) {
       // The metal C signature defaults `posted` to false, so emit a template
       // arg only when the producer explicitly opts into posted semantics.
       auto posted = op.getPosted();
@@ -1664,6 +1670,41 @@ private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
 };
 
+class TTKernelToEmitCNocWritesFlushedRewriter
+    : public OpConversionPattern<ttkernel::NocAsyncWritesFlushedOp> {
+public:
+  TTKernelToEmitCNocWritesFlushedRewriter(
+      TTKernelToEmitCTypeConverter &typeConverter, MLIRContext *ctx,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern<ttkernel::NocAsyncWritesFlushedOp>(typeConverter,
+                                                               ctx),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(ttkernel::NocAsyncWritesFlushedOp op,
+                  ttkernel::NocAsyncWritesFlushedOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Value, 1> operands;
+    FailureOr<std::string> nocName = ensureNocDeclaration(
+        op.getOperation(), rewriter, state, operands, adaptor.getNoc());
+    if (failed(nocName)) {
+      return failure();
+    }
+    auto posted = op.getPosted();
+    std::string templateArgument =
+        posted && *posted ? "<NocOptions::POSTED>" : "";
+    std::string callStr =
+        *nocName + ".async_writes_flushed" + templateArgument + "();";
+
+    rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
 template <typename SourceOp>
 class TTKernelToEmitCNocFullBarrierRewriter
     : public OpConversionPattern<SourceOp> {
@@ -1776,8 +1817,12 @@ public:
                 ", CoreLocalMem<uint32_t>({}), {}, " + endpoint.args +
                 ", {{});";
     } else {
-      callStr = *nocName + ".async_write(CoreLocalMem<uint32_t>({}), " +
-                endpoint.endpointName + ", {}, {{} , " + endpoint.args + ");";
+      auto posted = op.getPosted();
+      std::string templateArgument =
+          posted && *posted ? "<NocOptions::POSTED>" : "";
+      callStr = *nocName + ".async_write" + templateArgument +
+                "(CoreLocalMem<uint32_t>({}), " + endpoint.endpointName +
+                ", {}, {{} , " + endpoint.args + ");";
     }
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
@@ -1929,8 +1974,12 @@ public:
     SmallVector<Value, 5> operands{
         adaptor.getVal(), adaptor.getDstNocX(), adaptor.getDstNocY(),
         adaptor.getDstAddress(), adaptor.getByteEnable()};
+    auto posted = op.getPosted();
+    std::string options = posted && *posted
+                              ? "NocOptions::INLINE_L1 | NocOptions::POSTED"
+                              : "NocOptions::INLINE_L1";
     std::string callStr =
-        *nocName + ".inline_dw_write<NocOptions::INLINE_L1>(" + endpoint +
+        *nocName + ".inline_dw_write<" + options + ">(" + endpoint +
         ", {}, {{.noc_x = {}, .noc_y = {}, "
         ".addr = static_cast<uint32_t>({})}, {});";
 
@@ -3375,6 +3424,7 @@ public:
     patterns
         .add<TTKernelToEmitCGetNocAddrRewriter,
              TTKernelToEmitCNocAtomicBarrierRewriter,
+             TTKernelToEmitCNocWritesFlushedRewriter,
              TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncReadTileOp>,
              TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncWriteTileOp>,
              TTKernelToEmitCNocAsyncReadOnePacketSetStateRewriter,

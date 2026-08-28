@@ -147,6 +147,11 @@ void buildTTLAutoSyncPipeline(OpPassManager &pm) {
 void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createTTKernelSpecializeCores());
   pm.addPass(createCanonicalizerPass());
+  pm.addPass(createTTKernelBatchStaticPipeNetReceives());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createTTKernelUnrollStaticPipeNetRecordLoops());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createTTKernelCleanup());
   pm.addPass(createCSEPass());
   pm.addPass(createTTKernelAnnotateDFBUse());
 }

@@ -3698,7 +3698,10 @@ def TTKernel_NocAsyncWriteOp
                                  [AttrSizedOperandSegments]> {
     let summary = "NocAsyncWrite";
     let description = [{
-      NocAsyncWrite to either an L1 core coordinate or a DRAM bank.
+      Initiates an asynchronous write from local L1 to either a remote core or
+      a DRAM bank. The optional `posted` attribute suppresses the remote write
+      acknowledgement. A posted write must be ordered with receiver-visible
+      completion and explicitly flushed before its source L1 storage is reused.
     }];
 
     let arguments = (ins I32:$srcLocalL1Addr,
@@ -3706,10 +3709,11 @@ def TTKernel_NocAsyncWriteOp
                          Variadic<I32>:$dstBankId,
                          I32:$dstAddress,
                          I32:$size,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      $srcLocalL1Addr `,` (`core` `[` $dstCoreXY^ `]`)? (`bank` `[` $dstBankId^ `]`)? `,` $dstAddress `,` $size (`,` `noc` $noc^)? attr-dict `:` functional-type(operands, results)
+      $srcLocalL1Addr `,` (`core` `[` $dstCoreXY^ `]`)? (`bank` `[` $dstBankId^ `]`)? `,` $dstAddress `,` $size (`,` `noc` $noc^)? (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
 
     let hasVerifier = 1;
@@ -3773,15 +3777,18 @@ def TTKernel_NocAsyncWriteOnePacketSetStateOp
 
       The destination operand is a full NoC address. The companion
       `noc_async_write_one_packet_with_state` operation supplies the source L1
-      address and destination local L1 address that vary per transfer.
+      address and destination local L1 address that vary per transfer. The
+      optional `posted` attribute configures posted command state and must match
+      the companion operations that consume the state.
     }];
 
     let arguments = (ins TTKernel_NocAddr:$dstNocAddr,
                          I32:$size,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` $dstNocAddr `,` $size (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` $dstNocAddr `,` $size (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -3797,15 +3804,17 @@ def TTKernel_NocAsyncWriteOnePacketWithStateOp
 
       The destination local L1 address must refer to the same destination node
       that was used to set the command state. The transfer size is the size
-      programmed by the set-state operation.
+      programmed by the set-state operation. The optional `posted` attribute
+      must match the state-setting operation.
     }];
 
     let arguments = (ins I32:$srcLocalL1Addr,
                          I32:$dstLocalL1Addr,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` $srcLocalL1Addr `,` $dstLocalL1Addr (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` $srcLocalL1Addr `,` $dstLocalL1Addr (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -3832,6 +3841,26 @@ def TTKernel_NocAsyncWriteBarrierOp
     ];
 
     let hasCanonicalizer = 1;
+}
+
+def TTKernel_NocAsyncWritesFlushedOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_writes_flushed",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
+    let summary = "NocAsyncWritesFlushed";
+    let description = [{
+      Blocks until the selected NoC has retired all writes of the requested
+      response mode. The optional `posted` attribute selects posted writes;
+      when unset or false, the operation waits for non-posted writes.
+    }];
+
+    let arguments = (ins Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
+
+    let assemblyFormat = [{
+      `(` ($noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
+    }];
 }
 
 def TTKernel_NocAsyncAtomicBarrierOp
@@ -3972,18 +4001,21 @@ def TTKernel_NocInlineDwWriteOp
       Initiates an inline 32-bit NOC write to a remote L1 address. The value is
       provided as an SSA value, so the operation does not require a local SRAM
       staging word. The operation uses the dedicated write-at command and does
-      not change resident asynchronous-write state.
+      not change resident asynchronous-write state. The optional `posted`
+      attribute suppresses the remote write acknowledgement.
     }];
 
     let arguments = (ins IndexLike:$dstNocX,
                          IndexLike:$dstNocY,
-                         I32:$dstAddress,
+                         AnyTypeOf<[I32, TTKernel_L1Addr,
+                                    TTKernel_LocalSemaphore]>:$dstAddress,
                          I32:$val,
                          I8:$byte_enable,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` `core` `[` $dstNocX `,` $dstNocY `]` `,` $dstAddress `,` $val `,` $byte_enable (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` `core` `[` $dstNocX `,` $dstNocY `]` `,` $dstAddress `,` $val `,` $byte_enable (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -4180,8 +4212,8 @@ def TTKernel_ConstantTableLookupOp
     let description = [{
       Returns the element at `index` from the non-empty `values` table. Every
       table value must be non-negative. A constant index is verified to be
-      within the table bounds; a dynamic index must satisfy the same
-      precondition.
+      within the table bounds and canonicalizes to the selected constant; a
+      dynamic index must satisfy the same precondition.
     }];
 
     let arguments = (ins Index:$index, DenseI64ArrayAttr:$values);
@@ -4190,7 +4222,7 @@ def TTKernel_ConstantTableLookupOp
     let assemblyFormat = [{
       $index `,` $values attr-dict `:` type($index)
     }];
-    let hasFolder = 1;
+    let hasCanonicalizer = 1;
     let hasVerifier = 1;
 }
 
