@@ -11,7 +11,9 @@ This module handles `ttl.copy()` calls that are missing the paired
   because the handle will be discarded and nothing else can wait on it.
 * **Assigned copies with no wait** (`tx = ttl.copy(...)` with no
   `tx.wait()`) — an injection point is inserted on the very next
-  statement so that `tx.wait()` fires before anything else runs.
+  statement. Requests observed by a multi-request `ttl.wait_any` are instead
+  completed when their variable is reassigned or the function returns, after
+  selection and subsequent progress work.
 
 Push/pop injection for `dfb.reserve()` / `dfb.wait()` blocks is handled
 directly inside `DataflowBuffer` at runtime, not here:
@@ -26,8 +28,8 @@ The analysis approach:
 1. **AST analysis** (`collect_reachable_analyses`) — parse the source of
    each kernel function, recursively discover nested `def` helpers and
    module-scope callees referenced by simple name, and for each unwaited
-   `tx = ttl.copy(...)` compute an *injection point*: the first line the
-   runtime should execute after the copy call.
+   `tx = ttl.copy(...)` compute an *injection point*: the next line or the
+   function-return boundary.
 
 2. **Runtime interception** (`install_copy_wait_hooks`) — register
    `sys.monitoring` callbacks (Python 3.12+) that fire `tx.wait()` at
@@ -90,8 +92,8 @@ class InjectionPoint:
     executes, so ``tx.wait()`` runs before the next statement after the copy.
 
     When ``trigger_on_return`` is ``True``, the callback fires on the
-    function's ``return`` event instead (used when the copy is the last
-    statement in the function).
+    function's ``return`` event instead. This covers a final copy and cleanup
+    deferred until after a multi-request receive selection.
     """
 
     var_name: str
@@ -104,7 +106,9 @@ class KernelAnalysis:
     """Result of analysing one kernel function.
 
     ``injection_points`` covers copy-wait injection (Case B: assigned
-    ``tx = ttl.copy(...)`` with no explicit ``tx.wait()``).
+    ``tx = ttl.copy(...)`` with no explicit ``tx.wait()``). Multi-request
+    receive selections defer the corresponding injection until reassignment
+    or function return.
 
     ``bare_copy_linenos`` is the set of absolute file line numbers of bare
     ``ttl.copy(...)`` calls whose return value is not assigned to any
@@ -165,12 +169,12 @@ def _resolve_request_tuple_names(
     return frozenset(element.id for element in expression.elts)
 
 
-def _wait_any_request_names(
+def _wait_any_request_groups(
     node: ast.AST,
     request_tuple_bindings: dict[str, frozenset[str]],
-) -> set[str]:
-    """Return simple variables consumed by a ttl.wait_any tuple."""
-    names: set[str] = set()
+) -> tuple[frozenset[str], ...]:
+    """Return resolved request-variable groups consumed by ttl.wait_any."""
+    groups: list[frozenset[str]] = []
     for candidate in ast.walk(node):
         if not (
             isinstance(candidate, ast.Call)
@@ -185,8 +189,8 @@ def _wait_any_request_names(
             candidate.args[0], request_tuple_bindings
         )
         if resolved_names is not None:
-            names.update(resolved_names)
-    return names
+            groups.append(resolved_names)
+    return tuple(groups)
 
 
 def _update_request_tuple_bindings(
@@ -205,16 +209,27 @@ def _update_request_tuple_bindings(
     request_tuple_bindings[target.id] = resolved_names
 
 
+def _line_belongs_to_assignment(
+    line_number: int, copy_lineno: int, next_assignment_lineno: int | None
+) -> bool:
+    return line_number > copy_lineno and (
+        next_assignment_lineno is None or line_number < next_assignment_lineno
+    )
+
+
 def _find_copy_records(
     stmts: list[ast.stmt],
     file_start_line: int,
-) -> tuple[list[tuple[str, int]], list[int]]:
+) -> tuple[list[tuple[str, int | None]], list[int]]:
     """Find ttl.copy() calls that need automatic wait() insertion.
 
     Scans ``stmts`` (flat list from ``_all_stmts_flat``) for two patterns:
 
     * **Case B** — ``tx = ttl.copy(...)`` with no subsequent ``tx.wait()``:
-      returned as ``(var_name, abs_lineno)`` pairs in ``assigned_no_wait``.
+      returned as ``(var_name, trigger_lineno)`` pairs in
+      ``assigned_no_wait``. A `None` trigger defers cleanup until function
+      return. Multi-request selection defers cleanup until return or until the
+      request variable is reassigned.
     * **Case A** — bare ``ttl.copy(...)`` expression with no assignment:
       returned as absolute line numbers in ``bare_linenos``.
 
@@ -235,12 +250,13 @@ def _find_copy_records(
         elif isinstance(stmt, ast.Expr) and _is_ttl_copy_call(stmt.value):
             bare_linenos.append(abs_lineno)
 
-    # Map each variable name to the absolute line numbers where it is
-    # synchronized.
+    # Record exact completion separately from multi-request observations,
+    # which only delay automatic cleanup.
     # A copy assignment is only disqualified if the matching .wait() appears
     # *after* it; a wait that precedes the assignment (e.g. at the top of a loop
     # body to release the previous iteration's copy) must not suppress injection.
     wait_abs_linenos: dict[str, list[int]] = {}
+    wait_any_abs_linenos: dict[str, list[int]] = {}
     request_tuple_bindings: dict[str, frozenset[str]] = {}
     for stmt in stmts:
         for node in ast.walk(stmt):
@@ -255,16 +271,53 @@ def _find_copy_records(
                 wait_abs_linenos.setdefault(name, []).append(
                     file_start_line + node.lineno - 1
                 )
-        synchronization_line = file_start_line + stmt.lineno - 1
-        for name in _wait_any_request_names(stmt, request_tuple_bindings):
-            wait_abs_linenos.setdefault(name, []).append(synchronization_line)
+        selection_line = file_start_line + stmt.lineno - 1
+        for request_names in _wait_any_request_groups(stmt, request_tuple_bindings):
+            destination = (
+                wait_abs_linenos if len(request_names) == 1 else wait_any_abs_linenos
+            )
+            for name in request_names:
+                destination.setdefault(name, []).append(selection_line)
         _update_request_tuple_bindings(stmt, request_tuple_bindings)
 
-    return [
-        (var, ln)
-        for var, ln in assigned
-        if not any(wl > ln for wl in wait_abs_linenos.get(var, []))
-    ], bare_linenos
+    statement_linenos = [file_start_line + stmt.lineno - 1 for stmt in stmts]
+    assigned_no_wait: list[tuple[str, int | None]] = []
+    for var_name, copy_lineno in assigned:
+        next_assignment_lineno = next(
+            (
+                assignment_lineno
+                for assignment_name, assignment_lineno in assigned
+                if assignment_name == var_name and assignment_lineno > copy_lineno
+            ),
+            None,
+        )
+        if any(
+            _line_belongs_to_assignment(
+                wait_lineno, copy_lineno, next_assignment_lineno
+            )
+            for wait_lineno in wait_abs_linenos.get(var_name, [])
+        ):
+            continue
+        selection_linenos = [
+            selection_lineno
+            for selection_lineno in wait_any_abs_linenos.get(var_name, [])
+            if _line_belongs_to_assignment(
+                selection_lineno, copy_lineno, next_assignment_lineno
+            )
+        ]
+        if selection_linenos:
+            trigger_lineno = next_assignment_lineno
+        else:
+            trigger_lineno = next(
+                (
+                    statement_lineno
+                    for statement_lineno in statement_linenos
+                    if statement_lineno > copy_lineno
+                ),
+                None,
+            )
+        assigned_no_wait.append((var_name, trigger_lineno))
+    return assigned_no_wait, bare_linenos
 
 
 # ---------------------------------------------------------------------------
@@ -439,19 +492,17 @@ def _analyze_func_def_node(
         return KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
 
     assigned_no_wait, bare_linenos = _find_copy_records(stmts, file_start_line)
-    abs_linenos = [file_start_line + s.lineno - 1 for s in stmts]
-    injection_points = tuple(
-        InjectionPoint(
-            var_name=var_name,
-            trigger_lineno=(
-                tl := next((ln for ln in abs_linenos if ln > copy_lineno), None)
-            ),
-            trigger_on_return=tl is None,
+    injection_points: list[InjectionPoint] = []
+    for var_name, trigger_lineno in assigned_no_wait:
+        injection_points.append(
+            InjectionPoint(
+                var_name=var_name,
+                trigger_lineno=trigger_lineno,
+                trigger_on_return=trigger_lineno is None,
+            )
         )
-        for var_name, copy_lineno in assigned_no_wait
-    )
     return KernelAnalysis(
-        injection_points=injection_points,
+        injection_points=tuple(injection_points),
         bare_copy_linenos=frozenset(bare_linenos),
     )
 

@@ -450,8 +450,8 @@ class TestCopyWaitAnalysis:
         ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
 
-    def test_wait_any_tuple_literal_suppresses_copy_wait_injection(self):
-        """wait_any owns completion of every request in its tuple."""
+    def test_wait_any_tuple_literal_defers_copy_wait_injection(self):
+        """Multi-request wait_any defers cleanup until after selection."""
 
         def dm():
             request0 = ttl.copy(pipe0, block0)  # noqa: F821
@@ -459,10 +459,11 @@ class TestCopyWaitAnalysis:
             ttl.wait_any((request0, request1))
 
         ips = analyze_kernel_function(dm).injection_points
-        assert ips == ()
+        assert {ip.var_name for ip in ips} == {"request0", "request1"}
+        assert all(ip.trigger_on_return for ip in ips)
 
-    def test_wait_any_tuple_binding_suppresses_copy_wait_injection(self):
-        """A named request tuple has the same completion ownership."""
+    def test_wait_any_tuple_binding_defers_copy_wait_injection(self):
+        """A named request tuple retains the same selection boundary."""
 
         def dm():
             request0 = ttl.copy(pipe0, block0)  # noqa: F821
@@ -471,7 +472,53 @@ class TestCopyWaitAnalysis:
             ttl.wait_any(requests)
 
         ips = analyze_kernel_function(dm).injection_points
-        assert ips == ()
+        assert {ip.var_name for ip in ips} == {"request0", "request1"}
+        assert all(ip.trigger_on_return for ip in ips)
+
+    def test_single_request_wait_any_completes_request(self):
+        """A single candidate is the request completed by wait_any."""
+
+        def dm():
+            request = ttl.copy(pipe, block)  # noqa: F821
+            ttl.wait_any((request,))
+
+        assert analyze_kernel_function(dm).injection_points == ()
+
+    def test_wait_any_cleanup_triggers_on_function_return(self):
+        """Automatic cleanup follows all work after wait_any."""
+
+        def dm():
+            request0 = ttl.copy(pipe0, block0)  # noqa: F821
+            request1 = ttl.copy(pipe1, block1)  # noqa: F821
+            ttl.wait_any((request0, request1))
+            consume_ready_index()  # noqa: F821
+
+        ips = analyze_kernel_function(dm).injection_points
+        assert {ip.var_name for ip in ips} == {"request0", "request1"}
+        assert all(ip.trigger_on_return for ip in ips)
+
+    def test_wait_any_cleanup_precedes_request_reassignment(self):
+        """Deferred cleanup preserves the request before its name is reused."""
+        import inspect
+
+        def dm():
+            request = ttl.copy(pipe0, block0)  # noqa: F821
+            other = ttl.copy(pipe1, block1)  # noqa: F821
+            ttl.wait_any((request, other))
+            make_other_request_ready()  # noqa: F821
+            request = ttl.copy(pipe2, block2)  # noqa: F821
+
+        ips = analyze_kernel_function(dm).injection_points
+        request_points = [ip for ip in ips if ip.var_name == "request"]
+        assert len(request_points) == 2
+        source_lines, start = inspect.getsourcelines(dm)
+        reassignment_lineno = next(
+            start + offset
+            for offset, line in enumerate(source_lines)
+            if "pipe2" in line
+        )
+        assert request_points[0].trigger_lineno == reassignment_lineno
+        assert request_points[1].trigger_on_return
 
     def test_outer_copy_waited_in_nested_callback_not_detected(self):
         """A transaction waited by a nested callback is explicitly waited."""
@@ -710,6 +757,19 @@ class TestCopyWaitAnalysis:
         trigger_linenos = {ip.trigger_lineno for ip in analysis.injection_points}
         assert second_copy_lineno in trigger_linenos
         assert done_lineno in trigger_linenos
+
+    def test_wait_after_reassignment_only_completes_second_copy(self):
+        """A wait applies to the copy currently stored in the variable."""
+
+        def dm():
+            tx = ttl.copy(src0, block0)  # noqa: F821
+            tx = ttl.copy(src1, block1)  # noqa: F821
+            tx.wait()
+
+        ips = analyze_kernel_function(dm).injection_points
+        assert len(ips) == 1
+        assert ips[0].var_name == "tx"
+        assert not ips[0].trigger_on_return
 
 
 class TestCopyWaitRuntime:
