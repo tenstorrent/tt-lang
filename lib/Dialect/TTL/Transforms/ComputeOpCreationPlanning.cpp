@@ -433,6 +433,23 @@ static bool hasInterveningComputeSideEffect(Operation *producer,
   return false;
 }
 
+/// Returns the first observation point between `producer` and `consumer`, or
+/// null when folding the pair would not move an observation point.
+static Operation *findInstrumentationBetween(Operation *producer,
+                                             Operation *consumer) {
+  if (producer->getBlock() != consumer->getBlock()) {
+    return nullptr;
+  }
+  for (Operation *operation = producer->getNextNode();
+       operation && operation != consumer;
+       operation = operation->getNextNode()) {
+    if (isRelocatableComputeInstrumentation(operation)) {
+      return operation;
+    }
+  }
+  return nullptr;
+}
+
 static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
                                               Value value,
                                               FusedInputRole role) {
@@ -472,15 +489,8 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
     }
     Operation *user = *matmul.getResult().getUsers().begin();
     Operation *interveningInstrumentation = nullptr;
-    if (isa<AddOp>(user) && fusedOperations.contains(user) &&
-        matmul->getBlock() == user->getBlock()) {
-      for (Operation *operation = matmul->getNextNode(); operation != user;
-           operation = operation->getNextNode()) {
-        if (isRelocatableComputeInstrumentation(operation)) {
-          interveningInstrumentation = operation;
-          break;
-        }
-      }
+    if (isa<AddOp>(user) && fusedOperations.contains(user)) {
+      interveningInstrumentation = findInstrumentationBetween(matmul, user);
     }
     if (interveningInstrumentation) {
       plan.warnings.push_back({interveningInstrumentation,
@@ -542,14 +552,8 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
 
     // The fused operation never materializes the broadcast result, so any
     // observation point between the pair would lose the value it observes.
-    Operation *interveningInstrumentation = nullptr;
-    for (Operation *between = broadcast->getNextNode();
-         between && between != user; between = between->getNextNode()) {
-      if (isRelocatableComputeInstrumentation(between)) {
-        interveningInstrumentation = between;
-        break;
-      }
-    }
+    Operation *interveningInstrumentation =
+        findInstrumentationBetween(broadcast, user);
     if (interveningInstrumentation) {
       plan.warnings.push_back({interveningInstrumentation,
                                ComputeOpCreationWarningKind::
