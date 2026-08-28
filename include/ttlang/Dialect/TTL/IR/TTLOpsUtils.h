@@ -987,6 +987,18 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   return tileOp;
 }
 
+/// Create a tile store with a placeholder dst_index and producer defaults.
+inline TileStoreOp createTileStoreWithPlaceholderDstIndex(
+    OpBuilder &builder, Location loc, Value tile, Value view,
+    ValueRange indices, UnitAttr rowPrefix = nullptr) {
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  TileStoreOp store = TileStoreOp::create(
+      builder, loc, tile, view, indices, dstIndex,
+      DFBTileStoreKind::Producer, rowPrefix);
+  addPlaceholderDstIndexAttr(store.getOperation());
+  return store;
+}
+
 /// Collect the dataflow buffer values targeted by pack operations inside a
 /// loop.
 llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);

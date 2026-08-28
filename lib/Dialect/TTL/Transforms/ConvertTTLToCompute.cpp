@@ -193,11 +193,9 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
   SmallVector<Value> indices =
       applyIndexingMap(rewriter, loc, outputMap, iterIndices);
 
-  TileStoreOp tileStore = createTileOpWithPlaceholderDstIndex<TileStoreOp>(
-      rewriter, loc, tileResult, store.getView(), indices);
-  if (store.getRowPrefix()) {
-    tileStore->setAttr("row_prefix", store.getRowPrefixAttr());
-  }
+  TileStoreOp tileStore = createTileStoreWithPlaceholderDstIndex(
+      rewriter, loc, tileResult, store.getView(), indices,
+      store.getRowPrefixAttr());
   const WaitedDFBMutationPlan *waitedMutation = nullptr;
   for (const WaitedDFBMutationPlan &mutation : creation.waitedMutations) {
     if (mutation.store != store) {
@@ -1180,11 +1178,9 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
         applyIndexingMap(rewriter, loc, plan.iteration.outputMap, iterIndices);
-    TileStoreOp tileStore = createTileOpWithPlaceholderDstIndex<TileStoreOp>(
-        rewriter, loc, body->getArgument(0), plan.outputView, storeIndices);
-    if (op.getRowPrefix()) {
-      tileStore->setAttr("row_prefix", op.getRowPrefixAttr());
-    }
+    createTileStoreWithPlaceholderDstIndex(
+        rewriter, loc, body->getArgument(0), plan.outputView, storeIndices,
+        op.getRowPrefixAttr());
     YieldOp::create(rewriter, loc);
 
     for (AttachCBOp association : plan.outputAssociations) {
