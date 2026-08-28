@@ -185,9 +185,9 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
 /// Lower a matched additive tensor recurrence to one initial output store plus
 /// per-iteration accumulating stores. The generated loop is annotated for L1
 /// packer accumulation reconfiguration insertion.
-LogicalResult lowerTensorAccumulationToL1Pack(
-    const TensorAccumulationMatch &match, int64_t scopeId,
-    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter);
+void lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
+                                     int64_t scopeId,
+                                     RewriterBase &rewriter);
 
 /// Return one more than the maximum L1 accumulation scope id under `root`.
 int64_t getNextL1AccScopeId(Operation *root);
