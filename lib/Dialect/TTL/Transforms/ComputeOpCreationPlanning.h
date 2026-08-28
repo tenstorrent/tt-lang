@@ -641,9 +641,6 @@ struct PassthroughStorePlan {
   /// DFB associated with `outputView`.
   Value outputDFB;
 
-  /// Tensor type read by the passthrough compute.
-  RankedTensorType inputTensorType;
-
   /// Tensor type associated with the output dataflow buffer.
   RankedTensorType outputTensorType;
 
