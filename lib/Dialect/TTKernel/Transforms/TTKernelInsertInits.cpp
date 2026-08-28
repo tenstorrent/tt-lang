@@ -8,15 +8,17 @@
 // format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
 // configure the MATH pipeline.
 //
-// Two phases:
-//   1. Common inits: one per sync region, hoisted above enclosing loops.
+// The pass performs:
+//   - Common inits: one per sync region, hoisted above enclosing loops.
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
 //      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
+//   - Per-op inits: emitted in linear block order whenever the op type
 //      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
 //      key is (init op TypeID, operand values). An init is inserted only
 //      when the key changes. Tracking resets at sync boundaries.
+//   - Row-pack inits: one configuration around a loop when its only packer
+//      operation is a single pack_rows, otherwise around each pack_rows.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -33,6 +35,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+
+#include "llvm/ADT/DenseSet.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -757,6 +761,68 @@ static LogicalResult insertCommonInits(
   return hadError ? failure() : success();
 }
 
+/// A single pack_rows in a loop can reuse its static row configuration across
+/// iterations when no operation in the loop can reconfigure the packer.
+static ttk::PackRowsOp getHoistablePackRows(scf::ForOp loop) {
+  ttk::PackRowsOp candidate;
+  bool hasInterference = false;
+  loop->walk([&](Operation *operation) {
+    if (operation == loop.getOperation()) {
+      return WalkResult::advance();
+    }
+    if (auto packRows = dyn_cast<ttk::PackRowsOp>(operation)) {
+      if (candidate || packRows->getParentOfType<scf::ForOp>() != loop) {
+        hasInterference = true;
+        return WalkResult::interrupt();
+      }
+      candidate = packRows;
+      return WalkResult::advance();
+    }
+
+    StringRef operationName = operation->getName().getStringRef();
+    if (operation->hasTrait<ttk::TTKernelInitOpTrait>() ||
+        operationName.starts_with("ttkernel.pack_")) {
+      hasInterference = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return hasInterference ? ttk::PackRowsOp() : candidate;
+}
+
+static void insertPackRowsInits(ModuleOp moduleOp) {
+  SmallVector<scf::ForOp> loops;
+  moduleOp->walk([&](scf::ForOp loop) { loops.push_back(loop); });
+
+  llvm::DenseSet<Operation *> loopConfiguredPacks;
+  for (scf::ForOp loop : loops) {
+    ttk::PackRowsOp packRows = getHoistablePackRows(loop);
+    if (!packRows) {
+      continue;
+    }
+
+    OpBuilder builder(loop);
+    ttk::PackRowsInitOp::create(builder, packRows.getLoc(),
+                                packRows.getRowCountAttr());
+    builder.setInsertionPointAfter(loop);
+    ttk::PackRowsUninitOp::create(builder, packRows.getLoc());
+    loopConfiguredPacks.insert(packRows.getOperation());
+  }
+
+  SmallVector<ttk::PackRowsOp> packs;
+  moduleOp->walk([&](ttk::PackRowsOp packRows) { packs.push_back(packRows); });
+  for (ttk::PackRowsOp packRows : packs) {
+    if (loopConfiguredPacks.contains(packRows.getOperation())) {
+      continue;
+    }
+    OpBuilder builder(packRows);
+    ttk::PackRowsInitOp::create(builder, packRows.getLoc(),
+                                packRows.getRowCountAttr());
+    builder.setInsertionPointAfter(packRows);
+    ttk::PackRowsUninitOp::create(builder, packRows.getLoc());
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
@@ -832,6 +898,7 @@ struct TTKernelInsertInitsPass
     });
 
     moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
+    insertPackRowsInits(moduleOp);
   }
 };
 

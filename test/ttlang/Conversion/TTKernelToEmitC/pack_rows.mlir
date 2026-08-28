@@ -19,8 +19,10 @@ func.func @pack_rows_bf16() attributes {ttkernel.thread = #ttkernel.thread<compu
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(0)
       : () -> !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>
+  ttkernel.pack_rows_init {row_count = 28 : i64}
   ttkernel.pack_rows(%c0, %cb, %c0) {row_count = 28 : i64}
       : (index, !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>, index) -> ()
+  ttkernel.pack_rows_uninit
   func.return
 }
 
@@ -35,7 +37,9 @@ func.func @pack_rows_f32() attributes {ttkernel.thread = #ttkernel.thread<comput
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(1)
       : () -> !ttkernel.cb<14, !ttcore.tile<1x32, f32>>
+  ttkernel.pack_rows_init {row_count = 28 : i64}
   ttkernel.pack_rows(%c0, %cb, %c0) {row_count = 28 : i64}
       : (index, !ttkernel.cb<14, !ttcore.tile<1x32, f32>>, index) -> ()
+  ttkernel.pack_rows_uninit
   func.return
 }
