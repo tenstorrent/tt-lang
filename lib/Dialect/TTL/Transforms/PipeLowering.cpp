@@ -3947,6 +3947,81 @@ lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
                                        nodeIndex);
 }
 
+static std::optional<SmallVector<int64_t>> buildLocalRoleMembershipTable(
+    Operation *op, ArrayRef<PipeInfo> pipeInfos, PipeRole role) {
+  std::optional<std::pair<int64_t, int64_t>> maybeGrid = getLaunchGrid(op);
+  if (!maybeGrid) {
+    return std::nullopt;
+  }
+  int64_t gridX = maybeGrid->first;
+  int64_t gridY = maybeGrid->second;
+  std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
+  if (!maybeGridArea) {
+    return std::nullopt;
+  }
+  SmallVector<int64_t> membership(
+      static_cast<std::size_t>(*maybeGridArea), 0);
+  auto markRange = [&](int64_t minX, int64_t minY, int64_t maxX,
+                       int64_t maxY) -> LogicalResult {
+    if (minX < 0 || minY < 0 || maxX >= gridX || maxY >= gridY) {
+      return failure();
+    }
+    for (int64_t nodeY = minY; nodeY <= maxY; ++nodeY) {
+      for (int64_t nodeX = minX; nodeX <= maxX; ++nodeX) {
+        membership[static_cast<std::size_t>(nodeY * gridX + nodeX)] = 1;
+      }
+    }
+    return success();
+  };
+  for (const PipeInfo &pipeInfo : pipeInfos) {
+    if (pipeInfo.hasDeviceTransfer) {
+      return std::nullopt;
+    }
+    PipeType pipeType = pipeInfo.pipeType;
+    if ((role == PipeRole::Source || role == PipeRole::Active) &&
+        failed(markRange(pipeType.getSrcX(), pipeType.getSrcY(),
+                         pipeType.getSrcX(), pipeType.getSrcY()))) {
+      return std::nullopt;
+    }
+    if ((role == PipeRole::Destination || role == PipeRole::Active) &&
+        failed(markRange(
+            std::min(pipeType.getDstStartX(), pipeType.getDstEndX()),
+            std::min(pipeType.getDstStartY(), pipeType.getDstEndY()),
+            std::max(pipeType.getDstStartX(), pipeType.getDstEndX()),
+            std::max(pipeType.getDstStartY(), pipeType.getDstEndY())))) {
+      return std::nullopt;
+    }
+  }
+  return membership;
+}
+
+static std::optional<Value>
+lowerLocalRolePredicate(Operation *op, ArrayRef<PipeInfo> pipeInfos,
+                        PipeRole role,
+                        ConversionPatternRewriter &rewriter) {
+  std::optional<SmallVector<int64_t>> maybeMembership =
+      buildLocalRoleMembershipTable(op, pipeInfos, role);
+  if (!maybeMembership) {
+    return std::nullopt;
+  }
+  int64_t gridX = getLaunchGrid(op)->first;
+  Location loc = op->getLoc();
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value gridXValue = arith::ConstantIndexOp::create(rewriter, loc, gridX);
+  Value nodeRowOffset =
+      arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
+  Value nodeIndex =
+      arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  Value membership = buildConstantIndexTableLookup(
+      rewriter, loc, *maybeMembership, nodeIndex);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  return Value(arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ne, membership, zero));
+}
+
 // Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
 // named PipeNet. `roleBuilder` produces the i1 match for one static pipe.
 template <typename Op>
@@ -3965,6 +4040,11 @@ static LogicalResult lowerRolePredicate(
   auto it = pipeNetIndex.find(netId);
   assert(it != pipeNetIndex.end() && !it->second.empty() &&
          "role predicate must reference a preflighted PipeNet");
+  if (std::optional<Value> localPredicate =
+          lowerLocalRolePredicate(op, it->second, role, rewriter)) {
+    rewriter.replaceOp(op, *localPredicate);
+    return success();
+  }
   auto coreX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
   auto coreY =
@@ -4088,16 +4168,15 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   using PipeKey =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
   llvm::MapVector<int64_t, llvm::SmallSetVector<PipeKey, 4>> seenPerNet;
-  auto addPipe = [&](PipeType pipeType, PipeTransferContract contract) {
+  auto addPipe = [&](PipeType pipeType, PipeTransferContract contract,
+                     bool hasDeviceTransfer) {
     int64_t netId = pipeType.getPipeNetId();
     PipeKey key{pipeType.getSrcX(),      pipeType.getSrcY(),
                 pipeType.getDstStartX(), pipeType.getDstStartY(),
                 pipeType.getDstEndX(),   pipeType.getDstEndY()};
     if (seenPerNet[netId].insert(key)) {
-      index[netId].push_back(PipeInfo{pipeType, contract});
-      return;
-    }
-    if (!isCollectiveTransfer(contract)) {
+      index[netId].push_back(
+          PipeInfo{pipeType, contract, hasDeviceTransfer});
       return;
     }
     for (PipeInfo &pipeInfo : index[netId]) {
@@ -4107,7 +4186,10 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
           existingType.getDstStartX(), existingType.getDstStartY(),
           existingType.getDstEndX(),   existingType.getDstEndY()};
       if (existingKey == key) {
-        pipeInfo.transferContract = PipeTransferContract::Collective;
+        if (isCollectiveTransfer(contract)) {
+          pipeInfo.transferContract = PipeTransferContract::Collective;
+        }
+        pipeInfo.hasDeviceTransfer |= hasDeviceTransfer;
         return;
       }
     }
@@ -4116,13 +4198,15 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
 
   mod.walk([&](CreatePipeOp op) {
     addPipe(mlir::cast<PipeType>(op.getResult().getType()),
-            getPipeTransferContract(op));
+            getPipeTransferContract(op), /*hasDeviceTransfer=*/false);
   });
   auto addRecords = [&](PipeNetRecordsAttr records) {
     for (PipeRecordAttr record : records.getPipes()) {
       addPipe(getPipeTypeFromRecord(mod.getContext(), record,
                                     records.getPipeNetId()),
-              getPipeTransferContract(record));
+              getPipeTransferContract(record),
+              /*hasDeviceTransfer=*/
+              static_cast<bool>(record.getDeviceTransfer()));
     }
   };
   mod.walk([&](PipeNetForeachSrcOp op) { addRecords(op.getRecords()); });
@@ -4534,12 +4618,6 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
     PipeTransferAllocationUnit &unit = indexedUnit.value();
     const PipeTransferNode &transferNode =
         pipeGraph.getPipeTransferNode(unit.transferNodeId);
-    // Local table-driven transfers retain receiver publication because it
-    // produces substantially smaller kernels. Device transfers cannot publish
-    // receiver-local addresses directly, so they require this computation.
-    if (isSelectedTransferUnit(unit) && !transferNode.deviceTransfer) {
-      continue;
-    }
     const PipeReceiverEndpoint *receiverEndpoint =
         pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
     if (!receiverEndpoint) {

@@ -45,6 +45,12 @@ struct GridMajorPipeRecordIndexTables {
   SmallVector<int64_t> destinationDeviceIndices;
 };
 
+struct LocalPipeRecordIndexTables {
+  int64_t gridX = 0;
+  SmallVector<int64_t> recordOffsetsByNode;
+  SmallVector<int64_t> recordIndices;
+};
+
 static std::optional<int64_t> getDeviceCount(DeviceDomainAttr domain) {
   std::uint64_t deviceCount = 1;
   for (DeviceDomainComponentAttr component : domain.getComponents()) {
@@ -148,6 +154,57 @@ buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
   return tables;
 }
 
+static std::optional<LocalPipeRecordIndexTables>
+buildLocalPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
+                                Operation *op) {
+  if (records.getPipes().front().getDeviceTransfer()) {
+    return std::nullopt;
+  }
+  std::optional<std::pair<int64_t, int64_t>> maybeGrid = getLaunchGrid(op);
+  if (!maybeGrid) {
+    return std::nullopt;
+  }
+  auto [gridX, gridY] = *maybeGrid;
+  std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
+  if (!maybeGridArea) {
+    return std::nullopt;
+  }
+
+  SmallVector<SmallVector<int64_t>> recordsByNode(
+      static_cast<std::size_t>(*maybeGridArea));
+  for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
+    if (record.getDeviceTransfer()) {
+      return std::nullopt;
+    }
+    SmallVector<PipeRecordRoleFacts, 2> roleFacts =
+        getPipeRecordRoleFacts(record, role);
+    if (roleFacts.size() != 1 || roleFacts.front().device) {
+      return std::nullopt;
+    }
+    const PipeRecordRoleFacts &facts = roleFacts.front();
+    if (facts.minX < 0 || facts.minY < 0 || facts.maxX >= gridX ||
+        facts.maxY >= gridY) {
+      return std::nullopt;
+    }
+    for (int64_t nodeY = facts.minY; nodeY <= facts.maxY; ++nodeY) {
+      for (int64_t nodeX = facts.minX; nodeX <= facts.maxX; ++nodeX) {
+        recordsByNode[static_cast<std::size_t>(nodeY * gridX + nodeX)]
+            .push_back(static_cast<int64_t>(recordIndex));
+      }
+    }
+  }
+
+  LocalPipeRecordIndexTables tables;
+  tables.gridX = gridX;
+  tables.recordOffsetsByNode.push_back(0);
+  for (ArrayRef<int64_t> nodeRecords : recordsByNode) {
+    tables.recordIndices.append(nodeRecords.begin(), nodeRecords.end());
+    tables.recordOffsetsByNode.push_back(
+        static_cast<int64_t>(tables.recordIndices.size()));
+  }
+  return tables;
+}
+
 template <typename SelectOp, typename SelectedType>
 static SelectOp
 buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
@@ -224,6 +281,51 @@ clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
     Operation *clonedOp = builder.clone(bodyOp, mapping);
     collectOutermostPipeNetForeachOps(clonedOp, foreachWorklist);
   }
+}
+
+template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
+static bool tryLowerLocalPipeNetForeach(
+    ForeachOp op, RewriterBase &rewriter,
+    PipeForeachLoweringInfo &foreachLoweringInfo, PipeRole role,
+    PipeNetRecordSelection recordSelection,
+    SmallVectorImpl<Operation *> &foreachWorklist) {
+  PipeNetRecordsAttr records = op.getRecords();
+  std::optional<LocalPipeRecordIndexTables> maybeTables =
+      buildLocalPipeRecordIndexTables(records, role, op);
+  if (!maybeTables) {
+    return false;
+  }
+  const LocalPipeRecordIndexTables &tables = *maybeTables;
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value gridX = arith::ConstantIndexOp::create(rewriter, loc, tables.gridX);
+  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridX);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  Value nextNode = arith::AddIOp::create(
+      rewriter, loc, nodeIndex,
+      arith::ConstantIndexOp::create(rewriter, loc, 1));
+  Value lower = buildConstantIndexTableLookup(
+      rewriter, loc, tables.recordOffsetsByNode, nodeIndex);
+  Value upper = buildConstantIndexTableLookup(
+      rewriter, loc, tables.recordOffsetsByNode, nextNode);
+  Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+  foreachLoweringInfo.controlOps.push_back(forOp);
+  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value recordIndex = buildConstantIndexTableLookup(
+      rewriter, loc, tables.recordIndices, forOp.getInductionVar());
+  PipeRecordTables recordTables = buildPipeRecordTables(records);
+  auto selectedPipe = buildSelectedPipe<SelectOp, SelectedPipeType>(
+      rewriter, loc, records, recordTables, recordIndex);
+  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
+  rewriter.eraseOp(op);
+  return true;
 }
 
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
@@ -356,6 +458,11 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   if (shouldLowerPipeNetForeachDirect(records)) {
     lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
                               foreachWorklist);
+    return;
+  }
+  if (tryLowerLocalPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
+          op, rewriter, foreachLoweringInfo, role, recordSelection,
+          foreachWorklist)) {
     return;
   }
   if (tryLowerGridMajorPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(

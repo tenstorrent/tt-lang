@@ -114,6 +114,7 @@ using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 struct PipeInfo {
   PipeType pipeType;
   PipeTransferContract transferContract;
+  bool hasDeviceTransfer = false;
 };
 
 struct PipeSramAddressTableInfo {

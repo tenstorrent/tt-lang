@@ -8,16 +8,19 @@
 // Running static transport planning before conversion must preserve the same
 // selected-record address and synchronization tables.
 
-// Local selected records retain one receiver-published address table.
+// Local selected records retain distinct synchronization resources without
+// allocating the receiver-published address table used by dynamic addresses.
 // CHECK-NOT: ttl.pipe_conservative_l1_bytes
-// CHECK: ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64
+// CHECK-NOT: ttl.pipe_sram_scratch_bytes
+// CHECK: module attributes {{.*}}ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sync_semaphore_count = 8 : i64}
 
 module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 
 // CHECK-LABEL: func.func @gather_receiver
 // Six distinct completion counters cover the six matching records.
 // CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<6xi32>
-// CHECK: scf.for %[[INDEX:.*]] =
+// CHECK: scf.for %[[LOCAL_INDEX:.*]] =
+// CHECK: %[[INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[LOCAL_INDEX]], [0, 1, 2, 3, 4, 5] : index
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[PROGRESS_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: memref.load %[[COUNTERS]][%[[PROGRESS_INDEX]]] : memref<6xi32>
@@ -51,15 +54,16 @@ func.func @gather_receiver()
 }
 
 // CHECK-LABEL: func.func @gather_senders
-// CHECK: scf.for %[[INDEX:.*]] =
+// CHECK: scf.for %[[LOCAL_INDEX:.*]] =
+// CHECK: %[[INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[LOCAL_INDEX]], [0, 5, 1, 2, 3, 4] : index
 // CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[READY_SEM:.*]] = ttkernel.get_semaphore(%[[READY_INDEX]])
 // CHECK: %[[READY_ADDR:.*]] = ttkernel.reinterpret_cast(%[[READY_SEM]])
+// CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
+// CHECK: ttkernel.noc_async_write %
 // CHECK: %[[COMPLETION_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: %[[COMPLETION_SEM:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
 // CHECK: %[[COMPLETION_NOC_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_SEM]], {{.*}})
-// CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
-// CHECK: ttkernel.noc_async_write %
 // CHECK: ttkernel.noc_semaphore_inc(%[[COMPLETION_NOC_ADDR]], {{.*}})
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
