@@ -114,20 +114,58 @@ EOF
 
 @test "existing image runs a repository script through the mounted checkout" {
     local source_id
+    local runtime_id
     source_id="$(printf '%s' "$TTLANG_REPO_ROOT" | cksum | awk '{print $1}')"
     cd "$TTLANG_REPO_ROOT"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
         examples/eltwise_add.py "argument with spaces"
+    runtime_id="$(awk '/^tt-lang-emule:/{sub(/^tt-lang-emule:/, ""); print; exit}' "$MOCK_DOCKER_LOG")"
 
     assert_log_line \
         "type=bind,src=${TTLANG_REPO_ROOT},dst=/workspace"
     assert_log_line "/workspace/examples/eltwise_add.py"
     assert_log_line "argument with spaces"
+    [[ "$runtime_id" == 07f1bd83-d48d09de-r* ]]
     assert_log_line \
-        "type=volume,src=tt-lang-emule-build-07f1bd83-d48d09de-r1-${source_id},dst=/ttlang-build"
+        "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
     assert_log_line \
-        "type=volume,src=tt-lang-emule-cache-07f1bd83-d48d09de-r1,dst=/tt-metal-cache"
+        "type=volume,src=tt-lang-emule-cache-${runtime_id},dst=/tt-metal-cache"
     refute_log_line "build"
+}
+
+@test "runtime image identity changes when an image input changes" {
+    local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
+    local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
+    local first_image
+    local second_image
+    mkdir -p "$synthetic_root/.github/containers" \
+        "$synthetic_root/examples" "$synthetic_root/scripts"
+    cp "$DOCKERFILE" "$synthetic_root/.github/containers/Dockerfile.emule"
+    cp "$ENTRYPOINT" "$synthetic_root/scripts/tt-lang-emule-entrypoint.sh"
+    cp "$RUNNER" "$synthetic_runner"
+    touch "$synthetic_root/examples/program.py"
+
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/examples/program.py"
+    first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+
+    : > "$MOCK_DOCKER_LOG"
+    printf '\n# changed image input\n' >> \
+        "$synthetic_root/scripts/tt-lang-emule-entrypoint.sh"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/examples/program.py"
+    second_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+
+    [ "$first_image" != "$second_image" ]
+}
+
+@test "non-tty launch keeps stdin open without allocating a tty" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+        examples/eltwise_add.py
+
+    assert_log_line "-i"
+    refute_log_line "-t"
 }
 
 @test "missing image triggers a pinned image build before the run" {

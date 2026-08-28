@@ -11,11 +11,18 @@ set -euo pipefail
 
 readonly _TT_EMULE_COMMIT="07f1bd8301544403c8bc1faa4038f6cbf69909f1"
 readonly _TT_METAL_COMMIT="d48d09dee19de51f694a52fdf75d569950d38ceb"
-readonly _IMAGE_REVISION="1"
-readonly _RUNTIME_ID="${_TT_EMULE_COMMIT:0:8}-${_TT_METAL_COMMIT:0:8}-r${_IMAGE_REVISION}"
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+_IMAGE_INPUT_ID="$(
+    cksum "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
+        "${_SCRIPT_DIR}/tt-lang-emule-entrypoint.sh" |
+        awk '{print $1, $2}' |
+        cksum |
+        awk '{print $1}'
+)"
+readonly _IMAGE_INPUT_ID
+readonly _RUNTIME_ID="${_TT_EMULE_COMMIT:0:8}-${_TT_METAL_COMMIT:0:8}-r${_IMAGE_INPUT_ID}"
 _DOCKER="${TTLANG_EMULE_DOCKER:-docker}"
 _PLATFORM="${TTLANG_EMULE_PLATFORM:-linux/amd64}"
 _IMAGE="${TTLANG_EMULE_IMAGE:-tt-lang-emule:${_RUNTIME_ID}}"
@@ -96,9 +103,8 @@ esac
 
 _RUN_ARGS+=(--workdir "$_CONTAINER_CWD")
 
-if [ -t 0 ]; then
-    _RUN_ARGS+=(-i)
-fi
+# Docker detaches stdin without -i, including when the caller supplies a pipe.
+_RUN_ARGS+=(-i)
 if [ -t 1 ]; then
     _RUN_ARGS+=(-t)
 fi
