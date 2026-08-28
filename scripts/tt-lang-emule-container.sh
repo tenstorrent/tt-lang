@@ -19,7 +19,8 @@ _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 _DOCKER="${TTLANG_EMULE_DOCKER:-docker}"
 _PLATFORM="${TTLANG_EMULE_PLATFORM:-linux/amd64}"
 _IMAGE="${TTLANG_EMULE_IMAGE:-tt-lang-emule:${_RUNTIME_ID}}"
-_BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}}"
+_SOURCE_ID="$(printf '%s' "$_REPO_ROOT" | cksum | awk '{print $1}')"
+_BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}-${_SOURCE_ID}}"
 _CACHE_VOLUME="${TTLANG_EMULE_CACHE_VOLUME:-tt-lang-emule-cache-${_RUNTIME_ID}}"
 
 usage() {
@@ -122,7 +123,7 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
         --build-arg "TT_EMULE_COMMIT=${_TT_EMULE_COMMIT}" \
         --build-arg "TT_METAL_COMMIT=${_TT_METAL_COMMIT}" \
         --tag "$_IMAGE" \
-        "$_REPO_ROOT"
+        "${_REPO_ROOT}/scripts"
 fi
 
 exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"

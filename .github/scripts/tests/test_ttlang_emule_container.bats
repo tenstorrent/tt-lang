@@ -6,6 +6,7 @@ load test_helper
 
 RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
 ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
+DOCKERFILE="$TTLANG_REPO_ROOT/.github/containers/Dockerfile.emule"
 
 make_mock_docker() {
     local target="$1"
@@ -82,11 +83,17 @@ EOF
     chmod +x "$target_dir/cmake" "$target_dir/nproc" "$target_dir/python"
 }
 
-@test "emule image context excludes the conventional local virtualenv" {
-    run -0 grep -F -x -- ".venv/" "$TTLANG_REPO_ROOT/.dockerignore"
+@test "emule image fetches only the pinned source revisions" {
+    run -0 grep -F -- \
+        'fetch --depth 1 origin "$TT_EMULE_COMMIT"' "$DOCKERFILE"
+    run -0 grep -F -- \
+        'fetch --depth 1 origin "$TT_METAL_COMMIT"' "$DOCKERFILE"
+    run -1 grep -F -- "git clone" "$DOCKERFILE"
 }
 
 @test "existing image runs a repository script through the mounted checkout" {
+    local source_id
+    source_id="$(printf '%s' "$TTLANG_REPO_ROOT" | cksum | awk '{print $1}')"
     cd "$TTLANG_REPO_ROOT"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
         examples/eltwise_add.py "argument with spaces"
@@ -96,7 +103,7 @@ EOF
     assert_log_line "/workspace/examples/eltwise_add.py"
     assert_log_line "argument with spaces"
     assert_log_line \
-        "type=volume,src=tt-lang-emule-build-07f1bd83-d48d09de-r1,dst=/ttlang-build"
+        "type=volume,src=tt-lang-emule-build-07f1bd83-d48d09de-r1-${source_id},dst=/ttlang-build"
     assert_log_line \
         "type=volume,src=tt-lang-emule-cache-07f1bd83-d48d09de-r1,dst=/tt-metal-cache"
     refute_log_line "build"
@@ -113,6 +120,7 @@ EOF
         "TT_EMULE_COMMIT=07f1bd8301544403c8bc1faa4038f6cbf69909f1"
     assert_log_line \
         "TT_METAL_COMMIT=d48d09dee19de51f694a52fdf75d569950d38ceb"
+    assert_log_line "${TTLANG_REPO_ROOT}/scripts"
     assert_log_line "run"
 }
 

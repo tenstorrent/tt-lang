@@ -160,6 +160,18 @@ EOF
     assert_line "argv=emule"
 }
 
+@test "emule removes the separator before passing script arguments" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER="$runner" \
+        run -0 "$ROOT/bin/tt-lang-sim" program.py -- --backend emule
+    assert_line --index 0 "argv=program.py"
+    assert_line --index 1 "argv=--backend"
+    assert_line --index 2 "argv=emule"
+    refute_line "argv=--"
+}
+
 @test "unknown backend is rejected before dispatch" {
     make_layout "$ROOT" source
     run -2 "$ROOT/bin/tt-lang-sim" program.py --backend unknown

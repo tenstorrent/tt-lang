@@ -19,6 +19,7 @@ _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 # arguments, so stop scanning there as well.
 _BACKEND="${TTLANG_SIM_BACKEND:-python}"
 _FORWARD_ARGS=()
+_SEPARATOR_INDEX=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --backend)
@@ -34,6 +35,7 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --)
+            _SEPARATOR_INDEX="${#_FORWARD_ARGS[@]}"
             _FORWARD_ARGS+=("$@")
             break
             ;;
@@ -46,6 +48,20 @@ done
 set -- "${_FORWARD_ARGS[@]}"
 
 if [ "$_BACKEND" = "emule" ]; then
+    # Unlike the Python backend, emule has no intermediate argparse layer to
+    # consume the launcher/script separator before invoking the user program.
+    if [ -n "$_SEPARATOR_INDEX" ]; then
+        _EMULE_FORWARD_ARGS=()
+        _ARG_INDEX=0
+        for _ARGUMENT in "$@"; do
+            if [ "$_ARG_INDEX" -ne "$_SEPARATOR_INDEX" ]; then
+                _EMULE_FORWARD_ARGS+=("$_ARGUMENT")
+            fi
+            _ARG_INDEX=$((_ARG_INDEX + 1))
+        done
+        set -- "${_EMULE_FORWARD_ARGS[@]}"
+    fi
+
     if [ -n "${TTLANG_EMULE_RUNNER:-}" ]; then
         _EMULE_RUNNER="$TTLANG_EMULE_RUNNER"
     else

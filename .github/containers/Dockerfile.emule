@@ -31,10 +31,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && command -v lld-20 >/dev/null
 
 RUN mkdir -p "$TT_EMULE_RUNTIME_ROOT" \
-    && git clone https://github.com/tenstorrent/tt-emule.git /opt/tt-emule \
-    && git -C /opt/tt-emule checkout "$TT_EMULE_COMMIT" \
-    && git clone https://github.com/tenstorrent/tt-metal.git "$TT_METAL_SOURCE_DIR" \
-    && git -C "$TT_METAL_SOURCE_DIR" checkout "$TT_METAL_COMMIT" \
+    && git init /opt/tt-emule \
+    && git -C /opt/tt-emule remote add origin https://github.com/tenstorrent/tt-emule.git \
+    && git -C /opt/tt-emule fetch --depth 1 origin "$TT_EMULE_COMMIT" \
+    && git -C /opt/tt-emule checkout --detach FETCH_HEAD \
+    && git init "$TT_METAL_SOURCE_DIR" \
+    && git -C "$TT_METAL_SOURCE_DIR" remote add origin https://github.com/tenstorrent/tt-metal.git \
+    && git -C "$TT_METAL_SOURCE_DIR" fetch --depth 1 origin "$TT_METAL_COMMIT" \
+    && git -C "$TT_METAL_SOURCE_DIR" checkout --detach FETCH_HEAD \
     && git -C "$TT_METAL_SOURCE_DIR" submodule update --init --depth 1 \
         tt_metal/third_party/umd tt_metal/third_party/tracy
 
@@ -78,7 +82,7 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
     && grep -q 'emule::execute_program_emulated' /tmp/tt-metal-symbols.txt \
     && rm /tmp/tt-metal-symbols.txt
 
-COPY scripts/tt-lang-emule-entrypoint.sh /usr/local/bin/tt-lang-emule-entrypoint
+COPY tt-lang-emule-entrypoint.sh /usr/local/bin/tt-lang-emule-entrypoint
 RUN chmod +x /usr/local/bin/tt-lang-emule-entrypoint \
     && mkdir -p /ttlang-build /tt-metal-cache
 
