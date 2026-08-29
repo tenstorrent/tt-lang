@@ -2676,9 +2676,15 @@ public:
   LogicalResult
   matchAndRewrite(Op op, Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    ArrayAttr templateArguments;
+    auto posted = op.getPosted();
+    if (posted && *posted) {
+      templateArguments = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "true")});
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::routing_plane_fused_write_atomic_inc",
-        nullptr, nullptr, adaptor.getOperands());
+        nullptr, templateArguments, adaptor.getOperands());
     return success();
   }
 };

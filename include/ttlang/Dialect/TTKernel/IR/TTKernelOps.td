@@ -4671,7 +4671,10 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     complete transfer. `destinationDeviceId` identifies the final destination;
     `destinationMeshId` also selects the mesh when mesh routing is enabled.
     `destinationHopCount` selects the route when one-dimensional fabric routing
-    is enabled.
+    is enabled. The optional `posted` attribute suppresses NOC responses for
+    the worker-to-router payload and header writes. Their shared command buffer
+    preserves payload-before-header ordering, and the final fabric atomic
+    remains the receiver-visible completion signal.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
@@ -4684,7 +4687,8 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     I32:$sizeBytes,
     TTKernel_NocAddr:$destinationAddress,
     TTKernel_NocAddr:$semaphoreAddress,
-    I32:$increment
+    I32:$increment,
+    OptionalAttr<BoolAttr>:$posted
   );
   let assemblyFormat = [{
     `(` operands `)` attr-dict `:` functional-type(operands, results)

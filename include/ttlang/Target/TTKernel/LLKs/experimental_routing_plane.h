@@ -33,6 +33,7 @@ static __attribute__((noinline)) void routing_plane_atomic_inc(
       reinterpret_cast<uint32_t>(packet_header), sizeof(PACKET_HEADER_TYPE));
 }
 
+template <bool posted = false>
 static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
     tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t routeId,
     uint32_t connectionIndex, uint32_t destinationDeviceId,
@@ -57,9 +58,9 @@ static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
         tt::tt_fabric::NocUnicastCommandHeader{destinationAddress},
         maxPacketSize);
     sender.wait_for_empty_write_slot();
-    sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
-                                                                 maxPacketSize);
-    sender.send_payload_flush_blocking_from_address(
+    sender.send_payload_without_header_non_blocking_from_address<posted>(
+        sourceAddress, maxPacketSize);
+    sender.send_payload_flush_blocking_from_address<posted>(
         reinterpret_cast<uint32_t>(packetHeader), sizeof(PACKET_HEADER_TYPE));
     sourceAddress += maxPacketSize;
     destinationAddress += maxPacketSize;
@@ -71,9 +72,9 @@ static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
           destinationAddress, semaphoreAddress, increment, true},
       sizeBytes);
   sender.wait_for_empty_write_slot();
-  sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
-                                                               sizeBytes);
-  sender.send_payload_flush_blocking_from_address(
+  sender.send_payload_without_header_non_blocking_from_address<posted>(
+      sourceAddress, sizeBytes);
+  sender.send_payload_flush_blocking_from_address<posted>(
       reinterpret_cast<uint32_t>(packetHeader), sizeof(PACKET_HEADER_TYPE));
 }
 

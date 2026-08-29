@@ -2443,7 +2443,8 @@ public:
         target.destinationDeviceId, target.destinationMeshId,
         target.destinationHopCount, sourceAddress, sizeBytes,
         buildRemoteNocAddress(remoteX, remoteY, destinationAddress),
-        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment);
+        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment,
+        rewriter.getBoolAttr(true));
   }
 
 private:
