@@ -9,7 +9,7 @@
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @mismatched_pipe_net_id()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{record table identifies PipeNet 7, but pipe_net_id is 3}}
+    // expected-error @below {{PipeNet 7, but pipe_net_id is 3}}
     %count = ttl.pipenet_destination_count {
         pipe_net_id = 3 : i64, records = #records} : index
     func.return

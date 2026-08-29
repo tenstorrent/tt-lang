@@ -1100,7 +1100,8 @@ def TTL_IsDstOp : TTL_Op<"is_dst",
   let hasVerifier = 1;
 }
 
-def TTL_PipeNetDestinationCountOp : TTL_Op<"pipenet_destination_count", [Pure]> {
+def TTL_PipeNetDestinationCountOp
+    : TTL_Op<"pipenet_destination_count", [Pure]> {
   let summary = "Count PipeNet records targeting the current node";
   let description = [{
     Returns the number of records in the named PipeNet whose destination range

@@ -66,9 +66,7 @@ def destination_count_gather(inp, out):
         pass
 
 
-@pytest.mark.parametrize(
-    "dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
-)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
 def test_destination_count_matches_receive_records(device, dtype, to_device):
     torch.manual_seed(0)
@@ -89,6 +87,4 @@ def test_destination_count_matches_receive_records(device, dtype, to_device):
             3 * TILE : 4 * TILE,
         ] = inp_torch[:, source_x * TILE : (source_x + 1) * TILE]
 
-    assert_allclose(
-        expected.float(), ttnn.to_torch(output).float(), rtol=0.0, atol=0.0
-    )
+    assert_allclose(expected.float(), ttnn.to_torch(output).float(), rtol=0.0, atol=0.0)

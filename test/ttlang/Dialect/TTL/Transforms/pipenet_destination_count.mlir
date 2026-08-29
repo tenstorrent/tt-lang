@@ -8,6 +8,8 @@
    dstEndX = 3, dstEndY = 0>,
   <srcX = 2, srcY = 0, dstStartX = 3, dstStartY = 0,
    dstEndX = 3, dstEndY = 0>,
+  <srcX = 2, srcY = 0, dstStartX = 3, dstStartY = 0,
+   dstEndX = 3, dstEndY = 0>,
   <srcX = 0, srcY = 0, dstStartX = 2, dstStartY = 0,
    dstEndX = 2, dstEndY = 0>
 ]>
@@ -48,7 +50,7 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
   // CHECK: ttkernel.my_logical_y_
   // CHECK: arith.muli
   // CHECK: arith.addi
-  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 0, 1, 3]
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 0, 1, 4]
   func.func @local_destination_count()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %count = ttl.pipenet_destination_count {

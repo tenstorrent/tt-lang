@@ -45,6 +45,11 @@ class TestPipeNetPredicates:
                 (0, 1, 1, 1),
                 id="collective-destination-range",
             ),
+            pytest.param(
+                [ttl.Pipe((0, 0), (3, 0)), ttl.Pipe((0, 0), (3, 0))],
+                (0, 0, 0, 2),
+                id="duplicate-records",
+            ),
         ],
     )
     def test_destination_count_matches_callback_multiplicity(
