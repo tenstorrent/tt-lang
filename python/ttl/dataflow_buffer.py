@@ -11,7 +11,11 @@ from typing import Any, Optional, Tuple
 from ttl.ir import *
 
 from ._src.ttl_ast import syntax
-from .constants import DEFAULT_TILE_SIZE, SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS
+from .constants import (
+    DEFAULT_TILE_SIZE,
+    SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS,
+    SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS,
+)
 from .dfb_allocation_group import (
     DFBAllocationGroup,
     _BoundDFBAllocationGroup,
@@ -53,9 +57,10 @@ def _validate_tensor_backed_dfb_tensor(
         raise ValueError(f"{context} must use TILE layout")
 
     dtype_name = str(tensor.dtype).rsplit(".", maxsplit=1)[-1].lower()
-    if dtype_name not in {"bfloat16", "float32"}:
+    if dtype_name not in SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS:
         raise ValueError(
-            f"{context} supports BF16 and FP32 tensors, got {tensor.dtype}"
+            f"{context} supports BF16, FP32, BFP4_B, and BFP8_B tensors, "
+            f"got {tensor.dtype}"
         )
 
     try:
