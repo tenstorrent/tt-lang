@@ -104,10 +104,16 @@ public:
     addConversion([](PipeTokenType type) -> Type {
       return IntegerType::get(type.getContext(), 32);
     });
-    // Public pipe copies expose TransferHandleType and may preserve the dynamic
-    // post sequence through SCF or tensor containers. DMA handles use the same
-    // runtime representation, but their waits depend only on precomputed
-    // provenance and lower to barriers without inspecting this value.
+    addConversion([](ReceiveRequestType type) -> Type {
+      return IntegerType::get(type.getContext(), 32);
+    });
+    addConversion([](ReadyReceiveType type) -> Type {
+      return IntegerType::get(type.getContext(), 32);
+    });
+    // Receive requests may preserve the dynamic post sequence through SCF or
+    // tensor containers. DMA handles use the same runtime representation, but
+    // their waits depend only on precomputed provenance and lower to barriers
+    // without inspecting this value.
     addConversion([](TransferHandleType type) -> Type {
       return IntegerType::get(type.getContext(), 32);
     });
@@ -1447,6 +1453,40 @@ private:
   const PipeResourcePlan &pipeResourcePlan;
 };
 
+struct PipeTransferWaitAnyLowering
+    : OpConversionPattern<PipeTransferWaitAnyOp> {
+  PipeTransferWaitAnyLowering(const TypeConverter &typeConverter,
+                              MLIRContext *context,
+                              const PipeModulePlan &pipeModulePlan,
+                              const PipeResourcePlan &pipeResourcePlan)
+      : OpConversionPattern(typeConverter, context),
+        pipeModulePlan(pipeModulePlan), pipeResourcePlan(pipeResourcePlan) {}
+
+  LogicalResult
+  matchAndRewrite(PipeTransferWaitAnyOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerPipeTransferWaitAny(op, adaptor.getTokens(),
+                                    pipeModulePlan.getWaitAnyPlan(op),
+                                    pipeResourcePlan, rewriter);
+  }
+
+private:
+  const PipeModulePlan &pipeModulePlan;
+  const PipeResourcePlan &pipeResourcePlan;
+};
+
+struct ReadyReceiveIndexLowering : OpConversionPattern<ReadyReceiveIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ReadyReceiveIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, rewriter.getIndexType(),
+                                                    adaptor.getReady());
+    return success();
+  }
+};
+
 struct WaitLowering : OpConversionPattern<WaitOp> {
   WaitLowering(const TypeConverter &typeConverter, MLIRContext *context,
                const llvm::SmallPtrSetImpl<Operation *> &completedPipeSends)
@@ -2504,6 +2544,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
       senderCapacityCounters, computedAddressCounters);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeModulePlan,
                                          pipeResourcePlan);
+  patterns.add<PipeTransferWaitAnyLowering>(typeConverter, &ctx, pipeModulePlan,
+                                            pipeResourcePlan);
+  patterns.add<ReadyReceiveIndexLowering>(typeConverter, &ctx);
   patterns.add<WaitLowering>(typeConverter, &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(

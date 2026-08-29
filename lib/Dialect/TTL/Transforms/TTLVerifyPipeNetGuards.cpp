@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "DFBVerification.h"
-
+#include "PipeGraph.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -70,7 +70,7 @@ struct WaitUse {
 };
 
 /// Pipe synchronization event used by the wait-for graph verifier.
-enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
+enum class PipeEventKind { Send, ReceivePost, ReceiveWait, ReceiveWaitAny };
 
 /// Return the diagnostic name for a pipe synchronization event.
 StringRef getPipeEventName(PipeEventKind kind) {
@@ -81,9 +81,17 @@ StringRef getPipeEventName(PipeEventKind kind) {
     return "receiver post";
   case PipeEventKind::ReceiveWait:
     return "receive wait";
+  case PipeEventKind::ReceiveWaitAny:
+    return "receive wait-any";
   }
   llvm_unreachable("unknown pipe event kind");
 }
+
+/// One completion alternative of a receive wait-any event.
+struct PipeWaitAnyAlternative {
+  PipeType pipeType;
+  Operation *receivePost = nullptr;
+};
 
 /// One pipe synchronization event on the launch-node domain where it executes.
 struct PipeEvent {
@@ -96,6 +104,7 @@ struct PipeEvent {
   Operation *receivePost = nullptr;
   Operation *selectedForeachOp = nullptr;
   int64_t selectedRecordIndex = -1;
+  SmallVector<PipeWaitAnyAlternative> waitAnyAlternatives = {};
 };
 
 struct ModuleState;
@@ -172,10 +181,8 @@ struct ModuleState {
     PipeRole role =
         kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
     for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
-      PipeType pipeType = PipeType::get(
-          records.getContext(), record.getSrcX(), record.getSrcY(),
-          record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
-          record.getDstEndY(), records.getPipeNetId());
+      PipeType pipeType = getPipeTypeFromRecord(records.getContext(), record,
+                                                records.getPipeNetId());
       LaunchNodeDomain roleDomain =
           role == PipeRole::Source
               ? getPipeRecordSourceLaunchNodeDomain(record)
@@ -277,6 +284,52 @@ struct ModuleState {
 
     replacePipeEvents(op, std::move(events));
   }
+
+  /// Record one disjunctive receive-completion event.
+  void recordPipeWaitAnyEvent(WaitAnyOp waitOp, const LaunchNodeDomain &domain,
+                              Operation *unanalyzableOp) {
+    SmallVector<PipeWaitAnyAlternative> alternatives;
+    LaunchNodeDomain allowedDomain = launchDomains.baseDomain;
+    for (ArrayRef<Operation *> possiblePosts :
+         transfers.getReceivePosts(waitOp)) {
+      for (Operation *post : possiblePosts) {
+        CopyOp copyOp = cast<CopyOp>(post);
+        if (auto pipeType = dyn_cast<PipeType>(copyOp.getSrc().getType())) {
+          alternatives.push_back({pipeType, post});
+          allowedDomain =
+              allowedDomain.intersectWith(getPipeDestinationLaunchNodeDomain(
+                  pipeType, launchDomains.baseDomain));
+          continue;
+        }
+        FailureOr<SelectedPipeRecords> selected =
+            getSelectedPipeRecords(copyOp.getSrc());
+        if (failed(selected)) {
+          reportInvalidSelectedPipeDefinition(copyOp);
+          return;
+        }
+        allowedDomain =
+            allowedDomain.intersectWith(getPipeRecordsRoleLaunchNodeDomain(
+                selected->records, PipeRole::Destination));
+        for (PipeRecordAttr record : selected->records.getPipes()) {
+          alternatives.push_back(
+              {getPipeTypeFromRecord(selected->records.getContext(), record,
+                                     selected->records.getPipeNetId()),
+               post});
+        }
+      }
+    }
+    assert(!alternatives.empty() && "wait-any requires a candidate");
+    PipeEvent event{waitOp.getOperation(),
+                    alternatives.front().pipeType,
+                    PipeEventKind::ReceiveWaitAny,
+                    domain.intersectWith(allowedDomain),
+                    unanalyzableOp,
+                    nullptr,
+                    nullptr,
+                    -1,
+                    std::move(alternatives)};
+    replacePipeEvents(waitOp.getOperation(), {std::move(event)});
+  }
 };
 
 /// Final launch-node facts for one operation.
@@ -311,6 +364,14 @@ public:
     DataFlowSolver solver;
     dataflow::loadBaselineAnalyses(solver);
     LaunchNodeDomainAnalysisOptions options;
+    options.computeRegionDomain =
+        [&](Operation *op, unsigned) -> std::optional<LaunchNodeDomain> {
+      auto ifOp = dyn_cast<scf::IfOp>(op);
+      if (ifOp && getReadyReceiveSelection(ifOp.getCondition())) {
+        return state.baseDomain;
+      }
+      return std::nullopt;
+    };
     options.operationCallback = [&](Operation *op,
                                     const LaunchNodeDomain &domain,
                                     Operation *unanalyzableOp) {
@@ -620,6 +681,9 @@ void recordScheduleOperation(Operation *op, const LaunchNodeDomain &domain,
       })
       .Case<WaitOp>([&](WaitOp wait) {
         state.recordPipeWaitEvent(wait, domain, unanalyzableOp);
+      })
+      .Case<WaitAnyOp>([&](WaitAnyOp wait) {
+        state.recordPipeWaitAnyEvent(wait, domain, unanalyzableOp);
       });
 }
 
@@ -700,6 +764,8 @@ struct PipeScheduleNode {
   SmallVector<PipeCallSite> callSites;
   std::optional<std::uint64_t> executionCountDivisor;
   SmallVector<PipeScheduleEdge> successors;
+  SmallVector<PipeWaitAnyAlternative> waitAnyAlternatives;
+  SmallVector<PipeScheduleNodeId> waitAnyCompletingSends;
 };
 
 /// Retain the sends for one logical pipe in deterministic traversal order.
@@ -748,6 +814,8 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                    kernelFunction,
                    SmallVector<PipeCallSite>(callSites),
                    executionCountDivisor,
+                   {},
+                   event.waitAnyAlternatives,
                    {}});
   return nodeId;
 }
@@ -824,6 +892,27 @@ findReceivePostNodeForWait(ArrayRef<PipeScheduleNode> nodes,
              : std::optional<PipeScheduleNodeId>(*postIt);
 }
 
+/// Return the receiver-post node represented by one wait-any alternative.
+std::optional<PipeScheduleNodeId> findReceivePostNodeForWaitAnyAlternative(
+    ArrayRef<PipeScheduleNode> nodes, PipeScheduleNodeId waitNodeId,
+    const PipeWaitAnyAlternative &alternative,
+    ArrayRef<PipeScheduleNodeId> candidatePostNodes) {
+  const PipeScheduleNode &waitNode = nodes[waitNodeId];
+  auto postIt =
+      llvm::find_if(candidatePostNodes, [&](PipeScheduleNodeId postId) {
+        const PipeScheduleNode &postNode = nodes[postId];
+        return postNode.op == alternative.receivePost &&
+               postNode.coord == waitNode.coord &&
+               postNode.kernelFunction == waitNode.kernelFunction &&
+               haveSamePipeCallSites(postNode.callSites, waitNode.callSites) &&
+               getPipeIdentity(postNode.pipeType) ==
+                   getPipeIdentity(alternative.pipeType);
+      });
+  return postIt == candidatePostNodes.end()
+             ? std::nullopt
+             : std::optional<PipeScheduleNodeId>(*postIt);
+}
+
 /// Find any directed cycle in the pipe schedule graph.
 std::optional<SmallVector<PipeScheduleNodeId>>
 findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
@@ -873,6 +962,45 @@ findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
     }
   }
   return std::nullopt;
+}
+
+/// Compute the synchronization events that can complete under mandatory graph
+/// dependencies and disjunctive wait-any alternatives.
+SmallVector<bool>
+computeExecutablePipeScheduleNodes(ArrayRef<PipeScheduleNode> nodes) {
+  SmallVector<std::size_t> predecessorCounts(nodes.size(), 0);
+  for (const PipeScheduleNode &node : nodes) {
+    for (const PipeScheduleEdge &edge : node.successors) {
+      ++predecessorCounts[edge.successor];
+    }
+  }
+
+  SmallVector<bool> executable(nodes.size(), false);
+  bool changed;
+  do {
+    changed = false;
+    for (PipeScheduleNodeId nodeId = 0; nodeId < nodes.size(); ++nodeId) {
+      if (executable[nodeId] || predecessorCounts[nodeId] != 0) {
+        continue;
+      }
+      const PipeScheduleNode &node = nodes[nodeId];
+      if (node.kind == PipeEventKind::ReceiveWaitAny &&
+          !llvm::any_of(node.waitAnyCompletingSends,
+                        [&](PipeScheduleNodeId sendNodeId) {
+                          return executable[sendNodeId];
+                        })) {
+        continue;
+      }
+      executable[nodeId] = true;
+      changed = true;
+      for (const PipeScheduleEdge &edge : node.successors) {
+        assert(predecessorCounts[edge.successor] > 0 &&
+               "executable edge predecessor count underflow");
+        --predecessorCounts[edge.successor];
+      }
+    }
+  } while (changed);
+  return executable;
 }
 
 /// Return the first edge kind between two schedule nodes, if present.
@@ -938,6 +1066,9 @@ std::string describePipeScheduleNode(const PipeScheduleNode &node) {
     break;
   case PipeEventKind::ReceiveWait:
     os << "receive completion";
+    break;
+  case PipeEventKind::ReceiveWaitAny:
+    os << "receive wait-any";
     break;
   }
   os << " at core_x=" << node.coord.x << ", core_y=" << node.coord.y;
@@ -1722,7 +1853,7 @@ WalkResult walkPipeEventsInProgramOrder(
 // its handle waits for payload arrival. Modeling availability and completion as
 // separate events preserves asynchronous semantics and detects wait-for cycles.
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
-  SmallVector<PipeScheduleNode> nodes;
+  SmallVector<PipeScheduleNode, 0> nodes;
   llvm::MapVector<PipeIdentity, PipeOccurrences> pipeOccurrences;
   llvm::MapVector<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
       receivePostNodes;
@@ -1731,6 +1862,9 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   llvm::DenseMap<Operation *, SmallVector<PipeScheduleNodeId>>
       receivePostNodesByOperation;
   SmallVector<PipeScheduleNodeId> allReceiveWaitNodes;
+  SmallVector<PipeScheduleNodeId> allReceiveWaitAnyNodes;
+  llvm::DenseMap<Operation *, SmallVector<PipeScheduleNodeId>>
+      receiveWaitAnyNodesByOperation;
   SymbolTableCollection symbolTables;
   llvm::DenseSet<Operation *> functionsWithPipeEvents =
       getFunctionsWithPipeEvents(module, state, symbolTables);
@@ -1786,21 +1920,23 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                   state.sawError = true;
                   return WalkResult::interrupt();
                 }
-                PipeIdentity pipeIdentity = getPipeIdentity(event.pipeType);
-                auto pipeIt =
-                    pipeOccurrences
-                        .try_emplace(pipeIdentity,
-                                     PipeOccurrences{event.pipeType, {}})
-                        .first;
                 SmallVector<PipeScheduleNodeId> *matchingNodes = nullptr;
                 if (event.kind == PipeEventKind::Send) {
+                  PipeIdentity pipeIdentity = getPipeIdentity(event.pipeType);
+                  auto pipeIt =
+                      pipeOccurrences
+                          .try_emplace(pipeIdentity,
+                                       PipeOccurrences{event.pipeType, {}})
+                          .first;
                   matchingNodes = &pipeIt->second.sends;
                 } else if (event.kind == PipeEventKind::ReceivePost) {
                   matchingNodes = &receivePostNodes[getPipeCoordIdentity(
                       event.pipeType, coord)];
-                } else {
+                } else if (event.kind == PipeEventKind::ReceiveWait) {
                   matchingNodes = &receiveWaitNodes[getPipeCoordIdentity(
                       event.pipeType, coord)];
+                } else {
+                  matchingNodes = &receiveWaitAnyNodesByOperation[event.op];
                 }
                 if (failed(verifySingleKernelFunction(
                         nodes, *matchingNodes, event, function, state))) {
@@ -1815,6 +1951,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                   receivePostNodesByOperation[event.op].push_back(nodeId);
                 } else if (event.kind == PipeEventKind::ReceiveWait) {
                   allReceiveWaitNodes.push_back(nodeId);
+                } else if (event.kind == PipeEventKind::ReceiveWaitAny) {
+                  allReceiveWaitAnyNodes.push_back(nodeId);
                 }
                 if (lastNode) {
                   addPipeScheduleEdge(nodes, *lastNode, nodeId,
@@ -1936,6 +2074,41 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     waitsByPost[*maybePostNode].push_back(waitNodeId);
   }
 
+  // A wait-any becomes executable when one candidate's corresponding send has
+  // completed. Completion alternatives remain disjunctive graph requirements.
+  for (PipeScheduleNodeId waitNodeId : allReceiveWaitAnyNodes) {
+    PipeScheduleNode &waitNode = nodes[waitNodeId];
+    llvm::DenseSet<PipeScheduleNodeId> distinctSends;
+    for (const PipeWaitAnyAlternative &alternative :
+         waitNode.waitAnyAlternatives) {
+      auto postNodesIt =
+          receivePostNodesByOperation.find(alternative.receivePost);
+      if (postNodesIt == receivePostNodesByOperation.end()) {
+        continue;
+      }
+      std::optional<PipeScheduleNodeId> maybePostNode =
+          findReceivePostNodeForWaitAnyAlternative(
+              nodes, waitNodeId, alternative, postNodesIt->second);
+      if (!maybePostNode) {
+        continue;
+      }
+      auto sendIt = completingSendByPost.find(*maybePostNode);
+      if (sendIt == completingSendByPost.end()) {
+        continue;
+      }
+      if (distinctSends.insert(sendIt->second).second) {
+        waitNode.waitAnyCompletingSends.push_back(sendIt->second);
+      }
+    }
+    if (waitNode.waitAnyCompletingSends.empty()) {
+      waitNode.op->emitOpError()
+          << "receive wait-any has no candidate send corresponding to a "
+             "defining receiver post at core_x="
+          << waitNode.coord.x << ", core_y=" << waitNode.coord.y;
+      state.sawError = true;
+    }
+  }
+
   PipeRendezvousLifetimeAnalysis lifetimeAnalysis(nodes, completingSendByPost,
                                                   waitsByPost, state);
   for (const auto &postNodes : llvm::make_second_range(receivePostNodes)) {
@@ -1944,9 +2117,34 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     }
   }
 
+  SmallVector<bool> executable = computeExecutablePipeScheduleNodes(nodes);
+  if (llvm::all_of(executable, [](bool value) { return value; })) {
+    return;
+  }
   if (std::optional<SmallVector<PipeScheduleNodeId>> maybeCycle =
           findPipeScheduleCycle(nodes)) {
     emitPipeScheduleCycleDiagnostic(nodes, *maybeCycle, state);
+    return;
+  }
+  auto blockedWaitAny =
+      llvm::find_if(allReceiveWaitAnyNodes, [&](PipeScheduleNodeId nodeId) {
+        return !executable[nodeId];
+      });
+  if (blockedWaitAny != allReceiveWaitAnyNodes.end()) {
+    const PipeScheduleNode &waitNode = nodes[*blockedWaitAny];
+    auto diag = waitNode.op->emitOpError()
+                << "receive wait-any can block with every candidate send "
+                   "ordered after the selection at core_x="
+                << waitNode.coord.x << ", core_y=" << waitNode.coord.y;
+    std::size_t noteCount = 0;
+    for (PipeScheduleNodeId sendNodeId : waitNode.waitAnyCompletingSends) {
+      if (noteCount++ >= kMaxPipeScheduleDiagnosticNotes) {
+        break;
+      }
+      diag.attachNote(nodes[sendNodeId].op->getLoc())
+          << "this candidate send cannot complete before the wait-any";
+    }
+    state.sawError = true;
   }
 }
 

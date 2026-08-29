@@ -41,8 +41,8 @@ func.func @gather_receiver()
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 6>
     ttl.yield
   }
