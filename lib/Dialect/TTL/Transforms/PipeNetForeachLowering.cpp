@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetParticipantPlan.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeRecordLoweringUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -45,43 +46,19 @@ struct GridMajorPipeRecordIndexTables {
   SmallVector<int64_t> destinationDeviceIndices;
 };
 
-static std::optional<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op) {
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  if (!module) {
-    return std::nullopt;
-  }
-  Attribute gridAttr = module->getAttr(kLaunchGridAttrName);
-  SmallVector<int64_t, 2> extents;
-  if (auto dense = mlir::dyn_cast_if_present<DenseI64ArrayAttr>(gridAttr)) {
-    extents.append(dense.asArrayRef().begin(), dense.asArrayRef().end());
-  } else if (auto array = mlir::dyn_cast_if_present<ArrayAttr>(gridAttr)) {
-    for (Attribute extentAttr : array) {
-      auto extent = mlir::dyn_cast<IntegerAttr>(extentAttr);
-      if (!extent) {
-        return std::nullopt;
-      }
-      extents.push_back(extent.getInt());
-    }
-  }
-  if (extents.size() != 2 || extents[0] <= 0 || extents[1] <= 0) {
-    return std::nullopt;
-  }
-  return std::make_pair(extents[0], extents[1]);
-}
-
-static std::optional<int64_t> getDeviceCount(DeviceDomainAttr domain) {
+static FailureOr<int64_t> getDeviceCount(DeviceDomainAttr domain) {
   std::uint64_t deviceCount = 1;
   for (DeviceDomainComponentAttr component : domain.getComponents()) {
     for (int64_t extent : component.getExtent().asArrayRef()) {
       if (extent <= 0) {
-        return std::nullopt;
+        return failure();
       }
       std::optional<std::uint64_t> maybeDeviceCount = llvm::checkedMulUnsigned(
           deviceCount, static_cast<std::uint64_t>(extent));
       if (!maybeDeviceCount ||
           *maybeDeviceCount >
               static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
-        return std::nullopt;
+        return failure();
       }
       deviceCount = *maybeDeviceCount;
     }
@@ -89,38 +66,37 @@ static std::optional<int64_t> getDeviceCount(DeviceDomainAttr domain) {
   return static_cast<int64_t>(deviceCount);
 }
 
-static std::optional<GridMajorPipeRecordIndexTables>
+static FailureOr<GridMajorPipeRecordIndexTables>
 buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
                                     Operation *op) {
   DeviceTransferAttr firstTransfer =
       records.getPipes().front().getDeviceTransfer();
   if (!firstTransfer) {
-    return std::nullopt;
+    return failure();
   }
-  std::optional<std::pair<int64_t, int64_t>> maybeGrid = getLaunchGrid(op);
-  std::optional<int64_t> maybeDeviceCount =
-      getDeviceCount(firstTransfer.getDomain());
-  if (!maybeGrid || !maybeDeviceCount) {
-    return std::nullopt;
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  FailureOr<int64_t> deviceCount = getDeviceCount(firstTransfer.getDomain());
+  if (failed(launchGrid) || failed(deviceCount)) {
+    return failure();
   }
-  auto [gridX, gridY] = *maybeGrid;
+  auto [gridX, gridY] = *launchGrid;
   std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
   if (!maybeGridArea || records.getPipes().size() % *maybeGridArea != 0) {
-    return std::nullopt;
+    return failure();
   }
   int64_t gridArea = *maybeGridArea;
   if (records.getPipes().size() >
       static_cast<std::size_t>(std::numeric_limits<int64_t>::max())) {
-    return std::nullopt;
+    return failure();
   }
   int64_t recordCount = static_cast<int64_t>(records.getPipes().size());
   int64_t edgeCount = recordCount / gridArea;
-  if (*maybeDeviceCount >= recordCount) {
-    return std::nullopt;
+  if (*deviceCount >= recordCount) {
+    return failure();
   }
 
   SmallVector<SmallVector<int64_t>> edgeBlocksByDevice(
-      static_cast<std::size_t>(*maybeDeviceCount));
+      static_cast<std::size_t>(*deviceCount));
   GridMajorPipeRecordIndexTables tables;
   tables.gridX = gridX;
   tables.gridArea = gridArea;
@@ -131,7 +107,7 @@ buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
     PipeRecordAttr firstRecord = records.getPipes()[blockStart];
     DeviceTransferAttr transfer = firstRecord.getDeviceTransfer();
     if (!transfer || transfer.getDomain() != firstTransfer.getDomain()) {
-      return std::nullopt;
+      return failure();
     }
     for (int64_t nodeIndex = 0; nodeIndex < gridArea; ++nodeIndex) {
       PipeRecordAttr record = records.getPipes()[blockStart + nodeIndex];
@@ -143,7 +119,7 @@ buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
           record.getDstStartY() != expectedY ||
           record.getDstEndX() != expectedX ||
           record.getDstEndY() != expectedY) {
-        return std::nullopt;
+        return failure();
       }
     }
 
@@ -151,10 +127,9 @@ buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
         transfer.getDomain(), transfer.getEdge().getSource());
     int64_t destinationDeviceIndex = getLogicalDeviceIndex(
         transfer.getDomain(), transfer.getEdge().getDestination());
-    if (sourceDeviceIndex < 0 || sourceDeviceIndex >= *maybeDeviceCount ||
-        destinationDeviceIndex < 0 ||
-        destinationDeviceIndex >= *maybeDeviceCount) {
-      return std::nullopt;
+    if (sourceDeviceIndex < 0 || sourceDeviceIndex >= *deviceCount ||
+        destinationDeviceIndex < 0 || destinationDeviceIndex >= *deviceCount) {
+      return failure();
     }
     tables.sourceDeviceIndices.push_back(sourceDeviceIndex);
     tables.destinationDeviceIndices.push_back(destinationDeviceIndex);
@@ -252,27 +227,77 @@ clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
 
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
 static bool
-tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
-                                PipeForeachLoweringInfo &foreachLoweringInfo,
-                                PipeRole role,
-                                PipeNetRecordSelection recordSelection,
-                                SmallVectorImpl<Operation *> &foreachWorklist) {
+tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
+                            PipeForeachLoweringInfo &foreachLoweringInfo,
+                            PipeRole role,
+                            PipeNetRecordSelection recordSelection,
+                            SmallVectorImpl<Operation *> &foreachWorklist) {
   PipeNetRecordsAttr records = op.getRecords();
-  std::optional<GridMajorPipeRecordIndexTables> maybeTables =
-      buildGridMajorPipeRecordIndexTables(records, role, op);
-  if (!maybeTables) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
     return false;
   }
-  const GridMajorPipeRecordIndexTables &tables = *maybeTables;
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<LocalPipeNetParticipantPlan> participantPlan =
+      buildLocalPipeNetParticipantPlan(records, role, gridX, gridY);
+  if (failed(participantPlan)) {
+    return false;
+  }
+
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
   Value nodeY =
       ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-  Value gridX = arith::ConstantIndexOp::create(rewriter, loc, tables.gridX);
+  Value gridXValue =
+      arith::ConstantIndexOp::create(rewriter, loc, participantPlan->gridX);
+  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  Value lower = buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordOffsetsByNode, nodeIndex);
+  Value recordCount = buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
+  Value upper = arith::AddIOp::create(rewriter, loc, lower, recordCount);
+  Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
+  foreachLoweringInfo.controlOps.push_back(forOp);
+  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value recordIndex = buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordIndices, forOp.getInductionVar());
+  PipeRecordTables recordTables = buildPipeRecordTables(records);
+  auto selectedPipe = buildSelectedPipe<SelectOp, SelectedPipeType>(
+      rewriter, loc, records, recordTables, recordIndex);
+  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
+  rewriter.eraseOp(op);
+  return true;
+}
+
+template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
+static bool
+tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
+                                PipeForeachLoweringInfo &foreachLoweringInfo,
+                                PipeRole role,
+                                PipeNetRecordSelection recordSelection,
+                                SmallVectorImpl<Operation *> &foreachWorklist) {
+  PipeNetRecordsAttr records = op.getRecords();
+  FailureOr<GridMajorPipeRecordIndexTables> tables =
+      buildGridMajorPipeRecordIndexTables(records, role, op);
+  if (failed(tables)) {
+    return false;
+  }
+  const GridMajorPipeRecordIndexTables &tableData = *tables;
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value gridX = arith::ConstantIndexOp::create(rewriter, loc, tableData.gridX);
   Value gridArea =
-      arith::ConstantIndexOp::create(rewriter, loc, tables.gridArea);
+      arith::ConstantIndexOp::create(rewriter, loc, tableData.gridArea);
   Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridX);
   Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
   DeviceDomainAttr deviceDomain =
@@ -282,22 +307,22 @@ tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
   Value nextDevice = arith::AddIOp::create(rewriter, loc, currentDevice, one);
   Value lower = buildConstantIndexTableLookup(
-      rewriter, loc, tables.edgeOffsetsByDevice, currentDevice);
+      rewriter, loc, tableData.edgeOffsetsByDevice, currentDevice);
   Value upper = buildConstantIndexTableLookup(
-      rewriter, loc, tables.edgeOffsetsByDevice, nextDevice);
+      rewriter, loc, tableData.edgeOffsetsByDevice, nextDevice);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
   foreachLoweringInfo.controlOps.push_back(forOp);
   foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value edgeBlock = buildConstantIndexTableLookup(
-      rewriter, loc, tables.edgeBlocks, forOp.getInductionVar());
+      rewriter, loc, tableData.edgeBlocks, forOp.getInductionVar());
   Value edgeRecordOffset =
       arith::MulIOp::create(rewriter, loc, edgeBlock, gridArea);
   Value recordIndex =
       arith::AddIOp::create(rewriter, loc, edgeRecordOffset, nodeIndex);
   auto selectedPipe = buildGridMajorSelectedPipe<SelectOp, SelectedPipeType>(
-      rewriter, loc, records, tables, recordIndex, edgeBlock, nodeX, nodeY);
+      rewriter, loc, records, tableData, recordIndex, edgeBlock, nodeX, nodeY);
   clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
   rewriter.eraseOp(op);
   return true;
@@ -380,6 +405,11 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   if (shouldLowerPipeNetForeachDirect(records)) {
     lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
                               foreachWorklist);
+    return;
+  }
+  if (tryLowerLocalPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
+          op, rewriter, foreachLoweringInfo, role, recordSelection,
+          foreachWorklist)) {
     return;
   }
   if (tryLowerGridMajorPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(

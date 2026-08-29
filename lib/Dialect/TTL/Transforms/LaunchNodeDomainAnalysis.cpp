@@ -363,6 +363,22 @@ static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
   return true;
 }
 
+FailureOr<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op) {
+  ModuleOp module = mlir::dyn_cast<ModuleOp>(op);
+  if (!module) {
+    module = op->getParentOfType<ModuleOp>();
+  }
+  if (!module) {
+    return failure();
+  }
+  SmallVector<int64_t, 2> extents;
+  if (!readI64ArrayAttr(module.getOperation(), kLaunchGridAttrName, extents) ||
+      extents.size() != 2 || extents[0] <= 0 || extents[1] <= 0) {
+    return failure();
+  }
+  return std::make_pair(extents[0], extents[1]);
+}
+
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp,
                          SmallVectorImpl<int64_t> &ids) {
   return readI64ArrayAttr(scopeOp.getOperation(), kPipeNetIdsAttrName, ids);
@@ -454,18 +470,12 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
   executionCountAnalysesByFunction.clear();
-  if (!module->hasAttr(kLaunchGridAttrName)) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(module);
+  if (failed(launchGrid)) {
     hasLaunchGrid = false;
   } else {
-    SmallVector<int64_t> launchGrid;
-    if (!readI64ArrayAttr(module.getOperation(), kLaunchGridAttrName,
-                          launchGrid) ||
-        launchGrid.size() != 2 || launchGrid[0] <= 0 || launchGrid[1] <= 0) {
-      hasLaunchGrid = false;
-    } else {
-      hasLaunchGrid = true;
-      baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
-    }
+    hasLaunchGrid = true;
+    baseDomain = getFullLaunchNodeDomain(launchGrid->first, launchGrid->second);
   }
 
   module.walk([&](CreatePipeOp pipe) {
