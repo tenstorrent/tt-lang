@@ -590,7 +590,7 @@ def _synchronize_or_retain_runtime_resources(
 
 @dataclass(frozen=True)
 class MeshProgramPlacement:
-    """Device range for one program inside a mesh descriptor."""
+    """Inclusive device range for one program inside a mesh descriptor."""
 
     start: Any
     end: Optional[Any] = None

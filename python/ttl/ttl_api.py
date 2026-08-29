@@ -3217,9 +3217,9 @@ def pykernel_gen(
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
         device_domain: Optional logical device domain for mesh execution.
-        mesh_program_placements: Optional logical device coordinates or ranges
-            that receive program descriptors. The full device domain is used
-            when omitted.
+        mesh_program_placements: Optional logical device coordinate tuples or
+            inclusive ``ttl.MeshProgramPlacement`` ranges that receive program
+            descriptors. The full device domain is used when omitted.
         runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
