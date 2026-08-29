@@ -305,9 +305,16 @@ class _FakeTTNN:
         def __init__(self, tile_shape):
             self.tile_shape = tuple(tile_shape)
 
-        def get_tile_size(self, _data_format):
+        def get_tile_size(self, data_format):
             tile_height, tile_width = self.tile_shape
-            return tile_height * tile_width * 2
+            scalar_count = tile_height * tile_width
+            dtype_name = str(data_format).rsplit(".", maxsplit=1)[-1].lower()
+            exponent_bytes = ((scalar_count // 16 + 15) // 16) * 16
+            if dtype_name == "bfloat4_b":
+                return scalar_count // 2 + exponent_bytes
+            if dtype_name == "bfloat8_b":
+                return scalar_count + exponent_bytes
+            return scalar_count * 2
 
     class TileDescriptor:
         def __init__(self, tile):
@@ -4437,6 +4444,38 @@ def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatc
         )
 
 
+@pytest.mark.parametrize(
+    ("data_format", "page_size"),
+    [("bfloat4_b", 576), ("bfloat8_b", 1088)],
+    ids=["bfp4", "bfp8"],
+)
+def test_build_cb_descriptors_accepts_block_float_tensor_backing_format(
+    monkeypatch, data_format, page_size
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype(data_format)
+    tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[
+            _tensor_backing_config(
+                0,
+                nodes=((0, 0),),
+                data_format=data_format,
+                page_size=page_size,
+                byte_size=page_size,
+            )
+        ],
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert descriptors[0]["total_size"] == page_size
+
+
 def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
@@ -4460,7 +4499,10 @@ def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypa
         ),
     )
 
-    with pytest.raises(ValueError, match="tensor backing format bfp8 is not supported"):
+    with pytest.raises(
+        ValueError,
+        match="tensor backing format bfp8 is not supported; expected BF16, FP32, BFP4_B, or BFP8_B",
+    ):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[config],
@@ -4520,14 +4562,21 @@ def test_build_cb_descriptors_preserves_descriptor_helper_failure(monkeypatch):
 
 
 def _tensor_backing_config(
-    dfb_index, *, nodes, block_count=1, byte_offset=0, byte_size=2048
+    dfb_index,
+    *,
+    nodes,
+    block_count=1,
+    byte_offset=0,
+    byte_size=2048,
+    data_format="bfloat16",
+    page_size=2048,
 ):
     return PhysicalDFBConfig(
         dfb_index,
         1,
-        "bfloat16",
+        data_format,
         block_count,
-        2048,
+        page_size,
         (32, 32),
         (
             DFBStorageSegment(
