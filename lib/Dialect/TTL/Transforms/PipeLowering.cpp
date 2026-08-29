@@ -989,6 +989,43 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
   }
 }
 
+struct FabricRouteTarget {
+  Value destinationDeviceId;
+  Value destinationMeshId;
+  Value destinationHopCount;
+};
+
+static FabricRouteTarget buildFabricRouteTarget(
+    OpBuilder &builder, Location loc, Value routeIndex, Value runtimeArgBase,
+    std::size_t routeCount) {
+  Value firstDeviceIndex =
+      arith::ConstantIndexOp::create(builder, loc, 1 + routeCount);
+  Value firstMeshIndex =
+      arith::ConstantIndexOp::create(builder, loc, 1 + 2 * routeCount);
+  Value firstHopCountIndex =
+      arith::ConstantIndexOp::create(builder, loc, 1 + 3 * routeCount);
+  Value destinationDeviceIndex =
+      arith::AddIOp::create(builder, loc, firstDeviceIndex, routeIndex);
+  Value destinationMeshIndex =
+      arith::AddIOp::create(builder, loc, firstMeshIndex, routeIndex);
+  Value destinationHopCountIndex =
+      arith::AddIOp::create(builder, loc, firstHopCountIndex, routeIndex);
+  destinationDeviceIndex = arith::AddIOp::create(
+      builder, loc, runtimeArgBase, destinationDeviceIndex);
+  destinationMeshIndex = arith::AddIOp::create(
+      builder, loc, runtimeArgBase, destinationMeshIndex);
+  destinationHopCountIndex = arith::AddIOp::create(
+      builder, loc, runtimeArgBase, destinationHopCountIndex);
+  return {
+      ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
+                               destinationDeviceIndex),
+      ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
+                               destinationMeshIndex),
+      ttk::GetArgValOp::create(builder, loc, builder.getI32Type(),
+                               destinationHopCountIndex),
+  };
+}
+
 void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime) {
   llvm::DenseMap<std::pair<Operation *, int64_t>, Value>
@@ -1078,9 +1115,40 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
         arith::ConstantIndexOp::create(builder, loc, 1 + 4 * routeCount);
     Value connectionRecordsBase = arith::AddIOp::create(
         builder, loc, runtimeArgBase, connectionRecordsOffset);
+    Value headerCount = arith::ConstantIntOp::create(
+        builder, loc, static_cast<int64_t>(routeCount), 32);
     Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
         builder, loc, builder.getI32Type(), manager, connectionCount,
-        connectionRecordsBase);
+        headerCount, connectionRecordsBase);
+
+    Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    Value hasConnections = arith::CmpIOp::create(
+        builder, loc, arith::CmpIPredicate::ne, connectionCount, zero);
+    auto configureRoutes = scf::IfOp::create(
+        builder, loc, hasConnections, /*withElseRegion=*/false);
+    {
+      OpBuilder::InsertionGuard insertionGuard(builder);
+      builder.setInsertionPointToStart(
+          &configureRoutes.getThenRegion().front());
+      Value lower = arith::ConstantIndexOp::create(builder, loc, 0);
+      Value upper = arith::ConstantIndexOp::create(builder, loc, routeCount);
+      Value step = arith::ConstantIndexOp::create(builder, loc, 1);
+      scf::ForOp::create(
+          builder, loc, lower, upper, step, ValueRange{},
+          [&](OpBuilder &bodyBuilder, Location bodyLoc, Value routeIndex,
+              ValueRange) {
+            FabricRouteTarget target = buildFabricRouteTarget(
+                bodyBuilder, bodyLoc, routeIndex, runtimeArgBase, routeCount);
+            Value routeIndexI32 = arith::IndexCastOp::create(
+                bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), routeIndex);
+            ttk::RoutingPlaneSetUnicastRouteOp::create(
+                bodyBuilder, bodyLoc, routeId, routeIndexI32,
+                target.destinationDeviceId, target.destinationMeshId,
+                target.destinationHopCount);
+            scf::YieldOp::create(bodyBuilder, bodyLoc);
+          });
+    }
+    builder.setInsertionPointAfter(configureRoutes);
     FabricRuntimeInfo runtimeInfo{manager, routeId, connectionCount,
                                   runtimeArgBase, routeCount};
     for (Operation *operation : interval.protocolOperations) {
@@ -2425,11 +2493,9 @@ public:
 
   void emitAtomicIncrement(Value remoteX, Value remoteY, Value semaphoreAddress,
                            Value increment) {
-    FabricRouteTarget target = buildRouteTarget();
     ttk::RoutingPlaneAtomicIncOp::create(
-        rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.destinationDeviceId, target.destinationMeshId,
-        target.destinationHopCount,
+        rewriter, loc, runtime.manager, runtime.routeId, buildRouteIndex(),
+        buildConnectionIndex(),
         buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment);
   }
 
@@ -2437,23 +2503,15 @@ public:
                                      Value sourceAddress,
                                      Value destinationAddress, Value sizeBytes,
                                      Value semaphoreAddress, Value increment) {
-    FabricRouteTarget target = buildRouteTarget();
     ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
-        rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.destinationDeviceId, target.destinationMeshId,
-        target.destinationHopCount, sourceAddress, sizeBytes,
+        rewriter, loc, runtime.manager, runtime.routeId, buildRouteIndex(),
+        buildConnectionIndex(), sourceAddress, sizeBytes,
         buildRemoteNocAddress(remoteX, remoteY, destinationAddress),
         buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment,
         rewriter.getBoolAttr(true));
   }
 
 private:
-  struct FabricRouteTarget {
-    Value destinationDeviceId;
-    Value destinationMeshId;
-    Value destinationHopCount;
-  };
-
   struct TranslatedNode {
     Value x;
     Value y;
@@ -2486,33 +2544,9 @@ private:
                                     argIndex);
   }
 
-  FabricRouteTarget buildRouteTarget() {
-    Value firstDeviceIndex =
-        arith::ConstantIndexOp::create(rewriter, loc, 1 + runtime.routeCount);
-    Value firstMeshIndex = arith::ConstantIndexOp::create(
-        rewriter, loc, 1 + 2 * runtime.routeCount);
-    Value firstHopCountIndex = arith::ConstantIndexOp::create(
-        rewriter, loc, 1 + 3 * runtime.routeCount);
-    Value destinationDeviceIndex =
-        arith::AddIOp::create(rewriter, loc, firstDeviceIndex, routeIndex);
-    Value destinationMeshIndex =
-        arith::AddIOp::create(rewriter, loc, firstMeshIndex, routeIndex);
-    Value destinationHopCountIndex =
-        arith::AddIOp::create(rewriter, loc, firstHopCountIndex, routeIndex);
-    destinationDeviceIndex = arith::AddIOp::create(
-        rewriter, loc, runtime.runtimeArgBase, destinationDeviceIndex);
-    destinationMeshIndex = arith::AddIOp::create(
-        rewriter, loc, runtime.runtimeArgBase, destinationMeshIndex);
-    destinationHopCountIndex = arith::AddIOp::create(
-        rewriter, loc, runtime.runtimeArgBase, destinationHopCountIndex);
-    return {
-        ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
-                                 destinationDeviceIndex),
-        ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
-                                 destinationMeshIndex),
-        ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
-                                 destinationHopCountIndex),
-    };
+  Value buildRouteIndex() {
+    return arith::IndexCastOp::create(rewriter, loc, rewriter.getI32Type(),
+                                      routeIndex);
   }
 
   Location loc;

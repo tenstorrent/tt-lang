@@ -2636,7 +2636,7 @@ public:
         rewriter, op.getLoc(), rewriter.getStringAttr(code),
         ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
                    adaptor.getManager(), adaptor.getConnectionCount(),
-                   adaptor.getConnectionCount()});
+                   adaptor.getHeaderCount()});
     rewriter.replaceOp(
         op, emitc::LiteralOp::create(
                 rewriter, op.getLoc(),
@@ -2647,6 +2647,23 @@ public:
 
 private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
+class TTKernelRoutingPlaneSetUnicastRouteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneSetUnicastRouteOp> {
+  using Op = ttkernel::RoutingPlaneSetUnicastRouteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_set_unicast_route",
+        nullptr, nullptr, adaptor.getOperands());
+    return success();
+  }
 };
 
 class TTKernelRoutingPlaneAtomicIncOpRewriter
@@ -3533,6 +3550,7 @@ public:
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneSetUnicastRouteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);

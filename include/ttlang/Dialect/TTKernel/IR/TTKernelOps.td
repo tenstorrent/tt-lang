@@ -4621,17 +4621,42 @@ def TTKernel_OpenRoutingPlaneConnectionsOp :
   let description = [{
     Opens `connectionCount` routing-plane connections by reading their setup
     data from runtime arguments beginning at `runtimeArgBase`. The result owns
-    one packet header for each opened connection.
+    `headerCount` packet headers. Callers allocate one header per route so
+    different destinations that share a connection retain independent state.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$connectionCount,
+    I32:$headerCount,
     Index:$runtimeArgBase
   );
   let results = (outs I32:$routeId);
   let assemblyFormat = [{
-    $manager `,` $connectionCount `runtime_arg_base` `=` $runtimeArgBase
+    $manager `,` $connectionCount `header_count` `=` $headerCount
+      `runtime_arg_base` `=` $runtimeArgBase
       attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneSetUnicastRouteOp :
+    TTKernel_Op<"routing_plane.set_unicast_route"> {
+  let summary = "Configure one routing-plane packet header";
+  let description = [{
+    Configures the packet header selected by `routeIndex` for a unicast route.
+    `destinationDeviceId` and `destinationMeshId` identify the target when mesh
+    routing is enabled. `destinationHopCount` identifies the target when
+    one-dimensional fabric routing is enabled. The configured header remains
+    valid until another operation modifies the same route header.
+  }];
+  let arguments = (ins
+    I32:$routeId,
+    I32:$routeIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -4640,18 +4665,14 @@ def TTKernel_RoutingPlaneAtomicIncOp :
   let summary = "Increment a remote semaphore through one fabric connection";
   let description = [{
     Sends a non-posted atomic increment to `semaphoreAddress` through the
-    connection selected by `connectionIndex`. `destinationDeviceId` identifies
-    the final destination; `destinationMeshId` also selects the mesh when mesh
-    routing is enabled. `destinationHopCount` selects the route when
-    one-dimensional fabric routing is enabled.
+    connection selected by `connectionIndex`, using the header selected by
+    `routeIndex`. The route header must be configured before this operation.
   }];
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$routeId,
+    I32:$routeIndex,
     I32:$connectionIndex,
-    I32:$destinationDeviceId,
-    I32:$destinationMeshId,
-    I32:$destinationHopCount,
     TTKernel_NocAddr:$semaphoreAddress,
     I32:$increment
   );
@@ -4668,10 +4689,9 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     connection selected by `connectionIndex`. Payloads larger than the active
     fabric packet limit are split into consecutive packets. The final packet
     atomically increments `semaphoreAddress`, so the increment observes the
-    complete transfer. `destinationDeviceId` identifies the final destination;
-    `destinationMeshId` also selects the mesh when mesh routing is enabled.
-    `destinationHopCount` selects the route when one-dimensional fabric routing
-    is enabled. The optional `posted` attribute suppresses NOC responses for
+    complete transfer. `routeIndex` selects a packet header configured before
+    this operation, while `connectionIndex` selects the fabric sender. The
+    optional `posted` attribute suppresses NOC responses for
     the worker-to-router payload and header writes. Their shared command buffer
     preserves payload-before-header ordering, and the final fabric atomic
     remains the receiver-visible completion signal.
@@ -4679,10 +4699,8 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
   let arguments = (ins
     TTKernel_RoutingPlaneConnectionManager:$manager,
     I32:$routeId,
+    I32:$routeIndex,
     I32:$connectionIndex,
-    I32:$destinationDeviceId,
-    I32:$destinationMeshId,
-    I32:$destinationHopCount,
     I32:$sourceAddress,
     I32:$sizeBytes,
     TTKernel_NocAddr:$destinationAddress,
