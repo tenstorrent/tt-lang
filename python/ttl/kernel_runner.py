@@ -59,7 +59,7 @@ from .constants import (
 from . import dtype_utils
 from .domains import DeviceRef
 from .fabric import FabricManagerClaim
-from ._fabric_target import (
+from ._src.fabric_target import (
     FabricManagerIntervalKind,
     FabricManagerIntervalSpec,
     FabricRouteCache as _FabricRouteCache,

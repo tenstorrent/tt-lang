@@ -126,7 +126,6 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
-    _fabric_target.py
     atom.py
     dataflow_buffer.py
     compiler_options.py
@@ -172,6 +171,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/atom_split.py
     _src/atom_inline.py
     _src/auto_profile.py
+    _src/fabric_target.py
     _src/global_semaphore.py
     _src/perf_summary.py
     _src/perf_trace_server.py
