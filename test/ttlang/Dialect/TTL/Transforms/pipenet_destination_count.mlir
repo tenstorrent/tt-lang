@@ -1,4 +1,5 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// Verifies local and graph PipeNet destination-count lowering.
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 
 #records = #ttl.pipenet_records<net 0 name "gather" pipes [
   <srcX = 0, srcY = 0, dstStartX = 3, dstStartY = 0,
@@ -9,6 +10,32 @@
    dstEndX = 3, dstEndY = 0>,
   <srcX = 0, srcY = 0, dstStartX = 2, dstStartY = 0,
    dstEndX = 2, dstEndY = 0>
+]>
+
+#device_domain = #ttl.device_domain<
+    components = <name = "device", extent = [3]>>
+#device_records = #ttl.pipenet_records<net 1 name "device_gather" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #device_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [2]>>>>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #device_domain,
+        edge = <source = <coordinates = [1]>,
+                destination = <coordinates = [2]>>>>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #device_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>
 ]>
 
 // Local PipeNet records have no logical-device identity. Their destination
@@ -26,6 +53,21 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %count = ttl.pipenet_destination_count {
         pipe_net_id = 0 : i64, records = #records} : index
+    func.call @consume(%count) : (index) -> ()
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @device_destination_count
+  // CHECK: scf.for
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [1, 2, 2]
+  // CHECK: arith.cmpi eq
+  // CHECK: arith.andi
+  // CHECK: arith.select
+  // CHECK: arith.addi
+  func.func @device_destination_count()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %count = ttl.pipenet_destination_count {
+        pipe_net_id = 1 : i64, records = #device_records} : index
     func.call @consume(%count) : (index) -> ()
     func.return
   }
