@@ -173,6 +173,8 @@ class _FabricManagerBinding:
     caller_runtime_args: Tuple[int, ...]
     fabric_runtime_metadata: Tuple[int, ...]
     connections: Tuple[_FabricConnectionBinding, ...]
+    teardown_semaphore_ids: Tuple[int, ...] = ()
+    buffer_index_semaphore_ids: Tuple[int, ...] = ()
 
 
 @dataclass
@@ -190,6 +192,7 @@ class FabricTargetBindingPlan:
     managed_kernel_indices: Tuple[int, ...]
     runtime_arg_base_common_indices: Tuple[Optional[int], ...]
     runtime_arg_bases: Tuple[Optional[int], ...]
+    semaphore_descriptors: Tuple[Any, ...]
     managers: Tuple[_FabricManagerBinding, ...]
 
 
@@ -674,6 +677,81 @@ def _validate_manager_semaphore_capacity(
             )
 
 
+def _plan_explicit_manager_semaphores(
+    ttnn_api: Any,
+    program_descriptor: Any,
+    manager_requests: List[_FabricManagerRequest],
+) -> Tuple[
+    Dict[int, Tuple[Tuple[int, ...], Tuple[int, ...]]], Tuple[Any, ...]
+]:
+    explicit_manager_indices = [
+        manager_index
+        for manager_index, manager in enumerate(manager_requests)
+        if manager.apply_binding
+        and len({connection.direction for connection in manager.connections})
+        != len(manager.connections)
+    ]
+    if not explicit_manager_indices:
+        return {}, ()
+    if getattr(ttnn_api, "compute_fabric_connection_rt_args", None) is None:
+        raise RuntimeError(
+            "TTNN must expose compute_fabric_connection_rt_args() to bind "
+            "multiple fabric links in one direction"
+        )
+    if getattr(ttnn_api, "get_fabric_kernel_defines", None) is None:
+        raise RuntimeError(
+            "TTNN must expose get_fabric_kernel_defines() to bind multiple "
+            "fabric links in one direction"
+        )
+
+    used_ids_by_node = {}
+    explicit_nodes = {
+        manager_requests[manager_index].node_coordinates
+        for manager_index in explicit_manager_indices
+    }
+    for node_coordinates in explicit_nodes:
+        worker_node = ttnn_api.CoreCoord(*node_coordinates)
+        used_ids_by_node[node_coordinates] = {
+            int(semaphore.id)
+            for semaphore in program_descriptor.semaphores
+            if getattr(semaphore.core_type, "name", semaphore.core_type)
+            == "WORKER"
+            and semaphore.core_ranges.contains(worker_node)
+        }
+
+    semaphore_bindings = {}
+    semaphore_descriptors = []
+    for manager_index in explicit_manager_indices:
+        manager = manager_requests[manager_index]
+        used_ids = used_ids_by_node[manager.node_coordinates]
+        required_count = 2 * len(manager.connections)
+        selected_ids = [
+            semaphore_id
+            for semaphore_id in range(_WORKER_SEMAPHORE_CAPACITY)
+            if semaphore_id not in used_ids
+        ][:required_count]
+        assert len(selected_ids) == required_count
+        used_ids.update(selected_ids)
+        connection_count = len(manager.connections)
+        teardown_ids = tuple(selected_ids[:connection_count])
+        buffer_index_ids = tuple(selected_ids[connection_count:])
+        semaphore_bindings[manager_index] = (teardown_ids, buffer_index_ids)
+
+        worker_node = ttnn_api.CoreCoord(*manager.node_coordinates)
+        worker_ranges = ttnn_api.CoreRangeSet(
+            [ttnn_api.CoreRange(worker_node, worker_node)]
+        )
+        semaphore_descriptors.extend(
+            ttnn_api.SemaphoreDescriptor(
+                semaphore_id,
+                core_ranges=worker_ranges,
+                initial_value=0,
+            )
+            for semaphore_id in selected_ids
+        )
+    return semaphore_bindings, tuple(semaphore_descriptors)
+
+
 def build_fabric_target_binding_plan(
     ttnn_api: Any,
     program_descriptor: Any,
@@ -1062,6 +1140,11 @@ def build_fabric_target_binding_plan(
         )
 
     _validate_manager_semaphore_capacity(ttnn_api, program_descriptor, manager_requests)
+    explicit_semaphore_bindings, semaphore_descriptors = (
+        _plan_explicit_manager_semaphores(
+            ttnn_api, program_descriptor, manager_requests
+        )
+    )
     selected_links = _assign_fabric_links(manager_requests, interference_by_interval)
     manager_bindings = []
     for manager_index, manager_request in enumerate(manager_requests):
@@ -1074,6 +1157,9 @@ def build_fabric_target_binding_plan(
         )
         if not manager_request.apply_binding:
             continue
+        teardown_semaphore_ids, buffer_index_semaphore_ids = (
+            explicit_semaphore_bindings.get(manager_index, ((), ()))
+        )
         manager_bindings.append(
             _FabricManagerBinding(
                 kernel_index=manager_request.kernel_index,
@@ -1084,6 +1170,8 @@ def build_fabric_target_binding_plan(
                 ),
                 fabric_runtime_metadata=manager_request.fabric_runtime_metadata,
                 connections=connection_bindings,
+                teardown_semaphore_ids=teardown_semaphore_ids,
+                buffer_index_semaphore_ids=buffer_index_semaphore_ids,
             )
         )
     return FabricTargetBindingPlan(
@@ -1097,6 +1185,7 @@ def build_fabric_target_binding_plan(
             kernel_fabric_runtime_arg_base_common_indices
         ),
         runtime_arg_bases=runtime_arg_bases,
+        semaphore_descriptors=semaphore_descriptors,
         managers=tuple(manager_bindings),
     )
 
@@ -1108,6 +1197,35 @@ def apply_fabric_target_binding_plan(
     device_coordinates: Tuple[int, ...],
 ) -> None:
     """Apply a validated target-binding plan to one program descriptor."""
+    if plan.semaphore_descriptors:
+        program_descriptor.semaphores = [
+            *program_descriptor.semaphores,
+            *plan.semaphore_descriptors,
+        ]
+
+    setup_kernel_indices = {
+        manager.kernel_index
+        for manager in plan.managers
+        if manager.connections and not manager.teardown_semaphore_ids
+    }
+    explicit_kernel_indices = {
+        manager.kernel_index
+        for manager in plan.managers
+        if manager.teardown_semaphore_ids
+    }
+    for kernel_index in explicit_kernel_indices - setup_kernel_indices:
+        kernel_descriptor = program_descriptor.kernels[kernel_index]
+        existing_defines = {tuple(define) for define in kernel_descriptor.defines}
+        required_defines = ttnn_api.get_fabric_kernel_defines()
+        kernel_descriptor.defines = [
+            *kernel_descriptor.defines,
+            *(
+                define
+                for define in required_defines
+                if tuple(define) not in existing_defines
+            ),
+        ]
+
     applied_managers = []
     for manager in plan.managers:
         kernel_descriptor = program_descriptor.kernels[manager.kernel_index]
@@ -1128,14 +1246,23 @@ def apply_fabric_target_binding_plan(
                 manager.connections
             )
             connection_link_indices = explicit_link_indices
-            fabric_args = ttnn_api.setup_routing_plane_connection(
-                plan.source_node_id,
-                connection_node_ids,
-                connection_link_indices,
-                program_descriptor,
-                manager.kernel_index,
-                ttnn_api.CoreCoord(node_x, node_y),
-            )
+            if manager.teardown_semaphore_ids:
+                fabric_args = ttnn_api.compute_fabric_connection_rt_args(
+                    plan.source_node_id,
+                    connection_node_ids,
+                    connection_link_indices,
+                    manager.teardown_semaphore_ids,
+                    manager.buffer_index_semaphore_ids,
+                )
+            else:
+                fabric_args = ttnn_api.setup_routing_plane_connection(
+                    plan.source_node_id,
+                    connection_node_ids,
+                    connection_link_indices,
+                    program_descriptor,
+                    manager.kernel_index,
+                    ttnn_api.CoreCoord(node_x, node_y),
+                )
         runtime_arg_base = plan.runtime_arg_bases[manager.kernel_index]
         assert runtime_arg_base is not None
         runtime_args = [*manager.caller_runtime_args]

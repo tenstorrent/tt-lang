@@ -241,6 +241,8 @@ class _FakeTTNN:
         self.synchronize_calls = []
         self.next_address = 0x1000
         self.fabric_setup_calls = []
+        self.fabric_compute_calls = []
+        self.fabric_define_calls = 0
         self.fabric_direction_calls = []
         self.fabric_link_calls = []
         self.fabric_config = "mesh"
@@ -523,6 +525,29 @@ class _FakeTTNN:
             )
         )
         return [0xA0, 0xB0]
+
+    def compute_fabric_connection_rt_args(
+        self,
+        source_node_id,
+        destination_node_ids,
+        link_indices,
+        teardown_semaphore_ids,
+        buffer_index_semaphore_ids,
+    ):
+        self.fabric_compute_calls.append(
+            (
+                source_node_id,
+                destination_node_ids,
+                link_indices,
+                teardown_semaphore_ids,
+                buffer_index_semaphore_ids,
+            )
+        )
+        return [0xA0, 0xB0]
+
+    def get_fabric_kernel_defines(self):
+        self.fabric_define_calls += 1
+        return [("API_TYPE_Linear", "1"), ("FABRIC_2D", "1")]
 
     def get_eth_forwarding_direction(self, source_node_id, destination_node_id):
         self.fabric_direction_calls.append((source_node_id, destination_node_id))
@@ -3037,14 +3062,20 @@ def test_routing_plane_stripes_one_route_over_distinct_links(monkeypatch):
     )
 
     assert program.kernels[0].runtime_args[0][0][:6] == [2, 0, 2, 1, 0, 0]
-    assert fake_ttnn.fabric_setup_calls == [
+    assert fake_ttnn.fabric_setup_calls == []
+    assert fake_ttnn.fabric_compute_calls == [
         (
             _FakeFabricNodeId(0, 0),
             [destination, destination],
             [0, 1],
-            0,
-            (0, 0),
+            (0, 1),
+            (2, 3),
         )
+    ]
+    assert [semaphore.id for semaphore in program.semaphores] == [0, 1, 2, 3]
+    assert program.kernels[0].defines == [
+        ("API_TYPE_Linear", "1"),
+        ("FABRIC_2D", "1"),
     ]
 
 
