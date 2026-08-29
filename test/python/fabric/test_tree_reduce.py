@@ -23,8 +23,8 @@ from utils.correctness import assert_allclose
 pytestmark = pytest.mark.multi_device
 
 TREE_REDUCTION_DTYPES = [
-    pytest.param(torch.float32, ttnn.float32, 5e-3, 5e-2, id="fp32"),
     pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
+    pytest.param(torch.float32, ttnn.float32, 5e-3, 5e-2, id="fp32"),
 ]
 
 
@@ -69,19 +69,23 @@ def participant_mesh(participant_mesh_shape):
                 ttnn.close_mesh_device(mesh)
 
 
+@pytest.fixture(scope="module")
+def tree_all_reduce(participant_mesh_shape):
+    return make_tree_all_reduce_operation(participant_mesh_shape)
+
+
 # Verify that the explicit pairwise tree reduces four input tiles and
 # broadcasts the result to every participating device.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", TREE_REDUCTION_DTYPES)
 def test_tree_all_reduce(
     participant_mesh_shape,
     participant_mesh,
+    tree_all_reduce,
     torch_dtype,
     ttnn_dtype,
     rtol,
     atol,
 ):
-    print(f"Tree {ttnn_dtype}: construct operation", flush=True)
-    tree_all_reduce = make_tree_all_reduce_operation(participant_mesh_shape)
     logical_shape = (NUM_DEVICES * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
