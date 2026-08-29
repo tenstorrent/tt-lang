@@ -258,6 +258,21 @@ def _flatten_device_index(coordinates, mesh_shape: tuple[int, ...]) -> int:
     return device_index
 
 
+def _make_high_to_low_route_endpoints(
+    mesh_shape: tuple[int, ...], route_axes: tuple[int, ...]
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    fixed_coordinates = tuple(1 if extent > 1 else 0 for extent in mesh_shape)
+    source_device = tuple(
+        extent - 1 if axis in route_axes else fixed_coordinates[axis]
+        for axis, extent in enumerate(mesh_shape)
+    )
+    destination_device = tuple(
+        0 if axis in route_axes else fixed_coordinates[axis]
+        for axis in range(len(mesh_shape))
+    )
+    return source_device, destination_device
+
+
 def _select_longest_nontrivial_axis(mesh_shape: tuple[int, ...]) -> int:
     return max(
         (axis for axis, extent in enumerate(mesh_shape) if extent > 1),
@@ -1048,10 +1063,8 @@ def test_two_dimensional_route(
     ):
         pytest.skip("requires a full 2D mesh with the requested routing topology")
 
-    source_device = (0, 0)
-    destination_device = tuple(
-        extent - 1 if axis in route_axes else 0
-        for axis, extent in enumerate(route_mesh_shape)
+    source_device, destination_device = _make_high_to_low_route_endpoints(
+        route_mesh_shape, route_axes
     )
     point_to_point = _make_point_to_point_operation(
         route_mesh_shape, source_device, destination_device
@@ -1100,8 +1113,8 @@ def test_one_dimensional_route(
     if prod(line_shape) < 2:
         pytest.skip("requires a multi-device fabric line")
 
-    source_device = tuple(0 for _extent in line_shape)
-    destination_device = tuple(extent - 1 for extent in line_shape)
+    source_device = tuple(extent - 1 for extent in line_shape)
+    destination_device = tuple(0 for _extent in line_shape)
     point_to_point = _make_point_to_point_operation(
         line_shape, source_device, destination_device
     )
@@ -1123,7 +1136,7 @@ def test_one_dimensional_route(
             ttnn.close_mesh_device(mesh)
 
     expected = torch.zeros_like(inp_torch)
-    expected[-TILE_SIZE:, :] = inp_torch[:TILE_SIZE, :]
+    expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
@@ -1147,10 +1160,10 @@ def test_one_dimensional_neighbor_exchange(
     line_shape = tuple(
         2 if axis == line_axis else 1 for axis in range(len(route_mesh_shape))
     )
-    source_device = tuple(0 for _extent in line_shape)
-    destination_device = tuple(
+    source_device = tuple(
         1 if axis == line_axis else 0 for axis in range(len(line_shape))
     )
+    destination_device = tuple(0 for _extent in line_shape)
     point_to_point = _make_point_to_point_operation(
         line_shape, source_device, destination_device
     )
@@ -1171,7 +1184,7 @@ def test_one_dimensional_neighbor_exchange(
             ttnn.close_mesh_device(mesh)
 
     expected = torch.zeros_like(inp_torch)
-    expected[-TILE_SIZE:, :] = inp_torch[:TILE_SIZE, :]
+    expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
@@ -1200,10 +1213,8 @@ def test_reopen_with_different_fabric_config(
     route_axis = max(
         range(len(route_mesh_shape)), key=lambda axis: route_mesh_shape[axis]
     )
-    source_device = tuple(0 for _extent in route_mesh_shape)
-    destination_device = tuple(
-        extent - 1 if axis == route_axis else 0
-        for axis, extent in enumerate(route_mesh_shape)
+    source_device, destination_device = _make_high_to_low_route_endpoints(
+        route_mesh_shape, (route_axis,)
     )
     point_to_point = _make_point_to_point_operation(
         route_mesh_shape, source_device, destination_device
@@ -1222,12 +1233,16 @@ def test_reopen_with_different_fabric_config(
 
             result = _compose(mesh, out)
 
+        source_index = _flatten_device_index(source_device, route_mesh_shape)
         destination_index = _flatten_device_index(destination_device, route_mesh_shape)
         expected = torch.zeros_like(inp_torch)
         expected[
             destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE,
             :,
-        ] = inp_torch[:TILE_SIZE, :]
+        ] = inp_torch[
+            source_index * TILE_SIZE : (source_index + 1) * TILE_SIZE,
+            :,
+        ]
         assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
