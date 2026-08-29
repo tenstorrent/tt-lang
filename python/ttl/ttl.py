@@ -57,6 +57,7 @@ from .operators import (
     reset_all_dfbs,
     reset_dfbs,
     reconfigure_dfbs,
+    wait_any,
 )
 
 # Math operations namespace
@@ -102,6 +103,7 @@ __all__ = [
     "reset_dfbs",
     "reset_all_dfbs",
     "reconfigure_dfbs",
+    "wait_any",
     "math",
     "block",
 ]

@@ -20,6 +20,11 @@ def TTLInsertCBSync
 
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
+
+    A receive request used by `ttl.wait_any` has conditional completion. Its
+    destination reservation is not published automatically because only the
+    selected request is known to be complete. Publication must be explicit and
+    conditioned on the corresponding selection, or follow an exact wait.
   }];
 
   let dependentDialects = [];
@@ -126,16 +131,17 @@ def TTLFormPipeTransports
 
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
-    bytes. Selection uses a target-aligned DFB allocation and a conservative
-    upper bound for PipeNet address storage, scratch, GlobalSemaphore counters,
-    record-selected callback resources, synchronized-reset scratch, and DFB
-    reconfiguration state. `group-size = 1` disables grouping but still
-    validates the combined allocation and records the conservative reservation
-    for physical DFB allocation. A larger value is an upper bound; the pass
-    selects a smaller group when the loop trip count or L1 capacity requires
-    it. Ineligible loops retain scalar transfer IR. After PipeNet lowering
-    chooses exact resources, `convert-ttl-to-ttkernel` validates the
-    authoritative combined per-core allocation.
+    bytes. Selection uses a target-aligned logical DFB estimate and a
+    conservative upper bound for PipeNet address storage, scratch,
+    GlobalSemaphore counters, record-selected callback resources,
+    synchronized-reset scratch, and DFB reconfiguration state. This estimate
+    selects a grouping size; it does not reject the finalized physical DFB
+    allocation. `group-size = 1` disables grouping and records the conservative
+    PipeNet reservation for physical DFB allocation. A larger value is an upper
+    bound; the pass selects a smaller group when the loop trip count or L1
+    capacity requires it. Ineligible loops retain scalar transfer IR. After
+    PipeNet lowering chooses exact resources, `convert-ttl-to-ttkernel`
+    validates the authoritative combined per-core allocation.
   }];
 
   let options = [
@@ -155,11 +161,15 @@ def TTLFormPipeTransports
 
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
-  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let summary = "Complete ttl.copy operations without a guaranteed wait";
   let description = [{
-    Finds `ttl.copy` ops whose transfer handle result has no `ttl.wait` user
-    and inserts a `ttl.wait` immediately after the copy. Explicit `.wait()`
-    calls are preserved: the pass only fills in what is missing.
+    Proves copy completion across every reachable continuation, including
+    structured regions and block control flow. An uncovered copy receives an
+    implicit `ttl.wait`. When a request participates in a multi-request
+    `ttl.wait_any`, uncovered cleanup occurs at each reachable function exit.
+    The inserted wait therefore cannot alter the selected request or precede
+    work that completes pending candidates. A single-request `ttl.wait_any`
+    completes its sole request.
   }];
 
   let dependentDialects = [];

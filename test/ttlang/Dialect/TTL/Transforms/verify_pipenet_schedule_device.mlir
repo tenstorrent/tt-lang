@@ -69,8 +69,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post = ttl.copy %pipe, %reserved
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post : !ttl.receive_request
     }
     func.return
   }
@@ -169,8 +169,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         %post = ttl.copy %pipe, %reserved
             : (!ttl.selected_pipe_dst,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %post : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
         ttl.cb_push %dst_zero : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       } else {
         %reserved = ttl.cb_reserve %dst_one
@@ -179,8 +179,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         %post = ttl.copy %pipe, %reserved
             : (!ttl.selected_pipe_dst,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %post : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
         ttl.cb_push %dst_one : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       }
       ttl.yield
@@ -255,8 +255,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post = ttl.copy %pipe, %reserved
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post : !ttl.receive_request
       ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       ttl.yield
     }
@@ -317,8 +317,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post = ttl.copy %pipe, %reserved
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post : !ttl.receive_request
     }
     func.return
   }
@@ -412,8 +412,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post = ttl.copy %pipe, %reserved
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post : !ttl.receive_request
     }
     func.return
   }

@@ -133,8 +133,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 2>} {
       %receive = ttl.copy %pipe, %reserved
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
       ttl.cb_push %destination
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       ttl.yield

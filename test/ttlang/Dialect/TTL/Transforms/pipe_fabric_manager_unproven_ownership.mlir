@@ -89,8 +89,8 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
       ^bb0(%arg1: !ttl.selected_pipe_dst):
         %5 = ttl.cb_reserve %0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
         %6 = ttl.attach_cb %5, %0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        %7 = ttl.copy %arg1, %6 : (!ttl.selected_pipe_dst, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.transfer_handle
-        ttl.wait %7 : !ttl.transfer_handle
+        %7 = ttl.copy %arg1, %6 : (!ttl.selected_pipe_dst, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+        ttl.wait %7 : !ttl.receive_request
         ttl.cb_push %0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         %8 = ttl.cb_wait %0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
         %9 = ttl.attach_cb %8, %0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -105,8 +105,8 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
       ^bb0(%arg1: !ttl.selected_pipe_dst):
         %5 = ttl.cb_reserve %0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
         %6 = ttl.attach_cb %5, %0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        %7 = ttl.copy %arg1, %6 : (!ttl.selected_pipe_dst, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.transfer_handle
-        ttl.wait %7 : !ttl.transfer_handle
+        %7 = ttl.copy %arg1, %6 : (!ttl.selected_pipe_dst, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+        ttl.wait %7 : !ttl.receive_request
         ttl.cb_push %0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         %8 = ttl.cb_wait %0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
         %9 = ttl.attach_cb %8, %0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>

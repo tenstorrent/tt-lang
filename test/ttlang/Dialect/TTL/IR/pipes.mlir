@@ -105,10 +105,51 @@ func.func @copy_pipe_to_cb() {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %recv = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<1x1xf32>
-  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1xf32>) -> !ttl.transfer_handle
-  ttl.wait %xf : !ttl.transfer_handle
+  %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1xf32>) -> !ttl.receive_request
+  ttl.wait %xf : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], f32, 2>
   func.return
+}
+
+// -----
+
+// Rotating wait-any accepts receive requests from different PipeNets and
+// returns the selected operand index.
+// CHECK-LABEL: func.func @wait_any_receive_requests
+// CHECK: %[[REQUEST0:.*]] = ttl.copy
+// CHECK: %[[REQUEST1:.*]] = ttl.copy
+// CHECK: %[[START:.*]] = arith.constant 1 : index
+// CHECK: %[[READY:.*]] = ttl.wait_any %[[REQUEST0]], %[[REQUEST1]] start %[[START]]
+// CHECK: %[[INDEX:.*]] = ttl.ready_receive_index %[[READY]]
+// CHECK: ttl.wait %[[REQUEST0]] : !ttl.receive_request
+// CHECK: ttl.wait %[[REQUEST1]] : !ttl.receive_request
+func.func @wait_any_receive_requests() -> index {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], f32, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], f32, 2>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %pipe1 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 0) net 1
+      : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 1>
+  %dst0 = ttl.cb_reserve %cb0
+      : <[1, 1], f32, 2> -> tensor<1x1xf32>
+  %dst1 = ttl.cb_reserve %cb1
+      : <[1, 1], f32, 2> -> tensor<1x1xf32>
+  %request0 = ttl.copy %pipe0, %dst0
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1xf32>)
+      -> !ttl.receive_request
+  %request1 = ttl.copy %pipe1, %dst1
+      : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 1>, tensor<1x1xf32>)
+      -> !ttl.receive_request
+  %start = arith.constant 1 : index
+  %ready = ttl.wait_any %request0, %request1 start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  %index = ttl.ready_receive_index %ready : !ttl.ready_receive
+  ttl.wait %request0 : !ttl.receive_request
+  ttl.wait %request1 : !ttl.receive_request
+  func.return %index : index
 }
 
 // -----

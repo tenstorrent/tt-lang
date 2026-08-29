@@ -91,6 +91,7 @@ else:
         reset_all_dfbs,
         reset_dfbs,
         reconfigure_dfbs,
+        wait_any,
     )
 
     from ttl._generated_elementwise import *  # noqa: F401,F403
@@ -102,6 +103,8 @@ else:
         CircularBuffer,  # Deprecated, superseded by DataflowBuffer
         DataflowBuffer,
         CopyTransferHandler,
+        ReadyReceive,
+        ReceiveRequest,
         TensorBlock,
     )
     from ttl.pipe import Pipe, PipeNet
@@ -133,6 +136,8 @@ else:
         "CompilerOptions",
         "TensorBlock",
         "CopyTransferHandler",
+        "ReceiveRequest",
+        "ReadyReceive",
         "Pipe",
         "PipeNet",
         "AllToAllTransfer",
@@ -165,5 +170,6 @@ else:
         "reset_dfbs",
         "reset_all_dfbs",
         "reconfigure_dfbs",
+        "wait_any",
         *_elementwise_all,
     ]

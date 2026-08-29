@@ -119,6 +119,12 @@ class SimulatorContext:
     # replaced by reset_context(), requiring no sys.monitoring reconfiguration.
     # Typed as Any to avoid importing analysis.
     active_hooks: Dict[Any, Any] = field(default_factory=dict)
+    # Code-object identities with copy waits deferred until normal return.
+    deferred_copy_wait_codes: Set[int] = field(default_factory=set)
+    # Copy call sites whose dynamic requests require deferred waits.
+    deferred_copy_wait_sites: Set[Tuple[int, int]] = field(default_factory=set)
+    # Deferred requests indexed by the executing Python frame.
+    deferred_copy_wait_requests: Dict[Any, list[Any]] = field(default_factory=dict)
     # Set of (code_object, abs_lineno) pairs identifying bare ttl.copy() calls
     # (i.e. calls whose return value is not assigned).  The copy() function
     # checks this set to immediately call wait() for those call sites.

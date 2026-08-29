@@ -21,6 +21,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
@@ -128,7 +129,8 @@ public:
         emitLlk(experimental_pack_untilize_llks_generated,
                 experimental_pack_untilize_llks_generated_len);
       }
-      if (callee == "experimental::semaphore_wait" ||
+      if (callee == "experimental::semaphore_reached" ||
+          callee == "experimental::semaphore_wait" ||
           callee == "experimental::semaphore_wait_min") {
         emitLlk(experimental_semaphore_generated,
                 experimental_semaphore_generated_len);
@@ -181,6 +183,10 @@ public:
       if (callee == "experimental::matmul_block") {
         emitLlk(experimental_matmul_llks_generated,
                 experimental_matmul_llks_generated_len);
+      }
+      if (callee == "experimental::row_normalization_block") {
+        emitLlk(experimental_row_normalization_generated,
+                experimental_row_normalization_generated_len);
       }
       if (callee == "experimental::write_row_mask_tile" ||
           callee == "experimental::write_col_mask_tile" ||

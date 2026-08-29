@@ -42,6 +42,11 @@ struct RecordExecutionCountAnalysisCache {
 
 /// Analysis facts and operation indexes used while constructing PipeGraph.
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
+  struct ReceiveWaitAnyUse {
+    PipeTransferWaitAnyOp wait;
+    unsigned candidateIndex;
+  };
+
   std::unique_ptr<DFBLogicalIdentityAnalysis> dfbLogicalIdentities;
   PipeDFBIndexMode dfbIndexMode = PipeDFBIndexMode::Provisional;
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
@@ -51,6 +56,8 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   SmallVector<PipeTransferPostOp> receiverPosts;
   llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
       receiveWaitsByPost;
+  llvm::DenseMap<Operation *, SmallVector<ReceiveWaitAnyUse>>
+      receiveWaitAnysByPost;
   llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<PipeTransferPostOp>>
       receiverPostsByStream;
   llvm::DenseMap<PipeReceiverDFBPhysicalStreamKey, SmallVector<CBPushOp>>
@@ -81,6 +88,10 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
     options.computeRegionDomain =
         [&](Operation *op,
             unsigned regionNumber) -> std::optional<LaunchNodeDomain> {
+      if (auto ifOp = dyn_cast<scf::IfOp>(op);
+          ifOp && getReadyReceiveSelection(ifOp.getCondition())) {
+        return state.baseDomain;
+      }
       if (regionNumber != 0) {
         return std::nullopt;
       }
@@ -243,6 +254,19 @@ static LogicalResult recordReceiveWait(PipeTransferWaitOp waitOp,
   return success();
 }
 
+/// Associate each wait-any candidate with its possible receiver posts.
+static void recordReceiveWaitAny(PipeTransferWaitAnyOp waitOp,
+                                 PipeGraphAnalysisState &state,
+                                 const PipeTransferIndex &transferIndex) {
+  for (auto [candidateIndex, possiblePosts] :
+       llvm::enumerate(transferIndex.getWaitAnyCandidatePosts(waitOp))) {
+    for (Operation *post : possiblePosts) {
+      state.receiveWaitAnysByPost[post].push_back(
+          {waitOp, static_cast<unsigned>(candidateIndex)});
+    }
+  }
+}
+
 /// Collect protocol and receiver DFB operations once so graph analyses do not
 /// rescan the module for every receiver.
 static LogicalResult
@@ -264,6 +288,9 @@ collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
             })
             .Case<PipeTransferSendOp>([&](PipeTransferSendOp sendOp) {
               state.transferProtocolOps.push_back(sendOp.getOperation());
+            })
+            .Case<PipeTransferWaitAnyOp>([&](PipeTransferWaitAnyOp waitOp) {
+              recordReceiveWaitAny(waitOp, state, transferIndex);
             })
             .Case<CBPushOp>([&](CBPushOp pushOp) {
               FailureOr<PipeReceiverDFBStreamKey> maybeStreamKey =
@@ -562,22 +589,64 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
+/// Return true when `before` precedes `after` directly or before an enclosing
+/// runtime region containing `after`.
+static bool
+isBeforeInReceiverExecution(Operation *before, Operation *after,
+                            const LaunchExecutionLocation &location,
+                            const PipeGraphAnalysisState &analysisState) {
+  Operation *enclosing = after;
+  while (enclosing) {
+    if (isBeforeInReceiverControlContext(before, enclosing, location,
+                                         analysisState)) {
+      return true;
+    }
+    Block *block = enclosing->getBlock();
+    enclosing = block ? block->getParentOp() : nullptr;
+  }
+  return false;
+}
+
 static bool hasMatchingReceiveWaitBeforePush(
     PipeTransferPostOp postOp, CBPushOp pushOp,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
         &waitsByPost,
+    const llvm::DenseMap<Operation *,
+                         SmallVector<PipeGraphAnalysisState::ReceiveWaitAnyUse>>
+        &waitAnysByPost,
     const LaunchExecutionLocation &location,
     const PipeGraphAnalysisState &analysisState) {
   auto waitIt = waitsByPost.find(postOp.getOperation());
-  if (waitIt == waitsByPost.end()) {
+  if (waitIt != waitsByPost.end() &&
+      llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
+        return isBeforeInReceiverExecution(postOp, waitOp, location,
+                                           analysisState) &&
+               isBeforeInReceiverExecution(waitOp, pushOp, location,
+                                           analysisState);
+      })) {
+    return true;
+  }
+
+  auto waitAnyIt = waitAnysByPost.find(postOp.getOperation());
+  if (waitAnyIt == waitAnysByPost.end()) {
     return false;
   }
-  return llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-    return isBeforeInReceiverControlContext(postOp, waitOp, location,
-                                            analysisState) &&
-           isBeforeInReceiverControlContext(waitOp, pushOp, location,
-                                            analysisState);
-  });
+  for (PipeGraphAnalysisState::ReceiveWaitAnyUse use : waitAnyIt->second) {
+    if (!isBeforeInReceiverControlContext(postOp, use.wait, location,
+                                          analysisState)) {
+      continue;
+    }
+    auto isOrderedBefore = [&](Operation *before, Operation *after) {
+      return isBeforeInReceiverControlContext(before, after, location,
+                                              analysisState);
+    };
+    if (isInReadyReceiveSelectionRegion(
+            pushOp, use.wait, static_cast<int64_t>(use.candidateIndex),
+            isOrderedBefore)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// Group endpoints by logical DFB lifecycle. Physical aliases from other
@@ -1133,8 +1202,8 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
       rejectPipeOnly(reason);
       rejectComputedAddressPhase(reason);
     };
-    llvm::DenseSet<Operation *> postsWithPush;
     LogicalResult result = success();
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> pushesByPost;
 
     forEachReceiverDFBPhysicalStreamEvent(
         analysisState.pushesByPhysicalStream, receiverDFB,
@@ -1193,11 +1262,6 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             }
             return;
           }
-          if (ownedPosts.size() != 1) {
-            rejectBoth("push reserve owns multiple receiver posts");
-            return;
-          }
-
           // Unresolved outer control is safe only when the ownership and
           // receiver-context checks below prove the complete protocol.
           if (!isNocKernelThread(pushOp)) {
@@ -1208,45 +1272,56 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             rejectBoth("push block count is not a whole DFB block count");
             return;
           }
-          PipeTransferPostOp postOp = ownedPosts.front();
-          const PipeReceiverEndpoint *endpoint =
-              findPostReceiverEndpoint(postOp, receiverDFB, *this);
-          assert(endpoint &&
-                 "matching receiver post must have a receiver endpoint");
-          DeviceTransferAttr deviceTransfer =
-              getPipeTransferNode(endpoint->transferNode).deviceTransfer;
-          FailureOr<LaunchExecutionLocation> maybeLocation =
-              getPipeGraphExecutionLocation(
-                  postOp.getOperation(),
-                  getLaunchNodeCoord(receiverDFB.receiver), deviceTransfer,
-                  PipeRole::Destination);
-          if (failed(maybeLocation)) {
-            result = failure();
-            return;
+          int64_t postedBlocks = 0;
+          for (PipeTransferPostOp postOp : ownedPosts) {
+            const PipeReceiverEndpoint *endpoint =
+                findPostReceiverEndpoint(postOp, receiverDFB, *this);
+            assert(endpoint &&
+                   "matching receiver post must have a receiver endpoint");
+            DeviceTransferAttr deviceTransfer =
+                getPipeTransferNode(endpoint->transferNode).deviceTransfer;
+            FailureOr<LaunchExecutionLocation> maybeLocation =
+                getPipeGraphExecutionLocation(
+                    postOp.getOperation(),
+                    getLaunchNodeCoord(receiverDFB.receiver), deviceTransfer,
+                    PipeRole::Destination);
+            if (failed(maybeLocation)) {
+              result = failure();
+              return;
+            }
+            if (!hasMatchingReceiveWaitBeforePush(
+                    postOp, pushOp, analysisState.receiveWaitsByPost,
+                    analysisState.receiveWaitAnysByPost, *maybeLocation,
+                    analysisState)) {
+              auto diag =
+                  pushOp.emitOpError()
+                  << "publishes a pipe receiver DFB reservation without "
+                     "a preceding receive wait in the same control "
+                     "context";
+              diag.attachNote(postOp.getLoc())
+                  << "matching receiver post occurrence is here";
+              result = failure();
+              return;
+            }
+            std::optional<int64_t> maybeSpan =
+                getReceiverSlotSpanBlocksForPost(postOp, receiverDFBByPost);
+            if (!maybeSpan) {
+              rejectBoth("post has no receiver slot span");
+              return;
+            }
+            postedBlocks += *maybeSpan;
+            SmallVectorImpl<Operation *> &existingPushes =
+                pushesByPost[postOp.getOperation()];
+            if (llvm::any_of(existingPushes, [&](Operation *existingPush) {
+                  return !mlir::insideMutuallyExclusiveRegions(
+                      existingPush, pushOp.getOperation());
+                })) {
+              rejectBoth("post is consumed by multiple co-executing pushes");
+              return;
+            }
+            existingPushes.push_back(pushOp.getOperation());
           }
-          if (!hasMatchingReceiveWaitBeforePush(
-                  postOp, pushOp, analysisState.receiveWaitsByPost,
-                  *maybeLocation, analysisState)) {
-            auto diag = pushOp.emitOpError()
-                        << "publishes a pipe receiver DFB reservation without "
-                           "a preceding receive wait in the same control "
-                           "context";
-            diag.attachNote(postOp.getLoc())
-                << "matching receiver post occurrence is here";
-            result = failure();
-            return;
-          }
-          std::optional<int64_t> maybeSpan =
-              getReceiverSlotSpanBlocksForPost(postOp, receiverDFBByPost);
-          if (!maybeSpan) {
-            rejectBoth("post has no receiver slot span");
-            return;
-          }
-          if (!postsWithPush.insert(postOp.getOperation()).second) {
-            rejectBoth("post is consumed by more than one push");
-            return;
-          }
-          if (*maybePushedBlocks != *maybeSpan) {
+          if (*maybePushedBlocks != postedBlocks) {
             rejectBoth(
                 "push block count does not match posted receiver slot span");
           }
@@ -1255,7 +1330,7 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
       return failure();
     }
     for (PipeTransferPostOp postOp : posts) {
-      if (!postsWithPush.contains(postOp.getOperation())) {
+      if (!pushesByPost.contains(postOp.getOperation())) {
         rejectBoth("post is not consumed by a receiver push");
         break;
       }

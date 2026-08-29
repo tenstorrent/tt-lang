@@ -111,8 +111,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post = ttl.copy %pipe, %reserved
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post : !ttl.receive_request
       ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       ttl.yield
     }

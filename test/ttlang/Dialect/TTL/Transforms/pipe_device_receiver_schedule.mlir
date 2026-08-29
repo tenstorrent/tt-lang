@@ -166,8 +166,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post_0 = ttl.copy %pipe_0, %reserve_0
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post_0 : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post_0 : !ttl.receive_request
       ttl.cb_push %destination
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
@@ -179,8 +179,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %post_1 = ttl.copy %pipe_1, %reserve_1
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %post_1 : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %post_1 : !ttl.receive_request
       ttl.cb_push %destination
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }

@@ -33,8 +33,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         %receive = ttl.copy %pipe, %recv
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %receive : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
         ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       }
     }
@@ -97,8 +97,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 2>} {
         %receive = ttl.copy %pipe, %recv
             : (!ttl.selected_pipe_dst,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %receive : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
         ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       }
       ttl.yield

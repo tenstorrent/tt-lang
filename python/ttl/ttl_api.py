@@ -152,7 +152,14 @@ from .kernel import (
 )
 from .fabric import FabricManagerClaim, _bind_fabric_manager_claims
 from .runtime_resources import ProgramRuntimeResources
-from .operators import CopyTransferHandler, TensorBlock, copy
+from .operators import (
+    CopyTransferHandler,
+    ReadyReceive,
+    ReceiveRequest,
+    TensorBlock,
+    copy,
+    wait_any,
+)
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
 
@@ -2641,6 +2648,18 @@ def _lower_program_to_kernel(
                 ctx,
             )
 
+            # Compute creation needs explicit DST constraints before the final
+            # kernel-wide configuration analysis resolves automatic choices.
+            if ct.kernel_type == "compute":
+                if fp32_dest_acc_en is not None:
+                    ct.func_entry.attributes["fp32_dest_acc_en"] = BoolAttr.get(
+                        fp32_dest_acc_en, ctx
+                    )
+                if dst_full_sync_en is not None:
+                    ct.func_entry.attributes["dst_full_sync_en"] = BoolAttr.get(
+                        dst_full_sync_en, ctx
+                    )
+
             # Tag noc functions with their index so pipe semaphore allocation
             # and TTNN reader/writer role assignment can distinguish threads.
             if ct.kernel_type == "datamovement":
@@ -3270,6 +3289,9 @@ __all__ = [
     "DataflowBuffer",
     "CircularBuffer",
     "CopyTransferHandler",
+    "ReceiveRequest",
+    "ReadyReceive",
     "copy",
+    "wait_any",
     "CompiledTTNNKernel",
 ]

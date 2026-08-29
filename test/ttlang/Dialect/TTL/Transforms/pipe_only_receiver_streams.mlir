@@ -4,7 +4,7 @@
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-graph 2>&1 >/dev/null | FileCheck %s --check-prefix=GRAPH
 
 // GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
-// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push reserve owns multiple receiver posts
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push block count does not match posted receiver slot span
 // GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push is not in a receiver NOC thread
 // GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
 // GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
@@ -43,8 +43,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: one DFB reservation cannot publish multiple receiver posts because
-// their destination intervals are not represented by the protocol transaction.
+// Purpose: receiver posts from one DFB reservation cannot publish more blocks
+// than the subsequent push advances.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @one_reserve_with_multiple_posts()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

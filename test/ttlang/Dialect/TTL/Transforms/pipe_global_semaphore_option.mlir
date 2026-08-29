@@ -68,8 +68,8 @@ module attributes {
       %receive = ttl.copy %pipe, %reserved
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
       ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {

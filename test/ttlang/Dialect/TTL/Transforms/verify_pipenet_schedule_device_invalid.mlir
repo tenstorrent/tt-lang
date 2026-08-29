@@ -48,8 +48,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         %post = ttl.copy %pipe, %reserved
             : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %post : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
       }
     }
     func.return
@@ -99,8 +99,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %post = ttl.copy %pipe, %reserved
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %post : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %post : !ttl.receive_request
     func.return
   }
 }

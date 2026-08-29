@@ -633,6 +633,36 @@ def TTKernel_BinaryDestReuseTilesOp : TTKernel_FPUOp<"binary_dest_reuse_tiles"> 
     }];
 }
 
+def TTKernel_ExperimentalRowNormalizationBlockOp :
+    TTKernel_FPUOp<"experimental_row_normalization_block"> {
+  let summary = "Normalize one row in a single DST acquisition";
+  let description = [{
+    Computes a full-row sum of squares, applies scale, epsilon, and reciprocal
+    square root, then reuses the retained scalar across a contiguous block of
+    input tiles. Optional gamma multiplication occurs in place before packing.
+
+    The operation does not acquire, commit, wait, release, reserve, push, pop,
+    or pack. Those transactions remain explicit surrounding TTKernel
+    operations.
+  }];
+  let arguments = (ins TTKernel_CB:$input_cb,
+                       TTKernel_CB:$gamma_cb,
+                       TTKernel_CB:$output_cb,
+                       I64Attr:$num_tiles,
+                       F32Attr:$scale,
+                       F32Attr:$epsilon,
+                       BoolAttr:$has_gamma,
+                       TTCore_DataTypeAttr:$dtype);
+  let assemblyFormat = [{
+    `(` $input_cb `,` $gamma_cb `,` $output_cb `)`
+    `num_tiles` `=` $num_tiles `scale` `=` $scale
+    `epsilon` `=` $epsilon `has_gamma` `=` $has_gamma
+    `dtype` `=` $dtype
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTKernel_UnaryBcastInitOp : TTKernel_InitOp<"unary_bcast_init"> {
     let summary = "Init function";
     let description = [{
@@ -4013,6 +4043,24 @@ def TTKernel_SemaphoreWaitMinOp : TTKernel_Op<"experimental.semaphore_wait_min">
     }];
 
     let arguments = (ins TTKernel_L1AddrPtr:$sem_addr, I32:$val);
+
+    let assemblyFormat = [{
+      `(` $sem_addr `,` $val `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_SemaphoreReachedOp
+    : TTKernel_Op<"experimental.semaphore_reached",
+                  [MemoryEffects<[MemRead]>]> {
+    let summary = "Test a semaphore completion threshold";
+    let description = [{
+      Invalidates the L1 cache, reads a local L1 semaphore address, and returns
+      whether its value is equal to or greater than the target value. The
+      operation does not block or modify the semaphore.
+    }];
+
+    let arguments = (ins TTKernel_L1AddrPtr:$sem_addr, I32:$val);
+    let results = (outs I1:$reached);
 
     let assemblyFormat = [{
       `(` $sem_addr `,` $val `)` attr-dict `:` functional-type(operands, results)

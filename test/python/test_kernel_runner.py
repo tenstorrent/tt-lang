@@ -232,6 +232,10 @@ def _FakeExplicitCoreRanges(start, end):
         (_FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(*start), _FakeTTNN.CoreCoord(*end)),)
     )
 
+    @staticmethod
+    def num_cores():
+        return 1
+
 
 class _FakeTTNN:
     def __init__(self):
@@ -376,9 +380,16 @@ class _FakeTTNN:
         def __init__(self, tile_shape):
             self.tile_shape = tuple(tile_shape)
 
-        def get_tile_size(self, _data_format):
+        def get_tile_size(self, data_format):
             tile_height, tile_width = self.tile_shape
-            return tile_height * tile_width * 2
+            scalar_count = tile_height * tile_width
+            dtype_name = str(data_format).rsplit(".", maxsplit=1)[-1].lower()
+            exponent_bytes = ((scalar_count // 16 + 15) // 16) * 16
+            if dtype_name == "bfloat4_b":
+                return scalar_count // 2 + exponent_bytes
+            if dtype_name == "bfloat8_b":
+                return scalar_count + exponent_bytes
+            return scalar_count * 2
 
     class TileDescriptor:
         def __init__(self, tile):
@@ -451,13 +462,6 @@ class _FakeTTNN:
             if max_cores is not None and len(cores) >= max_cores:
                 return cores[:max_cores]
         return cores
-
-        def contains(self, coordinate):
-            return any(
-                core_range.start.x <= coordinate.x <= core_range.end.x
-                and core_range.start.y <= coordinate.y <= core_range.end.y
-                for core_range in self.ranges
-            )
 
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
@@ -6296,6 +6300,38 @@ def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatc
         )
 
 
+@pytest.mark.parametrize(
+    ("data_format", "page_size"),
+    [("bfloat4_b", 576), ("bfloat8_b", 1088)],
+    ids=["bfp4", "bfp8"],
+)
+def test_build_cb_descriptors_accepts_block_float_tensor_backing_format(
+    monkeypatch, data_format, page_size
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype(data_format)
+    tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[
+            _tensor_backing_config(
+                0,
+                nodes=((0, 0),),
+                data_format=data_format,
+                page_size=page_size,
+                byte_size=page_size,
+            )
+        ],
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert descriptors[0]["total_size"] == page_size
+
+
 def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
@@ -6319,7 +6355,10 @@ def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypa
         ),
     )
 
-    with pytest.raises(ValueError, match="tensor backing format bfp8 is not supported"):
+    with pytest.raises(
+        ValueError,
+        match="tensor backing format bfp8 is not supported; expected BF16, FP32, BFP4_B, or BFP8_B",
+    ):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[config],
@@ -6379,14 +6418,21 @@ def test_build_cb_descriptors_preserves_descriptor_helper_failure(monkeypatch):
 
 
 def _tensor_backing_config(
-    dfb_index, *, nodes, block_count=1, byte_offset=0, byte_size=2048
+    dfb_index,
+    *,
+    nodes,
+    block_count=1,
+    byte_offset=0,
+    byte_size=2048,
+    data_format="bfloat16",
+    page_size=2048,
 ):
     return PhysicalDFBConfig(
         dfb_index,
         1,
-        "bfloat16",
+        data_format,
         block_count,
-        2048,
+        page_size,
         (32, 32),
         (
             DFBStorageSegment(
@@ -6397,6 +6443,138 @@ def _tensor_backing_config(
             ),
         ),
     )
+
+
+def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x4000)
+    config = _tensor_backing_config(
+        0,
+        nodes=((0, 0),),
+        byte_offset=2048,
+        byte_size=2048,
+    )
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        core_ranges=_FakeCoreRanges(),
+        cb_configs=[config],
+        pipe_computed_address_dfb_indices=[0],
+    )
+
+    assert resources.computed_address_dfb_tensors == {}
+    assert resources.computed_address_base_addresses == {0: 0x4800}
+
+
+@pytest.mark.parametrize(
+    "storage_segments",
+    [
+        (),
+        (DFBStorageSegment(nodes=((0, 0), (2, 0))),),
+    ],
+    ids=["implicit-compiler-storage", "explicit-compiler-storage"],
+)
+def test_pipe_runtime_resources_allocate_compiler_computed_address_storage(
+    monkeypatch, storage_segments
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    backing_tensor = _FakeTensor(object(), address=0x6000)
+    allocated_core_ranges = []
+
+    def allocate_backing(core_ranges, _num_bytes, _device):
+        allocated_core_ranges.append(core_ranges)
+        return backing_tensor
+
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        allocate_backing,
+    )
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_segments)
+    program_core_ranges = _FakeCoreRanges((((0, 0), (2, 0)),))
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[_FakeTensor(object())],
+        core_ranges=program_core_ranges,
+        cb_configs=[config],
+        pipe_computed_address_dfb_indices=[0],
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=[config],
+        core_ranges=program_core_ranges,
+        pipe_computed_address_backing_tensors=(resources.computed_address_dfb_tensors),
+    )
+
+    assert resources.computed_address_dfb_tensors == {0: backing_tensor}
+    assert resources.computed_address_base_addresses == {0: 0x6000}
+    assert descriptors[0].backing_desc["tensor"] is backing_tensor
+    allocated_cores = _descriptor_cores(
+        SimpleNamespace(core_ranges=allocated_core_ranges[0])
+    )
+    if storage_segments:
+        assert allocated_cores == {(0, 0), (2, 0)}
+        assert _descriptor_cores(descriptors[0]) == {(0, 0), (2, 0)}
+    else:
+        assert allocated_cores == {(0, 0), (1, 0), (2, 0)}
+
+
+def test_cb_descriptors_reject_pipe_backing_with_tensor_storage(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = _tensor_backing_config(0, nodes=((0, 0),))
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "cannot combine PipeNet computed-address backing with "
+            "tensor-backed storage segments"
+        ),
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_backing_tensors={0: _FakeTensor(object())},
+        )
+
+
+def test_pipe_runtime_resources_reject_mixed_computed_address_storage(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda _core_ranges, _num_bytes, _device: _FakeTensor(object()),
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(nodes=((0, 0),), tensor_index=0),
+            DFBStorageSegment(nodes=((1, 0),)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="requires either tensor-backed storage on every segment or compiler storage",
+    ):
+        kernel_runner.build_pipe_runtime_resources(
+            tensors=[_FakeTensor(object())],
+            core_ranges=_FakeCoreRanges(),
+            cb_configs=[config],
+            pipe_computed_address_dfb_indices=[0],
+        )
 
 
 def test_build_cb_descriptors_rejects_aliased_partial_tensor_ranges(monkeypatch):

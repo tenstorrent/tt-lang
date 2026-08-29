@@ -11,6 +11,74 @@
 
 namespace mlir::tt::ttl {
 
+std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
+  auto compare = predicate.getDefiningOp<arith::CmpIOp>();
+  if (!compare || (compare.getPredicate() != arith::CmpIPredicate::eq &&
+                   compare.getPredicate() != arith::CmpIPredicate::ne)) {
+    return std::nullopt;
+  }
+  Value selectedValue;
+  std::optional<int64_t> selectedIndex = getConstantIntValue(compare.getRhs());
+  if (selectedIndex) {
+    selectedValue = compare.getLhs();
+  } else {
+    selectedIndex = getConstantIntValue(compare.getLhs());
+    selectedValue = compare.getRhs();
+  }
+  if (!selectedIndex || *selectedIndex < 0) {
+    return std::nullopt;
+  }
+  auto indexOp = selectedValue.getDefiningOp<ReadyReceiveIndexOp>();
+  if (!indexOp) {
+    return std::nullopt;
+  }
+  Operation *waitAny = indexOp.getReady().getDefiningOp();
+  std::size_t candidateCount;
+  if (auto highWaitAny = dyn_cast_or_null<WaitAnyOp>(waitAny)) {
+    candidateCount = highWaitAny.getRequests().size();
+  } else if (auto internalWaitAny =
+                 dyn_cast_or_null<PipeTransferWaitAnyOp>(waitAny)) {
+    candidateCount = internalWaitAny.getTokens().size();
+  } else {
+    return std::nullopt;
+  }
+  if (static_cast<std::size_t>(*selectedIndex) >= candidateCount) {
+    return std::nullopt;
+  }
+  return ReadyReceiveSelection{waitAny, *selectedIndex,
+                               compare.getPredicate() ==
+                                   arith::CmpIPredicate::eq};
+}
+
+bool isInReadyReceiveSelectionRegion(
+    Operation *operation, Operation *waitAny, int64_t candidateIndex,
+    llvm::function_ref<bool(Operation *, Operation *)> isOrderedBefore) {
+  Operation *current = operation;
+  while (Block *block = current->getBlock()) {
+    auto ifOp = dyn_cast_or_null<scf::IfOp>(block->getParentOp());
+    if (ifOp) {
+      std::optional<ReadyReceiveSelection> selection =
+          getReadyReceiveSelection(ifOp.getCondition());
+      bool inSelectedRegion =
+          selection && ((selection->selectedWhenTrue &&
+                         block->getParent() == &ifOp.getThenRegion()) ||
+                        (!selection->selectedWhenTrue &&
+                         block->getParent() == &ifOp.getElseRegion()));
+      if (inSelectedRegion && selection->candidateIndex == candidateIndex &&
+          selection->waitAny == waitAny &&
+          isOrderedBefore(waitAny, ifOp.getOperation())) {
+        return true;
+      }
+    }
+    Operation *parent = block->getParentOp();
+    if (!parent || parent == waitAny) {
+      break;
+    }
+    current = parent;
+  }
+  return false;
+}
+
 FailureOr<ttcore::TileType> getTileType(Type type) {
   if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
     return tileType;
@@ -187,14 +255,20 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     std::string &failureReason) {
   failureReason.clear();
   llvm::raw_string_ostream diagnostic(failureReason);
-  if (lhsType.getDataType() != rhsType.getDataType()) {
-    diagnostic << "element data type mismatch: lhs has " << lhsType
-               << " but rhs has " << rhsType;
-    return failure();
-  }
-  if (resultType.getDataType() != lhsType.getDataType()) {
-    diagnostic << "result element data type " << resultType
-               << " must match input element data type " << lhsType;
+  ttcore::DataType lhsDataType = lhsType.getDataType();
+  ttcore::DataType rhsDataType = rhsType.getDataType();
+  ttcore::DataType resultDataType = resultType.getDataType();
+  bool hasMatchingDataTypes =
+      lhsDataType == rhsDataType && lhsDataType == resultDataType;
+  bool isBFloat16ByBFP = !transposeRhs &&
+                         lhsDataType == ttcore::DataType::BFloat16 &&
+                         (rhsDataType == ttcore::DataType::BFP_BFloat4 ||
+                          rhsDataType == ttcore::DataType::BFP_BFloat8) &&
+                         resultDataType == ttcore::DataType::BFloat16;
+  if (!hasMatchingDataTypes && !isBFloat16ByBFP) {
+    diagnostic << "unsupported matmul element data type combination: lhs has "
+               << lhsType << ", rhs has " << rhsType << ", and result has "
+               << resultType;
     return failure();
   }
 
@@ -335,6 +409,15 @@ getDefaultTileExecutionInfo(Operation *operation,
     }
     return info;
   }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
+    info.primitive = TilePrimitive::Reduce;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    if (normalization.getHasGamma()) {
+      info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    }
+    info.requiredDstSlots = normalization.getNumTiles();
+    return info;
+  }
   if (isa<TileTransposeOp>(operation)) {
     info.primitive = TilePrimitive::Transpose;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
@@ -411,6 +494,10 @@ LogicalResult verifyTileExecutionInfo(Operation *operation,
         << "defines " << info.dstOperandsMaterializedByOperation.size()
         << " DST operand materialization entries for "
         << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  if (info.requiredDstSlots == 0) {
+    operation->emitOpError("defines a zero-slot DST residency requirement");
     return failure();
   }
   return success();
@@ -653,14 +740,18 @@ getDefaultDstReadFootprints(Operation *op) {
   return footprints;
 }
 
-/// Most tile ops write one explicit `dst_index`; block matmul is the current
-/// multi-slot writer and stores only read DST for packing.
+/// Most tile ops write one explicit `dst_index`; block operations may write a
+/// contiguous range, and stores only read DST for packing.
 SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   if (isa<TileStoreOp, DstIndexOp>(op)) {
     return {};
   }
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return {{matmul.getDstIndex(), getMatmulBlockOutputTileCount(matmul)}};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return {{normalization.getDstIndex(),
+             static_cast<int64_t>(normalization.getNumTiles())}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
@@ -681,6 +772,10 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return DstFootprint{matmul.getDstIndex(),
                         getMatmulBlockOutputTileCount(matmul)};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return DstFootprint{normalization.getDstIndex(),
+                        static_cast<int64_t>(normalization.getNumTiles())};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return DstFootprint{*dstIndex, 1};

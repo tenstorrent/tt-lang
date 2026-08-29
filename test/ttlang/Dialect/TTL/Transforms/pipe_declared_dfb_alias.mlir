@@ -39,13 +39,13 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %post = ttl.copy %pipe, %target_block
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<1x16, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %source, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %post : !ttl.transfer_handle
+    ttl.wait %post : !ttl.receive_request
     ttl.cb_push %target : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
     %target_ready = ttl.cb_wait %target
         : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
@@ -86,13 +86,13 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %post = ttl.copy %pipe, %target_block
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<1x16, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %source, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %post : !ttl.transfer_handle
+    ttl.wait %post : !ttl.receive_request
     ttl.cb_push %target : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
     %ready0 = ttl.cb_wait %target
         : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
@@ -141,13 +141,13 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %post0 = ttl.copy %pipe0, %target0_block
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<1x16, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send0 = ttl.copy %source0, %pipe0
         : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send0 : !ttl.transfer_handle<write>
-    ttl.wait %post0 : !ttl.transfer_handle
+    ttl.wait %post0 : !ttl.receive_request
     ttl.cb_push %target0 : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
     %target0_ready = ttl.cb_wait %target0
         : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
@@ -160,13 +160,13 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %post1 = ttl.copy %pipe1, %target1_block
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
            tensor<1x1x!ttcore.tile<1x16, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send1 = ttl.copy %source1, %pipe1
         : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send1 : !ttl.transfer_handle<write>
-    ttl.wait %post1 : !ttl.transfer_handle
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %target1 : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
     %target1_ready = ttl.cb_wait %target1
         : <[1, 1], !ttcore.tile<1x16, bf16>, 1>
