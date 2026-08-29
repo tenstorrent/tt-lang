@@ -31,12 +31,24 @@ namespace ttk = mlir::tt::ttkernel;
 // every record.
 constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
 
-static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
+static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records,
+                                            Operation *foreachOp) {
   bool hasDeviceTransfer =
       static_cast<bool>(records.getPipes().front().getDeviceTransfer());
-  return hasDeviceTransfer
-             ? records.getPipes().size() == 1
-             : records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
+  if (!hasDeviceTransfer) {
+    return records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
+  }
+  if (records.getPipes().size() != 1) {
+    return false;
+  }
+  bool usesSelectedIdentity = false;
+  foreachOp->walk([&](Operation *nestedOp) {
+    usesSelectedIdentity |= isa<SelectedPipeSourceDeviceIndexOp,
+                                SelectedPipeDestinationDeviceIndexOp,
+                                SelectedPipeSourceCoordinatesOp,
+                                SelectedPipeDestinationCoordinatesOp>(nestedOp);
+  });
+  return !usesSelectedIdentity;
 }
 
 struct GridMajorPipeRecordIndexTables {
@@ -475,7 +487,7 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
-  if (shouldLowerPipeNetForeachDirect(records)) {
+  if (shouldLowerPipeNetForeachDirect(records, op)) {
     lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
                               foreachWorklist);
     return;
