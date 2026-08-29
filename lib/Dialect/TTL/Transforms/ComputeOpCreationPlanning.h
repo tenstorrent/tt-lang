@@ -40,6 +40,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -136,9 +137,34 @@ enum class ComputeOpCreationRecipe {
   /// Emit the recorded expression-level tile recipes.
   Fused,
 
+  /// Emit one capacity-fitting row-normalization block schedule.
+  RowNormalization,
+
   /// Replace an identity operation with its input without creating a
   /// `ComputeOp`.
   Elide,
+};
+
+enum class RowNormalizationGammaMode {
+  None,
+  FullRow,
+};
+
+/// Exact operation state retained for row-normalization plan application.
+struct RowNormalizationOperationPlan {
+  Operation *source = nullptr;
+  SmallVector<Value> operands;
+};
+
+/// Immutable capacity-fitting row-normalization schedule.
+struct RowNormalizationPlan {
+  Value input;
+  Value gamma;
+  FloatAttr scale;
+  FloatAttr epsilon;
+  int64_t numTiles = 0;
+  RowNormalizationGammaMode gammaMode = RowNormalizationGammaMode::None;
+  SmallVector<RowNormalizationOperationPlan> operations;
 };
 
 /// Indexing and iteration semantics for one created `ComputeOp`.
@@ -561,6 +587,9 @@ struct ComputeOpCreationPlan {
 
   /// Tile-level recipes in expression dependency order.
   SmallVector<FusedOperationPlan> fusedOperations;
+
+  /// Complete capacity-fitting row-normalization schedule, when selected.
+  std::optional<RowNormalizationPlan> rowNormalization;
 
   /// Original result uses used to verify plan/application consistency.
   SmallVector<ComputeOpCreationUse> resultUses;

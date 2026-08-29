@@ -3,12 +3,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
+#include "ttlang/Dialect/TTL/Transforms/LowerRowNormalizationCompute.h"
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -429,6 +431,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (useBlockMatmul && op.containsOp<TileMatmulBlockOp>()) {
       return generateMatmulCompute(rewriter, loc, op, indexingMaps, iterTypes);
     }
+    if (op.containsOp<TileRowNormalizationBlockOp>()) {
+      return generateRowNormalizationCompute(rewriter, loc, op);
+    }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
@@ -727,6 +732,42 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   return success();
 }
 
+static LogicalResult validateRowNormalizationComputes(func::FuncOp func) {
+  SmallVector<ComputeOp> rowNormalizationComputes;
+  func.walk([&](ComputeOp computeOp) {
+    if (computeOp.containsOp<TileRowNormalizationBlockOp>()) {
+      rowNormalizationComputes.push_back(computeOp);
+    }
+  });
+  if (rowNormalizationComputes.empty()) {
+    return success();
+  }
+
+  std::string targetFailureReason;
+  FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+      ComputeTargetEnvironment::get(func, targetFailureReason);
+  if (failed(target)) {
+    func.emitOpError(targetFailureReason);
+    return failure();
+  }
+
+  bool hasInvalidCompute = false;
+  for (ComputeOp computeOp : rowNormalizationComputes) {
+    TileRowNormalizationBlockOp block =
+        *computeOp.getBody().getOps<TileRowNormalizationBlockOp>().begin();
+    std::string capabilityFailureReason;
+    if (failed((*target)->validateOperation(block, capabilityFailureReason))) {
+      block.emitOpError(capabilityFailureReason);
+      hasInvalidCompute = true;
+      continue;
+    }
+    if (failed(verifyRowNormalizationCompute(computeOp))) {
+      hasInvalidCompute = true;
+    }
+  }
+  return failure(hasInvalidCompute);
+}
+
 struct TTLLowerToLoopsPass
     : public tt::ttl::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
   using tt::ttl::impl::TTLLowerToLoopsBase<
@@ -754,6 +795,9 @@ struct TTLLowerToLoopsPass
       if (capacityResult.wasInterrupted()) {
         return signalPassFailure();
       }
+    }
+    if (failed(validateRowNormalizationComputes(func))) {
+      return signalPassFailure();
     }
 
     // Step 1: Lower compute ops to scf.for tile loops.
