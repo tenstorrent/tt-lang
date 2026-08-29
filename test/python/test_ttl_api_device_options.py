@@ -311,7 +311,7 @@ class TestMeshProgramPlacement:
         assert calls[0][1]["mesh_program_placements"] == [(0, 1)]
 
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
-        placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
+        placement = ttl.MeshProgramPlacement((0, 0), (0, 3))
         calls = []
 
         def fake_run_kernel_on_device(**kwargs):
