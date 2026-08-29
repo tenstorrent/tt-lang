@@ -30,6 +30,36 @@ func.func @missing_byte_count()
 
 // -----
 
+func.func @block_copy_requires_read_handle()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %src_wait = ttl.cb_wait %src_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %src = ttl.attach_cb %src_wait, %src_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %dst_reserve = ttl.cb_reserve %dst_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %dst = ttl.attach_cb %dst_reserve, %dst_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{dataflow-buffer block copy requires !ttl.transfer_handle<read> result}}
+  %copy = ttl.copy %src, %dst {byte_count = 896 : i64}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      -> !ttl.receive_request
+  func.return
+}
+
+// -----
+
 func.func @source_must_be_wait_view()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}

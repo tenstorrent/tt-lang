@@ -889,6 +889,12 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       return emitOpError(
           "dataflow-buffer block copies require an explicit byte_count");
     }
+    auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+    if (!handleType || handleType.getKind() != TransferKind::read) {
+      return emitOpError()
+             << "dataflow-buffer block copy requires "
+                "!ttl.transfer_handle<read> result";
+    }
     auto srcAttach = getSrc().getDefiningOp<AttachCBOp>();
     auto dstAttach = getDst().getDefiningOp<AttachCBOp>();
     mlir::Operation *srcAcquire =
