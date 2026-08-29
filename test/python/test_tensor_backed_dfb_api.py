@@ -285,7 +285,7 @@ def test_make_tensor_backed_dfb_requires_ttnn_tensor(monkeypatch):
     [
         (_FakeTensor(buffer_type="DRAM"), "must use L1 storage"),
         (_FakeTensor(layout="ROW_MAJOR"), "must use TILE layout"),
-        (_FakeTensor(dtype="int32"), "supports BF16, FP32, BFP4, and BFP8"),
+        (_FakeTensor(dtype="int32"), "supports BF16, FP32, BFP4_B, and BFP8_B"),
     ],
     ids=["dram", "row_major", "int32"],
 )

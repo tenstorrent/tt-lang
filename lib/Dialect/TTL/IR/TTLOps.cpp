@@ -443,7 +443,7 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
         tileType.getDataType() != ttcore::DataType::BFP_BFloat4 &&
         tileType.getDataType() != ttcore::DataType::BFP_BFloat8) {
       return emitOpError()
-             << "tensor backing supports only BF16, FP32, BFP4, and BFP8 "
+             << "tensor backing supports only BF16, FP32, BFP4_B, and BFP8_B "
                 "tile element types, got "
              << tileType;
     }

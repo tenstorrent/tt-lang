@@ -78,7 +78,7 @@ func.func @matmul_result_element_mismatch(
 
 // -----
 
-// Mixed-format matmul rejects a transposed BFP4 rhs.
+// Mixed-format matmul rejects a transposed BFP4_B rhs.
 func.func @matmul_transposed_bfp4_rhs(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<4x3x!ttcore.tile<32x32, bfp_bf4>>)
@@ -93,7 +93,7 @@ func.func @matmul_transposed_bfp4_rhs(
 
 // -----
 
-// Mixed-format matmul rejects a transposed BFP8 rhs.
+// Mixed-format matmul rejects a transposed BFP8_B rhs.
 func.func @matmul_transposed_bfp8_rhs(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<4x3x!ttcore.tile<32x32, bfp_bf8>>)

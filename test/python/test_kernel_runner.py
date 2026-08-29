@@ -4501,7 +4501,7 @@ def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypa
 
     with pytest.raises(
         ValueError,
-        match="tensor backing format bfp8 is not supported; expected BF16, FP32, BFP4, or BFP8",
+        match="tensor backing format bfp8 is not supported; expected BF16, FP32, BFP4_B, or BFP8_B",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],

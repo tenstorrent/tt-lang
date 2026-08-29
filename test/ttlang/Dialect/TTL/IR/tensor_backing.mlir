@@ -1,7 +1,7 @@
 // Tests supported block-float tensor-backed DFB element types.
 // RUN: ttlang-opt --split-input-file %s | FileCheck %s
 
-// BFP4 tensor backing uses its physical 576-byte tile page size.
+// BFP4_B tensor backing uses its physical 576-byte tile page size.
 module {
   // CHECK-LABEL: func.func @bfp4_tensor_backing
   func.func @bfp4_tensor_backing() {
@@ -14,7 +14,7 @@ module {
 
 // -----
 
-// BFP8 tensor backing uses its physical 1088-byte tile page size.
+// BFP8_B tensor backing uses its physical 1088-byte tile page size.
 module {
   // CHECK-LABEL: func.func @bfp8_tensor_backing
   func.func @bfp8_tensor_backing() {

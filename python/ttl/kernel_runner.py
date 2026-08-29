@@ -2349,7 +2349,7 @@ def _validate_tensor_backed_dfb_binding(
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing format "
             f"{config.data_format} is not supported; expected BF16, FP32, "
-            "BFP4, or BFP8"
+            "BFP4_B, or BFP8_B"
         )
     context = f"DFB[{config.dfb_index}] tensor backing"
     properties = _validate_tensor_backed_dfb_tensor(tensor, context=context)

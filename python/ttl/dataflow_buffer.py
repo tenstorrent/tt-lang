@@ -59,7 +59,7 @@ def _validate_tensor_backed_dfb_tensor(
     dtype_name = str(tensor.dtype).rsplit(".", maxsplit=1)[-1].lower()
     if dtype_name not in SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS:
         raise ValueError(
-            f"{context} supports BF16, FP32, BFP4, and BFP8 tensors, "
+            f"{context} supports BF16, FP32, BFP4_B, and BFP8_B tensors, "
             f"got {tensor.dtype}"
         )
 
