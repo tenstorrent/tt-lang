@@ -132,7 +132,7 @@ case "$PHASE" in
             python3 -m pytest \
                 -c build/test/pytest.ini \
                 --rootdir="${REPO_ROOT}/test" \
-                'test/python/fabric/test_tree_reduce.py::test_tree_all_reduce[fp32]' \
+                test/python/fabric/test_tree_reduce.py \
                 -svx --tb=long --timeout=60 --timeout-method=thread \
                 --junitxml=build/test/pytest-report-fabric-full.xml
         test_status=$?
