@@ -33,6 +33,7 @@ from .runtime_resources import (
     KernelRuntimeResources,
     ProgramRuntimeResources,
 )
+from .kernel_runner import MeshProgramPlacement
 from .condition import DispatchCondition
 from .dfb_reset import DFBReset
 from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
@@ -78,6 +79,7 @@ __all__ = [
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
+    "MeshProgramPlacement",
     "DispatchCondition",
     "DFBReset",
     "DFBAllocationGroup",

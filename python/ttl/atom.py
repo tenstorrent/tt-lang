@@ -1016,7 +1016,12 @@ def operation(
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
-    """Define a unified-body or explicit multi-kernel operation."""
+    """Define a unified-body or explicit multi-kernel operation.
+
+    ``mesh_program_placements`` optionally limits execution to logical device
+    coordinate tuples or inclusive ``ttl.MeshProgramPlacement`` ranges. When
+    omitted, an operation with a device domain executes on the full domain.
+    """
 
     def _decorator(fn):
         validate_operation_interface(fn)

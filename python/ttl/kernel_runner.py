@@ -622,7 +622,7 @@ class PipeGlobalSemaphoreCache:
 
 @dataclass(frozen=True)
 class MeshProgramPlacement:
-    """Device range for one program inside a mesh descriptor."""
+    """Inclusive device range for one program inside a mesh descriptor."""
 
     start: Any
     end: Optional[Any] = None

@@ -559,6 +559,13 @@ links, and groups destinations by direction. It validates a distinct-link
 assignment for all interfering managers before calling
 `ttnn.setup_routing_plane_connection(...)` with explicit link indices.
 
+An operation executes on its complete `device_domain` by default. The
+`mesh_program_placements` operation option can instead select explicit logical
+device coordinates or inclusive `ttl.MeshProgramPlacement` ranges. The host
+then materializes descriptors only for those devices. Placement is explicit:
+the compiler does not infer it from PipeNet endpoints because non-PipeNet code
+can have effects on every logical device.
+
 The compiler-managed runtime prefix is:
 
 ```text
