@@ -606,6 +606,20 @@ def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
     return tensor_placements
 
 
+def _resolve_mesh_program_placements(args: tuple, device_domain, requested_placements):
+    """Resolve explicit mesh placements or the full logical device domain."""
+    default_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
+    if requested_placements is None:
+        return default_placements
+    if not isinstance(requested_placements, (tuple, list)):
+        raise TypeError("mesh_program_placements must be a tuple or list")
+    if not requested_placements:
+        raise ValueError("mesh_program_placements must not be empty")
+    return list(requested_placements)
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -2418,6 +2432,7 @@ def _compile_kernel(
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
     device_domain=None,
+    mesh_program_placements=None,
     l1_budget_override: int = 0,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
@@ -2522,8 +2537,8 @@ def _compile_kernel(
 
     pipenets = _build_operation_pipenets(f, threads)
     device_domain = pipenets.resolve_device_domain(device_domain)
-    mesh_program_placements = _default_mesh_program_placements_with_domain(
-        args, device_domain
+    resolved_mesh_program_placements = _resolve_mesh_program_placements(
+        args, device_domain, mesh_program_placements
     )
 
     launch_grid = grid
@@ -2554,7 +2569,7 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
-        mesh_program_placements=mesh_program_placements,
+        mesh_program_placements=resolved_mesh_program_placements,
         device_domain=device_domain,
         logical_kernels=[thread._logical_kernel for thread in threads],
         operation_name=f.__name__,
@@ -3150,6 +3165,7 @@ def pykernel_gen(
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     _prepare_call: Optional[Callable] = None,
     device_domain=None,
+    mesh_program_placements=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -3170,6 +3186,9 @@ def pykernel_gen(
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
         device_domain: Optional logical device domain for mesh execution.
+        mesh_program_placements: Optional logical device coordinates or ranges
+            that receive program descriptors. The full device domain is used
+            when omitted.
         runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
@@ -3239,6 +3258,7 @@ def pykernel_gen(
                 target_arch=target_arch,
                 compiler_options=compiler_options,
                 device_domain=device_domain,
+                mesh_program_placements=mesh_program_placements,
                 l1_budget_override=l1_budget_override,
                 runtime_resource_factory=runtime_resource_factory,
                 runtime_resource_cache=runtime_resource_cache,

@@ -3004,6 +3004,61 @@ def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
     assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 0, 1]
 
 
+def test_device_domain_builds_only_explicit_mesh_program_placements(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        device_domain=DeviceDomain((4, 8)),
+        mesh_program_placements=[(0, 0), (3, 7)],
+    )
+
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == 2
+    assert mesh_programs[0][1].kernels[0].common_runtime_args == [0x2000, 0, 0]
+    assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 3, 7]
+
+
+@pytest.mark.parametrize(
+    "placement, message",
+    [
+        ((0,), "rank must match"),
+        (kernel_runner.MeshProgramPlacement((0, 1), (0, 0)), "must not exceed"),
+        ((4, 0), "inside the device domain"),
+    ],
+)
+def test_device_domain_rejects_invalid_mesh_program_placement(
+    monkeypatch, placement, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(object())],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            device_domain=DeviceDomain((4, 8)),
+            mesh_program_placements=[placement],
+        )
+
+
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
