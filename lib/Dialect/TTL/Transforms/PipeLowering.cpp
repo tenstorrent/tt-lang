@@ -1296,19 +1296,58 @@ static Value buildSelectedPipeCounterAddress(
                                  typedLocalAddress);
 }
 
+static bool anySelectedRecordUsesSenderReadyCounter(
+    ArrayRef<PipeResourceInfo> resources) {
+  return llvm::any_of(resources, [](const PipeResourceInfo &resource) {
+    return resource.readyCounter.has_value();
+  });
+}
+
+static bool allSelectedRecordsUseSenderReadyCounter(
+    ArrayRef<PipeResourceInfo> resources) {
+  return llvm::all_of(resources, [](const PipeResourceInfo &resource) {
+    return resource.readyCounter.has_value();
+  });
+}
+
+static PipeCounterInfo
+getFallbackSenderReadyCounter(ArrayRef<PipeResourceInfo> resources) {
+  auto readyResource = llvm::find_if(
+      resources, [](const PipeResourceInfo &resource) {
+        return resource.readyCounter.has_value();
+      });
+  assert(readyResource != resources.end() &&
+         "selected pipe has no sender-ready record");
+  return *readyResource->readyCounter;
+}
+
 static Value buildSelectedReadyCounterAddress(
     Operation *op, Location loc, ArrayRef<PipeResourceInfo> resources,
     Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
     ConversionPatternRewriter &rewriter) {
+  PipeCounterInfo fallbackCounter =
+      getFallbackSenderReadyCounter(resources);
   SmallVector<PipeCounterInfo> counters;
   counters.reserve(resources.size());
   for (const PipeResourceInfo &resource : resources) {
-    assert(resource.readyCounter &&
-           "selected pipe missing sender-ready counter");
-    counters.push_back(*resource.readyCounter);
+    counters.push_back(resource.readyCounter.value_or(fallbackCounter));
   }
   return buildSelectedPipeCounterAddress(op, loc, counters, recordIndex,
                                          pipeResourcePlan, rewriter);
+}
+
+static Value buildSelectedUsesSenderReadyCounter(
+    Location loc, ArrayRef<PipeResourceInfo> resources, Value recordIndex,
+    ConversionPatternRewriter &rewriter) {
+  SmallVector<int64_t> usesSenderReadyCounter =
+      llvm::map_to_vector(resources, [](const PipeResourceInfo &resource) {
+        return static_cast<int64_t>(resource.readyCounter.has_value());
+      });
+  Value selectedMode = loadIndexTableEntry(
+      loc, usesSenderReadyCounter, recordIndex, rewriter);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  return arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
+                               selectedMode, zero);
 }
 
 /// Add a static byte offset to an L1 address without changing the address
@@ -2704,8 +2743,10 @@ void initializeFabricReadyCounters(const PipeModulePlan &pipeModulePlan,
                        PipeSynchronizationProtocol::Fabric) {
       return;
     }
-    assert(resource.readyCounter &&
-           resource.readyCounter->getStorage() ==
+    if (!resource.readyCounter) {
+      return;
+    }
+    assert(resource.readyCounter->getStorage() ==
                PipeCounterStorage::GlobalSemaphore &&
            "fabric readiness requires a global counter");
     FuncOp func = sendOp->getParentOfType<FuncOp>();
@@ -2939,47 +2980,74 @@ static LogicalResult lowerSelectedPipeTransferSend(
         op, fields, usePostedCompletion, rewriter);
   }
 
-  Value senderSemAddr = buildSelectedReadyCounterAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  Value expectedSignals;
-  if (fields.isCollective) {
-    expectedSignals = arith::IndexCastOp::create(
-        rewriter, loc, rewriter.getI32Type(), fields.numDests);
-  } else {
-    expectedSignals = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
-  }
-  if (usesFabric) {
-    FuncOp func = op->getParentOfType<FuncOp>();
-    auto readyTableIt = fabricReadyCounters.find(func);
-    assert(readyTableIt != fabricReadyCounters.end() &&
-           "selected fabric sender is missing its readiness table");
-    SmallVector<PipeCounterInfo> readyCounters;
-    readyCounters.reserve(resources.size());
-    for (const PipeResourceInfo &resource : resources) {
-      assert(resource.readyCounter &&
-             resource.readyCounter->getStorage() ==
-                 PipeCounterStorage::GlobalSemaphore &&
-             "selected fabric readiness requires global counters");
-      readyCounters.push_back(*resource.readyCounter);
+  bool anyUseSenderReady =
+      anySelectedRecordUsesSenderReadyCounter(resources);
+  bool allUseSenderReady =
+      allSelectedRecordsUseSenderReadyCounter(resources);
+  if (anyUseSenderReady) {
+    Value senderSemAddr = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+    Value expectedSignals;
+    if (fields.isCollective) {
+      expectedSignals = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getI32Type(), fields.numDests);
+    } else {
+      expectedSignals = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
     }
-    Value readyIndex = buildSelectedCounterTableIndex(
-        loc, readyCounters, readyTableIt->second, fields.recordIndex, rewriter);
-    Value previousReady = memref::LoadOp::create(
-        rewriter, loc, readyTableIt->second.values, ValueRange{readyIndex});
-    Value expectedReady =
-        arith::AddIOp::create(rewriter, loc, previousReady, expectedSignals);
-    memref::StoreOp::create(rewriter, loc, expectedReady,
-                            readyTableIt->second.values,
-                            ValueRange{readyIndex});
-    auto senderSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-    ttk::SemaphoreWaitMinOp::create(rewriter, loc, senderSemPtr, expectedReady);
-  } else {
-    auto senderSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-    ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedSignals);
-    auto zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIndex);
+    auto emitSenderReadyWait = [&]() {
+      if (usesFabric) {
+        FuncOp func = op->getParentOfType<FuncOp>();
+        auto readyTableIt = fabricReadyCounters.find(func);
+        assert(readyTableIt != fabricReadyCounters.end() &&
+               "selected fabric sender is missing its readiness table");
+        PipeCounterInfo fallbackCounter =
+            getFallbackSenderReadyCounter(resources);
+        SmallVector<PipeCounterInfo> readyCounters = llvm::map_to_vector(
+            resources, [&](const PipeResourceInfo &resource) {
+              assert((!resource.readyCounter ||
+                      resource.readyCounter->getStorage() ==
+                          PipeCounterStorage::GlobalSemaphore) &&
+                     "selected fabric readiness requires global counters");
+              return resource.readyCounter.value_or(fallbackCounter);
+            });
+        Value readyIndex = buildSelectedCounterTableIndex(
+            loc, readyCounters, readyTableIt->second, fields.recordIndex,
+            rewriter);
+        Value previousReady = memref::LoadOp::create(
+            rewriter, loc, readyTableIt->second.values,
+            ValueRange{readyIndex});
+        Value expectedReady = arith::AddIOp::create(
+            rewriter, loc, previousReady, expectedSignals);
+        memref::StoreOp::create(rewriter, loc, expectedReady,
+                                readyTableIt->second.values,
+                                ValueRange{readyIndex});
+        auto senderSemPtr = ttk::CastToL1PtrOp::create(
+            rewriter, loc, l1PtrTy, senderSemAddr);
+        ttk::SemaphoreWaitMinOp::create(rewriter, loc, senderSemPtr,
+                                        expectedReady);
+        return;
+      }
+      auto senderSemPtr =
+          ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
+      ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr,
+                                   expectedSignals);
+      auto zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIndex);
+    };
+    if (allUseSenderReady) {
+      emitSenderReadyWait();
+    } else {
+      Value usesSenderReady = buildSelectedUsesSenderReadyCounter(
+          loc, resources, fields.recordIndex, rewriter);
+      auto readyWait = scf::IfOp::create(rewriter, loc, usesSenderReady,
+                                         /*withElseRegion=*/false);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&readyWait.getThenRegion().front());
+        emitSenderReadyWait();
+      }
+      rewriter.setInsertionPointAfter(readyWait);
+    }
   }
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
@@ -3396,8 +3464,11 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
 
-  const FabricRuntimeInfo *fabricRuntimeInfo = nullptr;
-  if (usesFabric) {
+  bool anyUseSenderReady =
+      anySelectedRecordUsesSenderReadyCounter(resources);
+  bool allUseSenderReady =
+      allSelectedRecordsUseSenderReadyCounter(resources);
+  if (usesFabric && anyUseSenderReady) {
     auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe receiver has no initialized routing-plane "
@@ -3411,20 +3482,33 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
                    "routing-plane targets");
       return failure();
     }
-    fabricRuntimeInfo = &runtimeIt->second;
-  }
-
-  Value senderSemAddr = buildSelectedReadyCounterAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  if (usesFabric) {
-    Value routeIndex = buildSelectedRouteIndex(loc, postPlan.fabricRouteIndices,
-                                               fields.recordIndex, rewriter);
-    FabricRouteEmitter routeEmitter(op, routeIndex, *fabricRuntimeInfo,
-                                    rewriter);
-    routeEmitter.emitAtomicIncrement(
-        fields.srcX, fields.srcY, senderSemAddr,
-        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
-  } else {
+    Value senderSemAddr = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+    auto emitSenderReadyIncrement = [&]() {
+      Value routeIndex = buildSelectedRouteIndex(
+          loc, postPlan.fabricRouteIndices, fields.recordIndex, rewriter);
+      FabricRouteEmitter routeEmitter(op, routeIndex, runtimeIt->second,
+                                      rewriter);
+      routeEmitter.emitAtomicIncrement(
+          fields.srcX, fields.srcY, senderSemAddr,
+          arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+    };
+    if (allUseSenderReady) {
+      emitSenderReadyIncrement();
+    } else {
+      Value usesSenderReady = buildSelectedUsesSenderReadyCounter(
+          loc, resources, fields.recordIndex, rewriter);
+      auto readyIncrement = scf::IfOp::create(
+          rewriter, loc, usesSenderReady, /*withElseRegion=*/false);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(
+            &readyIncrement.getThenRegion().front());
+        emitSenderReadyIncrement();
+      }
+      rewriter.setInsertionPointAfter(readyIncrement);
+    }
+  } else if (!usesFabric) {
     SelectedNocPipeTransportEmitter transport(
         op, fields, /*usePostedCompletion=*/false, rewriter);
     if (anyUsePublishedAddress) {
@@ -3465,8 +3549,31 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
         rewriter.setInsertionPointAfter(publishAddress);
       }
     }
-    if (failed(transport.emitSenderReadyIncrement(senderSemAddr))) {
-      return failure();
+    if (anyUseSenderReady) {
+      Value senderSemAddr = buildSelectedReadyCounterAddress(
+          op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+      auto emitSenderReadyIncrement = [&]() {
+        return transport.emitSenderReadyIncrement(senderSemAddr);
+      };
+      if (allUseSenderReady) {
+        if (failed(emitSenderReadyIncrement())) {
+          return failure();
+        }
+      } else {
+        Value usesSenderReady = buildSelectedUsesSenderReadyCounter(
+            loc, resources, fields.recordIndex, rewriter);
+        auto readyIncrement = scf::IfOp::create(
+            rewriter, loc, usesSenderReady, /*withElseRegion=*/false);
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(
+              &readyIncrement.getThenRegion().front());
+          if (failed(emitSenderReadyIncrement())) {
+            return failure();
+          }
+        }
+        rewriter.setInsertionPointAfter(readyIncrement);
+      }
     }
   }
 
@@ -4575,9 +4682,13 @@ static bool usesFabricProtocol(
 
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
-    const PipeSynchronizationSelection *synchronizationSelection) {
-  // Selected transfers publish receiver addresses, so their sender must wait
-  // until the matching table entry has been initialized.
+    const PipeSynchronizationSelection *synchronizationSelection,
+    bool hasComputedAddress, bool singleExecution) {
+  // A selected one-shot transfer with a computed destination cannot overwrite
+  // an earlier payload, and its destination storage exists before dispatch.
+  if (isSelectedTransferUnit(unit) && hasComputedAddress && singleExecution) {
+    return false;
+  }
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {
     return true;
   }
@@ -4898,16 +5009,23 @@ LogicalResult buildPipeResourcePlan(
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [&](std::size_t unitIndex) {
-        return usesSenderReadyCounter(units[unitIndex],
-                                      synchronizationSelection);
+        return usesSenderReadyCounter(
+            units[unitIndex], synchronizationSelection,
+            computedAddressPlan.infoByUnitIndex.contains(unitIndex),
+            hasSingleExecution(units[unitIndex], pipeGraph));
       });
 
   // The same ready color is reused on different source nodes, so every source
   // must interpret that color as the same storage kind.
   PipeCounterAllocationCounts counterCounts = counterAllocator.getCounts();
   bool hasFabricReadyCounter =
-      llvm::any_of(units, [&](const PipeTransferAllocationUnit &unit) {
-        return usesSenderReadyCounter(unit, synchronizationSelection) &&
+      llvm::any_of(llvm::enumerate(units), [&](auto indexedUnit) {
+        std::size_t unitIndex = indexedUnit.index();
+        const PipeTransferAllocationUnit &unit = indexedUnit.value();
+        return usesSenderReadyCounter(
+                   unit, synchronizationSelection,
+                   computedAddressPlan.infoByUnitIndex.contains(unitIndex),
+                   hasSingleExecution(unit, pipeGraph)) &&
                usesFabricProtocol(unit, synchronizationSelection);
       });
   bool useGlobalReadyCounters =
@@ -4947,7 +5065,10 @@ LogicalResult buildPipeResourcePlan(
     assert(completionColor < static_cast<int64_t>(completionCounters.size()));
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     std::optional<PipeCounterInfo> maybeReadyCounter;
-    if (usesSenderReadyCounter(unit, synchronizationSelection)) {
+    if (usesSenderReadyCounter(
+            unit, synchronizationSelection,
+            computedAddressPlan.infoByUnitIndex.contains(indexedUnit.index()),
+            hasSingleExecution(unit, pipeGraph))) {
       auto sourceIt = readyColorBySourceColor.find(sourceKey);
       assert(sourceIt != readyColorBySourceColor.end());
       auto colorIt = sourceIt->second.find(unit.resourceColor);
