@@ -23,8 +23,8 @@ from utils.correctness import assert_allclose
 pytestmark = pytest.mark.multi_device
 
 TREE_REDUCTION_DTYPES = [
-    pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
     pytest.param(torch.float32, ttnn.float32, 5e-3, 5e-2, id="fp32"),
+    pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
 ]
 
 
