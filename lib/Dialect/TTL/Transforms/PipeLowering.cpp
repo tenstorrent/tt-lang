@@ -3366,32 +3366,33 @@ LogicalResult lowerPipeTransferSend(
                                       nextAcquired);
     }
   } else if (usesFabric) {
-    assert(pipeResource.readyCounter &&
-           "fabric sender is missing its readiness counter");
-    FailureOr<PipeCounterTableEntry> maybeReadyProgress =
-        lookupPipeCounterTableEntry(fabricReadyCounters, senderFunc,
-                                    *pipeResource.readyCounter);
-    if (failed(maybeReadyProgress)) {
-      op.emitError("fabric pipe send has no cumulative readiness counter");
-      return failure();
+    if (pipeResource.readyCounter) {
+      FailureOr<PipeCounterTableEntry> maybeReadyProgress =
+          lookupPipeCounterTableEntry(fabricReadyCounters, senderFunc,
+                                      *pipeResource.readyCounter);
+      if (failed(maybeReadyProgress)) {
+        op.emitError("fabric pipe send has no cumulative readiness counter");
+        return failure();
+      }
+      int64_t expectedReceiverPosts =
+          isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
+      Value readyIndex = arith::ConstantIndexOp::create(
+          rewriter, loc, maybeReadyProgress->index);
+      Value previousReady = memref::LoadOp::create(
+          rewriter, loc, maybeReadyProgress->values, ValueRange{readyIndex});
+      Value readyIncrement = arith::ConstantIntOp::create(
+          rewriter, loc, expectedReceiverPosts, 32);
+      Value expectedReady =
+          arith::AddIOp::create(rewriter, loc, previousReady, readyIncrement);
+      memref::StoreOp::create(rewriter, loc, expectedReady,
+                              maybeReadyProgress->values,
+                              ValueRange{readyIndex});
+      Value readyCounterPtr =
+          buildPipeCounterPtr(loc, senderFunc, *pipeResource.readyCounter,
+                              pipeResourcePlan, rewriter);
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, readyCounterPtr,
+                                      expectedReady);
     }
-    int64_t expectedReceiverPosts =
-        isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
-    Value readyIndex = arith::ConstantIndexOp::create(
-        rewriter, loc, maybeReadyProgress->index);
-    Value previousReady = memref::LoadOp::create(
-        rewriter, loc, maybeReadyProgress->values, ValueRange{readyIndex});
-    Value readyIncrement =
-        arith::ConstantIntOp::create(rewriter, loc, expectedReceiverPosts, 32);
-    Value expectedReady =
-        arith::AddIOp::create(rewriter, loc, previousReady, readyIncrement);
-    memref::StoreOp::create(rewriter, loc, expectedReady,
-                            maybeReadyProgress->values, ValueRange{readyIndex});
-    Value readyCounterPtr =
-        buildPipeCounterPtr(loc, senderFunc, *pipeResource.readyCounter,
-                            pipeResourcePlan, rewriter);
-    ttk::SemaphoreWaitMinOp::create(rewriter, loc, readyCounterPtr,
-                                    expectedReady);
   } else {
     assert(pipeResource.readyCounter &&
            "sender-ready protocol selected without a sender-ready counter");
@@ -3714,9 +3715,8 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
 
-  if (usesFabric) {
-    assert(pipeResource.readyCounter &&
-           pipeResource.readyCounter->getStorage() ==
+  if (usesFabric && pipeResource.readyCounter) {
+    assert(pipeResource.readyCounter->getStorage() ==
                PipeCounterStorage::GlobalSemaphore &&
            "fabric receiver post requires a global readiness counter");
     auto runtimeIt = fabricRuntime.find(op.getOperation());
@@ -4763,9 +4763,9 @@ static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection,
     bool hasComputedAddress, bool singleExecution) {
-  // A selected one-shot transfer with a computed destination cannot overwrite
-  // an earlier payload, and its destination storage exists before dispatch.
-  if (isSelectedTransferUnit(unit) && hasComputedAddress && singleExecution) {
+  // A one-shot transfer with a computed destination cannot overwrite an
+  // earlier payload, and its destination storage exists before dispatch.
+  if (hasComputedAddress && singleExecution) {
     return false;
   }
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {

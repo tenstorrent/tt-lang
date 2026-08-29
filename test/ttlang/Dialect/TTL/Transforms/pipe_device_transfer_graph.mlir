@@ -5,9 +5,11 @@
 
 // Receiver declarations intentionally reverse the send order. Each edge must
 // retain its route, predicate, payload send, completion wait, and receiver DFB.
+// Computed receiver DFB addresses and exact single execution eliminate the
+// receiver-readiness messages without changing completion synchronization.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @senders
 // CHECK-SAME: ttl.fabric_routes = [
@@ -33,6 +35,7 @@
 // CHECK: scf.if %[[IS_DEVICE_0]] {
 // CHECK-NEXT: %[[CONNECTION_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[ROUTE_ID_0:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]] header_count = %{{.*}} runtime_arg_base = %[[RUNTIME_ARG_BASE_0]]
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[CONNECTION_MANAGER_0]], %[[ROUTE_ID_0]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
 // CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]])
@@ -46,6 +49,7 @@
 // CHECK: scf.if %[[IS_DEVICE_2]] {
 // CHECK-NEXT: %[[CONNECTION_MANAGER_2:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[ROUTE_ID_2:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]] header_count = %{{.*}} runtime_arg_base = %[[RUNTIME_ARG_BASE_2]]
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: %[[PAYLOAD_1:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[CONNECTION_MANAGER_2]], %[[ROUTE_ID_2]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
 // CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]])
@@ -64,7 +68,7 @@
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_1]],
 // CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER_3:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[RECEIVER_ROUTE_ID_3:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]] header_count = %{{.*}} runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_3]]
-// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_ROUTE_ID_3]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]])
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %c4096_i32)
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_1]],
@@ -79,7 +83,7 @@
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_0]],
 // CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER_1:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[RECEIVER_ROUTE_ID_1:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]] header_count = %{{.*}} runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_1]]
-// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_ROUTE_ID_1]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]])
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %c4096_i32)
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_0]],
