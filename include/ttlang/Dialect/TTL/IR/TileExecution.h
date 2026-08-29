@@ -12,6 +12,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -58,6 +59,8 @@ struct TileExecutionInfo {
   std::optional<FullFp32AccumulationKind> fullFp32Accumulation;
   /// Residual contents in a reused destination slot affect the result.
   bool accumulatesIntoDst = false;
+  /// Maximum simultaneous destination residency required by this operation.
+  std::uint64_t requiredDstSlots = 1;
 };
 
 /// Return strategies structurally permitted by the operation's SSA operands.

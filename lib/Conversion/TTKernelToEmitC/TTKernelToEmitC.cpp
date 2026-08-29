@@ -34,6 +34,7 @@
 #include "llvm/Support/xxhash.h"
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <optional>
 #include <string>
@@ -2781,6 +2782,46 @@ public:
   }
 };
 
+class ExperimentalRowNormalizationBlockOpConversion
+    : public OpConversionPattern<
+          ttkernel::ExperimentalRowNormalizationBlockOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalRowNormalizationBlockOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ttkernel::ExperimentalRowNormalizationBlockOp op,
+      ttkernel::ExperimentalRowNormalizationBlockOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const final {
+    auto createBitsLiteral = [&](FloatAttr value) {
+      std::uint64_t bits = value.getValue().bitcastToAPInt().getZExtValue();
+      return emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                      rewriter.getI32Type(),
+                                      (Twine(bits) + "U").str());
+    };
+    // The fused LLK multiplies its scaler during both reduction stages, so its
+    // argument is the square root of the semantic scale.
+    FloatAttr reductionScaler = rewriter.getF32FloatAttr(
+        std::sqrt(op.getScaleAttr().getValueAsDouble()));
+    Value reductionScalerBits = createBitsLiteral(reductionScaler);
+    Value epsilonBits = createBitsLiteral(op.getEpsilonAttr());
+
+    SmallVector<Attribute, 4> templateArguments = {
+        emitc::OpaqueAttr::get(op.getContext(),
+                               std::to_string(op.getNumTiles())),
+        emitc::OpaqueAttr::get(op.getContext(),
+                               op.getHasGamma() ? "true" : "false"),
+        datatypeToDataformatEnumNameOpaqueAttr(rewriter, op.getDtype())};
+    SmallVector<Value, 5> operands = {
+        adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
+        reductionScalerBits, epsilonBits};
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::row_normalization_block", ArrayAttr(),
+        ArrayAttr::get(op.getContext(), templateArguments), operands);
+    return success();
+  }
+};
+
 // Arith MaxUIOp doesn't have an emitc lowering. We can lower it to a call to
 // std::max.
 class ArithMaxUIRewriter : public OpConversionPattern<arith::MaxUIOp> {
@@ -3266,6 +3307,8 @@ public:
         typeConverter, context, state, "async_write_barrier");
 
     patterns.add<TTKernelInvokeSFPIOpRewriter>(typeConverter, context);
+    patterns.add<ExperimentalRowNormalizationBlockOpConversion>(typeConverter,
+                                                                context);
     patterns.add<TTKernelToEmitCGetDeviceIdFromLogicalMeshPositionOpRewriter>(
         typeConverter, context, state);
 

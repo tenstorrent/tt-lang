@@ -32,6 +32,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LaunchNodeDomainAnalysis.cpp
 
   LowerMatmulCompute.cpp
+  LowerRowNormalizationCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
   TTLCoalesceDFBAcquires.cpp

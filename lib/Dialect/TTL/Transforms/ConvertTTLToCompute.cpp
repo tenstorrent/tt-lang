@@ -605,6 +605,89 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   return success();
 }
 
+/// Applies a precomputed row-normalization schedule. Expression recognition,
+/// capacity, lifetimes, publication, and operation erasure are fixed by the
+/// immutable plan; application emits one block operation mechanically.
+static LogicalResult
+buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
+                             const ComputeOpCreationPlan &creation,
+                             const OutputPublicationPlan &outputs) {
+  assert(creation.recipe == ComputeOpCreationRecipe::RowNormalization &&
+         creation.rowNormalization &&
+         "row-normalization builder requires its typed schedule");
+  const RowNormalizationPlan &schedule = *creation.rowNormalization;
+  if (llvm::any_of(schedule.operations,
+                   [](const RowNormalizationOperationPlan &operation) {
+                     return !llvm::equal(operation.source->getOperands(),
+                                         operation.operands);
+                   })) {
+    return rewriter.notifyMatchFailure(
+        sinkOp, "row-normalization expression changed after planning");
+  }
+  Location loc = sinkOp->getLoc();
+  RankedTensorType outputType = creation.resultType;
+  SmallVector<Attribute> maps;
+  for (AffineMap inputMap : creation.iteration.inputMaps) {
+    maps.push_back(AffineMapAttr::get(inputMap));
+  }
+  maps.append(outputs.dfbs.size(),
+              AffineMapAttr::get(creation.iteration.outputMap));
+  SmallVector<Attribute> iteratorTypes =
+      buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
+
+  insertAtCreationAnchor(rewriter, outputs);
+  SmallVector<Value> outputViews;
+  SmallVector<Type> resultTypes;
+  for (Value outputDFB : outputs.dfbs) {
+    Value init =
+        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
+    outputViews.push_back(
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
+    resultTypes.push_back(outputType);
+  }
+
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange(resultTypes), ValueRange(creation.inputs),
+      ValueRange(outputViews), rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iteratorTypes));
+  Block *body = rewriter.createBlock(&computeOp.getBody());
+  for (ttcore::TileType inputTileType : creation.inputTileTypes) {
+    body->addArgument(inputTileType, loc);
+  }
+  Type outputTileType = creation.resultTileType;
+  SmallVector<Type> outputTileTypes(outputs.dfbs.size(), outputTileType);
+  SmallVector<Location> outputLocations(outputs.dfbs.size(), loc);
+  body->addArguments(outputTileTypes, outputLocations);
+
+  rewriter.setInsertionPointToStart(body);
+  Value inputTile = body->getArgument(0);
+  bool hasGamma = schedule.gammaMode != RowNormalizationGammaMode::None;
+  Value gammaTile = hasGamma ? body->getArgument(1) : inputTile;
+  Value outputTile = body->getArgument(creation.inputs.size());
+  Value result =
+      createTileOpWithPlaceholderDstIndex<TileRowNormalizationBlockOp>(
+          rewriter, loc, outputTileType, inputTile, gammaTile, outputTile,
+          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma),
+          rewriter.getI64IntegerAttr(schedule.numTiles));
+
+  for (StoreOp store : outputs.stores) {
+    emitTileStore(rewriter, loc, result, computeOp, store, creation);
+  }
+  YieldOp::create(rewriter, loc);
+
+  SmallVector<CBPushOp> replacedPushes;
+  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                   replacedPushes);
+  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
+    if (operation != sinkOp && operation->use_empty()) {
+      rewriter.eraseOp(operation);
+    }
+  }
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
@@ -713,14 +796,20 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
   if (failed(getCreationPlan(op, rewriter, kernelPlan, creation))) {
     return failure();
   }
-  if (creation->kind == ComputeOpCreationKind::Fused) {
-    OutputPublicationPlan outputs;
-    if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
-      return failure();
-    }
-    return buildFusedCompute(op, rewriter, *creation, outputs);
+  if (creation->kind != ComputeOpCreationKind::Fused ||
+      (creation->recipe != ComputeOpCreationRecipe::RowNormalization &&
+       creation->recipe != ComputeOpCreationRecipe::Fused)) {
+    return rewriter.notifyMatchFailure(op,
+                                       "operation has no fusable expression");
   }
-  return rewriter.notifyMatchFailure(op, "operation has no fusable expression");
+  OutputPublicationPlan outputs;
+  if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
+    return failure();
+  }
+  if (creation->recipe == ComputeOpCreationRecipe::RowNormalization) {
+    return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
+  }
+  return buildFusedCompute(op, rewriter, *creation, outputs);
 }
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
