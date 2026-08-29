@@ -128,6 +128,7 @@ case "$PHASE" in
         export TTLANG_DEBUG_FABRIC_ARGS=1
         export TTLANG_FINAL_MLIR=/tmp/pr734-fp32-tree-final.mlir
         export TT_METAL_WATCHER=20
+        export TT_METAL_WATCHER_DISABLE_ETH=1
         export TT_METAL_WATCHER_TEXT_START=1
         set +e
         timeout --signal=TERM --kill-after=15s 120 \
