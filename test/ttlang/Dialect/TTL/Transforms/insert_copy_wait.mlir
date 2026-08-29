@@ -92,37 +92,68 @@ func.func @mixed_copy_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout3>
 
 // -----
 
-// A later nonadjacent wait discards the partial immediate-wait plan.
+// Same-block waits complete each copy without changing their overlap.
 
-#partial_layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                              buffer = dram, grid = [1, 1], memory = interleaved>
+#linear_layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                             buffer = dram, grid = [1, 1], memory = interleaved>
 
-// CHECK-LABEL: func.func @discard_partial_immediate_plan
+// CHECK-LABEL: func.func @same_block_nonadjacent_waits
 // CHECK: %[[XF1:.+]] = ttl.copy
-// CHECK-NEXT: ttl.wait %[[XF1]]
 // CHECK-NEXT: %[[SLICE2:.+]] = ttl.tensor_slice
 // CHECK-NEXT: %[[XF2:.+]] = ttl.copy %[[SLICE2]]
-// CHECK-NEXT: %[[SLICE3:.+]] = ttl.tensor_slice
+// CHECK-NEXT: ttl.wait %[[XF1]]
 // CHECK-NEXT: ttl.wait %[[XF2]]
-// CHECK-NEXT: %[[XF3:.+]] = ttl.copy %[[SLICE3]]
-// CHECK-NEXT: ttl.wait %[[XF3]]
 // CHECK-NOT: ttl.wait
 // CHECK: return
-func.func @discard_partial_immediate_plan(
-    %arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>)
+func.func @same_block_nonadjacent_waits(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout>)
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %c0 = arith.constant 0 : index
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout>
+  %xf1 = ttl.copy %slice0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
+  %slice1 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout>
+  %xf2 = ttl.copy %slice1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>, #linear_layout>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %xf1 : !ttl.transfer_handle<read>
+  ttl.wait %xf2 : !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// Branch-local waits discard a partial local plan and use CFG analysis.
+
+#partial_layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                              buffer = dram, grid = [1, 1], memory = interleaved>
+
+// CHECK-LABEL: func.func @discard_partial_local_plan
+// CHECK: %[[XF1:.+]] = ttl.copy
+// CHECK-NEXT: ttl.wait %[[XF1]]
+// CHECK-NEXT: %[[SLICE2:.+]] = ttl.tensor_slice
+// CHECK-NEXT: %[[XF2:.+]] = ttl.copy %[[SLICE2]]
+// CHECK-NEXT: scf.if
+// CHECK: ttl.wait %[[XF2]]
+// CHECK: } else {
+// CHECK-NEXT: ttl.wait %[[XF2]]
+// CHECK-NOT: ttl.wait
+// CHECK: return
+func.func @discard_partial_local_plan(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>,
+    %condition: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>
   %xf1 = ttl.copy %slice0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
   %slice1 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>
   %xf2 = ttl.copy %slice1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
-  %slice2 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>
-  ttl.wait %xf2 : !ttl.transfer_handle<read>
-  %xf3 = ttl.copy %slice2, %cb2 : (tensor<1x1x!ttcore.tile<32x32, f32>, #partial_layout>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
-  ttl.wait %xf3 : !ttl.transfer_handle<read>
+  scf.if %condition {
+    ttl.wait %xf2 : !ttl.transfer_handle<read>
+  } else {
+    ttl.wait %xf2 : !ttl.transfer_handle<read>
+  }
   func.return
 }
 

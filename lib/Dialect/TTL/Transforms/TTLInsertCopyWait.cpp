@@ -481,12 +481,21 @@ struct CopyWaitPlan {
   Location location;
 };
 
+// Same-block program order completes the copy before any block exit or
+// backedge can execute.
+static bool hasGuaranteedSameBlockWait(CopyOp copy) {
+  return llvm::any_of(copy.getXf().getUsers(), [&](Operation *user) {
+    auto wait = dyn_cast<WaitOp>(user);
+    return wait && wait->getBlock() == copy->getBlock() &&
+           copy->isBeforeInBlock(wait);
+  });
+}
+
 static FailureOr<SmallVector<CopyWaitPlan>>
-tryPlanImmediateCopyWaits(func::FuncOp func) {
+tryPlanLocalCopyWaits(func::FuncOp func) {
   SmallVector<CopyWaitPlan> plans;
   WalkResult result = func.walk([&](CopyOp copy) {
-    auto wait = dyn_cast_or_null<WaitOp>(copy->getNextNode());
-    if (wait && wait.getXf() == copy.getXf()) {
+    if (hasGuaranteedSameBlockWait(copy)) {
       return WalkResult::advance();
     }
     if (!isa<ReceiveRequestType>(copy.getXf().getType()) &&
@@ -596,10 +605,10 @@ struct TTLInsertCopyWaitPass
     : public impl::TTLInsertCopyWaitBase<TTLInsertCopyWaitPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    FailureOr<SmallVector<CopyWaitPlan>> immediatePlans =
-        tryPlanImmediateCopyWaits(func);
-    if (succeeded(immediatePlans)) {
-      applyCopyWaitPlans(func, *immediatePlans);
+    FailureOr<SmallVector<CopyWaitPlan>> localPlans =
+        tryPlanLocalCopyWaits(func);
+    if (succeeded(localPlans)) {
+      applyCopyWaitPlans(func, *localPlans);
       return;
     }
 
