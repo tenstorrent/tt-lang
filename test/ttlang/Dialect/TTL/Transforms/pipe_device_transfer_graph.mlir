@@ -27,27 +27,22 @@
 // CHECK: %[[FABRIC_BASE_0:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[FABRIC_BASE_INDEX_0:.*]] = arith.index_cast %[[FABRIC_BASE_0]] : i32 to index
 // CHECK-NEXT: %[[CONNECTIONS_0:.*]] = ttkernel.get_arg_val(%[[FABRIC_BASE_INDEX_0]])
-// CHECK-NEXT: %[[RUNTIME_ARG_BASE_0:.*]] = arith.addi %[[FABRIC_BASE_INDEX_0]],
+// CHECK-NEXT: %[[CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// CHECK-NEXT: %[[RUNTIME_ARG_BASE:.*]] = arith.addi %[[FABRIC_BASE_INDEX_0]],
+// CHECK-NEXT: %[[ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER]], %[[CONNECTIONS_0]] runtime_arg_base = %[[RUNTIME_ARG_BASE]]
 // CHECK: scf.if %[[IS_DEVICE_0]] {
-// CHECK-NEXT: %[[CONNECTION_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[CONNECTION_COUNT_0:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]] runtime_arg_base = %[[RUNTIME_ARG_BASE_0]]
 // CHECK: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER_0]], %[[CONNECTION_COUNT_0]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
-// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]])
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_2:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_2:.*]] = arith.cmpi eq, %[[DEVICE_2]], %{{.*}} : i32
-// CHECK: %[[FABRIC_BASE_2:.*]] = ttkernel.get_common_arg_val
-// CHECK-NEXT: %[[FABRIC_BASE_INDEX_2:.*]] = arith.index_cast %[[FABRIC_BASE_2]] : i32 to index
-// CHECK-NEXT: %[[CONNECTIONS_2:.*]] = ttkernel.get_arg_val(%[[FABRIC_BASE_INDEX_2]])
-// CHECK-NEXT: %[[RUNTIME_ARG_BASE_2:.*]] = arith.addi %[[FABRIC_BASE_INDEX_2]],
 // CHECK: scf.if %[[IS_DEVICE_2]] {
-// CHECK-NEXT: %[[CONNECTION_MANAGER_2:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[CONNECTION_COUNT_2:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]] runtime_arg_base = %[[RUNTIME_ARG_BASE_2]]
 // CHECK: %[[PAYLOAD_1:.*]] = ttkernel.get_write_ptr
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER_2]], %[[CONNECTION_COUNT_2]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
-// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]])
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
 // CHECK-NEXT: }
+// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER]], %[[CONNECTIONS_0]])
+// CHECK-NOT: ttkernel.routing_plane.create_connection_manager
+// CHECK-NOT: ttkernel.routing_plane.open_connections
 // CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-LABEL: func.func @receivers
 // CHECK: %[[RECEIVER_DFB_0:.*]] = ttkernel.get_compile_time_arg_val(1)
@@ -57,31 +52,26 @@
 // CHECK: %[[RECEIVER_FABRIC_BASE_3:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[RECEIVER_FABRIC_BASE_INDEX_3:.*]] = arith.index_cast %[[RECEIVER_FABRIC_BASE_3]] : i32 to index
 // CHECK-NEXT: %[[RECEIVER_CONNECTIONS_3:.*]] = ttkernel.get_arg_val(%[[RECEIVER_FABRIC_BASE_INDEX_3]])
-// CHECK-NEXT: %[[RECEIVER_RUNTIME_ARG_BASE_3:.*]] = arith.addi %[[RECEIVER_FABRIC_BASE_INDEX_3]],
+// CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// CHECK-NEXT: %[[RECEIVER_RUNTIME_ARG_BASE:.*]] = arith.addi %[[RECEIVER_FABRIC_BASE_INDEX_3]],
+// CHECK-NEXT: %[[RECEIVER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTIONS_3]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE]]
 // CHECK: scf.if %[[IS_DEVICE_3]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_1]],
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER_3:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_COUNT_3:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_3]]
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTION_COUNT_3]],
-// CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]])
+// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_ROUTE_ID]],
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_1]],
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_1:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_1:.*]] = arith.cmpi eq, %[[DEVICE_1]], %{{.*}} : i32
-// CHECK: %[[RECEIVER_FABRIC_BASE_1:.*]] = ttkernel.get_common_arg_val
-// CHECK-NEXT: %[[RECEIVER_FABRIC_BASE_INDEX_1:.*]] = arith.index_cast %[[RECEIVER_FABRIC_BASE_1]] : i32 to index
-// CHECK-NEXT: %[[RECEIVER_CONNECTIONS_1:.*]] = ttkernel.get_arg_val(%[[RECEIVER_FABRIC_BASE_INDEX_1]])
-// CHECK-NEXT: %[[RECEIVER_RUNTIME_ARG_BASE_1:.*]] = arith.addi %[[RECEIVER_FABRIC_BASE_INDEX_1]],
 // CHECK: scf.if %[[IS_DEVICE_1]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_0]],
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER_1:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_COUNT_1:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_1]]
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTION_COUNT_1]],
-// CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]])
+// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_ROUTE_ID]],
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_0]],
 // CHECK-NEXT: }
+// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTIONS_3]])
+// CHECK-NOT: ttkernel.routing_plane.create_connection_manager
+// CHECK-NOT: ttkernel.routing_plane.open_connections
 // CHECK-NOT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: return
 
