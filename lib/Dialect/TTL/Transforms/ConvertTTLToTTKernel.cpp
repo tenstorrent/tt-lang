@@ -1200,7 +1200,6 @@ static LogicalResult lowerTensorCBCopy(
   return success();
 }
 
-/// Lower an explicit byte-preserving copy between acquired DFB blocks.
 static LogicalResult lowerDFBBlockCopy(CopyOp op,
                                        ConversionPatternRewriter &rewriter,
                                        const TypeConverter &typeConverter) {

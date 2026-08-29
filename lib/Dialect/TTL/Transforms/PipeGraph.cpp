@@ -1100,7 +1100,6 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
-/// Verify that every receiver agrees on the payload and has sufficient space.
 static LogicalResult
 verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(transferNode.sendOp);

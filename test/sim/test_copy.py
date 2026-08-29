@@ -473,6 +473,106 @@ class TestCopyWithStateMachine:
                     copy(source_block, destination_block)
                 copy(source_block, destination_block, byte_count=64).wait()
 
+    @pytest.mark.parametrize(
+        ("source_acquisition", "destination_acquisition", "expected_error"),
+        [
+            pytest.param(
+                BlockAcquisition.RESERVE,
+                BlockAcquisition.RESERVE,
+                "source must come from DFB wait",
+                id="source-not-waited",
+            ),
+            pytest.param(
+                BlockAcquisition.WAIT,
+                BlockAcquisition.WAIT,
+                "destination must come from DFB reserve",
+                id="destination-not-reserved",
+            ),
+        ],
+    )
+    def test_byte_counted_block_copy_requires_acquired_directions(
+        self,
+        source_acquisition,
+        destination_acquisition,
+        expected_error,
+    ) -> None:
+        """Reject block copies that reverse the producer/consumer roles."""
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        source_block = Block(
+            make_ones_tile(),
+            shape=(1, 1),
+            acquisition=source_acquisition,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=source_dfb,
+        )
+        destination_block = Block(
+            make_zeros_tile(),
+            shape=(1, 1),
+            acquisition=destination_acquisition,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=destination_dfb,
+        )
+
+        with pytest.raises(ValueError, match=expected_error):
+            CopyTransaction(source_block, destination_block, byte_count=64)
+
+    def test_byte_counted_block_copy_requires_distinct_dfbs(self) -> None:
+        """Reject local byte copies within one DFB lifecycle."""
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
+        )
+        source_block = Block(
+            make_ones_tile(),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=dfb,
+        )
+        destination_block = Block(
+            make_zeros_tile(),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=dfb,
+        )
+
+        with pytest.raises(
+            ValueError, match="requires distinct source and destination"
+        ):
+            CopyTransaction(source_block, destination_block, byte_count=64)
+
+    def test_byte_counted_pipe_copy_requires_matching_counts(self) -> None:
+        """Reject a receiver count that differs from the queued send count."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        pipe = Pipe(214, 215)
+        with source_dfb.reserve() as source_block:
+            copy(make_ones_tile(), source_block).wait()
+        with source_dfb.wait() as source_block:
+            copy(source_block, pipe, byte_count=64).wait()
+
+        destination_block = Block(
+            make_zeros_tile(),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=destination_dfb,
+        )
+        transaction = CopyTransaction(pipe, destination_block, byte_count=32)
+        with pytest.raises(ValueError, match="sender and receiver must use the same"):
+            transaction.wait()
+
     def test_byte_counted_pipe_copy_preserves_destination_tail(self) -> None:
         """Use the same byte count on pipe send and receive."""
         set_current_kernel_type(KernelKind.DATA_MOVEMENT)

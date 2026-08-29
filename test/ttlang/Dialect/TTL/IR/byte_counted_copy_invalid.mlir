@@ -235,3 +235,51 @@ func.func @destination_view_capacity_required()
       -> !ttl.transfer_handle<read>
   func.return
 }
+
+// -----
+
+func.func @byte_count_must_be_positive() {
+  %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @below {{'ttl.copy' op attribute 'byte_count' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+  %send = ttl.copy %src_dfb, %pipe {byte_count = 0 : i64}
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+func.func @pipe_source_capacity_required() {
+  %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @below {{byte_count 2049 exceeds source dataflow-buffer block capacity 2048}}
+  %send = ttl.copy %src_dfb, %pipe {byte_count = 2049 : i64}
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+func.func @pipe_receiver_capacity_required() {
+  %dst_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[14, 1], !ttcore.tile<1x32, bf16>, 1>
+  %dst_reserve = ttl.cb_reserve %dst_dfb
+      : <[14, 1], !ttcore.tile<1x32, bf16>, 1>
+      -> tensor<14x1x!ttcore.tile<1x32, bf16>>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @below {{byte_count 897 exceeds destination acquired dataflow-buffer view capacity 896}}
+  %receive = ttl.copy %pipe, %dst_reserve {byte_count = 897 : i64}
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<14x1x!ttcore.tile<1x32, bf16>>)
+      -> !ttl.receive_request
+  func.return
+}
