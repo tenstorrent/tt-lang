@@ -32,8 +32,11 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
 
 static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
-  return !records.getPipes().front().getDeviceTransfer() &&
-         records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
+  bool hasDeviceTransfer =
+      static_cast<bool>(records.getPipes().front().getDeviceTransfer());
+  return hasDeviceTransfer
+             ? records.getPipes().size() == 1
+             : records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
 }
 
 struct GridMajorPipeRecordIndexTables {
@@ -390,15 +393,28 @@ static Value buildRecordRoleMatch(RewriterBase &rewriter, Location loc,
                                   PipeRecordAttr record, PipeRole role) {
   SmallVector<PipeRecordRoleFacts, 2> roleFacts =
       getPipeRecordRoleFacts(record, role);
-  assert(roleFacts.size() == 1 && !roleFacts.front().device &&
-         "direct record lowering requires one local endpoint role");
+  assert(roleFacts.size() == 1 &&
+         "direct record lowering requires one endpoint role");
   const PipeRecordRoleFacts &facts = roleFacts.front();
   Value minX = arith::ConstantIndexOp::create(rewriter, loc, facts.minX);
   Value minY = arith::ConstantIndexOp::create(rewriter, loc, facts.minY);
   Value maxX = arith::ConstantIndexOp::create(rewriter, loc, facts.maxX);
   Value maxY = arith::ConstantIndexOp::create(rewriter, loc, facts.maxY);
-  return buildNodeRangeMatch(rewriter, loc, nodeX, nodeY, minX, minY, maxX,
-                             maxY);
+  Value roleMatches = buildNodeRangeMatch(rewriter, loc, nodeX, nodeY, minX,
+                                          minY, maxX, maxY);
+  if (!facts.device) {
+    return roleMatches;
+  }
+  DeviceTransferAttr transfer = record.getDeviceTransfer();
+  assert(transfer && "device endpoint role requires a device transfer");
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), transfer.getDomain());
+  Value endpointDevice = arith::ConstantIndexOp::create(
+      rewriter, loc,
+      getLogicalDeviceIndex(transfer.getDomain(), facts.device));
+  Value deviceMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentDevice, endpointDevice);
+  return arith::AndIOp::create(rewriter, loc, roleMatches, deviceMatches);
 }
 
 static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
@@ -418,7 +434,7 @@ static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
       rewriter.getI64IntegerAttr(record.getDstEndX()),
       rewriter.getI64IntegerAttr(record.getDstEndY()),
       rewriter.getI64IntegerAttr(records.getPipeNetId()),
-      records.getPipeNetName(), isCollectiveAttr, DeviceTransferAttr());
+      records.getPipeNetName(), isCollectiveAttr, record.getDeviceTransfer());
 }
 
 template <typename ForeachOp>
