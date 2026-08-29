@@ -13,6 +13,7 @@ import weakref
 import pytest
 
 import ttl.atom as atom_module
+import ttl.dtype_utils as dtype_utils
 import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
 
@@ -74,6 +75,14 @@ class _RecordingCompiledKernel:
         return self.program_hash
 
 
+def _recognize_fake_tensors(monkeypatch):
+    def predicate(arg):
+        return isinstance(arg, _FakeTensor)
+
+    monkeypatch.setattr(ttl_api, "is_ttnn_tensor", predicate)
+    monkeypatch.setattr(dtype_utils, "is_ttnn_tensor", predicate)
+
+
 def _install_recording_compile(monkeypatch):
     compile_calls = []
     kernel_id_counter = itertools.count(1)
@@ -116,9 +125,7 @@ def _install_recording_compile(monkeypatch):
         )
         return compiled_kernel
 
-    monkeypatch.setattr(
-        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
-    )
+    _recognize_fake_tensors(monkeypatch)
     monkeypatch.setattr(ttl_api, "_compile_kernel", fake_compile)
     return compile_calls
 
@@ -228,9 +235,7 @@ def test_unified_operation_cache_forwards_runtime_resources(monkeypatch):
 
 
 def test_cache_key_separates_math_fidelity(monkeypatch):
-    monkeypatch.setattr(
-        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
-    )
+    _recognize_fake_tensors(monkeypatch)
     tensors = (_FakeTensor(), _FakeTensor())
     common_options = {
         "args": tensors,
@@ -347,9 +352,7 @@ def test_operation_cache_compilation_is_single_flight(monkeypatch):
         assert release_compile.wait(timeout=5)
         return SerializedCompiledKernel(runtime_resource_cache)
 
-    monkeypatch.setattr(
-        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
-    )
+    _recognize_fake_tensors(monkeypatch)
     monkeypatch.setattr(ttl_api, "_compile_kernel", compile_kernel)
 
     @ttl_api.operation(grid=(1, 1))
@@ -415,9 +418,7 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
     ):
         return ResourceCompiledKernel(runtime_resource_cache)
 
-    monkeypatch.setattr(
-        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
-    )
+    _recognize_fake_tensors(monkeypatch)
     monkeypatch.setattr(ttl_api, "_resolve_l1_budget", lambda *_args: 98304)
     monkeypatch.setattr(
         kernel_runner,

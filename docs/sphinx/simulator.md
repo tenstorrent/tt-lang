@@ -43,6 +43,115 @@ If you have already built the full TT-Lang compiler (`source build/env/activate`
 tt-lang-sim examples/eltwise_add.py
 ```
 
+(compiler-validation-before-simulation)=
+## Compiler validation before simulation
+
+The functional simulator checks kernel behavior by executing its Python model.
+It does not normally apply compiler restrictions, so a kernel can complete in
+the simulator and still fail during compilation. Optional compiler validation
+runs the compiler frontend and its diagnostic TTL pipeline before each
+operation is simulated. A compiler diagnostic prevents that operation from
+executing in the simulator.
+
+This feature requires a full `tt-lang` installation or compiler build,
+including the compiled MLIR Python extensions. It does not require or open a
+Tenstorrent device. Tensor arguments are represented by host-side shape and
+configuration descriptors rather than device allocations. Validation stops
+before TTKernel and EmitC lowering, runtime artifact generation, and device
+execution. The standalone `tt-lang-sim` package remains independent of the
+compiler.
+
+### Validation modes
+
+Using `--compiler-validation` without a value enables required validation. An
+explicit mode may be supplied when optional fallback behavior is wanted:
+
+| Mode | Behavior |
+|---|---|
+| `off` | Do not load the compiler. This is the default. |
+| `auto` | Run validation when a full compiler installation is available. Otherwise, issue one warning and continue with simulation. |
+| `required` | Run validation and report an error if the compiler cannot be loaded. This mode prevents a missing compiler installation from silently disabling validation. |
+
+The `required` mode is appropriate when successful validation is part of a CI
+or kernel-acceptance contract:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation required
+```
+
+The equivalent shorter form is recommended for required validation:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation
+```
+
+The `auto` mode supports development environments where the same command may
+run with either the standalone simulator package or a full compiler build:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation auto
+```
+
+As with other simulator options, the Python script precedes the option on the
+command line.
+
+### Offline compiler target
+
+Most frontend, type, dataflow-buffer, pipe, and structural diagnostics are
+target-independent. Some compiler checks also depend on architectural
+constraints, including available kernel slots and compute or DST
+configuration. `--compiler-target` supplies that architecture description
+without probing hardware.
+
+The default target is `blackhole`. Wormhole B0 validation is selected
+explicitly:
+
+```bash
+tt-lang-sim examples/eltwise_add.py \
+  --compiler-validation required \
+  --compiler-target wormhole_b0
+```
+
+Target selection does not change simulator execution. It affects only the
+compiler diagnostics that run before simulation.
+
+### Validation scope and limitations
+
+Successful compiler validation is cached in memory for each distinct operation
+tensor signature. The signature includes logical and padded shapes, dtype,
+layout, tile geometry, buffer placement, memory layout, sharding and mesh
+metadata, argument aliasing, grid, target, and compiler options. The cache is
+owned by the decorated operation and lasts for the current Python process.
+Failed validation is not cached. Validation reuses the same Python
+frontend, source-aware diagnostics, IR verification, and TTL pass prefix as
+normal compilation through dataflow-buffer allocation and L1 budget
+validation. The compiler represents this prefix as a separate validation
+phase. The simulator returns after that phase; normal compilation continues
+with TTKernel and EmitC lowering and runtime artifact construction. The
+validation passes may transform temporary compiler IR because later
+diagnostics depend on those normalized forms. That IR is discarded and does
+not alter the Python operation executed by the simulator.
+
+The simulator passes all tensor configuration metadata that it models to the
+compiler validator. This includes tiled versus row-major layout, DRAM versus L1
+placement, interleaved and compiler-supported sharded memory layouts, shard
+specifications, and mesh distribution. Compiler restrictions still apply; for
+example, TTNN interop currently rejects row-major operation tensors, and the
+TTL dialect does not currently represent ND-sharded layouts. Unsupported
+metadata is reported instead of being silently replaced with defaults. The
+simulator models only the standard 32x32 tile, so it cannot validate custom
+tile geometry. It also cannot report the amount of L1 memory currently
+available on a live device. Runtime behavior such as deadlocks, numerical
+disagreement, and data-dependent failures remains the responsibility of
+simulation and device testing.
+
+Diagnostics reflect the compiler revision installed alongside the simulator.
+For parity with a deployment compiler, both paths must use the same TT-Lang
+revision and target selection. The simulator and compiler validate a versioned
+bridge contract when the feature is loaded. A mismatched installation is
+reported as unavailable rather than attempting to validate with an
+incompatible descriptor format.
+
 Run the simulator test suite:
 
 ```bash

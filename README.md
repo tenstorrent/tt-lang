@@ -195,6 +195,25 @@ tt-lang includes a functional simulator that runs kernels as pure Python, withou
 tt-lang-sim examples/eltwise_add.py
 ```
 
+When a full tt-lang compiler build is available, the simulator can run the
+compiler frontend and its error-detecting TTL passes before simulation:
+
+```bash
+tt-lang-sim examples/eltwise_add.py --compiler-validation
+```
+
+Validation is disabled by default so the pure-Python simulator wheel remains
+independent of the compiler. `--compiler-validation auto` enables it when the
+compiler is available and otherwise continues with a warning. This path uses
+host-side descriptors containing the simulator's logical and padded shapes,
+dtype, layout, memory placement, tiling, sharding, and mesh metadata. It stops
+before TTKernel/runtime lowering and does not open or require a Tenstorrent
+device. Blackhole is the default offline target; `--compiler-target
+wormhole_b0` selects Wormhole B0 for checks that depend on architecture
+constraints. See
+[Compiler validation before simulation](docs/sphinx/simulator.md#compiler-validation-before-simulation)
+for modes, CI guidance, validation scope, and limitations.
+
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.
 
 ## 3. Documentation

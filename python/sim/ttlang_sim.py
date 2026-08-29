@@ -25,7 +25,12 @@ from typing import Any, Optional
 
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
-from .context import set_dry_run
+from .context import reset_context, set_dry_run
+from .compiler_validation import (
+    COMPILER_VALIDATION_MODES,
+    COMPILER_VALIDATION_TARGETS,
+    configure as configure_compiler_validation,
+)
 
 
 def setup_simulator_imports() -> None:
@@ -349,6 +354,27 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--compiler-validation",
+        nargs="?",
+        const="required",
+        choices=COMPILER_VALIDATION_MODES,
+        default="off",
+        metavar="MODE",
+        help=(
+            "Run the compiler's host-only static validation before simulation. "
+            "With no MODE, validation is required. MODE may be 'off', 'auto', "
+            "or 'required'; 'auto' continues when the compiler is unavailable."
+        ),
+    )
+
+    parser.add_argument(
+        "--compiler-target",
+        choices=COMPILER_VALIDATION_TARGETS,
+        default="blackhole",
+        help="Offline architecture target for compiler validation (default: blackhole)",
+    )
+
     if not argv:
         parser.print_help()
         sys.exit(1)
@@ -373,6 +399,18 @@ def main() -> None:
     args, script_args = parser.parse_known_args(argv[1:])
     args.target = first
     args.script_args = script_args
+
+    # main() is also callable by embedders, so establish the same clean
+    # configuration a new CLI process would have before applying its options.
+    reset_context()
+
+    # Load the optional compiler while ``ttl`` still names the real package;
+    # setup_simulator_imports shadows it for the kernel script immediately after.
+    try:
+        configure_compiler_validation(args.compiler_validation, args.compiler_target)
+    except (RuntimeError, ValueError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
 
     # Set up simulator imports before running any code
     setup_simulator_imports()

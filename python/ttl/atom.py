@@ -85,7 +85,7 @@ from .dataflow_buffer import (
     make_dfb,
     make_tensor_backed_dfb,
 )
-from .dtype_utils import is_ttnn_tensor
+from .dtype_utils import is_tensor_value, is_ttnn_tensor
 from .kernel import (
     Kernel,
     KernelSelector,
@@ -105,12 +105,16 @@ from .ttl_api import (
     _backend_kernel_capacities,
     _backend_kernel_slots,
     _build_pipenet_graph,
+    _canonical_static_tensor_args,
     _canonical_tensor_args,
     _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
+    _make_operation_validator,
     _make_operation_wrapper,
+    _pykernel_validator,
     _run_thread_compiler,
     _slot_idle_kernel,
+    _validate_program,
     _validate_operation_options,
     pykernel_gen,
 )
@@ -689,24 +693,20 @@ def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
     return _compile_thread
 
 
-def _compile_atom(
+@dataclass(frozen=True)
+class _PreparedAtomProgram:
+    program: Program
+    logical_kernels: List
+
+
+def _prepare_atom_program(
     spec: _AtomSpec,
     args: tuple,
-    kwargs: dict,
     grid,
-    num_outs: int,
     memory_space: str,
     tiled: bool,
-    program_hash: int,
-    fp32_dest_acc_en: Optional[bool],
-    dst_full_sync_en: Optional[bool],
-    math_fidelity: Optional[str],
     target_arch: Optional[str],
-    compiler_options: CompilerOptions,
-    l1_budget_override: int,
-    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
-    runtime_resource_cache=None,
-):
+) -> _PreparedAtomProgram:
 
     # The shared operation wrapper supplies values in signature order.
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
@@ -726,13 +726,13 @@ def _compile_atom(
     # Register ttnn tensors so the per-thread compiler can resolve global
     # tensor indices for its tensor accessors.
     for idx, (pname, val) in enumerate(bound_arguments.items()):
-        if is_ttnn_tensor(val):
+        if is_tensor_value(val):
             register_tensor_name(val, pname, index=idx)
 
-    # Detect L1 vs DRAM addressing from the first tensor (matching
+    # Detect L1 vs DRAM addressing from the first tensor descriptor (matching
     # @ttl.operation), since the tensor accessor type depends on it.
     first_tensor = next(
-        (v for v in bound_arguments.values() if is_ttnn_tensor(v)), None
+        (v for v in bound_arguments.values() if is_tensor_value(v)), None
     )
     if first_tensor is not None:
         memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)
@@ -758,7 +758,7 @@ def _compile_atom(
         all_nets[id(net)] = net
     for net in nets.values():
         all_nets[id(net)] = net
-    pipe_graph = _build_pipenet_graph(all_nets.values())
+    _build_pipenet_graph(all_nets.values())
 
     split = split_function_body(
         fn_def=stripped_fn,
@@ -785,7 +785,7 @@ def _compile_atom(
     # stable; unused ones are removed by MLIR DCE.
     captures: Dict[str, Any] = {}
     for pname, val in bound_arguments.items():
-        if is_ttnn_tensor(val) or isinstance(val, (int, float)):
+        if is_tensor_value(val) or isinstance(val, (int, float)):
             captures[pname] = val
     captures.update(dfbs)
     captures.update(nets)
@@ -821,12 +821,32 @@ def _compile_atom(
     }
     program = Program(*threads, args=args, kwargs=injected_program_kwargs)
 
+    return _PreparedAtomProgram(program, thread_logical_kernels)
+
+
+def _compile_atom(
+    spec: _AtomSpec,
+    args: tuple,
+    grid,
+    num_outs: int,
+    memory_space: str,
+    tiled: bool,
+    program_hash: int,
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
+    target_arch: Optional[str],
+    compiler_options: CompilerOptions,
+    l1_budget_override: int,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache=None,
+):
+    prepared = _prepare_atom_program(spec, args, grid, memory_space, tiled, target_arch)
     return _lower_program_to_kernel(
-        program=program,
+        program=prepared.program,
         args=args,
         launch_grid=grid,
         num_outs=num_outs,
-        pipenets=pipe_graph,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
@@ -836,10 +856,37 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
-        logical_kernels=thread_logical_kernels,
+        logical_kernels=prepared.logical_kernels,
         operation_name=spec.name,
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
+    )
+
+
+def _validate_atom(
+    spec: _AtomSpec,
+    args: tuple,
+    grid,
+    memory_space: str,
+    tiled: bool,
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+    target_arch: Optional[str],
+    compiler_options: CompilerOptions,
+    l1_budget_override: int,
+) -> None:
+    prepared = _prepare_atom_program(spec, args, grid, memory_space, tiled, target_arch)
+    _validate_program(
+        program=prepared.program,
+        launch_grid=grid,
+        target_arch=target_arch,
+        fp32_dest_acc_en=fp32_dest_acc_en,
+        dst_full_sync_en=dst_full_sync_en,
+        compiler_options=compiler_options,
+        l1_budget_override=l1_budget_override,
+        kernel_source_file=spec.source_file,
+        kernel_line_offset=spec.line_offset,
+        logical_kernels=prepared.logical_kernels,
     )
 
 
@@ -858,7 +905,6 @@ def _compile_unified_operation(
     return _compile_atom(
         spec,
         runtime_args,
-        {},
         resolved_grid,
         decorator_options["num_outs"],
         decorator_options["memory_space"],
@@ -872,6 +918,29 @@ def _compile_unified_operation(
         l1_budget_override=l1_budget_override,
         runtime_resource_factory=decorator_options.get("runtime_resource_factory"),
         runtime_resource_cache=runtime_resource_cache,
+    )
+
+
+def _validate_unified_operation(
+    spec,
+    decorator_options,
+    runtime_args,
+    resolved_grid,
+    target_arch,
+    compiler_options,
+    l1_budget_override,
+):
+    return _validate_atom(
+        spec,
+        runtime_args,
+        resolved_grid,
+        decorator_options["memory_space"],
+        decorator_options["tiled"],
+        fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
+        dst_full_sync_en=decorator_options["dst_full_sync_en"],
+        target_arch=target_arch,
+        compiler_options=compiler_options,
+        l1_budget_override=l1_budget_override,
     )
 
 
@@ -922,6 +991,54 @@ class Atom:
         return self._wrapper(*args, **kwargs)
 
 
+class AtomValidator:
+    """Host-only validator for a unified operation."""
+
+    def __init__(self, spec: _AtomSpec, decorator_options: dict):
+        self._spec = spec
+        self._grid = decorator_options["grid"]
+        self._ttl_operation_kind = "unified"
+
+        expand_only_params = [
+            param.name for param in spec.params if param.kind in {"dfb", "pipenet"}
+        ]
+        validate_callback = functools.partial(
+            _validate_unified_operation, spec, decorator_options
+        )
+        prepare_call = functools.partial(
+            _canonical_static_tensor_args,
+            spec.fn,
+            expand_only_params=expand_only_params,
+        )
+        self._validator = _make_operation_validator(
+            spec.fn,
+            validate_callback,
+            grid=decorator_options["grid"],
+            fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
+            dst_full_sync_en=decorator_options["dst_full_sync_en"],
+            math_fidelity=decorator_options["math_fidelity"],
+            options=decorator_options["options"],
+            target_arch=decorator_options["target_arch"],
+            prepare_call=prepare_call,
+        )
+        functools.update_wrapper(self, spec.fn)
+
+    @property
+    def name(self) -> str:
+        return self._spec.name
+
+    def _operation_identity_capture(self) -> tuple[str, str]:
+        return ("operation", self._spec.operation_identity)
+
+    def __call__(self, *args, **kwargs):
+        if self._grid is None:
+            raise ValueError(
+                f"@ttl.operation {self.name!r} has no grid and is expand-only; "
+                "it cannot be called directly"
+            )
+        return self._validator(*args, **kwargs)
+
+
 def _unified_operation(
     grid: Optional[Union[tuple, Callable]] = None,
     num_outs: int = 1,
@@ -933,12 +1050,7 @@ def _unified_operation(
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
-    """Build the unified-body form selected by ``@ttl.operation``.
-
-    Accepts the same compile parameters as @ttl.operation (grid, the fp32
-    / dst-sync overrides, compiler options). A grid is required for a
-    top-level operation; a composed operation used only for expansion needs none.
-    """
+    """Build the unified-body form selected by @ttl.operation."""
     _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
 
     def _decorator(f):
@@ -961,6 +1073,54 @@ def _unified_operation(
     return _decorator
 
 
+def _unified_operation_validator(
+    *,
+    grid,
+    num_outs,
+    memory_space,
+    tiled,
+    fp32_dest_acc_en,
+    dst_full_sync_en,
+    math_fidelity,
+    options,
+    target_arch,
+) -> Callable:
+    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
+
+    def _decorator(f):
+        spec = _build_atom_spec(f)
+        return AtomValidator(
+            spec,
+            {
+                "grid": grid,
+                "memory_space": memory_space,
+                "tiled": tiled,
+                "fp32_dest_acc_en": fp32_dest_acc_en,
+                "dst_full_sync_en": dst_full_sync_en,
+                "math_fidelity": math_fidelity,
+                "options": options,
+                "target_arch": target_arch,
+            },
+        )
+
+    return _decorator
+
+
+def _validate_operation_definition(fn: Callable) -> None:
+    validate_operation_interface(fn)
+    global_captures = inspect.getclosurevars(fn).globals
+    for name, value in sorted(global_captures.items()):
+        if isinstance(
+            value,
+            (DispatchCondition, DFBAllocationGroup, DFBReset, DFBReconfiguration),
+        ):
+            raise ValueError(
+                f"@ttl.operation {fn.__name__!r}: "
+                f"{type(value).__name__} {name!r} must be created by an "
+                "enclosing factory"
+            )
+
+
 def operation(
     grid: Optional[Union[tuple, Callable]] = None,
     indexing_maps: Optional[List[Callable]] = None,
@@ -977,23 +1137,7 @@ def operation(
     """Define a unified-body or explicit multi-kernel operation."""
 
     def _decorator(fn):
-        validate_operation_interface(fn)
-        global_captures = inspect.getclosurevars(fn).globals
-        for name, value in sorted(global_captures.items()):
-            if isinstance(
-                value,
-                (
-                    DispatchCondition,
-                    DFBAllocationGroup,
-                    DFBReset,
-                    DFBReconfiguration,
-                ),
-            ):
-                raise ValueError(
-                    f"@ttl.operation {fn.__name__!r}: "
-                    f"{type(value).__name__} {name!r} must be created by an "
-                    "enclosing factory"
-                )
+        _validate_operation_definition(fn)
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
             prepare_call = functools.partial(_canonical_tensor_args, fn)
@@ -1024,6 +1168,59 @@ def operation(
             math_fidelity=math_fidelity,
             options=options,
             runtime_resource_factory=runtime_resource_factory,
+        )(fn)
+
+    return _decorator
+
+
+def _operation_validator(
+    *,
+    grid,
+    indexing_maps=None,
+    iterator_types=None,
+    num_outs=1,
+    memory_space="L1",
+    tiled=True,
+    fp32_dest_acc_en=None,
+    dst_full_sync_en=None,
+    math_fidelity=None,
+    options=None,
+    target_arch=None,
+) -> Callable:
+    """Define a host-only validator for either operation form."""
+
+    def _decorator(fn):
+        _validate_operation_definition(fn)
+        explicit_options = indexing_maps is not None or iterator_types is not None
+        if explicit_options or _has_explicit_kernels(fn):
+            prepare_call = functools.partial(_canonical_static_tensor_args, fn)
+            wrapped = _pykernel_validator(
+                grid=grid,
+                indexing_maps=indexing_maps,
+                iterator_types=iterator_types,
+                num_outs=num_outs,
+                memory_space=memory_space,
+                tiled=tiled,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
+                options=options,
+                target_arch=target_arch,
+                prepare_call=prepare_call,
+            )(fn)
+            wrapped._ttl_operation_kind = "multi_kernel"
+            return wrapped
+
+        return _unified_operation_validator(
+            grid=grid,
+            num_outs=num_outs,
+            memory_space=memory_space,
+            tiled=tiled,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
+            options=options,
+            target_arch=target_arch,
         )(fn)
 
     return _decorator

@@ -357,7 +357,7 @@ def make_dataflow_buffer_like(
         DataflowBuffer for use in thread function closures
     """
     tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
-    if hasattr(tensor, "get_tile"):
+    if "TILE" in str(getattr(tensor, "layout", "TILE")) and hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
     return DataflowBuffer(
         tensor,
@@ -382,10 +382,13 @@ def make_tensor_backed_dfb(
     with the other group members. Tensor-backed group members must retain an
     identical DFB capacity descriptor.
     """
-    from .dtype_utils import is_ttnn_tensor
+    from .dtype_utils import is_tensor_value
 
-    if not is_ttnn_tensor(tensor):
-        raise TypeError("tensor-backed DFB storage requires a TTNN tensor")
+    if not is_tensor_value(tensor):
+        raise TypeError(
+            "tensor-backed DFB storage requires a TTNN tensor or static tensor "
+            "descriptor"
+        )
     if not isinstance(byte_offset, int) or isinstance(byte_offset, bool):
         raise TypeError("byte_offset must be an integer")
     if byte_offset < 0:

@@ -45,13 +45,17 @@ _TTNN_MEMORY_LAYOUT_MAP = {
 
 
 def detect_memory_layout(tensor) -> int:
-    """Detect TensorMemoryLayout enum value from a TTNN tensor."""
-    mem_config = tensor.memory_config()
+    """Detect TensorMemoryLayout enum value from tensor metadata."""
+    memory_config = getattr(tensor, "memory_config", None)
+    mem_config = memory_config() if callable(memory_config) else memory_config
+    if mem_config is None:
+        return TENSOR_MEMORY_LAYOUT_INTERLEAVED
     if hasattr(mem_config, "memory_layout"):
         layout_str = str(mem_config.memory_layout)
         for key, value in _TTNN_MEMORY_LAYOUT_MAP.items():
             if key in layout_str:
                 return value
+        raise ValueError(f"Unsupported tensor memory layout {layout_str}")
     return TENSOR_MEMORY_LAYOUT_INTERLEAVED
 
 

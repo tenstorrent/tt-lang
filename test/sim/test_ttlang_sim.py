@@ -1211,3 +1211,29 @@ class TestSimProfileArgParsing:
         with pytest.raises(SystemExit) as exc:
             extract(["script.py", "--save"])
         assert exc.value.code == 2
+
+
+def test_bare_compiler_validation_flag_requires_validation(monkeypatch):
+    from sim import ttlang_sim
+
+    configured = []
+    executed = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["tt-lang-sim", "kernel.py", "--compiler-validation"],
+    )
+    monkeypatch.setattr(
+        ttlang_sim,
+        "configure_compiler_validation",
+        lambda mode, target: configured.append((mode, target)),
+    )
+    monkeypatch.setattr(ttlang_sim, "setup_simulator_imports", lambda: None)
+    monkeypatch.setattr(
+        ttlang_sim, "run_file", lambda target, argv: executed.append((target, argv))
+    )
+
+    ttlang_sim.main()
+
+    assert configured == [("required", "blackhole")]
+    assert executed == [("kernel.py", [])]

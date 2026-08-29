@@ -36,10 +36,22 @@ from ttl.dialects import ttcore
 
 def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
+    if (
+        isinstance(tensor, torch.Tensor)
+        or getattr(tensor, "_ttlang_static_tensor", False) is True
+    ):
+        return False
     _ensure_ttnn()
     if ttnn is None:
         return False
     return isinstance(tensor, ttnn.Tensor)
+
+
+def is_tensor_value(tensor) -> bool:
+    """Return whether ``tensor`` can describe a compiler tensor argument."""
+    return getattr(tensor, "_ttlang_static_tensor", False) is True or is_ttnn_tensor(
+        tensor
+    )
 
 
 def torch_dtype_to_ttcore_datatype(torch_dtype):
@@ -55,22 +67,30 @@ def torch_dtype_to_ttcore_datatype(torch_dtype):
     Raises:
         ValueError: If dtype is not supported
     """
-    if torch_dtype == torch.float32:
+    # Compare stable names rather than torch module attributes. The simulator
+    # may temporarily rebind narrow dtype attributes for host arithmetic while
+    # retaining the original dtype object on its tensors.
+    dtype_name = str(torch_dtype).removeprefix("torch.").lower()
+    if dtype_name == "float32":
         return ttcore.DataType.Float32
-    if torch_dtype == torch.float16:
+    if dtype_name == "float16":
         return ttcore.DataType.Float16
-    if torch_dtype == torch.bfloat16:
+    if dtype_name == "bfloat16":
         return ttcore.DataType.BFloat16
-    if torch_dtype == torch.int32:
+    if dtype_name == "int32":
         return ttcore.DataType.Int32
-    if torch_dtype == torch.uint32:
+    if dtype_name == "uint32":
         return ttcore.DataType.UInt32
-    if torch_dtype == torch.uint16:
+    if dtype_name == "uint16":
         return ttcore.DataType.UInt16
-    if torch_dtype == torch.uint8:
+    if dtype_name == "uint8":
         return ttcore.DataType.UInt8
-    if torch_dtype == torch.bool:
+    if dtype_name == "bool":
         return ttcore.DataType.Bool
+    if dtype_name in ("bfloat8_b", "bfp_bfloat8", "bfp_bf8"):
+        return ttcore.DataType.BFP_BFloat8
+    if dtype_name in ("bfloat4_b", "bfp_bfloat4", "bfp_bf4"):
+        return ttcore.DataType.BFP_BFloat4
 
     raise ValueError(f"Unsupported torch dtype for ttcore.DataType: {torch_dtype}")
 

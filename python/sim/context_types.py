@@ -38,6 +38,8 @@ class SimulatorConfig:
     # deadlock detection, and copy-wait injection — only the payload bytes are
     # not transferred.  Assumes computation results do not affect control flow.
     dry_run: bool = False
+    compiler_validation_mode: str = "off"
+    compiler_validation_target: str = "blackhole"
 
 
 @dataclass

@@ -1911,6 +1911,8 @@ class Tensor:
     ttnn's ``(64,)``.
     """
 
+    _ttlang_sim_tensor = True
+
     def __init__(
         self,
         tensor: torch.Tensor,
@@ -2881,7 +2883,9 @@ def rand(
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
-        DRAM_MEMORY_CONFIG if memory_config is None else memory_config,
+        memory_config=(
+            memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+        ),
         dtype=dtype,
         logical_shape=tuple(shape),
         device=device,
@@ -2900,7 +2904,9 @@ def empty(
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
-        DRAM_MEMORY_CONFIG if memory_config is None else memory_config,
+        memory_config=(
+            memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+        ),
         dtype=dtype,
         logical_shape=tuple(shape),
         device=device,
@@ -2919,7 +2925,9 @@ def zeros(
     return Tensor(
         _pad_to_tile_alignment(raw, layout),
         layout,
-        DRAM_MEMORY_CONFIG if memory_config is None else memory_config,
+        memory_config=(
+            memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+        ),
         dtype=dtype,
         logical_shape=tuple(shape),
         device=device,
