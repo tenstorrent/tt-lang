@@ -125,6 +125,9 @@ case "$PHASE" in
     fabric-pytests)
         activate_build
         unset TT_VISIBLE_DEVICES
+        export TTLANG_DEBUG_FABRIC_ARGS=1
+        export TTLANG_FINAL_MLIR=/tmp/pr734-fp32-tree-final.mlir
+        set +e
         timeout --signal=TERM --kill-after=15s 180 \
             python3 -m pytest \
                 -c build/test/pytest.ini \
@@ -132,6 +135,14 @@ case "$PHASE" in
                 'test/python/fabric/test_tree_reduce.py::test_tree_all_reduce[fp32]' \
                 -svx --tb=long --timeout=60 --timeout-method=thread \
                 --junitxml=build/test/pytest-report-fabric-full.xml
+        test_status=$?
+        set -e
+        if [ -f "$TTLANG_FINAL_MLIR" ]; then
+            echo "FP32 tree: final MLIR fabric state"
+            grep -E 'func.func|ttl.fabric_routes|routing_plane|runtime_arg_base' \
+                "$TTLANG_FINAL_MLIR" || true
+        fi
+        exit "$test_status"
         ;;
     smoketest)
         activate_build
