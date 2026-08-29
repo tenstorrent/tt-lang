@@ -27,22 +27,36 @@ _NET_OF_ANOTHER_OPERATION = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 1))])
 class TestPipeNetPredicates:
     """PipeNet.is_src / is_dst / is_active use ttl.node(); run inside @ttl.operation."""
 
-    def test_destination_count_matches_callback_multiplicity(self) -> None:
-        net = ttl.PipeNet(
-            [
-                ttl.Pipe((0, 0), (3, 0)),
-                ttl.Pipe((1, 0), (3, 0)),
-                ttl.Pipe((2, 0), (3, 0)),
-                ttl.Pipe((0, 0), (2, 0)),
-            ]
-        )
+    @pytest.mark.parametrize(
+        ("pipes", "expected_counts"),
+        [
+            pytest.param(
+                [
+                    ttl.Pipe((0, 0), (3, 0)),
+                    ttl.Pipe((1, 0), (3, 0)),
+                    ttl.Pipe((2, 0), (3, 0)),
+                    ttl.Pipe((0, 0), (2, 0)),
+                ],
+                (0, 0, 1, 3),
+                id="explicit-pipes",
+            ),
+            pytest.param(
+                [ttl.Pipe((0, 0), (slice(1, 4), 0))],
+                (0, 1, 1, 1),
+                id="collective-destination-range",
+            ),
+        ],
+    )
+    def test_destination_count_matches_callback_multiplicity(
+        self, pipes, expected_counts
+    ) -> None:
+        net = ttl.PipeNet(pipes)
 
         @ttl.operation(grid=(4, 1))
         def op(_input_tensor: ttnn.Tensor, _output_tensor: ttnn.Tensor) -> None:
             @ttl.compute()
             def compute() -> None:
                 node_x, _node_y = ttl.node(dims=2)
-                expected_counts = (0, 0, 1, 3)
                 matching_sources = []
                 net.if_dst(lambda pipe: matching_sources.append(pipe.src))
                 assert net.destination_count() == expected_counts[node_x]

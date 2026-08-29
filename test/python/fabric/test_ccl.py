@@ -251,6 +251,36 @@ def _make_point_to_point_operation(
     return point_to_point
 
 
+def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    root_device = tuple(0 for _extent in mesh_shape)
+    gather_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.gather(device_domain, root=root_device)
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def graph_destination_count(inp, out):
+        output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def write_count():
+            destination_count = gather_net.destination_count()
+            with output_dfb.reserve() as output_block:
+                ttl.copy(inp[destination_count, 0], output_block).wait()
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, out[0, 0]).wait()
+
+        @ttl.datamovement()
+        def idle_brisc():
+            pass
+
+    return graph_destination_count
+
+
 def _flatten_device_index(coordinates, mesh_shape: tuple[int, ...]) -> int:
     device_index = 0
     for coordinate, extent in zip(coordinates, mesh_shape):
@@ -883,6 +913,42 @@ def test_point_to_point(
     assert len(set(program_cache_entry_counts)) == 1
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_graph_destination_count(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    device_count = prod(fabric_mesh_shape)
+    operation = _make_graph_destination_count_operation(fabric_mesh_shape)
+    per_device_input = torch.cat(
+        [
+            torch.full(
+                (TILE_SIZE, TILE_SIZE),
+                fill_value=destination_count,
+                dtype=torch_dtype,
+            )
+            for destination_count in range(device_count)
+        ]
+    )
+    inp_torch = per_device_input.repeat(device_count, 1)
+    out_torch = torch.zeros(device_count * TILE_SIZE, TILE_SIZE, dtype=torch_dtype)
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        operation(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(out_torch)
+    expected[:TILE_SIZE, :] = device_count - 1
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
