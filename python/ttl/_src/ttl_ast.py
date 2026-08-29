@@ -1164,9 +1164,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
             )
         }
-        if method == "destination_count":
-            arguments["records"] = self._get_pipe_net_records_attr(pipenet)
-        elif pipenet.is_graph:
+        if method == "destination_count" or pipenet.is_graph:
             arguments["records"] = self._get_pipe_net_records_attr(pipenet)
         return self._PIPENET_QUERY_OPS[method](**arguments)
 

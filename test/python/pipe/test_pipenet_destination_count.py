@@ -10,8 +10,10 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import to_dram, to_l1
 from utils.correctness import assert_allclose
+
+pytestmark = pytest.mark.requires_device
 
 TILE = 32
 GRID_X = 4
@@ -67,13 +69,16 @@ def destination_count_gather(inp, out):
 @pytest.mark.parametrize(
     "dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
 )
-def test_destination_count_matches_receive_records(device, dtype):
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_destination_count_matches_receive_records(device, dtype, to_device):
+    torch.manual_seed(0)
     inp_torch = torch.randn(TILE, GRID_X * TILE, dtype=dtype)
-    output = to_dram(
+    input_tensor = to_device(inp_torch, device)
+    output = to_device(
         torch.zeros(MAX_RECEIVES * TILE, GRID_X * TILE, dtype=dtype), device
     )
 
-    destination_count_gather(to_dram(inp_torch, device), output)
+    destination_count_gather(input_tensor, output)
     ttnn.synchronize_device(device)
 
     expected = torch.zeros(MAX_RECEIVES * TILE, GRID_X * TILE, dtype=dtype)
