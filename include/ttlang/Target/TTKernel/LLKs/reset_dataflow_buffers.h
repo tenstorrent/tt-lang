@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "ttlang/Target/TTKernel/LLKs/risc_barrier.h"
+
 #if defined(COMPILE_FOR_BRISC) || defined(COMPILE_FOR_NCRISC) ||               \
     defined(COMPILE_FOR_DM)
 #include "api/dataflow/dataflow_api.h"
@@ -24,11 +26,6 @@ namespace detail {
 
 static constexpr uint32_t kConfigWords = 11;
 static constexpr uint32_t kCompletionMarker = 0xd1fb;
-static constexpr uint32_t kParticipantCount = 4;
-static constexpr uint32_t kEntryArrived = 1;
-static constexpr uint32_t kEntryReleased = 2;
-static constexpr uint32_t kExitArrived = 3;
-static constexpr uint32_t kExitReleased = 4;
 
 #if defined(COMPILE_FOR_BRISC) ||                                              \
     (defined(COMPILE_FOR_DM) && COMPILE_FOR_DM == 0)
@@ -52,82 +49,6 @@ static constexpr uint32_t kExitReleased = 4;
 #define TTLANG_DFB_PACK
 #endif
 
-FORCE_INLINE uint32_t
-loadSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord) {
-  // Blackhole RISC caches are not coherent across processors on the core.
-  asm volatile("fence" ::: "memory");
-  uint32_t value;
-  asm volatile("lw %[value], (%[address])\n\t"
-               "and x0, x0, %[value]"
-               : [value] "=r"(value)
-               : [address] "r"(synchronizationWord)
-               : "memory");
-  return value;
-}
-
-FORCE_INLINE void
-storeSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord,
-                         uint32_t value) {
-  // The dependent load waits until the store is visible to the other RISCs.
-  asm volatile("sw %[value], (%[address])\n\t"
-               "lw %[value], (%[address])\n\t"
-               "and x0, x0, %[value]"
-               : [value] "+r"(value)
-               : [address] "r"(synchronizationWord)
-               : "memory");
-}
-
-FORCE_INLINE volatile uint32_t tt_l1_ptr *
-synchronizationWord(uint32_t participant, uint32_t word0, uint32_t word1,
-                    uint32_t word2, uint32_t word3) {
-  uintptr_t address = word0;
-  if (participant == 1) {
-    address = word1;
-  } else if (participant == 2) {
-    address = word2;
-  } else if (participant == 3) {
-    address = word3;
-  }
-  return reinterpret_cast<volatile uint32_t tt_l1_ptr *>(address);
-}
-
-FORCE_INLINE bool participantsHaveState(uint32_t state, uint32_t word0,
-                                        uint32_t word1, uint32_t word2,
-                                        uint32_t word3) {
-  for (uint32_t participant = 0; participant < kParticipantCount;
-       ++participant) {
-    if (loadSynchronizationWord(synchronizationWord(participant, word0, word1,
-                                                    word2, word3)) != state) {
-      return false;
-    }
-  }
-  return true;
-}
-
-FORCE_INLINE void setParticipantStates(uint32_t state, uint32_t word0,
-                                       uint32_t word1, uint32_t word2,
-                                       uint32_t word3) {
-  for (uint32_t participant = 0; participant < kParticipantCount;
-       ++participant) {
-    storeSynchronizationWord(
-        synchronizationWord(participant, word0, word1, word2, word3), state);
-  }
-}
-
-static constexpr uint32_t participantWord() {
-#if defined(TTLANG_DFB_DM0)
-  return 0;
-#elif defined(TTLANG_DFB_UNPACK)
-  return 1;
-#elif defined(TTLANG_DFB_MATH)
-  return 2;
-#elif defined(TTLANG_DFB_PACK)
-  return 3;
-#else
-  return 0;
-#endif
-}
-
 FORCE_INLINE void drain() {
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_DM1)
   noc_async_full_barrier();
@@ -142,38 +63,6 @@ FORCE_INLINE void drain() {
   TTI_STALLWAIT(p_stall::STALL_TDMA, p_stall::PACK);
   TTI_SETDMAREG(0, kCompletionMarker, 0, LO_16(p_gpr_pack::TMP0));
   sync_regfile_write(p_gpr_pack::TMP0);
-#endif
-}
-
-FORCE_INLINE void enter(uint32_t word0, uint32_t word1, uint32_t word2,
-                        uint32_t word3) {
-#if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_UNPACK) ||                   \
-    defined(TTLANG_DFB_MATH) || defined(TTLANG_DFB_PACK)
-  constexpr uint32_t word = participantWord();
-  auto *state = synchronizationWord(word, word0, word1, word2, word3);
-  storeSynchronizationWord(state, kEntryArrived);
-  while (loadSynchronizationWord(state) != kEntryReleased) {
-  }
-#elif defined(TTLANG_DFB_DM1)
-  while (!participantsHaveState(kEntryArrived, word0, word1, word2, word3)) {
-  }
-  setParticipantStates(kEntryReleased, word0, word1, word2, word3);
-#endif
-}
-
-FORCE_INLINE void exit(uint32_t word0, uint32_t word1, uint32_t word2,
-                       uint32_t word3) {
-#if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_UNPACK) ||                   \
-    defined(TTLANG_DFB_MATH) || defined(TTLANG_DFB_PACK)
-  constexpr uint32_t word = participantWord();
-  auto *state = synchronizationWord(word, word0, word1, word2, word3);
-  storeSynchronizationWord(state, kExitArrived);
-  while (loadSynchronizationWord(state) != kExitReleased) {
-  }
-#elif defined(TTLANG_DFB_DM1)
-  while (!participantsHaveState(kExitArrived, word0, word1, word2, word3)) {
-  }
-  setParticipantStates(kExitReleased, word0, word1, word2, word3);
 #endif
 }
 
@@ -282,10 +171,10 @@ FORCE_INLINE void reset_dataflow_buffers(uint32_t word0, uint32_t word1,
   static_assert(sizeof...(Config) == RecordCount * detail::kConfigWords);
 
   detail::drain();
-  detail::enter(word0, word1, word2, word3);
+  detail::riscBarrierEnter(word0, word1, word2, word3);
   detail::ApplyConfigurations<Config...>::run();
   asm volatile("" ::: "memory");
-  detail::exit(word0, word1, word2, word3);
+  detail::riscBarrierExit(word0, word1, word2, word3);
 }
 
 } // namespace ttlang

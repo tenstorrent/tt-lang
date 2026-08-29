@@ -398,11 +398,6 @@ struct TTLFinalizeDFBIndicesPass
           invalidResetContract = true;
         }
       }
-      if (!topLevel && residentLoop && calls.size() < 2) {
-        func.emitError("a cyclic resident loop requires at least two "
-                       "reset_dataflow_buffers calls");
-        invalidResetContract = true;
-      }
       if (!topLevel && residentLoop) {
         cyclicResetLoops[func.getOperation()] = residentLoop;
       }
@@ -598,10 +593,6 @@ struct TTLFinalizeDFBIndicesPass
           dfb.epochRepresentative.try_emplace(epoch, op);
         }
       };
-
-      // The bind anchors the interval; binds are hoisted to the function
-      // entry, so the start is refined to the first acquire below.
-      extendInterval(dfb, bindOp, func, *order);
 
       // Pipe destinations are slot-addressed (block_count == sender count)
       // and pipe sends read asynchronously, so pipe-attached DFBs keep
