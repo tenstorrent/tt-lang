@@ -577,52 +577,6 @@ def _synchronize_or_retain_runtime_resources(
         raise
 
 
-@dataclass
-class PipeGlobalSemaphoreCache:
-    """Own stable compiler-managed GlobalSemaphores across cached dispatches."""
-
-    _device: Optional[Any] = field(default=None, init=False)
-    _core_coordinates: Optional[Tuple[Tuple[int, int], ...]] = field(
-        default=None, init=False
-    )
-    _semaphores: List[Any] = field(default_factory=list, init=False)
-
-    def acquire(
-        self,
-        tensors: List[Any],
-        core_ranges: Any,
-        count: int,
-        device: Optional[Any] = None,
-    ) -> List[Any]:
-        """Return zeroed semaphores with stable addresses for one context."""
-        if count <= 0:
-            return []
-
-        ttnn_api = _ensure_ttnn()
-        if ttnn_api is None:
-            raise RuntimeError("ttnn is not available")
-        resource_device = device if device is not None else _first_device(tensors)
-        core_coordinates = _core_range_coordinates(core_ranges)
-        if (
-            self._device is resource_device
-            and self._core_coordinates == core_coordinates
-            and len(self._semaphores) == count
-        ):
-            for semaphore in self._semaphores:
-                ttnn_api.reset_global_semaphore_value(semaphore, 0)
-            return self._semaphores
-
-        self._semaphores, _addresses = build_pipe_global_semaphores(
-            tensors=tensors,
-            core_ranges=core_ranges,
-            count=count,
-            device=resource_device,
-        )
-        self._device = resource_device
-        self._core_coordinates = core_coordinates
-        return self._semaphores
-
-
 @dataclass(frozen=True)
 class MeshProgramPlacement:
     """Device range for one program inside a mesh descriptor."""
@@ -1804,18 +1758,6 @@ def _align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
 
 
-def _core_range_coordinates(core_ranges: Any) -> Tuple[Tuple[int, int], ...]:
-    """Return the canonical worker coordinates for a semaphore allocation."""
-    return tuple(
-        sorted(
-            (core_x, core_y)
-            for core_range in core_ranges.ranges()
-            for core_y in range(int(core_range.start.y), int(core_range.end.y) + 1)
-            for core_x in range(int(core_range.start.x), int(core_range.end.x) + 1)
-        )
-    )
-
-
 def _first_device(tensors: List[Any]) -> Any:
     for tensor in tensors:
         if tensor is not None and hasattr(tensor, "device"):
@@ -2101,7 +2043,6 @@ def build_pipe_runtime_resources(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
-    pipe_global_semaphore_cache: Optional[PipeGlobalSemaphoreCache] = None,
     device: Optional[Any] = None,
     initialize_sram_scratch: bool = False,
     kernel_specs: Optional[List[KernelSpec]] = None,
@@ -2154,24 +2095,12 @@ def build_pipe_runtime_resources(
         device=resource_device,
         zero_initialize=initialize_sram_scratch,
     )
-    if pipe_global_semaphore_cache is None:
-        global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
-            tensors=tensors,
-            core_ranges=core_ranges,
-            count=num_pipe_global_semaphores,
-            device=resource_device,
-        )
-    else:
-        global_semaphores = pipe_global_semaphore_cache.acquire(
-            tensors=tensors,
-            core_ranges=core_ranges,
-            count=num_pipe_global_semaphores,
-            device=resource_device,
-        )
-        global_semaphore_addresses = [
-            int(ttnn.get_global_semaphore_address(semaphore))
-            for semaphore in global_semaphores
-        ]
+    global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
+        tensors=tensors,
+        core_ranges=core_ranges,
+        count=num_pipe_global_semaphores,
+        device=resource_device,
+    )
     # Keep this order in sync with PipeLowering.cpp: optional SRAM scratch base,
     # then GlobalSemaphore counter addresses.
     # [Device 2.0] This is the current ABI for pipe resource records; future
@@ -4709,7 +4638,6 @@ __all__ = [
     "FabricManagerIntervalSpec",
     "FabricRouteSpec",
     "MeshProgramPlacement",
-    "PipeGlobalSemaphoreCache",
     "LogicalKernelId",
     "ProgramResourcePlan",
     "PipeRuntimeResources",

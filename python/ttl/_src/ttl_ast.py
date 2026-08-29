@@ -33,7 +33,7 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
-from ..fabric import FabricManagerClaim, FabricManagerEffectKind
+from ..fabric import FabricManagerClaim
 from ..kernel import (
     Kernel,
     KernelKind,
@@ -3310,9 +3310,6 @@ class TTLGenericCompiler(TTCompilerBase):
                         effect_node,
                         f"unknown fabric manager effect {method_name!r}",
                     )
-                expected_kind = FabricManagerEffectKind(method_name)
-                actual_effect = getattr(claim, method_name)()
-                assert actual_effect.kind == expected_kind
                 fabric_manager_effect_attrs.append(
                     ttl.ir.FabricManagerEffectAttr.get(
                         self.ctx,

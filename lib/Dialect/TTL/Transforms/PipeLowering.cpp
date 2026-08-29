@@ -1071,11 +1071,6 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
   }
 }
 
-static int64_t alignTo(int64_t value, int64_t alignment) {
-  assert(alignment > 0 && "alignment must be positive");
-  return ((value + alignment - 1) / alignment) * alignment;
-}
-
 /// Compiler-managed pipe resources follow tensor buffer addresses and computed
 /// receiver DFB bases in the common runtime argument list.
 /// [Device 2.0] Keep this as a resource-plan lookup so the final device API
@@ -4917,7 +4912,7 @@ LogicalResult buildPipeResourcePlan(
   info.sramScratch.bytes =
       maxAddressTableBytes == 0
           ? 0
-          : alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
+          : llvm::alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
   return success();
 }
 
@@ -5098,7 +5093,7 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
   int64_t alignedAddressTableBytes =
       addressTableBytes == 0
           ? 0
-          : alignTo(addressTableBytes, kPipeSramScratchAlignmentBytes);
+          : llvm::alignTo(addressTableBytes, kPipeSramScratchAlignmentBytes);
   assert(transportScratchBytes <=
              std::numeric_limits<int64_t>::max() - alignedAddressTableBytes &&
          "combined pipe scratch allocation exceeds int64_t");

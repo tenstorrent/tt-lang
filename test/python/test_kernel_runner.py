@@ -240,7 +240,6 @@ def _FakeExplicitCoreRanges(start, end):
 class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
-        self.reset_calls = []
         self.generic_op_calls = []
         self.synchronize_calls = []
         self.next_address = 0x1000
@@ -504,9 +503,6 @@ class _FakeTTNN:
     @staticmethod
     def get_global_semaphore_address(semaphore):
         return semaphore["address"]
-
-    def reset_global_semaphore_value(self, semaphore, value):
-        self.reset_calls.append((semaphore, value))
 
     def setup_routing_plane_connection(
         self,
@@ -3225,6 +3221,11 @@ def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypat
         grid_rows=1,
     )
 
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+        (_FakeFabricNodeId(0, 1), _FakeFabricNodeId(0, 2)),
+        (_FakeFabricNodeId(0, 2), _FakeFabricNodeId(0, 3)),
+    ]
     assert fake_ttnn.fabric_setup_calls == [
         (
             _FakeFabricNodeId(0, 0),
