@@ -30,8 +30,13 @@ class _FakeTile:
     tile_shape = (32, 32)
 
     @staticmethod
-    def get_tile_size(_dtype):
-        return 2048
+    def get_tile_size(dtype):
+        return {
+            "bfloat16": 2048,
+            "float32": 4096,
+            "bfloat4_b": 576,
+            "bfloat8_b": 1088,
+        }[dtype]
 
 
 class _FakeTensor:
@@ -72,6 +77,28 @@ def test_make_tensor_backed_dfb_records_complete_capacity(monkeypatch):
     assert dfb.block_count == 2
     assert dfb.byte_offset == 2048
     assert dfb.byte_size == 16384
+
+
+@pytest.mark.parametrize(
+    ("dtype", "page_size"),
+    [
+        ("bfloat16", 2048),
+        ("float32", 4096),
+        ("bfloat4_b", 576),
+        ("bfloat8_b", 1088),
+    ],
+    ids=["bf16", "fp32", "bfp4", "bfp8"],
+)
+def test_make_tensor_backed_dfb_accepts_supported_dtypes(monkeypatch, dtype, page_size):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    dfb = dataflow_buffer.make_tensor_backed_dfb(
+        _FakeTensor(dtype=dtype), shape=(1, 1), block_count=1
+    )
+
+    assert dfb.byte_size == page_size
 
 
 @pytest.mark.parametrize(
@@ -258,7 +285,7 @@ def test_make_tensor_backed_dfb_requires_ttnn_tensor(monkeypatch):
     [
         (_FakeTensor(buffer_type="DRAM"), "must use L1 storage"),
         (_FakeTensor(layout="ROW_MAJOR"), "must use TILE layout"),
-        (_FakeTensor(dtype="int32"), "supports BF16 and FP32"),
+        (_FakeTensor(dtype="int32"), "supports BF16, FP32, BFP4_B, and BFP8_B"),
     ],
     ids=["dram", "row_major", "int32"],
 )

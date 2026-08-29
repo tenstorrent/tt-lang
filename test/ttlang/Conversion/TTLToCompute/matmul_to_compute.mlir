@@ -48,6 +48,90 @@ func.func @matmul_1x1_f32(
 
 // -----
 
+// The Kimi 1x32 BF16 activation/output tiles and 32x32 BFP4_B weight tiles
+// retain their distinct formats through lowering.
+// CHECK-LABEL: func.func @matmul_bf16_bfp4
+func.func @matmul_bf16_bfp4(
+    %arg0: tensor<1x2x!ttcore.tile<1x32, bf16>>,
+    %arg1: tensor<2x2x!ttcore.tile<32x32, bfp_bf4>>)
+    -> tensor<1x2x!ttcore.tile<1x32, bf16>> {
+  // CHECK: ttl.compute
+  // CHECK-SAME: ins({{.*}} : tensor<1x2x!ttcore.tile<1x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bfp_bf4>>)
+  // CHECK-SAME: outs({{.*}} : tensor<1x2x!ttcore.tile<1x32, bf16>>)
+  // CHECK: ^bb0(%[[LHS:.*]]: !ttcore.tile<1x32, bf16>, %[[RHS:.*]]: !ttcore.tile<32x32, bfp_bf4>
+  // CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[LHS]], %[[RHS]]
+  // CHECK-SAME: !ttcore.tile<1x32, bf16>, !ttcore.tile<32x32, bfp_bf4> -> !ttcore.tile<1x32, bf16>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, bfp_bf4>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0
+      : (tensor<1x2x!ttcore.tile<1x32, bf16>>,
+         !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>)
+        -> tensor<1x2x!ttcore.tile<1x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1
+      : (tensor<2x2x!ttcore.tile<32x32, bfp_bf4>>,
+         !ttl.cb<[2, 2], !ttcore.tile<32x32, bfp_bf4>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, bfp_bf4>>
+  %reserve = ttl.cb_reserve %cb2
+      : <[1, 2], !ttcore.tile<1x32, bf16>, 2>
+        -> tensor<1x2x!ttcore.tile<1x32, bf16>>
+  %mm = ttl.matmul %a, %b
+      : tensor<1x2x!ttcore.tile<1x32, bf16>>,
+        tensor<2x2x!ttcore.tile<32x32, bfp_bf4>>
+        -> tensor<1x2x!ttcore.tile<1x32, bf16>>
+  ttl.store %mm, %reserve
+      : tensor<1x2x!ttcore.tile<1x32, bf16>>,
+        tensor<1x2x!ttcore.tile<1x32, bf16>>
+  func.return %mm : tensor<1x2x!ttcore.tile<1x32, bf16>>
+}
+
+// -----
+
+// The Kimi 1x32 BF16 activation/output tiles and 32x32 BFP8_B weight tiles
+// retain their distinct formats through lowering.
+// CHECK-LABEL: func.func @matmul_bf16_bfp8
+func.func @matmul_bf16_bfp8(
+    %arg0: tensor<1x2x!ttcore.tile<1x32, bf16>>,
+    %arg1: tensor<2x2x!ttcore.tile<32x32, bfp_bf8>>)
+    -> tensor<1x2x!ttcore.tile<1x32, bf16>> {
+  // CHECK: ttl.compute
+  // CHECK-SAME: ins({{.*}} : tensor<1x2x!ttcore.tile<1x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bfp_bf8>>)
+  // CHECK-SAME: outs({{.*}} : tensor<1x2x!ttcore.tile<1x32, bf16>>)
+  // CHECK: ^bb0(%[[LHS:.*]]: !ttcore.tile<1x32, bf16>, %[[RHS:.*]]: !ttcore.tile<32x32, bfp_bf8>
+  // CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[LHS]], %[[RHS]]
+  // CHECK-SAME: !ttcore.tile<1x32, bf16>, !ttcore.tile<32x32, bfp_bf8> -> !ttcore.tile<1x32, bf16>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, bfp_bf8>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0
+      : (tensor<1x2x!ttcore.tile<1x32, bf16>>,
+         !ttl.cb<[1, 2], !ttcore.tile<1x32, bf16>, 2>)
+        -> tensor<1x2x!ttcore.tile<1x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1
+      : (tensor<2x2x!ttcore.tile<32x32, bfp_bf8>>,
+         !ttl.cb<[2, 2], !ttcore.tile<32x32, bfp_bf8>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, bfp_bf8>>
+  %reserve = ttl.cb_reserve %cb2
+      : <[1, 2], !ttcore.tile<1x32, bf16>, 2>
+        -> tensor<1x2x!ttcore.tile<1x32, bf16>>
+  %mm = ttl.matmul %a, %b
+      : tensor<1x2x!ttcore.tile<1x32, bf16>>,
+        tensor<2x2x!ttcore.tile<32x32, bfp_bf8>>
+        -> tensor<1x2x!ttcore.tile<1x32, bf16>>
+  ttl.store %mm, %reserve
+      : tensor<1x2x!ttcore.tile<1x32, bf16>>,
+        tensor<1x2x!ttcore.tile<1x32, bf16>>
+  func.return %mm : tensor<1x2x!ttcore.tile<1x32, bf16>>
+}
+
+// -----
+
 // Non-square [2,4] @ [4,3] -> [2,3].
 // CHECK-LABEL: func.func @matmul_2x4_4x3
 func.func @matmul_2x4_4x3(
