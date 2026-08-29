@@ -32,15 +32,212 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %recv = ttl.copy %pipe, %recv_dst
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %src_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %recv : !ttl.transfer_handle
+    ttl.wait %recv : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     func.return
+  }
+}
+
+// -----
+
+// A physical DFB index that changes from tensor-backed to compiler-managed
+// storage requires the receiver-published address protocol in every epoch.
+module attributes {
+  ttl.dfb_allocations = [
+    {allocation_nodes = [[0, 0]], block_count = 1 : i32,
+     dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>,
+     num_tiles = 1 : i32, page_size = 2048 : i32,
+     storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}]},
+    {allocation_nodes = [[0, 0]], block_count = 1 : i32,
+     dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>,
+     num_tiles = 1 : i32, page_size = 2048 : i32}],
+  ttl.dfb_reconfiguration_plan = {
+    boundary_ordinals = array<i64: 0>,
+    dfbs = [
+      {configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bf16>,
+         num_tiles = 1 : i32, page_size = 2048 : i32,
+         storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}]},
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bf16>,
+         entry_reconfiguration = 0 : i64, num_tiles = 1 : i32,
+         page_size = 2048 : i32, storage_segments = [{nodes = [[0, 0]]}]}],
+       dfb_index = 0 : i32},
+      {configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bf16>,
+         num_tiles = 1 : i32, page_size = 2048 : i32,
+         storage_segments = [{nodes = [[0, 0]]}]}],
+       dfb_index = 1 : i32}]},
+  ttl.launch_grid = [1, 1],
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @compute() attributes {
+      ttl.base_cta_index = 3 : i32,
+      ttl.crta_indices = [],
+      ttl.kernel_thread = #ttkernel.thread<compute>,
+      ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "reconfigured_receiver">
+  } {
+    ttl.dfb_reconfiguration <0, participants[
+      <kind = compute, identity = "compute_kernel", operation = "reconfigured_receiver">,
+      <kind = data_movement, identity = "reader_kernel", operation = "reconfigured_receiver">,
+      <kind = data_movement, identity = "writer_kernel", operation = "reconfigured_receiver">]>
+    return
+  }
+
+  // COMPUTED-LABEL: func.func @reconfigured_receiver
+  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
+  // The first epoch publishes and consumes the tensor-backed reservation.
+  // COMPUTED: ttkernel.store_to_l1
+  // COMPUTED: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"
+  // The second epoch publishes and consumes the compiler-managed reservation.
+  // COMPUTED: ttkernel.store_to_l1
+  // COMPUTED: ttkernel.load_from_l1
+  // COMPUTED: return
+  func.func @reconfigured_receiver(
+      %input: tensor<1x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>,
+      %output: tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+      attributes {
+        ttl.base_cta_index = 3 : i32,
+        ttl.crta_indices = [0 : i32, 2 : i32],
+        ttl.kernel_thread = #ttkernel.thread<noc>,
+        ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader_kernel", operation = "reconfigured_receiver">,
+        ttl.noc_index = 0 : i32
+      } {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe {kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> -> !ttl.pipe_transfer
+    %scratch = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %send_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %tensor_backed = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index,
+         tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+
+    %tensor_reservation = ttl.cb_reserve %tensor_backed
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %tensor_block = ttl.attach_cb %tensor_reservation, %tensor_backed
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %tensor_token = ttl.pipe_transfer.post %transfer, %tensor_block
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.pipe_token<net 0>
+    %send_reservation_0 = ttl.cb_reserve %send_dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %send_block_0 = ttl.attach_cb %send_reservation_0, %send_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %input_row = arith.constant 0 : index
+    %input_column_0 = arith.constant 0 : index
+    %input_tile_0 = ttl.tensor_slice %input[%input_row, %input_column_0]
+        : tensor<1x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+    %read_0 = ttl.copy %input_tile_0, %send_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %read_0 : !ttl.transfer_handle<read>
+    ttl.cb_push %send_dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %ready_0 = ttl.cb_wait %send_dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %send_0 = ttl.pipe_transfer.send %transfer, %send_dfb
+        : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send_0 : !ttl.transfer_handle<write>
+    ttl.cb_pop %send_dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    ttl.pipe_transfer.wait %tensor_token : !ttl.pipe_token<net 0>
+    ttl.cb_push %tensor_backed : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %tensor_ready = ttl.cb_wait %tensor_backed
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %tensor_backed : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+
+    ttl.dfb_reconfiguration <0, participants[
+      <kind = compute, identity = "compute_kernel", operation = "reconfigured_receiver">,
+      <kind = data_movement, identity = "reader_kernel", operation = "reconfigured_receiver">,
+      <kind = data_movement, identity = "writer_kernel", operation = "reconfigured_receiver">]>
+
+    %scratch_reservation = ttl.cb_reserve %scratch
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scratch_block = ttl.attach_cb %scratch_reservation, %scratch
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scratch_token = ttl.pipe_transfer.post %transfer, %scratch_block
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.pipe_token<net 0>
+    %send_reservation_1 = ttl.cb_reserve %send_dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %send_block_1 = ttl.attach_cb %send_reservation_1, %send_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %input_column_1 = arith.constant 1 : index
+    %input_tile_1 = ttl.tensor_slice %input[%input_row, %input_column_1]
+        : tensor<1x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+    %read_1 = ttl.copy %input_tile_1, %send_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %read_1 : !ttl.transfer_handle<read>
+    ttl.cb_push %send_dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %ready_1 = ttl.cb_wait %send_dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %send_1 = ttl.pipe_transfer.send %transfer, %send_dfb
+        : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send_1 : !ttl.transfer_handle<write>
+    ttl.cb_pop %send_dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    ttl.pipe_transfer.wait %scratch_token : !ttl.pipe_token<net 0>
+    ttl.cb_push %scratch : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %scratch_ready = ttl.cb_wait %scratch
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %output_row = arith.constant 0 : index
+    %output_column = arith.constant 0 : index
+    %output_tile = ttl.tensor_slice %output[%output_row, %output_column]
+        : tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+    %write = ttl.copy %scratch, %output_tile
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %write : !ttl.transfer_handle<write>
+    ttl.cb_pop %scratch : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+
+  func.func @synchronize() attributes {
+      ttl.base_cta_index = 3 : i32,
+      ttl.crta_indices = [],
+      ttl.kernel_thread = #ttkernel.thread<noc>,
+      ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer_kernel", operation = "reconfigured_receiver">,
+      ttl.noc_index = 1 : i32
+  } {
+    ttl.dfb_reconfiguration <0, participants[
+      <kind = compute, identity = "compute_kernel", operation = "reconfigured_receiver">,
+      <kind = data_movement, identity = "reader_kernel", operation = "reconfigured_receiver">,
+      <kind = data_movement, identity = "writer_kernel", operation = "reconfigured_receiver">]>
+    return
   }
 }
 
@@ -76,13 +273,13 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %receive = ttl.copy %pipe, %reserved
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %src, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %receive : !ttl.transfer_handle
+    ttl.wait %receive : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     func.return
   }
@@ -164,8 +361,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         %receive = ttl.copy %pipe, %slot
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %receive : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
         ttl.cb_push %dst {num_tiles = 2 : i64}
             : <[1, 1], !ttcore.tile<32x32, f32>, 4>
       }
@@ -229,13 +426,13 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %recv = ttl.copy %pipe, %recv_dst
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %src_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %recv : !ttl.transfer_handle
+    ttl.wait %recv : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     func.return
   }
@@ -288,13 +485,13 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %recv = ttl.copy %pipe, %recv_dst
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %src_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %recv : !ttl.transfer_handle
+    ttl.wait %recv : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     func.return
   }
@@ -398,13 +595,13 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %recv = ttl.copy %pipe, %recv_dst
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send = ttl.copy %src_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %recv : !ttl.transfer_handle
+    ttl.wait %recv : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     func.return
   }

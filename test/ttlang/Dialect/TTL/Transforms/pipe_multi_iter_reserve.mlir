@@ -48,8 +48,8 @@ func.func @sender_uses_published_unicast_address_receiver() attributes { "ttl.ke
   %xf = ttl.copy %pipe, %recv_dst
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
-  ttl.wait %xf : !ttl.transfer_handle
+      -> !ttl.receive_request
+  ttl.wait %xf : !ttl.receive_request
   ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -106,8 +106,8 @@ func.func @sender_uses_published_multicast_addresses_receiver() attributes { "tt
     %xf = ttl.copy %pipe, %recv_dst
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   func.return
@@ -139,8 +139,8 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
   %xf = ttl.copy %pipe, %recv_dst
       : (!ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
-  ttl.wait %xf : !ttl.transfer_handle
+      -> !ttl.receive_request
+  ttl.wait %xf : !ttl.receive_request
   ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -195,8 +195,8 @@ func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel
     %xf = ttl.copy %pipe, %recv_dst
         : (!ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   func.return

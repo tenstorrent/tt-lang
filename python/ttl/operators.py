@@ -17,6 +17,7 @@ from ttl.ir import (
     FloatAttr,
     IndexType,
     IntegerAttr,
+    IntegerType,
     RankedTensorType,
     Type,
 )
@@ -480,6 +481,53 @@ class CopyTransferHandler:
         return ttl.wait(ast_self)
 
 
+@syntax("!ttl.receive_request")
+class ReceiveRequest:
+    """Handle for one posted PipeNet receive."""
+
+    def wait(ast_self: ReceiveRequest):
+        """Block until this receive request completes."""
+        return ttl.wait(ast_self)
+
+
+@syntax("!ttl.ready_receive")
+class ReadyReceive:
+    """Completed receive selected by wait_any()."""
+
+    def index(ast_self: ReadyReceive):
+        """Return the selected request's tuple index."""
+        return ttl.ready_receive_index(ast_self)
+
+
+@syntax("wait_any")
+def wait_any(requests, start=0) -> ReadyReceive:
+    """Select the first completed receive in cyclic order from start."""
+    if not isinstance(requests, tuple):
+        raise TypeError("wait_any() requests must be an explicitly ordered tuple")
+    if not requests:
+        raise ValueError("wait_any() requires at least one receive request")
+    if any(
+        ttl.ReceiveRequestType.maybe_downcast(request.type) is None
+        for request in requests
+    ):
+        raise TypeError("wait_any() accepts only PipeNet receive requests")
+    if len({id(request) for request in requests}) != len(requests):
+        raise ValueError("wait_any() requires distinct receive requests")
+    context = requests[0].type.context
+    if isinstance(start, bool):
+        raise TypeError("wait_any() start must be an integer or index value")
+    if isinstance(start, int):
+        start = arith.ConstantOp(IndexType.get(context), start)
+    elif not hasattr(start, "type"):
+        raise TypeError("wait_any() start must be an integer or index value")
+    elif not isinstance(start.type, (IndexType, IntegerType)):
+        raise TypeError("wait_any() start must be an integer or index value")
+    elif not isinstance(start.type, IndexType):
+        start = arith.IndexCastOp(IndexType.get(context), start)
+    ready_type = ttl.ReadyReceiveType.get(context)
+    return ttl.wait_any(list(requests), start, results=[ready_type])
+
+
 def _make_tensor_slice(tensor, indices, slice_shape):
     """Create a ttl.tensor_slice from a tensor, tile indices, and shape.
 
@@ -727,7 +775,7 @@ def _get_pipe_mlir_value(pipe):
 
 
 @syntax("copy")
-def copy(src, dst) -> CopyTransferHandler:
+def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
@@ -736,7 +784,7 @@ def copy(src, dst) -> CopyTransferHandler:
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
 
     Returns:
-        CopyTransferHandler handle that must be waited on for completion
+        ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
 
     For multi-tile CBs (shape > 1x1), use range syntax: tensor[0:2, 0:2]
     For single-tile CBs (shape 1x1), use index syntax: tensor[0, 0]
@@ -773,7 +821,7 @@ def copy(src, dst) -> CopyTransferHandler:
                 )
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst.type.context
-            xf_type = Type.parse("!ttl.transfer_handle", ctx)
+            xf_type = ttl.ReceiveRequestType.get(ctx)
             return ttl.copy(xf_type, pipe_val, dst)
 
     # Non-pipe transfers: tensor subscript <-> block
@@ -1513,7 +1561,10 @@ def raw_element_write(block, *args):
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
+    "ReceiveRequest",
+    "ReadyReceive",
     "copy",
+    "wait_any",
     "core",
     "grid_size",
     "signpost",

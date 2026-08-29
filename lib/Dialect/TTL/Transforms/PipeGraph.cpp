@@ -34,6 +34,11 @@ namespace mlir::tt::ttl {
 
 /// Analysis facts and operation indexes used while constructing PipeGraph.
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
+  struct ReceiveWaitAnyUse {
+    PipeTransferWaitAnyOp wait;
+    unsigned candidateIndex;
+  };
+
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
   llvm::DenseMap<Operation *, std::unique_ptr<DFBAcquireReleaseIndex>>
       dfbLifecycles;
@@ -41,6 +46,8 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   SmallVector<PipeTransferPostOp> receiverPosts;
   llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
       receiveWaitsByPost;
+  llvm::DenseMap<Operation *, SmallVector<ReceiveWaitAnyUse>>
+      receiveWaitAnysByPost;
   llvm::DenseMap<int64_t, SmallVector<PipeTransferPostOp>>
       receiverPostsByStream;
   llvm::DenseMap<int64_t, SmallVector<CBPushOp>> pushesByStream;
@@ -69,6 +76,10 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   options.computeRegionDomain =
       [&](Operation *op,
           unsigned regionNumber) -> std::optional<LaunchNodeDomain> {
+    if (auto ifOp = dyn_cast<scf::IfOp>(op);
+        ifOp && getReadyReceiveSelection(ifOp.getCondition())) {
+      return state.baseDomain;
+    }
     if (regionNumber != 0) {
       return std::nullopt;
     }
@@ -164,6 +175,19 @@ static LogicalResult recordReceiveWait(PipeTransferWaitOp waitOp,
   return success();
 }
 
+/// Associate each wait-any candidate with its possible receiver posts.
+static void recordReceiveWaitAny(PipeTransferWaitAnyOp waitOp,
+                                 PipeGraphAnalysisState &state,
+                                 const PipeTransferIndex &transferIndex) {
+  for (auto [candidateIndex, possiblePosts] :
+       llvm::enumerate(transferIndex.getWaitAnyCandidatePosts(waitOp))) {
+    for (Operation *post : possiblePosts) {
+      state.receiveWaitAnysByPost[post].push_back(
+          {waitOp, static_cast<unsigned>(candidateIndex)});
+    }
+  }
+}
+
 /// Collect protocol and receiver DFB operations once so graph analyses do not
 /// rescan the module for every receiver.
 static LogicalResult
@@ -181,6 +205,9 @@ collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
             })
             .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp waitOp) {
               recordResult = recordReceiveWait(waitOp, state, transferIndex);
+            })
+            .Case<PipeTransferWaitAnyOp>([&](PipeTransferWaitAnyOp waitOp) {
+              recordReceiveWaitAny(waitOp, state, transferIndex);
             })
             .Case<CBPushOp>([&](CBPushOp pushOp) {
               std::optional<int64_t> maybeStreamKey =
@@ -393,21 +420,63 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
+/// Return true when `before` precedes `after` directly or before an enclosing
+/// runtime region containing `after`.
+static bool
+isBeforeInReceiverExecution(Operation *before, Operation *after,
+                            PipeReceiverCoord receiver,
+                            const PipeGraphAnalysisState &analysisState) {
+  Operation *enclosing = after;
+  while (enclosing) {
+    if (isBeforeInReceiverControlContext(before, enclosing, receiver,
+                                         analysisState)) {
+      return true;
+    }
+    Block *block = enclosing->getBlock();
+    enclosing = block ? block->getParentOp() : nullptr;
+  }
+  return false;
+}
+
 static bool hasMatchingReceiveWaitBeforePush(
     PipeTransferPostOp postOp, CBPushOp pushOp,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
         &waitsByPost,
+    const llvm::DenseMap<Operation *,
+                         SmallVector<PipeGraphAnalysisState::ReceiveWaitAnyUse>>
+        &waitAnysByPost,
     PipeReceiverCoord receiver, const PipeGraphAnalysisState &analysisState) {
   auto waitIt = waitsByPost.find(postOp.getOperation());
-  if (waitIt == waitsByPost.end()) {
+  if (waitIt != waitsByPost.end() &&
+      llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
+        return isBeforeInReceiverExecution(postOp, waitOp, receiver,
+                                           analysisState) &&
+               isBeforeInReceiverExecution(waitOp, pushOp, receiver,
+                                           analysisState);
+      })) {
+    return true;
+  }
+
+  auto waitAnyIt = waitAnysByPost.find(postOp.getOperation());
+  if (waitAnyIt == waitAnysByPost.end()) {
     return false;
   }
-  return llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-    return isBeforeInReceiverControlContext(postOp, waitOp, receiver,
-                                            analysisState) &&
-           isBeforeInReceiverControlContext(waitOp, pushOp, receiver,
-                                            analysisState);
-  });
+  for (PipeGraphAnalysisState::ReceiveWaitAnyUse use : waitAnyIt->second) {
+    if (!isBeforeInReceiverControlContext(postOp, use.wait, receiver,
+                                          analysisState)) {
+      continue;
+    }
+    auto isOrderedBefore = [&](Operation *before, Operation *after) {
+      return isBeforeInReceiverControlContext(before, after, receiver,
+                                              analysisState);
+    };
+    if (isInReadyReceiveSelectionRegion(
+            pushOp, use.wait, static_cast<int64_t>(use.candidateIndex),
+            isOrderedBefore)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// Group posts by physical DFB because its writers share one reservation ring.
@@ -881,7 +950,7 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
       node.pipeOnlyProducerStreamFailureReason = reason;
       valid = false;
     };
-    llvm::DenseSet<Operation *> postsWithPush;
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> pushesByPost;
 
     forEachReceiverDFBStreamEvent(
         analysisState.pushesByStream, receiverDFB, [&](CBPushOp pushOp) {
@@ -922,7 +991,8 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
           for (PipeTransferPostOp postOp : ownedPosts) {
             if (!hasMatchingReceiveWaitBeforePush(
                     postOp, pushOp, analysisState.receiveWaitsByPost,
-                    receiverDFB.receiver, analysisState)) {
+                    analysisState.receiveWaitAnysByPost, receiverDFB.receiver,
+                    analysisState)) {
               reject("post has no receive wait before push");
               return;
             }
@@ -933,10 +1003,16 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
               return;
             }
             postedBlocks += *maybeSpan;
-            if (!postsWithPush.insert(postOp.getOperation()).second) {
-              reject("post is consumed by more than one push");
+            SmallVectorImpl<Operation *> &existingPushes =
+                pushesByPost[postOp.getOperation()];
+            if (llvm::any_of(existingPushes, [&](Operation *existingPush) {
+                  return !mlir::insideMutuallyExclusiveRegions(
+                      existingPush, pushOp.getOperation());
+                })) {
+              reject("post is consumed by multiple co-executing pushes");
               return;
             }
+            existingPushes.push_back(pushOp.getOperation());
           }
           if (*maybePushedBlocks != postedBlocks) {
             reject("push block count does not match posted receiver slot span");
@@ -947,7 +1023,7 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
     }
 
     for (PipeTransferPostOp postOp : posts) {
-      if (!postsWithPush.contains(postOp.getOperation())) {
+      if (!pushesByPost.contains(postOp.getOperation())) {
         reject("post is not consumed by a receiver push");
         break;
       }

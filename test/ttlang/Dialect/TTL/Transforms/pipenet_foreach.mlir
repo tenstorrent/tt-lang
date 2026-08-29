@@ -28,8 +28,8 @@ func.func private @foreach_src_send_direct_receiver()
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     ttl.yield
   }
@@ -127,8 +127,8 @@ func.func @foreach_dst_receive_direct()
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     ttl.yield
   }
@@ -190,8 +190,8 @@ func.func @foreach_dst_outer_reserve_direct()
       %xf = ttl.copy %pipe, %recv
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %xf : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %xf : !ttl.receive_request
       ttl.yield
     }
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -225,8 +225,8 @@ func.func private @foreach_src_send_table_driven_receiver()
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 5>
     ttl.yield
   }
@@ -328,8 +328,8 @@ func.func @foreach_dst_receive_table_driven()
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     ttl.yield
   }
@@ -395,8 +395,8 @@ func.func @foreach_dst_outer_reserve()
       %xf = ttl.copy %pipe, %recv
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %xf : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %xf : !ttl.receive_request
       ttl.yield
     }
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -479,8 +479,8 @@ func.func @nested_foreach_receiver()
       %receive = ttl.copy %inner_pipe, %reserve
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
       ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       ttl.yield
     }
@@ -544,8 +544,8 @@ func.func @loopback_collective_receiver()
     %receive = ttl.copy %pipe, %reserve
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %receive : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %receive : !ttl.receive_request
     ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.yield
   }
@@ -620,8 +620,8 @@ func.func @mixed_static_and_selected_receiver()
     %receive = ttl.copy %static_pipe, %reserve
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %receive : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %receive : !ttl.receive_request
     ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
   }
   ttl.pipenet_foreach_dst attributes {
@@ -635,8 +635,8 @@ func.func @mixed_static_and_selected_receiver()
     %receive = ttl.copy %pipe, %reserve
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %receive : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %receive : !ttl.receive_request
     ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.yield
   }

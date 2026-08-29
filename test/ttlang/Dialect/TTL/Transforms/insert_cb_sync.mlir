@@ -460,6 +460,116 @@ func.func @reserve_outside_loop(
 
 // -----
 
+// A wait-any synchronization does not prove either candidate complete for an
+// unconditional publication. The selected branch publication is preserved.
+
+// CHECK-LABEL: func.func @wait_any_requires_explicit_push
+// CHECK: %[[LANDING0:.+]] = ttl.bind_cb
+// CHECK: %[[LANDING1:.+]] = ttl.bind_cb
+// CHECK: ttl.cb_reserve %[[LANDING0]]
+// CHECK: ttl.cb_reserve %[[LANDING1]]
+// CHECK: %[[READY:.+]] = ttl.wait_any
+// CHECK: %[[SELECTED:.+]] = ttl.ready_receive_index %[[READY]]
+// CHECK: scf.if
+// CHECK:   ttl.wait
+// CHECK-NEXT: ttl.cb_push %[[LANDING0]]
+// CHECK: } else {
+// CHECK:   scf.if
+// CHECK:     ttl.cb_push %[[LANDING1]]
+// CHECK: }
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @wait_any_requires_explicit_push(%condition: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %landing1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+  %block0 = ttl.cb_reserve %landing0
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %block1 = ttl.cb_reserve %landing1
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %request0 = ttl.copy %pipe0, %block0
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+  %request1 = ttl.copy %pipe1, %block1
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+  %start = arith.constant 0 : index
+  %ready = ttl.wait_any %request0, %request1 start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+  %zero = arith.constant 0 : index
+  %selected0 = arith.cmpi eq, %selected, %zero : index
+  scf.if %selected0 {
+    ttl.wait %request0 : !ttl.receive_request
+    ttl.cb_push %landing0
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  } else {
+    %one = arith.constant 1 : index
+    %selected1 = arith.cmpi eq, %selected, %one : index
+    scf.if %selected1 {
+      ttl.cb_push %landing1
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+  }
+  func.return
+}
+
+// -----
+
+// Two receives into one DFB publish in reservation order after exact waits.
+
+// CHECK-LABEL: func.func @wait_any_shared_dfb_in_order
+// CHECK: ttl.wait_any
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @wait_any_shared_dfb_in_order()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+  %block0 = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %request0 = ttl.copy %pipe0, %block0
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+  %block1 = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %request1 = ttl.copy %pipe1, %block1
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+  %start = arith.constant 0 : index
+  %ready = ttl.wait_any %request0, %request1 start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  ttl.wait %request0 : !ttl.receive_request
+  ttl.cb_push %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.wait %request1 : !ttl.receive_request
+  ttl.cb_push %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
 // Test 15: scf.if nested inside scf.for, pop inside if branch.
 // Pop hoisted out of if, stays inside the for body.
 

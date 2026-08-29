@@ -132,17 +132,19 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Asynchronous copy between tensor slice and circular buffer";
+  let summary = "Asynchronous copy involving a tensor, DFB, or pipe";
   let description = [{
-    `ttl.copy` initiates an asynchronous transfer and returns a transfer handle
-    (`!ttl.transfer_handle`) that can be synchronized with `ttl.wait`.
+    `ttl.copy` initiates an asynchronous transfer. Pipe-to-DFB receives return
+    `!ttl.receive_request`; other copies return `!ttl.transfer_handle`.
 
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
 
-    Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
-    must be a ranked tensor (the result of a tensor slice) with TTL layout
-    encoding. The copy transfers the complete tensor in row-major tile order.
+    A tensor transfer has exactly one DFB (`!ttl.cb`) operand and one ranked
+    tensor operand with TTL layout encoding. A pipe send has a DFB source and a
+    pipe destination. A pipe receive has a pipe source and a destination block
+    reserved from a DFB. The copy transfers the complete payload in row-major
+    tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
@@ -174,7 +176,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     AnyType:$src,
     AnyType:$dst
   );
-  let results = (outs TTL_TransferHandle:$xf);
+  // The verifier selects the result type from the transfer direction.
+  let results = (outs AnyType:$xf);
   let assemblyFormat = "$src `,` $dst attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
@@ -183,11 +186,12 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Wait on a transfer handle";
   let description = [{
     `ttl.wait` blocks until the asynchronous transfer identified by the input
-    transfer handle (`!ttl.transfer_handle`) is complete and the destination is safe to use.
+    transfer handle or receive request is complete and the destination is safe
+    to use.
 
-    In the current MVP lowering, this is implemented using a TTKernel global NOC
-    barrier as a placeholder until per-transfer (TRID-based) synchronization is
-    used.
+    Pipe receive requests use the compiler-managed PipeNet completion counter
+    associated with the request. Other transfer handles use the barrier
+    selected by their transfer direction.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     barriers are available in TTKernel. Issue: #87.
@@ -200,10 +204,11 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     ttl.wait %xf : !ttl.transfer_handle<read>
     ```
 
-    Note: Transfer direction is modeled in the transfer handle type
+    Transfer direction is modeled in the transfer handle type
     (`!ttl.transfer_handle<read>` or `!ttl.transfer_handle<write>`). The
     verifier requires direction-typed handles so lowering can always emit
-    exactly one barrier (read vs. write).
+    exactly one barrier (read vs. write). Pipe receive requests use the
+    direction-independent `!ttl.receive_request` type.
   }];
   // NOTE: Use AnyType here so assembly prints/parses the full type spelling
   // (`!ttl.transfer_handle<read/write>`) rather than the stripped custom form
@@ -212,6 +217,37 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins AnyType:$xf);
   let assemblyFormat = "$xf attr-dict `:` type($xf)";
   let hasVerifier = 1;
+}
+
+def TTL_WaitAnyOp : TTL_Op<"wait_any",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for one posted PipeNet receive";
+  let description = [{
+    Blocks until at least one request has completed. Candidates are inspected
+    in cyclic operand order beginning at `start`, normalized modulo the number
+    of requests. The first completed request in that order is selected. Only the
+    selected request becomes complete; all other requests remain pending.
+
+    The request list must be nonempty and contain distinct SSA values. Requests
+    may originate from different PipeNets. Their logical receive identities and
+    physical synchronization resources remain compiler-owned.
+  }];
+  let arguments = (ins Variadic<TTL_ReceiveRequest>:$requests, Index:$start);
+  let results = (outs TTL_ReadyReceive:$ready);
+  let assemblyFormat = [{
+    $requests `start` $start attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_ReadyReceiveIndexOp : TTL_Op<"ready_receive_index", [Pure]> {
+  let summary = "Return the selected receive-request index";
+  let description = [{
+    Returns the zero-based operand index selected by `ttl.wait_any`.
+  }];
+  let arguments = (ins TTL_ReadyReceive:$ready);
+  let results = (outs Index:$index);
+  let assemblyFormat = "$ready attr-dict `:` type($ready)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -878,6 +914,23 @@ def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
     TTL_PipeToken:$token
   );
   let assemblyFormat = "$token attr-dict `:` type($token)";
+}
+
+def TTL_PipeTransferWaitAnyOp : TTL_Op<"pipe_transfer.wait_any",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for one pipe receive token";
+  let description = [{
+    Blocks until one candidate completion counter has reached the sequence in
+    its token. Candidates are inspected in cyclic operand order beginning at
+    `start`. Tokens may name different PipeNets. The result identifies the
+    selected candidate index and does not complete nonselected tokens.
+  }];
+  let arguments = (ins Variadic<TTL_PipeToken>:$tokens, Index:$start);
+  let results = (outs TTL_ReadyReceive:$ready);
+  let assemblyFormat = [{
+    $tokens `start` $start attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
 }
 
 def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",

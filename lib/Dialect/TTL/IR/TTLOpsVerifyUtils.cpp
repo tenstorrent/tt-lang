@@ -12,11 +12,10 @@ namespace mlir::tt::ttl::verify {
 
 mlir::LogicalResult verifyWaitOperandType(mlir::Operation *op,
                                           mlir::Value handle) {
-  // Accept typed and untyped transfer handles. Untyped handles model async
-  // pipe receive completion and are expanded before lowering.
-  if (!mlir::isa<mlir::tt::ttl::TransferHandleType>(handle.getType())) {
+  if (!mlir::isa<mlir::tt::ttl::TransferHandleType,
+                 mlir::tt::ttl::ReceiveRequestType>(handle.getType())) {
     return op->emitOpError()
-           << "expects transfer handle (!ttl.transfer_handle), got "
+           << "expects transfer handle or receive request, got "
            << handle.getType();
   }
 
