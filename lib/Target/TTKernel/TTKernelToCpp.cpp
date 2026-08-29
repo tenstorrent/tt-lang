@@ -144,6 +144,10 @@ public:
       }
       if (callee == "experimental::routing_plane_set_unicast_route" ||
           callee == "experimental::routing_plane_atomic_inc" ||
+          callee ==
+              "experimental::routing_plane_set_fused_write_atomic_inc_state" ||
+          callee ==
+              "experimental::routing_plane_fused_write_atomic_inc_with_state" ||
           callee == "experimental::routing_plane_fused_write_atomic_inc") {
         emitLlk(experimental_routing_plane_generated,
                 experimental_routing_plane_generated_len);

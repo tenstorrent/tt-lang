@@ -4681,6 +4681,53 @@ def TTKernel_RoutingPlaneAtomicIncOp :
   }];
 }
 
+def TTKernel_RoutingPlaneSetFusedWriteAtomicIncStateOp :
+    TTKernel_Op<"routing_plane.set_fused_write_atomic_inc_state"> {
+  let summary = "Configure one-packet routing-plane fused-write state";
+  let description = [{
+    Configures the packet header selected by `routeIndex` for a fused payload
+    write and remote semaphore increment. The result is true when `sizeBytes`
+    fits the active fabric packet limit and the state was configured. A false
+    result requires the transfer to use the general packetized operation.
+  }];
+  let arguments = (ins
+    I32:$routeId,
+    I32:$routeIndex,
+    I32:$sizeBytes,
+    TTKernel_NocAddr:$destinationAddress,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let results = (outs I1:$configured);
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneFusedWriteAtomicIncWithStateOp :
+    TTKernel_Op<"routing_plane.fused_write_atomic_inc_with_state"> {
+  let summary = "Send a one-packet fused write using configured state";
+  let description = [{
+    Sends `sizeBytes` from local L1 memory through the connection selected by
+    `connectionIndex`, using the fused write and atomic-increment state already
+    configured in the packet header selected by `routeIndex`. The optional
+    `posted` attribute suppresses NOC responses for worker-to-router writes.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$routeIndex,
+    I32:$connectionIndex,
+    I32:$sourceAddress,
+    I32:$sizeBytes,
+    OptionalAttr<BoolAttr>:$posted
+  );
+  let assemblyFormat = [{
+    `(` operands `)` (`posted` $posted^)? attr-dict
+      `:` functional-type(operands, results)
+  }];
+}
+
 def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
   let summary = "Write a payload and increment a remote semaphore";

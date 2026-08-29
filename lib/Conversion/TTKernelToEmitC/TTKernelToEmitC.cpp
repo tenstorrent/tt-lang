@@ -2683,6 +2683,52 @@ public:
   }
 };
 
+class TTKernelRoutingPlaneSetFusedWriteAtomicIncStateOpRewriter
+    : public OpConversionPattern<
+          ttkernel::RoutingPlaneSetFusedWriteAtomicIncStateOp> {
+  using Op = ttkernel::RoutingPlaneSetFusedWriteAtomicIncStateOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type configuredType =
+        getTypeConverter()->convertType(op.getConfigured().getType());
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, configuredType,
+        "experimental::routing_plane_set_fused_write_atomic_inc_state",
+        nullptr, nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneFusedWriteAtomicIncWithStateOpRewriter
+    : public OpConversionPattern<
+          ttkernel::RoutingPlaneFusedWriteAtomicIncWithStateOp> {
+  using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncWithStateOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    ArrayAttr templateArguments;
+    auto posted = op.getPosted();
+    if (posted && *posted) {
+      templateArguments = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "true")});
+    }
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(),
+        "experimental::routing_plane_fused_write_atomic_inc_with_state",
+        nullptr, templateArguments, adaptor.getOperands());
+    return success();
+  }
+};
+
 class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
     : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
   using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
@@ -3550,6 +3596,8 @@ public:
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneSetFusedWriteAtomicIncStateOpRewriter,
+                 TTKernelRoutingPlaneFusedWriteAtomicIncWithStateOpRewriter,
                  TTKernelRoutingPlaneSetUnicastRouteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,

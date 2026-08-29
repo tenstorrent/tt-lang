@@ -40,6 +40,40 @@ static __attribute__((noinline)) void routing_plane_atomic_inc(
       reinterpret_cast<uint32_t>(packet_header), sizeof(PACKET_HEADER_TYPE));
 }
 
+static __attribute__((noinline)) bool
+routing_plane_set_fused_write_atomic_inc_state(
+    uint32_t routeId, uint32_t routeIndex, uint32_t sizeBytes,
+    uint64_t destinationAddress, uint64_t semaphoreAddress,
+    uint32_t increment) {
+  const uint32_t maxPacketSize = tt::tt_fabric::get_fabric_max_packet_size();
+  if (sizeBytes > maxPacketSize) {
+    return false;
+  }
+
+  auto *packetHeader =
+      PacketHeaderPool::header_table[routeId].first + routeIndex;
+  packetHeader->to_noc_fused_unicast_write_atomic_inc(
+      tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader{
+          destinationAddress, semaphoreAddress, increment, true},
+      sizeBytes);
+  return true;
+}
+
+template <bool posted = false>
+FORCE_INLINE void routing_plane_fused_write_atomic_inc_with_state(
+    tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t routeId,
+    uint32_t routeIndex, uint32_t connectionIndex, uint32_t sourceAddress,
+    uint32_t sizeBytes) {
+  auto *packetHeader =
+      PacketHeaderPool::header_table[routeId].first + routeIndex;
+  auto &sender = manager.get(static_cast<uint8_t>(connectionIndex)).sender;
+  sender.wait_for_empty_write_slot();
+  sender.send_payload_without_header_non_blocking_from_address<posted>(
+      sourceAddress, sizeBytes);
+  sender.send_payload_flush_blocking_from_address<posted>(
+      reinterpret_cast<uint32_t>(packetHeader), sizeof(PACKET_HEADER_TYPE));
+}
+
 template <bool posted = false>
 static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
     tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t routeId,

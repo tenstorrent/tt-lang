@@ -364,6 +364,106 @@ struct PrearmPostedNocWrite : OpRewritePattern<NocAsyncWriteOp> {
   }
 };
 
+/// Return whether an operation may modify routing-plane packet-header state.
+static bool mayModifyRoutingPlaneHeader(Operation *operation) {
+  auto modifiesHeader = [](Operation *candidate) {
+    return isa<OpenRoutingPlaneConnectionsOp,
+               RoutingPlaneSetUnicastRouteOp, RoutingPlaneAtomicIncOp,
+               RoutingPlaneSetFusedWriteAtomicIncStateOp,
+               RoutingPlaneFusedWriteAtomicIncWithStateOp,
+               RoutingPlaneFusedWriteAtomicIncOp,
+               CloseRoutingPlaneConnectionsOp>(candidate) ||
+           isa<CallOpInterface>(candidate);
+  };
+  if (modifiesHeader(operation)) {
+    return true;
+  }
+  return operation
+      ->walk([&](Operation *nested) {
+        return modifiesHeader(nested) ? WalkResult::interrupt()
+                                      : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
+/// Configure one-packet fabric command state before sender-side blocking waits.
+/// The runtime predicate retains general packetization when a configured fabric
+/// packet limit is smaller than the transfer.
+struct PreconfigureRoutingPlaneFusedWrite
+    : OpRewritePattern<RoutingPlaneFusedWriteAtomicIncOp> {
+  using OpRewritePattern<
+      RoutingPlaneFusedWriteAtomicIncOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(
+      RoutingPlaneFusedWriteAtomicIncOp op,
+      PatternRewriter &rewriter) const override {
+    std::optional<int64_t> transferSize = getConstantIntValue(op.getSizeBytes());
+    if (!transferSize || *transferSize <= 0) {
+      return rewriter.notifyMatchFailure(op,
+                                         "write size is not a positive constant");
+    }
+
+    Operation *firstBlockingWait = nullptr;
+    for (Operation *previous = op->getPrevNode(); previous;
+         previous = previous->getPrevNode()) {
+      if (mayModifyRoutingPlaneHeader(previous)) {
+        break;
+      }
+      if (isa<CBWaitFrontOp, SemaphoreWaitOp, SemaphoreWaitMinOp>(previous)) {
+        firstBlockingWait = previous;
+      }
+    }
+    if (!firstBlockingWait) {
+      return rewriter.notifyMatchFailure(
+          op, "no preceding blocking wait can hide packet-header setup");
+    }
+
+    SmallPtrSet<Operation *, 8> movedDefinitions;
+    SmallVector<Operation *, 8> definitionsToMove;
+    SmallVector<Value> configurationValues{
+        op.getRouteId(),          op.getRouteIndex(),
+        op.getSizeBytes(),        op.getDestinationAddress(),
+        op.getSemaphoreAddress(), op.getIncrement()};
+    for (Value value : configurationValues) {
+      if (failed(collectValueDefinitionsToMove(
+              value, firstBlockingWait, movedDefinitions, definitionsToMove))) {
+        return rewriter.notifyMatchFailure(
+            op, "packet-header configuration cannot dominate the blocking wait");
+      }
+    }
+    for (Operation *definition : definitionsToMove) {
+      rewriter.moveOpBefore(definition, firstBlockingWait);
+    }
+
+    Location loc = op.getLoc();
+    rewriter.setInsertionPoint(firstBlockingWait);
+    Value configured = RoutingPlaneSetFusedWriteAtomicIncStateOp::create(
+        rewriter, loc, op.getRouteId(), op.getRouteIndex(), op.getSizeBytes(),
+        op.getDestinationAddress(), op.getSemaphoreAddress(), op.getIncrement());
+
+    rewriter.setInsertionPoint(op);
+    auto stateSelection = scf::IfOp::create(
+        rewriter, loc, configured, /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard insertionGuard(rewriter);
+      rewriter.setInsertionPointToStart(&stateSelection.getThenRegion().front());
+      RoutingPlaneFusedWriteAtomicIncWithStateOp::create(
+          rewriter, loc, op.getManager(), op.getRouteId(), op.getRouteIndex(),
+          op.getConnectionIndex(), op.getSourceAddress(), op.getSizeBytes(),
+          op.getPostedAttr());
+
+      rewriter.setInsertionPointToStart(&stateSelection.getElseRegion().front());
+      RoutingPlaneFusedWriteAtomicIncOp::create(
+          rewriter, loc, op.getManager(), op.getRouteId(), op.getRouteIndex(),
+          op.getConnectionIndex(), op.getSourceAddress(), op.getSizeBytes(),
+          op.getDestinationAddress(), op.getSemaphoreAddress(), op.getIncrement(),
+          op.getPostedAttr());
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 /// Return whether `loop` preserves the write command and setup predicate.
 static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
                                               scf::ForOp loop,
@@ -516,7 +616,8 @@ void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
   patterns.add<DeduplicateConsecutiveBarriers<NocAsyncWriteBarrierOp>>(
       patterns.getContext());
   patterns.add<HoistIfRegionInvariantValueOps, HoistLoopInvariantValueOps,
-               PrearmPostedNocWrite, UseStatefulNocWriteInLoop>(
+               PrearmPostedNocWrite, PreconfigureRoutingPlaneFusedWrite,
+               UseStatefulNocWriteInLoop>(
       patterns.getContext());
 }
 
