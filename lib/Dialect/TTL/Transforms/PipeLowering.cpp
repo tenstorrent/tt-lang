@@ -28,6 +28,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetParticipantPlan.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeRecordLoweringUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
@@ -3986,68 +3987,34 @@ static Value lowerDeviceDestinationCount(
   return loop.getResult(0);
 }
 
-struct LocalDestinationCountTable {
-  int64_t gridX = 0;
-  SmallVector<int64_t> counts;
-};
-
-static std::optional<LocalDestinationCountTable>
-buildLocalDestinationCountTable(Operation *op, PipeNetRecordsAttr records) {
-  std::optional<std::pair<int64_t, int64_t>> maybeGrid = getLaunchGrid(op);
-  if (!maybeGrid) {
-    return std::nullopt;
-  }
-  auto [gridX, gridY] = *maybeGrid;
-  std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
-  if (!maybeGridArea) {
-    return std::nullopt;
-  }
-
-  LocalDestinationCountTable table;
-  table.gridX = gridX;
-  table.counts.assign(static_cast<std::size_t>(*maybeGridArea), 0);
-  for (PipeRecordAttr record : records.getPipes()) {
-    if (record.getDeviceTransfer()) {
-      return std::nullopt;
-    }
-    PipeType pipeType = getPipeTypeFromRecord(
-        op->getContext(), record, records.getPipeNetId());
-    int64_t minX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
-    int64_t minY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
-    int64_t maxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
-    int64_t maxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
-    if (minX < 0 || minY < 0 || maxX >= gridX || maxY >= gridY) {
-      return std::nullopt;
-    }
-    for (int64_t nodeY = minY; nodeY <= maxY; ++nodeY) {
-      for (int64_t nodeX = minX; nodeX <= maxX; ++nodeX) {
-        ++table.counts[static_cast<std::size_t>(nodeY * gridX + nodeX)];
-      }
-    }
-  }
-  return table;
-}
-
 static std::optional<Value>
 lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
                            ConversionPatternRewriter &rewriter) {
-  std::optional<LocalDestinationCountTable> maybeTable =
-      buildLocalDestinationCountTable(op, records);
-  if (!maybeTable) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
     return std::nullopt;
   }
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<LocalPipeNetParticipantPlan> participantPlan =
+      buildLocalPipeNetParticipantPlan(records, PipeRole::Destination, gridX,
+                                       gridY);
+  if (failed(participantPlan)) {
+    return std::nullopt;
+  }
+
   Location loc = op->getLoc();
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
   Value nodeY =
       ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-  Value gridX =
-      arith::ConstantIndexOp::create(rewriter, loc, maybeTable->gridX);
-  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridX);
+  Value gridXValue =
+      arith::ConstantIndexOp::create(rewriter, loc, participantPlan->gridX);
+  Value nodeRowOffset =
+      arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
   Value nodeIndex =
       arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
-  return buildConstantIndexTableLookup(rewriter, loc, maybeTable->counts,
-                                       nodeIndex);
+  return buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
 
 // Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
