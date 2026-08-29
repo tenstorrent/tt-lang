@@ -147,7 +147,23 @@ case "$PHASE" in
         fi
         if [ -f generated/watcher/watcher.log ]; then
             echo "Final TT-Metal Watcher state"
-            tail -n 300 generated/watcher/watcher.log
+            awk '
+                { current_dump = current_dump $0 ORS }
+                /^Dump #[0-9]+ completed/ {
+                    last_dump = current_dump
+                    current_dump = ""
+                }
+                END { printf "%s", last_dump }
+            ' generated/watcher/watcher.log > /tmp/pr734-watcher-last.log
+            awk '
+                /^Device [0-3] worker core/ {
+                    print
+                    if (getline > 0) {
+                        print
+                    }
+                }
+                /^k_id\[/ { print }
+            ' /tmp/pr734-watcher-last.log
         fi
         exit "$test_status"
         ;;
