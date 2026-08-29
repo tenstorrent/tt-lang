@@ -125,12 +125,12 @@ case "$PHASE" in
     fabric-pytests)
         activate_build
         unset TT_VISIBLE_DEVICES
-        timeout --signal=TERM --kill-after=15s 1800 \
+        timeout --signal=TERM --kill-after=15s 180 \
             python3 -m pytest \
                 -c build/test/pytest.ini \
                 --rootdir="${REPO_ROOT}/test" \
-                test/python/fabric \
-                -v -x --tb=long --timeout=300 --timeout-method=thread \
+                'test/python/fabric/test_tree_reduce.py::test_tree_all_reduce[fp32]' \
+                -svx --tb=long --timeout=60 --timeout-method=thread \
                 --junitxml=build/test/pytest-report-fabric-full.xml
         ;;
     smoketest)

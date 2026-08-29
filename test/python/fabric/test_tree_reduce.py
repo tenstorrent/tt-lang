@@ -80,20 +80,27 @@ def test_tree_all_reduce(
     rtol,
     atol,
 ):
+    print("FP32 tree: construct operation", flush=True)
     tree_all_reduce = make_tree_all_reduce_operation(participant_mesh_shape)
     logical_shape = (NUM_DEVICES * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
     out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
 
+    print("FP32 tree: create input tensor", flush=True)
     inp = _mesh_tensor(participant_mesh, inp_torch, ttnn_dtype)
+    print("FP32 tree: create output tensor", flush=True)
     out = _mesh_tensor(participant_mesh, out_torch, ttnn_dtype)
 
+    print("FP32 tree: dispatch", flush=True)
     tree_all_reduce(inp, out)
+    print("FP32 tree: dispatch returned", flush=True)
 
+    print("FP32 tree: read output", flush=True)
     result = ttnn.to_torch(
         out,
         mesh_composer=ttnn.ConcatMeshToTensor(participant_mesh, dim=0),
     )
+    print("FP32 tree: read output returned", flush=True)
 
     input_tiles = inp_torch.reshape(NUM_DEVICES, TILE_SIZE, TILE_SIZE)
     reduced = input_tiles.float().sum(dim=0).to(torch_dtype)
