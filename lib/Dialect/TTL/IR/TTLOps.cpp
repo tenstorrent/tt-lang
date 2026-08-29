@@ -2339,6 +2339,94 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// TileRowNormalizationBlockOp
+//===----------------------------------------------------------------------===//
+
+static mlir::FailureOr<mlir::tt::ttcore::TileType>
+getRowNormalizationTileType(mlir::Type type) {
+  if (auto tileType = mlir::dyn_cast<mlir::tt::ttcore::TileType>(type)) {
+    return tileType;
+  }
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  if (!tensorType) {
+    return mlir::failure();
+  }
+  auto tileType =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return mlir::failure();
+  }
+  return tileType;
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
+  FailureOr<ttcore::TileType> inputTileType =
+      getRowNormalizationTileType(getInput().getType());
+  FailureOr<ttcore::TileType> gammaTileType =
+      getRowNormalizationTileType(getGamma().getType());
+  FailureOr<ttcore::TileType> outputTileType =
+      getRowNormalizationTileType(getOutput().getType());
+  FailureOr<ttcore::TileType> resultTileType =
+      getRowNormalizationTileType(getResult().getType());
+  if (failed(inputTileType) || failed(gammaTileType) ||
+      failed(outputTileType) || failed(resultTileType)) {
+    return emitOpError("input, gamma, output, and result must contain tiles");
+  }
+  if (*inputTileType != *outputTileType || *resultTileType != *outputTileType) {
+    return emitOpError(
+        "input, output, and result tile types must match exactly");
+  }
+  if (inputTileType->getDataType() != ttcore::DataType::BFloat16) {
+    return emitOpError("supports bf16 tiles only");
+  }
+  if (getHasGamma() && *gammaTileType != *outputTileType) {
+    return emitOpError("gamma tile type must match the output tile type");
+  }
+  if (!getHasGamma() && getGamma() != getInput()) {
+    return emitOpError("gamma must equal input when has_gamma is false");
+  }
+
+  const llvm::APFloat &scale = getScaleAttr().getValue();
+  const llvm::APFloat &epsilon = getEpsilonAttr().getValue();
+  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+    return emitOpError("scale must be finite and positive");
+  }
+  if (!epsilon.isFinite() || epsilon.isZero() || epsilon.isNegative()) {
+    return emitOpError("epsilon must be finite and positive");
+  }
+
+  auto inputTensor = dyn_cast<RankedTensorType>(getInput().getType());
+  auto outputTensor = dyn_cast<RankedTensorType>(getOutput().getType());
+  auto gammaTensor = dyn_cast<RankedTensorType>(getGamma().getType());
+  if (!inputTensor && !outputTensor && !gammaTensor) {
+    return success();
+  }
+  if (!inputTensor || !outputTensor || !gammaTensor) {
+    return emitOpError(
+        "block lowering requires input, gamma, and output to all be tensors");
+  }
+  if (!inputTensor.hasStaticShape() || !outputTensor.hasStaticShape() ||
+      !gammaTensor.hasStaticShape() || inputTensor.getRank() != 2 ||
+      outputTensor.getRank() != 2 || gammaTensor.getRank() != 2) {
+    return emitOpError("tensor operands must be static rank-2 tensors");
+  }
+  if (inputTensor.getShape() != outputTensor.getShape() ||
+      inputTensor.getDimSize(0) != 1) {
+    return emitOpError(
+        "input and output must have the same one-row tensor shape");
+  }
+  if (inputTensor.getNumElements() != static_cast<int64_t>(getNumTiles())) {
+    return emitOpError("num_tiles must match the row tensor width");
+  }
+  if (getHasGamma()) {
+    if (gammaTensor.getShape() != outputTensor.getShape()) {
+      return emitOpError("gamma tensor shape must match the output shape");
+    }
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // BlockBroadcastOp
 //===----------------------------------------------------------------------===//
 
