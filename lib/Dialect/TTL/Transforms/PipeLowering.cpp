@@ -307,14 +307,6 @@ executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
          });
 }
 
-static bool
-executionLocationsOverlap(ArrayRef<FabricManagerExecutionLocation> lhs,
-                          ArrayRef<FabricManagerExecutionLocation> rhs) {
-  return llvm::any_of(lhs, [&](FabricManagerExecutionLocation lhsLocation) {
-    return llvm::is_contained(rhs, lhsLocation);
-  });
-}
-
 static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
     const FabricRuntimeIntervalPlan &interval,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
@@ -459,7 +451,6 @@ struct FabricRuntimeCoalescingCandidate {
   std::size_t intervalIndex;
   Operation *acquireBoundary;
   Operation *releaseBoundary;
-  SmallVector<FabricManagerExecutionLocation> executionLocations;
 };
 
 static void coalesceFabricRuntimeCandidates(
@@ -490,11 +481,9 @@ static void coalesceFabricRuntimeCandidates(
   coalesced.releaseBoundary = releaseBoundary;
 }
 
-static void
-coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan,
-                                           const PipeGraph &pipeGraph) {
-  // Unserialized intervals reuse one function-scoped connection record set.
-  // Reopening those records after close prevents mesh-workload completion.
+static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
+  // Each function has one host-specialized connection record set. Unserialized
+  // intervals in one block must share a manager or they reopen that set.
   llvm::MapVector<Block *, SmallVector<FabricRuntimeCoalescingCandidate>>
       candidatesByBlock;
   for (auto [intervalIndex, interval] :
@@ -504,8 +493,6 @@ coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan,
     }
     assert(interval.managerIntervalIndices.size() == 1 &&
            "runtime intervals must be coalesced once");
-    const FabricManagerIntervalPlan &managerInterval =
-        plan.managerIntervals[interval.managerIntervalIndices.front()];
     FuncOp function = interval.acquireBoundary->getParentOfType<FuncOp>();
     assert(function && "fabric runtime interval must be inside a function");
     Operation *acquireBoundary =
@@ -515,49 +502,15 @@ coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan,
     if (acquireBoundary->getBlock() != releaseBoundary->getBlock()) {
       continue;
     }
-    SmallVector<FabricManagerExecutionLocation> executionLocations =
-        getIntervalExecutionLocations(managerInterval, pipeGraph);
-    assert(!executionLocations.empty() &&
-           "generated fabric interval must have an execution location");
     candidatesByBlock[acquireBoundary->getBlock()].push_back(
-        {intervalIndex, acquireBoundary, releaseBoundary,
-         std::move(executionLocations)});
+        {intervalIndex, acquireBoundary, releaseBoundary});
   }
 
   SmallVector<bool> removed(plan.runtimeIntervals.size());
   for (const auto &entry : candidatesByBlock) {
     ArrayRef<FabricRuntimeCoalescingCandidate> candidates = entry.second;
-    SmallVector<bool> visited(candidates.size());
-    for (std::size_t rootIndex = 0; rootIndex < candidates.size();
-         ++rootIndex) {
-      if (visited[rootIndex]) {
-        continue;
-      }
-      visited[rootIndex] = true;
-      SmallVector<std::size_t> worklist{rootIndex};
-      SmallVector<FabricRuntimeCoalescingCandidate> component;
-      while (!worklist.empty()) {
-        std::size_t candidateIndex = worklist.pop_back_val();
-        component.push_back(candidates[candidateIndex]);
-        for (std::size_t otherIndex = 0; otherIndex < candidates.size();
-             ++otherIndex) {
-          if (visited[otherIndex] ||
-              !executionLocationsOverlap(
-                  candidates[candidateIndex].executionLocations,
-                  candidates[otherIndex].executionLocations)) {
-            continue;
-          }
-          visited[otherIndex] = true;
-          worklist.push_back(otherIndex);
-        }
-      }
-      if (component.size() > 1) {
-        llvm::sort(component, [](const FabricRuntimeCoalescingCandidate &lhs,
-                                 const FabricRuntimeCoalescingCandidate &rhs) {
-          return lhs.intervalIndex < rhs.intervalIndex;
-        });
-        coalesceFabricRuntimeCandidates(component, plan, removed);
-      }
+    if (candidates.size() > 1) {
+      coalesceFabricRuntimeCandidates(candidates, plan, removed);
     }
   }
 
@@ -739,7 +692,7 @@ static void planFabricManagerOwnership(
       plan.managerIntervals[rhsIndex].interferingIntervals.push_back(lhsIndex);
     }
   }
-  coalesceUnserializedFabricRuntimeIntervals(plan, pipeGraph);
+  coalesceUnserializedFabricRuntimeIntervals(plan);
 }
 
 LogicalResult buildFabricRoutePlan(
