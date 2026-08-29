@@ -113,8 +113,10 @@ from .ttl_api import (
     _build_pipenet_graph,
     _canonical_tensor_args,
     _default_mesh_program_placements_with_domain,
+    _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
+    _resolve_mesh_program_placements,
     _run_thread_compiler,
     _slot_idle_kernel,
     _validate_operation_options,
@@ -725,6 +727,7 @@ def _compile_atom(
     compiler_options: CompilerOptions,
     l1_budget_override: int,
     device_domain=None,
+    mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache=None,
 ):
@@ -837,8 +840,8 @@ def _compile_atom(
         "debug_locations": True,
     }
     program = Program(*threads, args=args, kwargs=injected_program_kwargs)
-    mesh_program_placements = _default_mesh_program_placements_with_domain(
-        args, device_domain
+    resolved_mesh_program_placements = _resolve_mesh_program_placements(
+        args, device_domain, mesh_program_placements
     )
 
     return _lower_program_to_kernel(
@@ -855,7 +858,7 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
-        mesh_program_placements=mesh_program_placements,
+        mesh_program_placements=resolved_mesh_program_placements,
         device_domain=device_domain,
         logical_kernels=thread_logical_kernels,
         operation_name=spec.name,
@@ -891,6 +894,7 @@ def _compile_unified_operation(
         target_arch=target_arch,
         compiler_options=compiler_options,
         device_domain=decorator_options["device_domain"],
+        mesh_program_placements=decorator_options.get("mesh_program_placements"),
         l1_budget_override=l1_budget_override,
         runtime_resource_factory=decorator_options.get("runtime_resource_factory"),
         runtime_resource_cache=runtime_resource_cache,
@@ -954,6 +958,7 @@ def _unified_operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     device_domain=None,
+    mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
@@ -981,6 +986,7 @@ def _unified_operation(
                 "math_fidelity": math_fidelity,
                 "options": options,
                 "device_domain": device_domain,
+                "mesh_program_placements": mesh_program_placements,
                 "runtime_resource_factory": runtime_resource_factory,
             },
         )
@@ -1000,6 +1006,7 @@ def operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     device_domain=None,
+    mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
@@ -1039,6 +1046,7 @@ def operation(
                 runtime_resource_factory=runtime_resource_factory,
                 _prepare_call=prepare_call,
                 device_domain=device_domain,
+                mesh_program_placements=mesh_program_placements,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
             return wrapped
@@ -1053,6 +1061,7 @@ def operation(
             math_fidelity=math_fidelity,
             options=options,
             device_domain=device_domain,
+            mesh_program_placements=mesh_program_placements,
             runtime_resource_factory=runtime_resource_factory,
         )(fn)
 
