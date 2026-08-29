@@ -38,3 +38,46 @@ func.func @prearm_posted_write(%src: i32, %dst: i32) {
       : (i32, index, index, i32, i32, i8) -> ()
   func.return
 }
+
+// Configure the one-packet fused command before both blocking waits while
+// retaining the general packetized operation when the runtime packet limit is
+// smaller than the constant transfer.
+// CHECK-LABEL: func.func @preconfigure_fabric_write
+// CHECK: %[[CONFIGURED:.*]] = ttkernel.routing_plane.set_fused_write_atomic_inc_state(
+// CHECK-SAME: ) : (i32, i32, i32, !ttkernel.noc_addr, !ttkernel.noc_addr, i32) -> i1
+// CHECK: ttkernel.cb_wait_front
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: scf.if %[[CONFIGURED]] {
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc_with_state({{.*}}) posted true
+// CHECK: } else {
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}) {posted = true}
+// CHECK: }
+func.func @preconfigure_fabric_write(
+    %manager: !ttkernel.routing_plane_connection_manager,
+    %source: i32, %destination: !ttkernel.noc_addr,
+    %remote_semaphore: !ttkernel.noc_addr) {
+  %c0 = arith.constant 0 : index
+  %route_id = arith.constant 0 : i32
+  %route_index = arith.constant 0 : i32
+  %connection_index = arith.constant 0 : i32
+  %size = arith.constant 64 : i32
+  %increment = arith.constant 1 : i32
+  %ready = arith.constant 1 : i32
+  %dataflow_buffer = ttkernel.get_compile_time_arg_val(0)
+      : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+  %ready_semaphore = ttkernel.get_semaphore(%c0)
+      : (index) -> !ttkernel.local_semaphore
+  %ready_address = ttkernel.reinterpret_cast(%ready_semaphore)
+      : (!ttkernel.local_semaphore) -> !ttkernel.l1_addr_ptr
+  ttkernel.cb_wait_front(%dataflow_buffer, %ready)
+      : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.experimental.semaphore_wait(%ready_address, %ready)
+      : (!ttkernel.l1_addr_ptr, i32) -> ()
+  ttkernel.routing_plane.fused_write_atomic_inc(
+      %manager, %route_id, %route_index, %connection_index,
+      %source, %size, %destination, %remote_semaphore, %increment)
+      {posted = true}
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32,
+         i32, !ttkernel.noc_addr, !ttkernel.noc_addr, i32) -> ()
+  func.return
+}

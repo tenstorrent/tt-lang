@@ -30,16 +30,21 @@
 // CHECK: if ([[COUNT:.*]] != 0) {
 // CHECK-NEXT: open_connections([[MANAGER]], [[COUNT]], [[ARG_INDEX]]);
 // CHECK-NEXT: PacketHeaderPool::reset();
-// CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n([[COUNT]]);
-// CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^,]+]],
-// CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
-// CHECK: experimental::routing_plane_fused_write_atomic_inc<true>([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
+// CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n({{[^)]+}});
+// CHECK: experimental::routing_plane_set_unicast_route([[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^)]+]])
+// CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[INDEX]],
+// CHECK: bool [[CONFIGURED:.*]] = experimental::routing_plane_set_fused_write_atomic_inc_state([[ROUTE_ID]], [[INDEX]],
+// CHECK: experimental::routing_plane_fused_write_atomic_inc_with_state([[MANAGER]], [[ROUTE_ID]], [[INDEX]],
+// CHECK: experimental::routing_plane_fused_write_atomic_inc_with_state<true>([[MANAGER]], [[ROUTE_ID]], [[INDEX]],
+// CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[INDEX]],
+// CHECK: experimental::routing_plane_fused_write_atomic_inc<true>([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[INDEX]],
 // CHECK: if ([[COUNT]] != 0) {
 // CHECK-NEXT: close_connections([[MANAGER]]);
 
 module {
   func.func @routing_plane() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %count = arith.constant 1 : i32
+    %header_count = arith.constant 1 : i32
     %runtime_arg_base = arith.constant 5 : index
     %connection_index = arith.constant 0 : i32
     %destination_device_id = arith.constant 2 : i32
@@ -62,27 +67,41 @@ module {
     %manager = ttkernel.routing_plane.create_connection_manager
       : !ttkernel.routing_plane_connection_manager
     %route_id = ttkernel.routing_plane.open_connections
-      %manager, %count runtime_arg_base = %runtime_arg_base
-      : (!ttkernel.routing_plane_connection_manager, i32, index) -> i32
+      %manager, %count header_count = %header_count
+      runtime_arg_base = %runtime_arg_base
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, index) -> i32
+    ttkernel.routing_plane.set_unicast_route(
+      %route_id, %connection_index, %destination_device_id,
+      %destination_mesh_id, %destination_hop_count)
+      : (i32, i32, i32, i32, i32) -> ()
     ttkernel.routing_plane.atomic_inc(
-      %manager, %route_id, %connection_index, %destination_device_id,
-      %destination_mesh_id, %destination_hop_count, %semaphore_address,
-      %increment)
-      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
+      %manager, %route_id, %connection_index, %connection_index,
+      %semaphore_address, %increment)
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32,
          !ttkernel.noc_addr, i32) -> ()
+    %configured = ttkernel.routing_plane.set_fused_write_atomic_inc_state(
+      %route_id, %connection_index, %size, %destination_address,
+      %semaphore_address, %increment)
+      : (i32, i32, i32, !ttkernel.noc_addr, !ttkernel.noc_addr, i32) -> i1
+    ttkernel.routing_plane.fused_write_atomic_inc_with_state(
+      %manager, %route_id, %connection_index, %connection_index, %source,
+      %size)
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32,
+         i32) -> ()
+    ttkernel.routing_plane.fused_write_atomic_inc_with_state(
+      %manager, %route_id, %connection_index, %connection_index, %source,
+      %size) posted true
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32,
+         i32) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
-      %manager, %route_id, %connection_index, %destination_device_id,
-      %destination_mesh_id, %destination_hop_count, %source, %size,
+      %manager, %route_id, %connection_index, %connection_index, %source, %size,
       %destination_address, %semaphore_address, %increment)
       : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
-         i32, i32,
          !ttkernel.noc_addr, !ttkernel.noc_addr, i32) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
-      %manager, %route_id, %connection_index, %destination_device_id,
-      %destination_mesh_id, %destination_hop_count, %source, %size,
+      %manager, %route_id, %connection_index, %connection_index, %source, %size,
       %destination_address, %semaphore_address, %increment) {posted = true}
       : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
-         i32, i32,
          !ttkernel.noc_addr, !ttkernel.noc_addr, i32) -> ()
     ttkernel.routing_plane.close_connections(%manager, %count)
       : (!ttkernel.routing_plane_connection_manager, i32) -> ()
