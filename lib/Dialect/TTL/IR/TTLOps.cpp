@@ -438,12 +438,13 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
              << "tensor backing requires a TTCore tile element type, got "
              << cbTy.getElementType();
     }
-    // TODO(#812): Extend tensor backing after additional formats are specified.
     if (tileType.getDataType() != ttcore::DataType::BFloat16 &&
-        tileType.getDataType() != ttcore::DataType::Float32) {
+        tileType.getDataType() != ttcore::DataType::Float32 &&
+        tileType.getDataType() != ttcore::DataType::BFP_BFloat4 &&
+        tileType.getDataType() != ttcore::DataType::BFP_BFloat8) {
       return emitOpError()
-             << "tensor backing supports only BF16 and FP32 tile element "
-                "types, got "
+             << "tensor backing supports only BF16, FP32, BFP4_B, and BFP8_B "
+                "tile element types, got "
              << tileType;
     }
     int64_t pageSize = static_cast<int64_t>(tileType.getSizeBytes());

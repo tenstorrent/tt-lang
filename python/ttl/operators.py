@@ -1203,9 +1203,14 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
         )
     lhs_dtype = ttcore.DataType(lhs_tile.data_type_as_int)
     rhs_dtype = ttcore.DataType(rhs_tile.data_type_as_int)
-    if lhs_dtype != rhs_dtype:
+    is_bfloat16_by_bfp = (
+        not transpose
+        and lhs_dtype == ttcore.DataType.BFloat16
+        and rhs_dtype in (ttcore.DataType.BFP_BFloat4, ttcore.DataType.BFP_BFloat8)
+    )
+    if lhs_dtype != rhs_dtype and not is_bfloat16_by_bfp:
         raise ValueError(
-            "matmul operand tile data types must match, got "
+            "unsupported matmul operand tile data type combination: "
             f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
         )
 

@@ -10,6 +10,18 @@ SUPPORTED_MATH_FIDELITIES = ("LoFi", "HiFi2", "HiFi3", "HiFi4")
 SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS = frozenset(
     ["HEIGHT_SHARDED", "WIDTH_SHARDED", "BLOCK_SHARDED"]
 )
+SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS = frozenset(
+    [
+        "bfloat16",
+        "bf16",
+        "float32",
+        "f32",
+        "bfloat4_b",
+        "bfp_bf4",
+        "bfloat8_b",
+        "bfp_bf8",
+    ]
+)
 
 
 def validate_math_fidelity(math_fidelity: str | None) -> None:
