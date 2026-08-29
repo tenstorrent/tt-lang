@@ -179,10 +179,10 @@ Pipe transfers have the following operational semantics:
 - A pipe has no implicit intermediate buffer. The destination storage is the
   DFB block the user reserves in the receiver callback.
 - `ttl.copy(pipe, dst_blk)` posts a receive for the user-reserved
-  destination block and returns a transfer handle. `RP` records the
+  destination block and returns a typed `ReceiveRequest`. `RP` records the
   post as a send condition. `RA/RP` also publishes the runtime
   destination address; both CA modes compute it on the sender.
-- Waiting on that transfer handle waits for the sender's completion
+- Waiting on that request waits for the sender's completion
   signal for that posted receive.
 - `ttl.copy(src_blk, pipe)` starts a send. `RP` waits until every
   destination has posted a receive; `CC` waits until every destination
@@ -236,6 +236,65 @@ Pipe transfers have the following operational semantics:
   containing pipe events must be reachable from a kernel-thread entry point
   through direct calls. Recursive calls and schedules exceeding 4096 events
   after launch-node specialization and helper expansion are rejected.
+
+### Selecting among completed receives
+
+`ttl.wait_any(requests, start)` waits until at least one PipeNet receive request
+is complete and returns a typed `ReadyReceive`. `requests` is a nonempty tuple
+of distinct `ReceiveRequest` values. `ReadyReceive.index()` returns the selected
+tuple index.
+
+Selection inspects indices in cyclic order
+`start % len(requests), ..., len(requests) - 1, 0, ...` and ends immediately
+before the normalized start index. It selects the first complete request in
+that order. A caller implements rotating priority
+by passing `(previous_index + 1) % len(requests)` to the next selection. When
+several requests are already complete, this rule is deterministic and prevents
+a fixed tuple prefix from receiving permanent priority.
+
+Selection completes only the returned request. Nonselected requests remain
+pending and retain their original destination DFB reservations. They may
+participate in a later `wait_any` or an exact `ReceiveRequest.wait()`. The
+selected request may also receive an exact wait; repeated waits observe the
+same completed transfer.
+
+Each candidate has a compiler-derived identity consisting of its PipeNet id,
+pipe-transfer definition, and selected record index when record selection is
+dynamic. The program does not allocate or compare physical semaphore ids.
+Lowering maps every identity to a receiver-completion counter and a
+cumulative expected sequence value, then polls those resources with a
+nonblocking semaphore threshold test. Alternate SSA definitions of one request
+are valid only when they denote the same logical channel and destination DFB
+stream. Their completion state uses one cumulative counter.
+
+Pending requests require independent destination capacity. Candidates that may
+complete or be consumed out of FIFO order use separate DFB streams. Multiple
+reserved blocks in one DFB stream are valid only when requests complete and
+publish in reservation order. Tensor-backed DFBs expose independent landing
+storage directly without intermediate scratch copies.
+
+```python
+block0 = landing_dfb0.reserve()
+block1 = landing_dfb1.reserve()
+request0 = ttl.copy(pipe0, block0)
+request1 = ttl.copy(pipe1, block1)
+
+ready = ttl.wait_any((request0, request1), start=next_index)
+selected = ready.index()
+if selected == 0:
+    request0.wait()
+    block0.push()
+    ready_block0 = landing_dfb0.wait()
+    consume(ready_block0)
+    ready_block0.pop()
+else:
+    request1.wait()
+    block1.push()
+    ready_block1 = landing_dfb1.wait()
+    consume(ready_block1)
+    ready_block1.pop()
+next_index = (selected + 1) % 2
+```
 
 The receive transfer created by `ttl.copy(pipe, dst_blk)` moves through
 these states:
@@ -403,6 +462,8 @@ Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 - `ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`.
 - `ttl.wait` on a pipe receive handle expands to
   `ttl.pipe_transfer.wait`.
+- `ttl.wait_any` on pipe receive requests expands to
+  `ttl.pipe_transfer.wait_any`.
 - `ttl.wait` on a pipe send handle remains a high-level `ttl.wait` until
   TTKernel conversion, where it is erased because `ttl.pipe_transfer.send`
   has already waited for the payload write and signaled completion.

@@ -102,6 +102,13 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
+const PipeWaitAnyPlan &
+PipeModulePlan::getWaitAnyPlan(PipeTransferWaitAnyOp operation) const {
+  auto planIt = waitAnyPlans.find(operation.getOperation());
+  assert(planIt != waitAnyPlans.end() && "wait-any operation has no plan");
+  return planIt->second;
+}
+
 FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
                                                       int64_t blockSpan) {
   FailureOr<CircularBufferType> maybeDFBType =
@@ -470,7 +477,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   DominanceInfo dominanceInfo(module);
   auto addTransferPlan =
       [&](Operation *operation, PipeReference pipeReference,
-          PipeTransferPlan::Resources resources) -> LogicalResult {
+          PipeResourceAccessPlan::Resources resources) -> LogicalResult {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     auto postOp = dyn_cast<PipeTransferPostOp>(operation);
     auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
@@ -547,6 +554,20 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return failure();
     }
   }
+
+  module.walk([&](PipeTransferWaitAnyOp waitOp) {
+    PipeWaitAnyPlan waitPlan;
+    for (ArrayRef<Operation *> possiblePosts :
+         transferIndex.getWaitAnyCandidatePosts(waitOp)) {
+      assert(!possiblePosts.empty() && "candidate must have a receiver post");
+      auto transferPlanIt = plan.transferPlans.find(possiblePosts.front());
+      assert(transferPlanIt != plan.transferPlans.end() &&
+             "validated wait-any post is missing planned resources");
+      waitPlan.candidates.push_back(
+          transferPlanIt->second.getResourceAccessPlan());
+    }
+    plan.waitAnyPlans.insert({waitOp.getOperation(), std::move(waitPlan)});
+  });
 
   return plan;
 }

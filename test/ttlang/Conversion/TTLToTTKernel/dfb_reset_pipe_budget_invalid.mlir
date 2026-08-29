@@ -22,8 +22,8 @@ module attributes {
       %transfer = ttl.copy %pipe, %destination
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %transfer : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %transfer : !ttl.receive_request
       ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       ttl.yield
     }

@@ -851,6 +851,22 @@ FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op);
 /// Return concrete DST write indices for an interface-bearing operation.
 FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 
+/// Canonical comparison of a wait-any result index with one candidate.
+struct ReadyReceiveSelection {
+  Operation *waitAny = nullptr;
+  int64_t candidateIndex = 0;
+  bool selectedWhenTrue = true;
+};
+
+/// Return the wait-any selection represented by an integer predicate.
+std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate);
+
+/// Return whether `operation` executes in the selected region for one
+/// wait-any candidate.
+bool isInReadyReceiveSelectionRegion(
+    Operation *operation, Operation *waitAny, int64_t candidateIndex,
+    llvm::function_ref<bool(Operation *, Operation *)> isOrderedBefore);
+
 /// Set the dst_index Value on a tile op with TTLDstResultOpTrait.
 inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
   assert(op->hasTrait<TTLDstResultOpTrait>() &&

@@ -29,7 +29,6 @@ from typing import Optional
 from .context_types import SimulatorContext
 from .kernel import KernelKind
 
-
 # Single per-process simulator context.  Created lazily by ``get_context()``
 # and swapped wholesale by ``set_context()`` / ``reset_context()``.  See the
 # module docstring for why a plain module global is the right abstraction.
@@ -107,6 +106,9 @@ def cleanup_run_context() -> None:
     ctx.kernel_dfb_count = 0
     ctx.kernel_l1_bytes = 0
     ctx.active_hooks.clear()
+    ctx.deferred_copy_wait_codes.clear()
+    ctx.deferred_copy_wait_sites.clear()
+    ctx.deferred_copy_wait_requests.clear()
     ctx.auto_wait_copy_lines.clear()
     _free_monitoring_tool_id()
 

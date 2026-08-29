@@ -20,6 +20,11 @@ def TTLInsertCBSync
 
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
+
+    A receive request used by `ttl.wait_any` has conditional completion. Its
+    destination reservation is not published automatically because only the
+    selected request is known to be complete. Publication must be explicit and
+    conditioned on the corresponding selection, or follow an exact wait.
   }];
 
   let dependentDialects = [];
@@ -156,11 +161,15 @@ def TTLFormPipeTransports
 
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
-  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let summary = "Complete ttl.copy operations without a guaranteed wait";
   let description = [{
-    Finds `ttl.copy` ops whose transfer handle result has no `ttl.wait` user
-    and inserts a `ttl.wait` immediately after the copy. Explicit `.wait()`
-    calls are preserved: the pass only fills in what is missing.
+    Proves copy completion across every reachable continuation, including
+    structured regions and block control flow. An uncovered copy receives an
+    implicit `ttl.wait`. When a request participates in a multi-request
+    `ttl.wait_any`, uncovered cleanup occurs at each reachable function exit.
+    The inserted wait therefore cannot alter the selected request or precede
+    work that completes pending candidates. A single-request `ttl.wait_any`
+    completes its sole request.
   }];
 
   let dependentDialects = [];
