@@ -160,7 +160,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-form-accumulation-scopes{strategy=<accumulation-strategy>}` -- form semantic accumulation scopes for eligible tensor recurrences
 - `ttl-lower-accumulation-scopes{strategy=<accumulation-strategy>}` -- lower tensor accumulation scopes
 - `ttl-materialize-loop-state` -- replace remaining ranked-tensor loop-carried values with compiler-created DFBs
-- `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
+- `ttl-insert-copy-wait` -- complete copies on every continuation without moving request cleanup before `ttl.wait_any`
 - `ttl-auto-sync` -- run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
 - `ttl-insert-accumulation-scopes{kind=dfb}` -- form semantic accumulation scopes for user-written `+=` loops
 - `ttl-lower-accumulation-scopes{kind=dfb}` -- lower user-written `+=` scopes to L1 packer metadata

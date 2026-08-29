@@ -50,13 +50,13 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %receive = ttl.copy %pipe, %reserve
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %send = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
              !ttl.selected_pipe_dst)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
-      ttl.wait %receive : !ttl.transfer_handle
+      ttl.wait %receive : !ttl.receive_request
       ttl.cb_push %recv_cb
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       %ready = ttl.cb_wait %recv_cb

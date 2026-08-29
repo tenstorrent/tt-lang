@@ -37,7 +37,78 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A result-selection branch preserves the enclosing destination domain.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @selected_receive_producer
+  // CHECK: ttl.wait_any
+  // CHECK: scf.if
+  // CHECK: ttl.cb_push
+  // CHECK-LABEL: func.func @selected_receive_consumer
+  // CHECK: ttl.cb_wait
+  func.func @selected_receive_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %landing1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %block0 = ttl.cb_reserve %landing0
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %block1 = ttl.cb_reserve %landing1
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %request0 = ttl.copy %pipe0, %block0
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %request1 = ttl.copy %pipe1, %block1
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %start = arith.constant 0 : index
+      %ready = ttl.wait_any %request0, %request1 start %start
+          : (!ttl.receive_request, !ttl.receive_request, index)
+          -> !ttl.ready_receive
+      %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+      %zero = arith.constant 0 : index
+      %selected0 = arith.cmpi eq, %selected, %zero : index
+      scf.if %selected0 {
+        ttl.cb_push %landing0
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+    }
+    func.return
+  }
+
+  func.func @selected_receive_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %block = ttl.cb_wait %landing0
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     func.return
   }
@@ -194,7 +265,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -225,7 +296,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64
       %ra = ttl.copy %pa, %recv_a_dst
           : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     ttl.if_dst %pb : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1> {
       %recv_b_dst = ttl.cb_reserve %cb
@@ -234,7 +305,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64
       %rb = ttl.copy %pb, %recv_b_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -317,26 +388,26 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
       %post0 = ttl.copy %pipe, %recv0
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %send0 = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send0 : !ttl.transfer_handle<write>
-      ttl.wait %post0 : !ttl.transfer_handle
+      ttl.wait %post0 : !ttl.receive_request
       %recv1 = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %post1 = ttl.copy %pipe, %recv1
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %send1 = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send1 : !ttl.transfer_handle<write>
-      ttl.wait %post1 : !ttl.transfer_handle
+      ttl.wait %post1 : !ttl.receive_request
     }
     func.return
   }
@@ -364,8 +435,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     func.return
   }
@@ -424,8 +495,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %recv = ttl.copy %pipe, %recv_reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv : !ttl.receive_request
       }
       ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
         %send = ttl.copy %send_cb, %pipe
@@ -634,7 +705,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -664,7 +735,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -1045,7 +1116,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -1082,7 +1153,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -1272,7 +1343,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -1311,7 +1382,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe, %reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     // CHECK-NOT: ttl.copy
     func.return
@@ -1401,7 +1472,7 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     } else {
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,

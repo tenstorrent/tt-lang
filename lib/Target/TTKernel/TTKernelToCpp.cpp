@@ -127,7 +127,8 @@ public:
         emitLlk(experimental_pack_untilize_llks_generated,
                 experimental_pack_untilize_llks_generated_len);
       }
-      if (callee == "experimental::semaphore_wait" ||
+      if (callee == "experimental::semaphore_reached" ||
+          callee == "experimental::semaphore_wait" ||
           callee == "experimental::semaphore_wait_min") {
         emitLlk(experimental_semaphore_generated,
                 experimental_semaphore_generated_len);

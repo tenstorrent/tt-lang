@@ -36,12 +36,12 @@ func.func @overlap_two_receives_use_distinct_completion() attributes { "ttl.kern
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
   %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf1 : !ttl.transfer_handle
+  %xf1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+  ttl.wait %xf1 : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   %recv2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf2 : !ttl.transfer_handle
+  %xf2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+  ttl.wait %xf2 : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
   func.return
 }
@@ -89,12 +89,12 @@ func.func @disjoint_receivers_reuse_completion() attributes { "ttl.kernel_thread
   %p_net0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p_net1 = ttl.create_pipe src(0, 1) dst(2, 0) to(2, 3) net 1 : !ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>
   %recv0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf0 = ttl.copy %p_net0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf0 : !ttl.transfer_handle
+  %xf0 = ttl.copy %p_net0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+  ttl.wait %xf0 : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf1 = ttl.copy %p_net1, %recv1 : (!ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf1 : !ttl.transfer_handle
+  %xf1 = ttl.copy %p_net1, %recv1 : (!ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+  ttl.wait %xf1 : !ttl.receive_request
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   func.return
 }
@@ -159,12 +159,12 @@ func.func @overlap_distinct_slots() attributes { "ttl.kernel_thread" = #ttkernel
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
   ttl.if_dst %p1 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post2 : !ttl.transfer_handle
+    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post2 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   ttl.if_src %p1 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
@@ -221,12 +221,12 @@ func.func @overlap_distinct_slots_reversed_order() attributes { "ttl.kernel_thre
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
   ttl.if_dst %p1 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     %recv1 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post2 : !ttl.transfer_handle
+    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post2 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   // Reverse program order: p2's send runs before p1's send.
@@ -279,12 +279,12 @@ func.func @grouped_reserve_advances_following_slot() attributes { "ttl.kernel_th
   %p2 = ttl.create_pipe src(3, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(3, 0) dst(1, 0) to(1, 3) net 0>
   ttl.if_dst %p1 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     %recv_group = ttl.cb_reserve %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 3> -> tensor<1x2x!ttcore.tile<32x32, f32>>
-    %post1 = ttl.copy %p1, %recv_group : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x2x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post1 : !ttl.transfer_handle
+    %post1 = ttl.copy %p1, %recv_group : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x2x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post1 : !ttl.receive_request
     ttl.cb_push %dst_cb {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, f32>, 3>
     %recv2 = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 3> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(3, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post2 : !ttl.transfer_handle
+    %post2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(3, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post2 : !ttl.receive_request
     ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 3>
   }
   ttl.if_src %p1 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
@@ -342,8 +342,8 @@ func.func @loopback_self_inc_receiver() attributes { "ttl.kernel_thread" = #ttke
   %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 3) net 0 : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>
   ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0> {
     %recv = ttl.cb_reserve %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-    ttl.wait %post : !ttl.transfer_handle
+    %post = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.receive_request
+    ttl.wait %post : !ttl.receive_request
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   }
   func.return

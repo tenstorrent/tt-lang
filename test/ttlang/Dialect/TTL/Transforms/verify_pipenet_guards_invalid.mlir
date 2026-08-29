@@ -18,6 +18,24 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// Internal wait-any tokens must originate from receiver posts.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @wait_any_requires_post_token()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %token = builtin.unrealized_conversion_cast to !ttl.pipe_token<net 0>
+    %start = arith.constant 0 : index
+    // expected-error @below {{'ttl.pipe_transfer.wait_any' op requires every token value to derive from a ttl.pipe_transfer.post}}
+    %ready = ttl.pipe_transfer.wait_any %token start %start
+        : (!ttl.pipe_token<net 0>, index) -> !ttl.ready_receive
+    func.return
+  }
+}
+
+// -----
+
 // A DFB-to-pipe copy must execute only on the pipe source node.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
@@ -87,7 +105,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe, %reserve
           : (!ttl.selected_pipe_src,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       ttl.yield
     }
     func.return
@@ -114,21 +132,21 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv0 = ttl.copy %pipe, %dst0
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %dst1 = ttl.cb_reserve %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       %recv1 = ttl.copy %pipe, %dst1
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      %recv = scf.if %condition -> (!ttl.transfer_handle) {
-        scf.yield %recv0 : !ttl.transfer_handle
+          -> !ttl.receive_request
+      %recv = scf.if %condition -> (!ttl.receive_request) {
+        scf.yield %recv0 : !ttl.receive_request
       } else {
-        scf.yield %recv1 : !ttl.transfer_handle
+        scf.yield %recv1 : !ttl.receive_request
       }
       // expected-error @below {{'ttl.wait' op requires either every possible source to be the same pipe receive ttl.copy or no source to be a pipe receive}}
-      ttl.wait %recv : !ttl.transfer_handle
+      ttl.wait %recv : !ttl.receive_request
     }
     func.return
   }
@@ -157,7 +175,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %recv = ttl.copy %pipe, %recv_view
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     func.return
   }
 }
@@ -256,7 +274,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %view
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %core_x = ttl.core_x : index
       %scaled = arith.muli %core_x, %runtime : index
       %zero = arith.constant 0 : index
@@ -264,7 +282,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %cond = arith.cmpi eq, %scaled, %zero : index
       scf.if %cond {
         // expected-error @below {{could not statically analyze the PipeNet guard}}
-        ttl.wait %recv : !ttl.transfer_handle
+        ttl.wait %recv : !ttl.receive_request
       }
       ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
@@ -476,7 +494,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
       %r = ttl.copy %pa, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -530,7 +548,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         %recv = ttl.copy %pa, %recv_view
             : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
+            -> !ttl.receive_request
       }
     }
     func.return
@@ -662,7 +680,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
