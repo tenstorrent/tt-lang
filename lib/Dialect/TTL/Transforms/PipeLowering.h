@@ -37,6 +37,7 @@ struct FabricRoute {
   DeviceRefAttr remoteDevice;
   SmallVector<LaunchNodeCoord> sourceNodes;
   std::size_t routeIndex;
+  std::size_t maxConnectionCount;
 };
 
 /// Fabric routes and their logical device domain for one kernel function.
@@ -106,6 +107,7 @@ struct FabricRuntimeInfo {
   Value connectionCount;
   Value runtimeArgBase;
   std::size_t routeCount = 0;
+  std::size_t maxConnectionsPerRoute = 1;
 };
 
 /// Routing-plane state indexed by each fabric protocol operation.

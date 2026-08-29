@@ -55,6 +55,8 @@ namespace mlir::tt::ttl {
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
+static constexpr std::size_t kMaxGeneratedFabricConnectionsPerRoute = 2;
+
 //===----------------------------------------------------------------------===//
 // Helpers
 //===----------------------------------------------------------------------===//
@@ -155,7 +157,8 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
 static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
                                   DeviceRefAttr localDevice,
                                   DeviceRefAttr remoteDevice,
-                                  LaunchNodeCoord localNode) {
+                                  LaunchNodeCoord localNode,
+                                  std::size_t maxConnectionCount) {
   auto route = llvm::find_if(routes, [&](const FabricRoute &existing) {
     return existing.localDevice == localDevice &&
            existing.remoteDevice == remoteDevice;
@@ -164,6 +167,8 @@ static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
     if (!llvm::is_contained(route->sourceNodes, localNode)) {
       route->sourceNodes.push_back(localNode);
     }
+    route->maxConnectionCount =
+        std::max(route->maxConnectionCount, maxConnectionCount);
     return route->routeIndex;
   }
 
@@ -171,8 +176,8 @@ static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
       llvm::count_if(routes, [&](const FabricRoute &existing) {
         return existing.localDevice == localDevice;
       });
-  routes.push_back(
-      FabricRoute{localDevice, remoteDevice, {localNode}, routeIndex});
+  routes.push_back(FabricRoute{localDevice, remoteDevice, {localNode},
+                               routeIndex, maxConnectionCount});
   return routeIndex;
 }
 
@@ -802,7 +807,8 @@ LogicalResult buildFabricRoutePlan(
     }
     std::size_t routeIndex = addFabricRoute(
         (*maybeSendFunctionPlan)->routes, source, destination,
-        LaunchNodeCoord{transferNode.pipe.srcX, transferNode.pipe.srcY});
+        LaunchNodeCoord{transferNode.pipe.srcX, transferNode.pipe.srcY},
+        kMaxGeneratedFabricConnectionsPerRoute);
     if (failed(
             recordRouteIndex(send, transferNode.sendRecordIndex, routeIndex))) {
       result = failure();
@@ -823,7 +829,8 @@ LogicalResult buildFabricRoutePlan(
       }
       std::size_t reverseRouteIndex = addFabricRoute(
           (*maybePostFunctionPlan)->routes, destination, source,
-          LaunchNodeCoord{endpoint.receiver.x, endpoint.receiver.y});
+          LaunchNodeCoord{endpoint.receiver.x, endpoint.receiver.y},
+          kMaxGeneratedFabricConnectionsPerRoute);
       if (failed(recordRouteIndex(postOp, endpoint.postRecordIndex,
                                   reverseRouteIndex))) {
         result = failure();
@@ -942,6 +949,9 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
            builder.getNamedAttr("remote", route.remoteDevice),
            builder.getNamedAttr("route_index",
                                 builder.getI64IntegerAttr(route.routeIndex)),
+           builder.getNamedAttr(
+               "max_connection_count",
+               builder.getI64IntegerAttr(route.maxConnectionCount)),
            builder.getNamedAttr("source_nodes",
                                 builder.getArrayAttr(sourceNodes))}));
     }
@@ -999,11 +1009,11 @@ static FabricRouteTarget buildFabricRouteTarget(
     OpBuilder &builder, Location loc, Value routeIndex, Value runtimeArgBase,
     std::size_t routeCount) {
   Value firstDeviceIndex =
-      arith::ConstantIndexOp::create(builder, loc, 1 + routeCount);
-  Value firstMeshIndex =
       arith::ConstantIndexOp::create(builder, loc, 1 + 2 * routeCount);
-  Value firstHopCountIndex =
+  Value firstMeshIndex =
       arith::ConstantIndexOp::create(builder, loc, 1 + 3 * routeCount);
+  Value firstHopCountIndex =
+      arith::ConstantIndexOp::create(builder, loc, 1 + 4 * routeCount);
   Value destinationDeviceIndex =
       arith::AddIOp::create(builder, loc, firstDeviceIndex, routeIndex);
   Value destinationMeshIndex =
@@ -1112,11 +1122,14 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
         builder, loc,
         ttk::RoutingPlaneConnectionManagerType::get(builder.getContext()));
     Value connectionRecordsOffset =
-        arith::ConstantIndexOp::create(builder, loc, 1 + 4 * routeCount);
+        arith::ConstantIndexOp::create(builder, loc, 1 + 5 * routeCount);
     Value connectionRecordsBase = arith::AddIOp::create(
         builder, loc, runtimeArgBase, connectionRecordsOffset);
     Value headerCount = arith::ConstantIntOp::create(
-        builder, loc, static_cast<int64_t>(routeCount), 32);
+        builder, loc,
+        static_cast<int64_t>(routeCount *
+                             kMaxGeneratedFabricConnectionsPerRoute),
+        32);
     Value routeId = ttk::OpenRoutingPlaneConnectionsOp::create(
         builder, loc, builder.getI32Type(), manager, connectionCount,
         headerCount, connectionRecordsBase);
@@ -1131,26 +1144,34 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
       builder.setInsertionPointToStart(
           &configureRoutes.getThenRegion().front());
       Value lower = arith::ConstantIndexOp::create(builder, loc, 0);
-      Value upper = arith::ConstantIndexOp::create(builder, loc, routeCount);
+      Value upper = arith::ConstantIndexOp::create(
+          builder, loc,
+          routeCount * kMaxGeneratedFabricConnectionsPerRoute);
       Value step = arith::ConstantIndexOp::create(builder, loc, 1);
       scf::ForOp::create(
           builder, loc, lower, upper, step, ValueRange{},
-          [&](OpBuilder &bodyBuilder, Location bodyLoc, Value routeIndex,
+          [&](OpBuilder &bodyBuilder, Location bodyLoc, Value headerIndex,
               ValueRange) {
+            Value connectionsPerRoute = arith::ConstantIndexOp::create(
+                bodyBuilder, bodyLoc,
+                kMaxGeneratedFabricConnectionsPerRoute);
+            Value routeIndex = arith::DivUIOp::create(
+                bodyBuilder, bodyLoc, headerIndex, connectionsPerRoute);
             FabricRouteTarget target = buildFabricRouteTarget(
                 bodyBuilder, bodyLoc, routeIndex, runtimeArgBase, routeCount);
-            Value routeIndexI32 = arith::IndexCastOp::create(
-                bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), routeIndex);
+            Value headerIndexI32 = arith::IndexCastOp::create(
+                bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), headerIndex);
             ttk::RoutingPlaneSetUnicastRouteOp::create(
-                bodyBuilder, bodyLoc, routeId, routeIndexI32,
+                bodyBuilder, bodyLoc, routeId, headerIndexI32,
                 target.destinationDeviceId, target.destinationMeshId,
                 target.destinationHopCount);
             scf::YieldOp::create(bodyBuilder, bodyLoc);
           });
     }
     builder.setInsertionPointAfter(configureRoutes);
-    FabricRuntimeInfo runtimeInfo{manager, routeId, connectionCount,
-                                  runtimeArgBase, routeCount};
+    FabricRuntimeInfo runtimeInfo{
+        manager, routeId, connectionCount, runtimeArgBase, routeCount,
+        kMaxGeneratedFabricConnectionsPerRoute};
     for (Operation *operation : interval.protocolOperations) {
       auto [runtimeIt, inserted] = runtime.try_emplace(operation, runtimeInfo);
       (void)runtimeIt;
@@ -2545,8 +2566,12 @@ private:
   }
 
   Value buildRouteIndex() {
-    return arith::IndexCastOp::create(rewriter, loc, rewriter.getI32Type(),
-                                      routeIndex);
+    Value connectionsPerRoute = arith::ConstantIndexOp::create(
+        rewriter, loc, runtime.maxConnectionsPerRoute);
+    Value firstHeaderIndex = arith::MulIOp::create(
+        rewriter, loc, routeIndex, connectionsPerRoute);
+    return arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getI32Type(), firstHeaderIndex);
   }
 
   Location loc;

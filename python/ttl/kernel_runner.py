@@ -4209,7 +4209,8 @@ def _fabric_routes_to_source(
         route_sources = [
             "FabricRouteSpec("
             f"{route.local_device!r}, {route.remote_device!r}, "
-            f"{route.source_nodes!r}, {route.route_index!r})"
+            f"{route.source_nodes!r}, {route.route_index!r}, "
+            f"{route.max_connection_count!r})"
             for route in routes
         ]
         kernel_routes.append("[" + ", ".join(route_sources) + "]")

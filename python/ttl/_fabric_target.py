@@ -18,6 +18,7 @@ class FabricRouteSpec:
     remote_device: Tuple[int, ...]
     source_nodes: Tuple[Tuple[int, ...], ...]
     route_index: int
+    max_connection_count: int = 1
 
 
 class FabricManagerIntervalKind(Enum):
@@ -193,6 +194,7 @@ class FabricTargetBindingPlan:
 
 
 _WORKER_SEMAPHORE_CAPACITY = 16
+_MAX_FABRIC_CONNECTIONS_PER_ROUTE = 2
 
 
 def _read_runtime_arg_row(
@@ -237,6 +239,18 @@ def _validate_kernel_aligned_fabric_metadata(
             "kernel_fabric_runtime_arg_base_common_indices must have one entry "
             "per kernel descriptor"
         )
+    for kernel_index, routes in enumerate(kernel_fabric_routes):
+        for route in routes:
+            if not (
+                1
+                <= route.max_connection_count
+                <= _MAX_FABRIC_CONNECTIONS_PER_ROUTE
+            ):
+                raise ValueError(
+                    f"kernel {kernel_index} fabric route {route.route_index} "
+                    f"requests {route.max_connection_count} connections; "
+                    f"supported range is 1..{_MAX_FABRIC_CONNECTIONS_PER_ROUTE}"
+                )
 
 
 def _plan_runtime_arg_bases(
@@ -744,36 +758,88 @@ def build_fabric_target_binding_plan(
                 )
                 for resolved_route in resolved_routes
             ]
-            route_connection_node_ids = [
-                connection.node_id for connection in resolved_connections
-            ]
             destination_node_ids = [
                 connection.destination_node_id for connection in resolved_connections
             ]
-            route_directions = [
-                connection.direction for connection in resolved_connections
+            remote_max_connection_counts = [
+                max(
+                    route.max_connection_count
+                    for route in active_routes
+                    if route.remote_device == remote_device
+                )
+                for remote_device in active_remote_devices
             ]
-            connection_index_by_direction = {}
+
+            direction_indices = {}
+            direction_order = []
+            connection_nodes_by_direction = []
+            remote_slots_by_direction = []
+            for remote_slot, connection in enumerate(resolved_connections):
+                direction_index = direction_indices.get(connection.direction)
+                if direction_index is None:
+                    direction_index = len(direction_order)
+                    direction_indices[connection.direction] = direction_index
+                    direction_order.append(connection.direction)
+                    connection_nodes_by_direction.append([])
+                    remote_slots_by_direction.append([])
+                connection_nodes_by_direction[direction_index].append(
+                    connection.node_id
+                )
+                remote_slots_by_direction[direction_index].append(remote_slot)
+
             connection_node_ids = []
             connection_directions = []
-            connection_nodes_by_connection = []
-            remote_connection_slots = []
-            for connection_node_id, direction in zip(
-                route_connection_node_ids, route_directions
-            ):
-                connection_index = connection_index_by_direction.get(direction)
-                if connection_index is None:
-                    connection_index = len(connection_node_ids)
-                    connection_index_by_direction[direction] = connection_index
-                    connection_node_ids.append(connection_node_id)
-                    connection_directions.append(direction)
-                    connection_nodes_by_connection.append([])
-                connection_nodes_by_connection[connection_index].append(
-                    connection_node_id
+            connection_eligible_links = []
+            remote_connection_ranges = [None] * len(active_remote_devices)
+            for direction_index, direction in enumerate(direction_order):
+                direction_nodes = connection_nodes_by_direction[direction_index]
+                eligible_links = None
+                if can_enumerate_forwarding_links:
+                    eligible_links = _intersect_forwarding_links(
+                        ttnn_api,
+                        active_route_cache,
+                        mesh_device,
+                        fabric_config,
+                        source_node_id,
+                        direction_nodes,
+                    )
+                    if not eligible_links:
+                        raise ValueError(
+                            "fabric destinations sharing one direction have "
+                            "no common forwarding link"
+                        )
+                direction_remote_slots = remote_slots_by_direction[direction_index]
+                desired_connection_count = max(
+                    remote_max_connection_counts[remote_slot]
+                    for remote_slot in direction_remote_slots
                 )
-                remote_connection_slots.append(connection_index)
+                available_connection_count = (
+                    len(eligible_links) if eligible_links is not None else 1
+                )
+                direction_connection_count = min(
+                    desired_connection_count, available_connection_count
+                )
+                first_connection_index = len(connection_node_ids)
+                connection_node_ids.extend(
+                    [direction_nodes[0]] * direction_connection_count
+                )
+                connection_directions.extend(
+                    [direction] * direction_connection_count
+                )
+                connection_eligible_links.extend(
+                    [eligible_links] * direction_connection_count
+                )
+                for remote_slot in direction_remote_slots:
+                    remote_connection_ranges[remote_slot] = (
+                        first_connection_index,
+                        min(
+                            remote_max_connection_counts[remote_slot],
+                            direction_connection_count,
+                        ),
+                    )
 
-            route_slots = [0] * route_count
+            route_connection_bases = [0] * route_count
+            route_connection_counts = [0] * route_count
             destination_device_ids = [0] * route_count
             destination_mesh_ids = [0] * route_count
             destination_hop_counts = [0] * route_count
@@ -785,7 +851,10 @@ def build_fabric_target_binding_plan(
                     )
                 active_route_indices.add(route.route_index)
                 remote_slot = remote_index[route.remote_device]
-                route_slots[route.route_index] = remote_connection_slots[remote_slot]
+                connection_range = remote_connection_ranges[remote_slot]
+                assert connection_range is not None
+                route_connection_bases[route.route_index] = connection_range[0]
+                route_connection_counts[route.route_index] = connection_range[1]
                 destination_node_id = destination_node_ids[remote_slot]
                 destination_device_ids[route.route_index] = int(
                     destination_node_id.chip_id
@@ -799,7 +868,8 @@ def build_fabric_target_binding_plan(
 
             fabric_runtime_metadata = (
                 len(connection_node_ids),
-                *route_slots,
+                *route_connection_bases,
+                *route_connection_counts,
                 *destination_device_ids,
                 *destination_mesh_ids,
                 *destination_hop_counts,
@@ -815,26 +885,11 @@ def build_fabric_target_binding_plan(
             )
             connection_requests = []
             for connection_index, connection_node_id in enumerate(connection_node_ids):
-                eligible_links = None
-                if can_enumerate_forwarding_links:
-                    eligible_links = _intersect_forwarding_links(
-                        ttnn_api,
-                        active_route_cache,
-                        mesh_device,
-                        fabric_config,
-                        source_node_id,
-                        connection_nodes_by_connection[connection_index],
-                    )
-                    if not eligible_links:
-                        raise ValueError(
-                            "fabric destinations sharing one direction have "
-                            "no common forwarding link"
-                        )
                 connection_requests.append(
                     _FabricConnectionRequest(
                         connection_node_id=connection_node_id,
                         direction=connection_directions[connection_index],
-                        eligible_links=eligible_links,
+                        eligible_links=connection_eligible_links[connection_index],
                         interval_ids=generated_interval_ids,
                     )
                 )

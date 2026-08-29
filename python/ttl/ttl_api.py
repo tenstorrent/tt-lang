@@ -1254,6 +1254,7 @@ def _get_kernel_fabric_routes(module, kernel_name: str):
                 ),
                 source_nodes=source_nodes,
                 route_index=int(route["route_index"]),
+                max_connection_count=int(route["max_connection_count"]),
             )
         )
     return routes
