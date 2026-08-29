@@ -72,7 +72,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 2>} {
   // CHECK-LABEL: func.func @matching_selected_runtime_receiver_context
   // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // CHECK-NOT: ttkernel.noc_inline_dw_write
-  // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
+  // CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc
   // CHECK-NOT: ttkernel.noc_inline_dw_write
   // CHECK: return
   func.func @matching_selected_runtime_receiver_context(%runtime_y: index)

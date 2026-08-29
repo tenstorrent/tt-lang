@@ -11,8 +11,8 @@
 // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [1, 0] : index
 // CHECK: arith.cmpi
 // CHECK: scf.if
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc
 // CHECK-LABEL: func.func @receiver
 // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 1] : index
 // CHECK: arith.cmpi

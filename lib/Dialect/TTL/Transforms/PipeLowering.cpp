@@ -4763,9 +4763,10 @@ static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection,
     bool hasComputedAddress, bool singleExecution) {
-  // A one-shot transfer with a computed destination cannot overwrite an
-  // earlier payload, and its destination storage exists before dispatch.
-  if (hasComputedAddress && singleExecution) {
+  // A one-shot fabric transfer with a computed destination cannot overwrite
+  // an earlier payload, and its destination storage exists before dispatch.
+  if (usesFabricProtocol(unit, synchronizationSelection) &&
+      hasComputedAddress && singleExecution) {
     return false;
   }
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {

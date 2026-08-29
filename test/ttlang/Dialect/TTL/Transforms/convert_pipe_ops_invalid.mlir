@@ -938,7 +938,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
           -> !ttl.transfer_handle
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      // expected-error @below {{pipe transfer source DFB element type must be tile}}
+      // expected-error @below {{pipe transfer DFB element type must be tile}}
       %send = ttl.copy %src, %pipe
           : (!ttl.cb<[1, 1], f32, 1>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)

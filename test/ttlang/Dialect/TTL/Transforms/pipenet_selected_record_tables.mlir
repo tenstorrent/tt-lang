@@ -10,9 +10,10 @@
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-NOT: ttl.pipe_sram_scratch_bytes
 
-// The sender uses route slots 0 and 1 for records 0 and 1. It emits each
-// transfer without a sender-readiness wait because destination storage is
-// stable for the operation's single execution.
+// Each record selects a disjoint pair of preconfigured route headers and the
+// corresponding connection range. It emits the transfer without a
+// sender-readiness wait because destination storage is stable for the
+// operation's single execution.
 // CHECK-LABEL: func.func @sender()
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: %[[FABRIC_BASE_I32:.*]] = ttkernel.get_common_arg_val
@@ -20,21 +21,17 @@
 // CHECK: scf.for %[[RECORD:.*]] =
 // CHECK: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
 // CHECK-NOT: ttkernel.experimental.semaphore_wait
-// CHECK: %[[DEST_DEVICE_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
-// CHECK: %[[DEST_MESH_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
-// CHECK: %[[DEST_HOPS_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
-// CHECK-NEXT: %[[DEST_DEVICE_ARG_INDEX:.*]] = arith.addi %[[FABRIC_BASE]], %[[DEST_DEVICE_RELATIVE_INDEX]] : index
-// CHECK-NEXT: %[[DEST_MESH_ARG_INDEX:.*]] = arith.addi %[[FABRIC_BASE]], %[[DEST_MESH_RELATIVE_INDEX]] : index
-// CHECK-NEXT: %[[DEST_HOPS_ARG_INDEX:.*]] = arith.addi %[[FABRIC_BASE]], %[[DEST_HOPS_RELATIVE_INDEX]] : index
-// CHECK: %[[DEST_DEVICE:.*]] = ttkernel.get_arg_val(%[[DEST_DEVICE_ARG_INDEX]]) : (index) -> i32
-// CHECK: %[[DEST_MESH:.*]] = ttkernel.get_arg_val(%[[DEST_MESH_ARG_INDEX]]) : (index) -> i32
-// CHECK: %[[DEST_HOPS:.*]] = ttkernel.get_arg_val(%[[DEST_HOPS_ARG_INDEX]]) : (index) -> i32
+// CHECK: %[[ROUTE_HEADER_BASE_INDEX:.*]] = arith.muli %[[ROUTE]], {{.*}} : index
+// CHECK-NEXT: %[[ROUTE_HEADER_BASE:.*]] = arith.index_cast %[[ROUTE_HEADER_BASE_INDEX]] : index to i32
 // CHECK: %[[CONNECTION_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK-NEXT: %[[CONNECTION_ARG_INDEX:.*]] = arith.addi %[[FABRIC_BASE]], %[[CONNECTION_RELATIVE_INDEX]] : index
 // CHECK-NEXT: %[[CONNECTION:.*]] = ttkernel.get_arg_val(%[[CONNECTION_ARG_INDEX]]) : (index) -> i32
+// CHECK-NEXT: %[[CONNECTION_COUNT_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
+// CHECK-NEXT: %[[CONNECTION_COUNT_ARG_INDEX:.*]] = arith.addi %[[FABRIC_BASE]], %[[CONNECTION_COUNT_RELATIVE_INDEX]] : index
+// CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.get_arg_val(%[[CONNECTION_COUNT_ARG_INDEX]]) : (index) -> i32
 // CHECK: scf.if
 // CHECK-NOT: ttkernel.routing_plane.atomic_inc
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[CONNECTION]], %[[DEST_DEVICE]], %[[DEST_MESH]], %[[DEST_HOPS]],{{.*}}) {posted = true}
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc({{.*}}, %[[ROUTE_HEADER_BASE]], %[[CONNECTION]], %[[CONNECTION_COUNT]],{{.*}}) {posted = true}
 
 // Each receiver record resolves its logical device, then waits on its shared
 // completion counter. No reverse-route readiness atomic is emitted.
