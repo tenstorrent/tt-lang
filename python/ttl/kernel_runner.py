@@ -51,7 +51,10 @@ from .dataflow_buffer import (
     _validate_tensor_backed_dfb_range,
     _validate_tensor_backed_dfb_tensor,
 )
-from .constants import DEFAULT_L1_CB_BUDGET_BYTES
+from .constants import (
+    DEFAULT_L1_CB_BUDGET_BYTES,
+    SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS,
+)
 from . import dtype_utils
 from .kernel import Kernel, KernelKind, KernelSelector
 from .runtime_resources import (
@@ -2342,10 +2345,11 @@ def _validate_tensor_backed_dfb_binding(
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing {tensor_index} is absent"
         )
-    if config.data_format not in {"bfloat16", "bf16", "float32", "f32"}:
+    if config.data_format not in SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing format "
-            f"{config.data_format} is not supported; expected BF16 or FP32"
+            f"{config.data_format} is not supported; expected BF16, FP32, "
+            "BFP4_B, or BFP8_B"
         )
     context = f"DFB[{config.dfb_index}] tensor backing"
     properties = _validate_tensor_backed_dfb_tensor(tensor, context=context)

@@ -255,14 +255,20 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     std::string &failureReason) {
   failureReason.clear();
   llvm::raw_string_ostream diagnostic(failureReason);
-  if (lhsType.getDataType() != rhsType.getDataType()) {
-    diagnostic << "element data type mismatch: lhs has " << lhsType
-               << " but rhs has " << rhsType;
-    return failure();
-  }
-  if (resultType.getDataType() != lhsType.getDataType()) {
-    diagnostic << "result element data type " << resultType
-               << " must match input element data type " << lhsType;
+  ttcore::DataType lhsDataType = lhsType.getDataType();
+  ttcore::DataType rhsDataType = rhsType.getDataType();
+  ttcore::DataType resultDataType = resultType.getDataType();
+  bool hasMatchingDataTypes =
+      lhsDataType == rhsDataType && lhsDataType == resultDataType;
+  bool isBFloat16ByBFP = !transposeRhs &&
+                         lhsDataType == ttcore::DataType::BFloat16 &&
+                         (rhsDataType == ttcore::DataType::BFP_BFloat4 ||
+                          rhsDataType == ttcore::DataType::BFP_BFloat8) &&
+                         resultDataType == ttcore::DataType::BFloat16;
+  if (!hasMatchingDataTypes && !isBFloat16ByBFP) {
+    diagnostic << "unsupported matmul element data type combination: lhs has "
+               << lhsType << ", rhs has " << rhsType << ", and result has "
+               << resultType;
     return failure();
   }
 

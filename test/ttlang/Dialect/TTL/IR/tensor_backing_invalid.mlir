@@ -111,10 +111,10 @@ module {
 
 // -----
 
-// Tensor-backed formats are limited to the data types defined by the specification.
+// Tensor-backed formats reject tile data types outside the supported set.
 module {
   func.func @unsupported_tile_data_type() {
-    // expected-error @below {{tensor backing supports only BF16 and FP32 tile element types}}
+    // expected-error @below {{tensor backing supports only BF16, FP32, BFP4_B, and BFP8_B tile element types}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f16>, 1>
     return
   }
