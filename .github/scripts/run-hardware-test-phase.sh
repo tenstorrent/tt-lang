@@ -127,8 +127,10 @@ case "$PHASE" in
         unset TT_VISIBLE_DEVICES
         export TTLANG_DEBUG_FABRIC_ARGS=1
         export TTLANG_FINAL_MLIR=/tmp/pr734-fp32-tree-final.mlir
+        export TT_METAL_WATCHER=20
+        export TT_METAL_WATCHER_TEXT_START=1
         set +e
-        timeout --signal=TERM --kill-after=15s 180 \
+        timeout --signal=TERM --kill-after=15s 120 \
             python3 -m pytest \
                 -c build/test/pytest.ini \
                 --rootdir="${REPO_ROOT}/test" \
@@ -141,6 +143,10 @@ case "$PHASE" in
             echo "FP32 tree: final MLIR fabric state"
             grep -E 'func.func|ttl.fabric_routes|routing_plane|runtime_arg_base' \
                 "$TTLANG_FINAL_MLIR" || true
+        fi
+        if [ -f generated/watcher/watcher.log ]; then
+            echo "Final TT-Metal Watcher state"
+            tail -n 300 generated/watcher/watcher.log
         fi
         exit "$test_status"
         ;;
