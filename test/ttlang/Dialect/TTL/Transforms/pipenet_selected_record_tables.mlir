@@ -3,22 +3,23 @@
 // Summary: Verify selected fabric records preserve record-aligned route and
 // resource tables when one source device communicates with two destinations.
 
-// Fabric records compute receiver DFB addresses and do not allocate a
-// receiver-published address table.
+// Fabric records compute receiver DFB addresses before dispatch. One-shot
+// records therefore require only the completion semaphore.
 // CHECK-LABEL: module attributes
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-NOT: ttl.pipe_sram_scratch_bytes
 
-// The sender uses route slots 0 and 1 for records 0 and 1. Its readiness
-// resources use distinct compiler-managed common arguments and counter slots.
+// The sender uses route slots 0 and 1 for records 0 and 1. It emits each
+// transfer without a sender-readiness wait because destination storage is
+// stable for the operation's single execution.
 // CHECK-LABEL: func.func @sender()
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: %[[FABRIC_BASE_I32:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[FABRIC_BASE:.*]] = arith.index_cast %[[FABRIC_BASE_I32]] : i32 to index
 // CHECK: scf.for %[[RECORD:.*]] =
 // CHECK: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
-// CHECK-NEXT: %[[READY_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [2, 3] : index
-// CHECK-NEXT: %[[READY_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_INDEX]]) : (index) -> i32
-// CHECK-NEXT: %[[READY_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: %[[DEST_DEVICE_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK: %[[DEST_MESH_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK: %[[DEST_HOPS_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
@@ -32,37 +33,20 @@
 // CHECK-NEXT: %[[CONNECTION_ARG_INDEX:.*]] = arith.addi %[[FABRIC_BASE]], %[[CONNECTION_RELATIVE_INDEX]] : index
 // CHECK-NEXT: %[[CONNECTION:.*]] = ttkernel.get_arg_val(%[[CONNECTION_ARG_INDEX]]) : (index) -> i32
 // CHECK: scf.if
-// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[CONNECTION]], %[[DEST_DEVICE]], %[[DEST_MESH]], %[[DEST_HOPS]],
 
-// Each receiver record resolves its own logical device and reverse-route
-// destination while both records use reverse route slot zero.
+// Each receiver record resolves its logical device, then waits on its shared
+// completion counter. No reverse-route readiness atomic is emitted.
 // CHECK-LABEL: func.func @receiver()
-// CHECK: %[[REVERSE_FABRIC_BASE_I32:.*]] = ttkernel.get_common_arg_val
-// CHECK-NEXT: %[[REVERSE_FABRIC_BASE:.*]] = arith.index_cast %[[REVERSE_FABRIC_BASE_I32]] : i32 to index
 // CHECK: scf.for %[[RECORD:.*]] =
 // CHECK: %[[DEST_DEVICE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [1, 2] : index
 // CHECK: arith.cmpi eq, {{.*}}, %[[DEST_DEVICE]] : index
-// CHECK: %[[COMPLETION_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [1, 2] : index
-// CHECK-NEXT: %[[COMPLETION_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_ARG_INDEX]]) : (index) -> i32
-// CHECK-NEXT: %[[REVERSE_ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
-// CHECK: %[[REVERSE_DEVICE_RELATIVE_INDEX:.*]] = arith.addi %[[REVERSE_ROUTE]], {{.*}} : index
-// CHECK: %[[REVERSE_MESH_RELATIVE_INDEX:.*]] = arith.addi %[[REVERSE_ROUTE]], {{.*}} : index
-// CHECK: %[[REVERSE_HOPS_RELATIVE_INDEX:.*]] = arith.addi %[[REVERSE_ROUTE]], {{.*}} : index
-// CHECK-NEXT: %[[REVERSE_DEVICE_ARG_INDEX:.*]] = arith.addi %[[REVERSE_FABRIC_BASE]], %[[REVERSE_DEVICE_RELATIVE_INDEX]] : index
-// CHECK-NEXT: %[[REVERSE_MESH_ARG_INDEX:.*]] = arith.addi %[[REVERSE_FABRIC_BASE]], %[[REVERSE_MESH_RELATIVE_INDEX]] : index
-// CHECK-NEXT: %[[REVERSE_HOPS_ARG_INDEX:.*]] = arith.addi %[[REVERSE_FABRIC_BASE]], %[[REVERSE_HOPS_RELATIVE_INDEX]] : index
-// CHECK: %[[REVERSE_DEVICE:.*]] = ttkernel.get_arg_val(%[[REVERSE_DEVICE_ARG_INDEX]]) : (index) -> i32
-// CHECK: %[[REVERSE_MESH:.*]] = ttkernel.get_arg_val(%[[REVERSE_MESH_ARG_INDEX]]) : (index) -> i32
-// CHECK: %[[REVERSE_HOPS:.*]] = ttkernel.get_arg_val(%[[REVERSE_HOPS_ARG_INDEX]]) : (index) -> i32
-// CHECK: %[[REVERSE_CONNECTION_RELATIVE_INDEX:.*]] = arith.addi %[[REVERSE_ROUTE]], {{.*}} : index
-// CHECK-NEXT: %[[REVERSE_CONNECTION_ARG_INDEX:.*]] = arith.addi %[[REVERSE_FABRIC_BASE]], %[[REVERSE_CONNECTION_RELATIVE_INDEX]] : index
-// CHECK-NEXT: %[[REVERSE_CONNECTION:.*]] = ttkernel.get_arg_val(%[[REVERSE_CONNECTION_ARG_INDEX]]) : (index) -> i32
 // CHECK: %[[COMPLETION_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
 // CHECK-NEXT: %[[COMPLETION_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_COUNTER]]) : (index) -> i32
 // CHECK-NEXT: %[[COMPLETION_POINTER:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION_ADDRESS]])
 // CHECK: scf.if
-// CHECK: ttkernel.routing_plane.atomic_inc({{.*}}, %[[REVERSE_CONNECTION]], %[[REVERSE_DEVICE]], %[[REVERSE_MESH]], %[[REVERSE_HOPS]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_POINTER]], {{.*}})
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [3]>>
