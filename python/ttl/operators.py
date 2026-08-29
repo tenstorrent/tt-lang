@@ -791,16 +791,12 @@ def _copy_byte_count_attr(byte_count, ctx):
         return None
     byte_count_value = _get_constant_int(byte_count)
     if byte_count_value <= 0:
-        raise ValueError(
-            f"copy() byte_count must be positive, got {byte_count_value}"
-        )
+        raise ValueError(f"copy() byte_count must be positive, got {byte_count_value}")
     return IntegerAttr.get(IntegerType.get_signless(64, ctx), byte_count_value)
 
 
 @syntax("copy")
-def copy(
-    src, dst, *, byte_count=None
-) -> Union[CopyTransferHandler, ReceiveRequest]:
+def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 

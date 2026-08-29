@@ -457,10 +457,9 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     Value transfer = getOrCreatePipeTransfer(
         builder, copyOp.getLoc(), copyOp.getDst(), expansion.contract,
         expansion.deviceTransfer, transferByDirectCreatePipe);
-    auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
-                                             copyOp.getResult().getType(),
-                                             transfer, copyOp.getSrc(),
-                                             copyOp.getByteCountAttr());
+    auto sendOp = PipeTransferSendOp::create(
+        builder, copyOp.getLoc(), copyOp.getResult().getType(), transfer,
+        copyOp.getSrc(), copyOp.getByteCountAttr());
     copyOp.getResult().replaceAllUsesWith(sendOp.getXf());
     copyOp->erase();
   }

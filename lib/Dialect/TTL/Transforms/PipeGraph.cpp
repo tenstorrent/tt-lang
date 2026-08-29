@@ -1140,8 +1140,7 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
           dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
       auto destinationTile =
           dyn_cast<ttcore::TileType>(destinationDFBType.getElementType());
-      FailureOr<uint64_t> sourceCapacity =
-          getDFBBlockSizeBytes(sourceDFBType);
+      FailureOr<uint64_t> sourceCapacity = getDFBBlockSizeBytes(sourceDFBType);
       FailureOr<uint64_t> destinationCapacity =
           getDFBViewSizeBytes(postOp.getDst());
       uint64_t byteCount = static_cast<uint64_t>(sendByteCount.getInt());

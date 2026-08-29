@@ -39,3 +39,45 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @byte_counted_grouped_transfer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 4} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 4} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe {
+        block_span = 2 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst_dfb {num_tiles = 2 : i64}
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+          -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+      %token = ttl.pipe_transfer.post %transfer, %recv {
+          byte_count = 896 : i64}
+          : (!ttl.pipe_transfer,
+             tensor<1x2x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+    }
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-error @below {{byte-counted pipe transfers require a one-block transfer span}}
+      %send = ttl.pipe_transfer.send %transfer, %src_dfb {
+          byte_count = 896 : i64}
+          : (!ttl.pipe_transfer,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}

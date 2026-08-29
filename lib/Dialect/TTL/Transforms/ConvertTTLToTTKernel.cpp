@@ -1201,9 +1201,9 @@ static LogicalResult lowerTensorCBCopy(
 }
 
 /// Lower an explicit byte-preserving copy between acquired DFB blocks.
-static LogicalResult lowerDFBBlockCopy(
-    CopyOp op, ConversionPatternRewriter &rewriter,
-    const TypeConverter &typeConverter) {
+static LogicalResult lowerDFBBlockCopy(CopyOp op,
+                                       ConversionPatternRewriter &rewriter,
+                                       const TypeConverter &typeConverter) {
   IntegerAttr byteCountAttr = op.getByteCountAttr();
   Value srcDFB = getAttachedCB(op.getSrc());
   Value dstDFB = getAttachedCB(op.getDst());
@@ -1221,12 +1221,11 @@ static LogicalResult lowerDFBBlockCopy(
   }
 
   Location loc = op.getLoc();
-  FailureOr<Value> srcCB = utils::convertTTLCBToTTKernel(
-      srcDFB, rewriter, loc, &typeConverter);
-  FailureOr<Value> dstCB = utils::convertTTLCBToTTKernel(
-      dstDFB, rewriter, loc, &typeConverter);
-  assert(succeeded(srcCB) && succeeded(dstCB) &&
-         "preflight checked DFB types");
+  FailureOr<Value> srcCB =
+      utils::convertTTLCBToTTKernel(srcDFB, rewriter, loc, &typeConverter);
+  FailureOr<Value> dstCB =
+      utils::convertTTLCBToTTKernel(dstDFB, rewriter, loc, &typeConverter);
+  assert(succeeded(srcCB) && succeeded(dstCB) && "preflight checked DFB types");
 
   Value srcAddress = ttk::GetReadPtrOp::create(rewriter, loc, *srcCB);
   Value dstAddress = ttk::GetWritePtrOp::create(rewriter, loc, *dstCB);
@@ -1283,8 +1282,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
     bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
-    bool srcIsDFBAttachedTensor =
-        srcKind == CopyOperandKind::DFBAttachedTensor;
+    bool srcIsDFBAttachedTensor = srcKind == CopyOperandKind::DFBAttachedTensor;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;

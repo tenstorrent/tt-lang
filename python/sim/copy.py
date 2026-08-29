@@ -121,8 +121,10 @@ class CopyTransaction:
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
 
-        # Mark blocks in state machine BEFORE validation - this transitions them to appropriate states
-        # that prevent user access during the copy operation
+        # Validation must not change block state so callers can recover from an
+        # invalid request and issue a corrected transfer on the same blocks.
+        handler.validate(src, dst, byte_count)
+
         match src:
             case Block():
                 src.mark_copy_as_source(user_location)
@@ -133,9 +135,6 @@ class CopyTransaction:
                 dst.mark_copy_as_dest(user_location)
             case _:
                 pass
-
-        # Validate immediately - let exceptions propagate to scheduler for context
-        handler.validate(src, dst, byte_count)
 
         if TRACE.enabled:
             trace(

@@ -162,9 +162,10 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     unchanged.
 
     Pipe copies may also specify `byte_count` to transfer a valid prefix of one
-    source block. The sender and every receiver must specify the same count,
-    and the count must fit both endpoint blocks. Omitting `byte_count`
-    preserves the complete-block transfer contract.
+    source block. Byte-counted pipe transfers require a one-block transfer
+    span. The sender and every receiver must specify the same count, and the
+    count must fit both endpoint blocks. Omitting `byte_count` preserves the
+    complete-block transfer contract.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.

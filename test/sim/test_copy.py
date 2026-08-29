@@ -52,6 +52,7 @@ class TestCopyTransaction:
         ):
             CopyTransaction(tensor1, tensor2)
 
+
 class TestTensorToBlockCopy:
     """Test copy operations from tensor to Block."""
 
@@ -395,6 +396,82 @@ class TestCopyWithStateMachine:
                 expected = source.to_torch().reshape(-1)
                 assert torch.equal(result[: 32 * 32], expected[: 32 * 32])
                 assert torch.all(result[32 * 32 :] == -7.0)
+
+    def test_byte_counted_block_copy_preserves_partial_element_bytes(
+        self,
+    ) -> None:
+        """Model the operation's byte granularity, including partial elements."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(32, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                destination_block.raw_tensor.to_torch().fill_(-7.0)
+                source_values = source_block.raw_tensor.to_torch().reshape(-1)
+                expected = destination_block.raw_tensor.to_torch().reshape(-1).clone()
+                expected[0] = source_values[0]
+                source_partial = source_values[1:2].to(
+                    dtype=source_block.raw_tensor.dtype
+                )
+                expected_partial = expected[1:2].to(
+                    dtype=destination_block.raw_tensor.dtype
+                )
+                source_partial_bytes = source_partial.view(dtype=torch.uint8).reshape(
+                    -1
+                )
+                expected_partial_bytes = expected_partial.view(
+                    dtype=torch.uint8
+                ).reshape(-1)
+                expected_partial_bytes[0] = source_partial_bytes[0]
+                expected[1] = expected_partial.to(
+                    dtype=destination_block.raw_tensor.underlying_dtype
+                ).item()
+
+                copy(source_block, destination_block, byte_count=3).wait()
+
+                destination_after = destination_block.raw_tensor.to_torch().reshape(-1)
+                assert torch.equal(destination_after, expected)
+
+    def test_block_copy_requires_byte_count(self) -> None:
+        """Reject block-to-block copies without an explicit byte count."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(32, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                with pytest.raises(
+                    ValueError, match="Block-to-block copy requires byte_count"
+                ):
+                    copy(source_block, destination_block)
+                copy(source_block, destination_block, byte_count=64).wait()
 
     def test_byte_counted_pipe_copy_preserves_destination_tail(self) -> None:
         """Use the same byte count on pipe send and receive."""

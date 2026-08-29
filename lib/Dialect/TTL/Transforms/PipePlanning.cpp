@@ -134,31 +134,31 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
   }
 
   if (IntegerAttr byteCountAttr = sendOp.getByteCountAttr()) {
-    int64_t byteCount = byteCountAttr.getInt();
-    std::optional<int64_t> maybeSizeBytes =
-        llvm::checkedMul(byteCount, blockSpan);
-    if (!maybeSizeBytes) {
-      sendOp.emitError("byte-counted pipe transfer payload exceeds int64_t");
+    if (blockSpan != 1) {
+      sendOp.emitError(
+          "byte-counted pipe transfers require a one-block transfer span");
       return failure();
     }
-    return PipeTransferPayload{blockSpan, byteCount, *maybeSizeBytes};
+    int64_t byteCount = byteCountAttr.getInt();
+    return PipeTransferPayload{/*pageCount=*/1,
+                               /*pageSizeBytes=*/byteCount,
+                               /*sizeBytes=*/byteCount};
   }
 
-  std::optional<int64_t> maybeElementCount =
+  std::optional<int64_t> maybePageCount =
       llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
-  if (!maybeElementCount) {
-    sendOp.emitError("pipe transfer element count exceeds int64_t");
+  if (!maybePageCount) {
+    sendOp.emitError("pipe transfer page count exceeds int64_t");
     return failure();
   }
-  int64_t elementSizeBytes = tileType.getSizeBytes();
+  int64_t pageSizeBytes = tileType.getSizeBytes();
   std::optional<int64_t> maybeSizeBytes =
-      llvm::checkedMul(*maybeElementCount, elementSizeBytes);
+      llvm::checkedMul(*maybePageCount, pageSizeBytes);
   if (!maybeSizeBytes) {
     sendOp.emitError("pipe transfer payload size exceeds int64_t");
     return failure();
   }
-  return PipeTransferPayload{*maybeElementCount, elementSizeBytes,
-                             *maybeSizeBytes};
+  return PipeTransferPayload{*maybePageCount, pageSizeBytes, *maybeSizeBytes};
 }
 
 static FailureOr<PipeSendPlan>
