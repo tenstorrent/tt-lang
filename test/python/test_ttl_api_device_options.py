@@ -186,6 +186,21 @@ class TestMeshProgramPlacement:
 
         assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
 
+    def test_explicit_mesh_program_placements_override_full_domain(self):
+        domain = ttl.DeviceDomain((4, 8))
+        placements = [(0, 0), (3, 7)]
+
+        resolved = ttl_api._resolve_mesh_program_placements((), domain, placements)
+
+        assert resolved == placements
+
+    @pytest.mark.parametrize("placements", [(), []])
+    def test_explicit_mesh_program_placements_reject_empty(self, placements):
+        with pytest.raises(ValueError, match="must not be empty"):
+            ttl_api._resolve_mesh_program_placements(
+                (), ttl.DeviceDomain((1, 2)), placements
+            )
+
     def test_compile_kernel_forwards_device_domain_to_lowering(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
         calls = []
@@ -237,6 +252,7 @@ class TestMeshProgramPlacement:
 
     def test_operation_forwards_device_domain_to_explicit_compiler(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
+        placements = [(0, 0)]
         decorator_options = []
 
         def fake_pykernel_gen(**kwargs):
@@ -246,11 +262,16 @@ class TestMeshProgramPlacement:
         monkeypatch.setattr(ttl_atom, "pykernel_gen", fake_pykernel_gen)
         monkeypatch.setattr(ttl_atom, "_has_explicit_kernels", lambda _: True)
 
-        @ttl_atom.operation(grid=(1, 1), device_domain=domain)
+        @ttl_atom.operation(
+            grid=(1, 1),
+            device_domain=domain,
+            mesh_program_placements=placements,
+        )
         def operation():
             pass
 
         assert decorator_options[0]["device_domain"] is domain
+        assert decorator_options[0]["mesh_program_placements"] is placements
 
     def test_unified_compiler_forwards_device_domain(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
@@ -269,6 +290,7 @@ class TestMeshProgramPlacement:
             "dst_full_sync_en": None,
             "math_fidelity": None,
             "device_domain": domain,
+            "mesh_program_placements": [(0, 1)],
             "runtime_resource_factory": None,
         }
 
@@ -286,6 +308,7 @@ class TestMeshProgramPlacement:
 
         assert result == "compiled"
         assert calls[0][1]["device_domain"] is domain
+        assert calls[0][1]["mesh_program_placements"] == [(0, 1)]
 
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
         placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))

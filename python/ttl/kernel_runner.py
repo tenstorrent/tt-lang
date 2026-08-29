@@ -3793,7 +3793,50 @@ def build_mesh_program_descriptor(
     return mesh_program_descriptor
 
 
-def _iter_device_domain_coordinates(device_domain):
+def _mesh_program_placement_bounds(placement: Any) -> tuple[tuple, tuple]:
+    if isinstance(placement, MeshProgramPlacement):
+        start = placement.start
+        end = placement.start if placement.end is None else placement.end
+    elif isinstance(placement, (tuple, list)):
+        start = placement
+        end = placement
+    else:
+        raise TypeError(
+            "device-domain mesh placements must be coordinate tuples or "
+            "MeshProgramPlacement values"
+        )
+    return tuple(start), tuple(end)
+
+
+def _iter_device_domain_coordinates(device_domain, mesh_program_placements=None):
+    domain_extent = tuple(
+        dimension
+        for component in device_domain.components
+        for dimension in component.extent
+    )
+    domain_rank = len(domain_extent)
+    placement_bounds = None
+    if mesh_program_placements is not None:
+        placement_bounds = [
+            _mesh_program_placement_bounds(placement)
+            for placement in mesh_program_placements
+        ]
+        for start, end in placement_bounds:
+            if len(start) != domain_rank or len(end) != domain_rank:
+                raise ValueError(
+                    "mesh program placement rank must match device-domain rank"
+                )
+            if any(
+                start_value > end_value for start_value, end_value in zip(start, end)
+            ):
+                raise ValueError("mesh program placement start must not exceed its end")
+            if any(
+                start_value < 0 or end_value >= extent
+                for start_value, end_value, extent in zip(start, end, domain_extent)
+            ):
+                raise ValueError(
+                    "mesh program placement must be inside the device domain"
+                )
     component_coordinates = []
     for component in device_domain.components:
         component_coordinates.append(
@@ -3803,7 +3846,18 @@ def _iter_device_domain_coordinates(device_domain):
         runtime_coordinates = [
             value for coordinate in coordinates for value in coordinate
         ]
-        yield tuple(runtime_coordinates), runtime_coordinates
+        mesh_coordinate = tuple(runtime_coordinates)
+        if placement_bounds is not None and not any(
+            all(
+                start_value <= coordinate_value <= end_value
+                for coordinate_value, start_value, end_value in zip(
+                    mesh_coordinate, start, end
+                )
+            )
+            for start, end in placement_bounds
+        ):
+            continue
+        yield mesh_coordinate, runtime_coordinates
 
 
 def build_device_mesh_program_descriptor(
@@ -4073,7 +4127,7 @@ def _run_kernel_on_device_impl(
         program_descriptors = {}
         fabric_binding_plans = {}
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
-            device_domain
+            device_domain, mesh_program_placements
         ):
             device_program = build_device_program(runtime_coordinates)
             program_descriptors[mesh_coordinate] = device_program
