@@ -34,7 +34,7 @@
 // CHECK-NEXT: %[[CONNECTION:.*]] = ttkernel.get_arg_val(%[[CONNECTION_ARG_INDEX]]) : (index) -> i32
 // CHECK: scf.if
 // CHECK-NOT: ttkernel.routing_plane.atomic_inc
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[CONNECTION]], %[[DEST_DEVICE]], %[[DEST_MESH]], %[[DEST_HOPS]],
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[CONNECTION]], %[[DEST_DEVICE]], %[[DEST_MESH]], %[[DEST_HOPS]],{{.*}}) {posted = true}
 
 // Each receiver record resolves its logical device, then waits on its shared
 // completion counter. No reverse-route readiness atomic is emitted.
