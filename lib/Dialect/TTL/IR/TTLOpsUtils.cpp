@@ -409,6 +409,15 @@ getDefaultTileExecutionInfo(Operation *operation,
     }
     return info;
   }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
+    info.primitive = TilePrimitive::Reduce;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    if (normalization.getHasGamma()) {
+      info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    }
+    info.requiredDstSlots = normalization.getNumTiles();
+    return info;
+  }
   if (isa<TileTransposeOp>(operation)) {
     info.primitive = TilePrimitive::Transpose;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
@@ -485,6 +494,10 @@ LogicalResult verifyTileExecutionInfo(Operation *operation,
         << "defines " << info.dstOperandsMaterializedByOperation.size()
         << " DST operand materialization entries for "
         << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  if (info.requiredDstSlots == 0) {
+    operation->emitOpError("defines a zero-slot DST residency requirement");
     return failure();
   }
   return success();
@@ -727,14 +740,18 @@ getDefaultDstReadFootprints(Operation *op) {
   return footprints;
 }
 
-/// Most tile ops write one explicit `dst_index`; block matmul is the current
-/// multi-slot writer and stores only read DST for packing.
+/// Most tile ops write one explicit `dst_index`; block operations may write a
+/// contiguous range, and stores only read DST for packing.
 SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   if (isa<TileStoreOp, DstIndexOp>(op)) {
     return {};
   }
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return {{matmul.getDstIndex(), getMatmulBlockOutputTileCount(matmul)}};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return {{normalization.getDstIndex(),
+             static_cast<int64_t>(normalization.getNumTiles())}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
@@ -755,6 +772,10 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return DstFootprint{matmul.getDstIndex(),
                         getMatmulBlockOutputTileCount(matmul)};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return DstFootprint{normalization.getDstIndex(),
+                        static_cast<int64_t>(normalization.getNumTiles())};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return DstFootprint{*dstIndex, 1};

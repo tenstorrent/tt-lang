@@ -1568,6 +1568,48 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
   }];
 }
 
+def TTL_TileRowNormalizationBlockOp :
+    TTL_TileOp<"tile_row_normalization_block",
+               "Reduce",
+               [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+  let summary = "Normalize one static row in one DST acquisition";
+  let description = [{
+    Computes `input * rsqrt(sum(input * input) * scale + epsilon)` for one
+    rank-2 row of tiles. The optional gamma tensor is multiplied into the
+    normalized result before publication.
+
+    `dst_index` identifies the first output slot. The operation initially
+    stores the inverse RMS scalar there, moves it to a compute source register,
+    clears the acquired DST section, and writes the normalized row to the
+    contiguous slots beginning at `dst_index`. `num_tiles` records the exact
+    row width because scalarization replaces tensor operands with tile values.
+    The input, gamma, and output operands identify dataflow buffers; gamma is
+    equal to input when `has_gamma` is false and is not read in that mode.
+
+    The operation is internal to block compute lowering. Its result represents
+    the complete contiguous DST footprint, not one independently executable
+    tile iteration.
+  }];
+  let arguments = (ins TTL_TileOrTensor:$input,
+                       TTL_TileOrTensor:$gamma,
+                       TTL_TileOrTensor:$output,
+                       F32Attr:$scale,
+                       F32Attr:$epsilon,
+                       BoolAttr:$has_gamma,
+                       ConfinedAttr<I64Attr, [IntPositive]>:$num_tiles,
+                       Index:$dst_index);
+  let results = (outs TTL_TileOrTensor:$result);
+  let assemblyFormat = [{
+    $input `,` $gamma `,` $output
+    `scale` `=` $scale `epsilon` `=` $epsilon
+    `has_gamma` `=` $has_gamma
+    `num_tiles` `=` $num_tiles
+    `into` `dst` `[` $dst_index `]` attr-dict `:`
+    type($input) `,` type($gamma) `,` type($output) `->` type($result)
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Transpose Operation
 //===----------------------------------------------------------------------===//

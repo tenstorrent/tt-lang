@@ -16,6 +16,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <functional>
 
 namespace mlir::tt::ttl {
@@ -784,10 +785,261 @@ static LogicalResult buildFusedIterationPlan(ComputeOpCreationPlan &plan,
   return success();
 }
 
+struct MatchedRowNormalization {
+  RowNormalizationPlan schedule;
+  FusionTraceResult trace;
+};
+
+static bool hasOnlyUser(Value value, Operation *expectedUser) {
+  return value.hasOneUse() && *value.getUsers().begin() == expectedUser;
+}
+
+static bool isFullScalarReduction(ReduceOp reduce) {
+  if (reduce.getReduceType() != ReduceType::Sum) {
+    return false;
+  }
+  llvm::SmallDenseSet<int64_t> dimensions =
+      normalizeDimsToSet(reduce.getDims(), 2);
+  return dimensions.size() == 2 && dimensions.contains(0) &&
+         dimensions.contains(1);
+}
+
+static bool isFullScalarBroadcast(BlockBroadcastOp broadcast) {
+  llvm::SmallDenseSet<int64_t> dimensions =
+      normalizeDimsToSet(broadcast.getDims(), 2);
+  return dimensions.size() == 2 && dimensions.contains(0) &&
+         dimensions.contains(1);
+}
+
+static bool isUnitFill(Value value, Operation *expectedUser, FillOp &fill) {
+  fill = value.getDefiningOp<FillOp>();
+  return fill && hasOnlyUser(value, expectedUser) &&
+         fill.getValueAttr().getValueAsDouble() == 1.0;
+}
+
+static bool isFinitePositiveFloat(FloatAttr value) {
+  const llvm::APFloat &number = value.getValue();
+  return number.isFinite() && !number.isZero() && !number.isNegative();
+}
+
+static bool matchAddWithConstant(Value value, Operation *expectedUser,
+                                 MulUnaryConstOp &scaledReduction,
+                                 FillOp &epsilonFill) {
+  auto add = value.getDefiningOp<AddOp>();
+  if (!add || !hasOnlyUser(value, expectedUser)) {
+    return false;
+  }
+  auto matchOperands = [&](Value scaledValue, Value fillValue) {
+    scaledReduction = scaledValue.getDefiningOp<MulUnaryConstOp>();
+    epsilonFill = fillValue.getDefiningOp<FillOp>();
+    return scaledReduction && epsilonFill && hasOnlyUser(scaledValue, add) &&
+           hasOnlyUser(fillValue, add);
+  };
+  return matchOperands(add.getLhs(), add.getRhs()) ||
+         matchOperands(add.getRhs(), add.getLhs());
+}
+
+static bool matchNormalizedProduct(MulOp normalized, Value &input,
+                                   BlockBroadcastOp &scalarBroadcast,
+                                   RsqrtOp &inverseRms, AddOp &biasedMeanSquare,
+                                   MulUnaryConstOp &scaledReduction,
+                                   FillOp &epsilonFill, ReduceOp &reduce,
+                                   FillOp &reductionScaler, MulOp &square) {
+  auto matchOperands = [&](Value inputValue, Value broadcastValue) {
+    if (!getAttachedCB(inputValue)) {
+      return false;
+    }
+    scalarBroadcast = broadcastValue.getDefiningOp<BlockBroadcastOp>();
+    if (!scalarBroadcast || !hasOnlyUser(broadcastValue, normalized) ||
+        !isFullScalarBroadcast(scalarBroadcast)) {
+      return false;
+    }
+    input = inputValue;
+    return true;
+  };
+  if (!matchOperands(normalized.getLhs(), normalized.getRhs()) &&
+      !matchOperands(normalized.getRhs(), normalized.getLhs())) {
+    return false;
+  }
+
+  inverseRms = scalarBroadcast.getInput().getDefiningOp<RsqrtOp>();
+  if (!inverseRms || !hasOnlyUser(inverseRms.getResult(), scalarBroadcast)) {
+    return false;
+  }
+  biasedMeanSquare = inverseRms.getInput().getDefiningOp<AddOp>();
+  if (!biasedMeanSquare ||
+      !matchAddWithConstant(inverseRms.getInput(), inverseRms, scaledReduction,
+                            epsilonFill)) {
+    return false;
+  }
+
+  reduce = scaledReduction.getInput().getDefiningOp<ReduceOp>();
+  if (!reduce || !hasOnlyUser(reduce.getResult(), scaledReduction) ||
+      !isFullScalarReduction(reduce)) {
+    return false;
+  }
+  if (!isUnitFill(reduce.getScaler(), reduce, reductionScaler)) {
+    return false;
+  }
+  square = reduce.getInput().getDefiningOp<MulOp>();
+  if (!square || !hasOnlyUser(square.getResult(), reduce) ||
+      square.getLhs() != input || square.getRhs() != input) {
+    return false;
+  }
+  return true;
+}
+
+static std::optional<MatchedRowNormalization>
+matchRowNormalization(Operation *source,
+                      const ComputeTargetEnvironment &target) {
+  auto finalMultiply = dyn_cast<MulOp>(source);
+  if (!finalMultiply) {
+    return std::nullopt;
+  }
+
+  MulOp normalized = finalMultiply;
+  Value gamma;
+  RowNormalizationGammaMode gammaMode = RowNormalizationGammaMode::None;
+
+  Value input;
+  BlockBroadcastOp scalarBroadcast;
+  RsqrtOp inverseRms;
+  AddOp biasedMeanSquare;
+  MulUnaryConstOp scaledReduction;
+  FillOp epsilonFill;
+  ReduceOp reduce;
+  FillOp reductionScaler;
+  MulOp square;
+  if (!matchNormalizedProduct(normalized, input, scalarBroadcast, inverseRms,
+                              biasedMeanSquare, scaledReduction, epsilonFill,
+                              reduce, reductionScaler, square)) {
+    auto matchGammaProduct = [&](Value normalizedValue, Value gammaValue) {
+      normalized = normalizedValue.getDefiningOp<MulOp>();
+      if (!normalized || !hasOnlyUser(normalizedValue, source) ||
+          !matchNormalizedProduct(
+              normalized, input, scalarBroadcast, inverseRms, biasedMeanSquare,
+              scaledReduction, epsilonFill, reduce, reductionScaler, square)) {
+        return false;
+      }
+      gamma = gammaValue;
+      return true;
+    };
+    if (!matchGammaProduct(finalMultiply.getLhs(), finalMultiply.getRhs()) &&
+        !matchGammaProduct(finalMultiply.getRhs(), finalMultiply.getLhs())) {
+      return std::nullopt;
+    }
+
+    if (!getAttachedCB(gamma)) {
+      return std::nullopt;
+    }
+    gammaMode = RowNormalizationGammaMode::FullRow;
+  }
+
+  auto inputType = dyn_cast<RankedTensorType>(input.getType());
+  auto resultType = dyn_cast<RankedTensorType>(source->getResult(0).getType());
+  if (!inputType || !resultType || !inputType.hasStaticShape() ||
+      !resultType.hasStaticShape() || inputType.getRank() != 2 ||
+      resultType.getRank() != 2 || inputType.getDimSize(0) != 1 ||
+      inputType != resultType ||
+      !isa<ttcore::TileType>(inputType.getElementType())) {
+    return std::nullopt;
+  }
+
+  int64_t numTiles = inputType.getNumElements();
+  ttcore::DataType dataType =
+      cast<ttcore::TileType>(inputType.getElementType()).getDataType();
+  if (dataType != ttcore::DataType::BFloat16) {
+    return std::nullopt;
+  }
+  ComputeScheduleCapabilityLimits limits = target.getScheduleCapabilityLimits(
+      ComputeScheduleCapability::RowNormalization,
+      cast<ttcore::TileType>(inputType.getElementType()));
+  if (!limits.maxTiles) {
+    return std::nullopt;
+  }
+  func::FuncOp function = source->getParentOfType<func::FuncOp>();
+  auto fp32Constraint =
+      function->getAttrOfType<BoolAttr>(kFp32DestAccEnAttrName);
+  auto fullSyncConstraint =
+      function->getAttrOfType<BoolAttr>(kDstFullSyncEnAttrName);
+  bool isFloat32 = fp32Constraint && fp32Constraint.getValue();
+  bool fullSync = !fullSyncConstraint || fullSyncConstraint.getValue();
+  std::uint32_t dstCapacity = getDstCapacity(isFloat32, fullSync);
+  dstCapacity = std::min(*limits.maxTiles, dstCapacity);
+  if (numTiles < 1 || static_cast<std::uint64_t>(numTiles) >
+                          static_cast<std::uint64_t>(dstCapacity)) {
+    return std::nullopt;
+  }
+
+  if (gammaMode != RowNormalizationGammaMode::None) {
+    auto gammaType = dyn_cast<RankedTensorType>(gamma.getType());
+    if (!gammaType ||
+        gammaType.getElementType() != inputType.getElementType()) {
+      return std::nullopt;
+    }
+    if (gammaType != resultType) {
+      return std::nullopt;
+    }
+  }
+  if (!isFinitePositiveFloat(scaledReduction.getValueAttr()) ||
+      !isFinitePositiveFloat(epsilonFill.getValueAttr())) {
+    return std::nullopt;
+  }
+
+  MatchedRowNormalization match;
+  match.schedule.input = input;
+  match.schedule.gamma = gamma;
+  match.schedule.scale = scaledReduction.getValueAttr();
+  match.schedule.epsilon = epsilonFill.getValueAttr();
+  match.schedule.numTiles = numTiles;
+  match.schedule.gammaMode = gammaMode;
+
+  auto recordOperation = [&](Operation *operation) {
+    RowNormalizationOperationPlan operationPlan;
+    operationPlan.source = operation;
+    llvm::append_range(operationPlan.operands, operation->getOperands());
+    match.schedule.operations.push_back(std::move(operationPlan));
+    match.trace.opsInOrder.insert(operation);
+  };
+  recordOperation(square);
+  recordOperation(reductionScaler);
+  recordOperation(reduce);
+  recordOperation(scaledReduction);
+  recordOperation(epsilonFill);
+  recordOperation(biasedMeanSquare);
+  recordOperation(inverseRms);
+  recordOperation(scalarBroadcast);
+  recordOperation(normalized);
+  if (source != normalized.getOperation()) {
+    recordOperation(source);
+  }
+
+  match.trace.rootInputs.insert(input);
+  match.trace.lifetimeRootInputs.insert(input);
+  if (gammaMode != RowNormalizationGammaMode::None) {
+    match.trace.rootInputs.insert(gamma);
+    match.trace.lifetimeRootInputs.insert(gamma);
+  }
+  return match;
+}
+
 static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
                                                 std::string &failureReason) {
   if (plan.kind == ComputeOpCreationKind::Elide) {
     plan.recipe = ComputeOpCreationRecipe::Elide;
+    return success();
+  }
+  if (plan.rowNormalization) {
+    plan.recipe = ComputeOpCreationRecipe::RowNormalization;
+    MLIRContext *context = plan.source->getContext();
+    AffineMap identity = AffineMap::getMultiDimIdentityMap(2, context);
+    plan.iteration.inputMaps.push_back(identity);
+    if (plan.rowNormalization->gammaMode ==
+        RowNormalizationGammaMode::FullRow) {
+      plan.iteration.inputMaps.push_back(identity);
+    }
+    plan.iteration.outputMap = identity;
+    plan.iteration.iteratorTypes.assign(2, utils::IteratorType::parallel);
     return success();
   }
   if (plan.kind == ComputeOpCreationKind::Fused) {
@@ -1675,6 +1927,15 @@ buildComputeOpCreationPlan(Operation *source,
   if (isComputeOpCreationElision(source)) {
     plan.kind = ComputeOpCreationKind::Elide;
     plan.inputs = {cast<TypecastOp>(source).getInput()};
+  } else if (std::optional<MatchedRowNormalization> rowNormalization =
+                 matchRowNormalization(source, target)) {
+    plan.kind = ComputeOpCreationKind::Fused;
+    plan.trace = std::move(rowNormalization->trace);
+    plan.rowNormalization = std::move(rowNormalization->schedule);
+    plan.inputs.push_back(plan.rowNormalization->input);
+    if (plan.rowNormalization->gammaMode != RowNormalizationGammaMode::None) {
+      plan.inputs.push_back(plan.rowNormalization->gamma);
+    }
   } else if (std::optional<SmallVector<Value>> directInputs =
                  collectDirectInputs(source,
                                      [](OpOperand &) { return false; })) {
@@ -1770,6 +2031,19 @@ buildComputeOpCreationPlan(Operation *source,
     plan.waitedMutations.push_back(std::move(*mutation));
   }
 
+  if (plan.rowNormalization &&
+      (plan.outputs.transactions.size() != 1 || plan.outputs.dfbs.size() != 1 ||
+       plan.outputs.stores.size() != 1)) {
+    plan.rejectionKind =
+        ComputeOpCreationRejectionKind::UnsupportedOutputPublication;
+    plan.rejectionReason =
+        "row-normalization block requires exactly one output store "
+        "transaction";
+    return rejectComputeOpCreation(
+        source, plan.rejectionKind, plan.rejectionReason,
+        std::optional<ComputeOpCreationPlan>(std::move(plan)));
+  }
+
   ComputeOpMovement movement =
       collectComputeOpMovement(source, plan.kind, plan.trace);
   if (failed(collectComputeInstrumentation(
@@ -1780,6 +2054,14 @@ buildComputeOpCreationPlan(Operation *source,
     return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
         std::optional<ComputeOpCreationPlan>(std::move(plan)));
+  }
+
+  if (plan.rowNormalization && !plan.instrumentation.empty()) {
+    plan.rejectionKind =
+        ComputeOpCreationRejectionKind::InstrumentationWouldBeReordered;
+    plan.rejectionReason =
+        "row-normalization block fusion cannot preserve instrumentation "
+        "inside the absorbed expression";
   }
 
   SmallVector<ComputeOpCreationInstrumentationBoundary>
