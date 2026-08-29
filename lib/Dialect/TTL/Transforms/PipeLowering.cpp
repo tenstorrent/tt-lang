@@ -1144,27 +1144,33 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
       builder.setInsertionPointToStart(
           &configureRoutes.getThenRegion().front());
       Value lower = arith::ConstantIndexOp::create(builder, loc, 0);
-      Value upper = arith::ConstantIndexOp::create(
-          builder, loc,
-          routeCount * kMaxGeneratedFabricConnectionsPerRoute);
+      Value upper = arith::ConstantIndexOp::create(builder, loc, routeCount);
       Value step = arith::ConstantIndexOp::create(builder, loc, 1);
       scf::ForOp::create(
           builder, loc, lower, upper, step, ValueRange{},
-          [&](OpBuilder &bodyBuilder, Location bodyLoc, Value headerIndex,
+          [&](OpBuilder &bodyBuilder, Location bodyLoc, Value routeIndex,
               ValueRange) {
             Value connectionsPerRoute = arith::ConstantIndexOp::create(
                 bodyBuilder, bodyLoc,
                 kMaxGeneratedFabricConnectionsPerRoute);
-            Value routeIndex = arith::DivUIOp::create(
-                bodyBuilder, bodyLoc, headerIndex, connectionsPerRoute);
             FabricRouteTarget target = buildFabricRouteTarget(
                 bodyBuilder, bodyLoc, routeIndex, runtimeArgBase, routeCount);
-            Value headerIndexI32 = arith::IndexCastOp::create(
-                bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), headerIndex);
-            ttk::RoutingPlaneSetUnicastRouteOp::create(
-                bodyBuilder, bodyLoc, routeId, headerIndexI32,
-                target.destinationDeviceId, target.destinationMeshId,
-                target.destinationHopCount);
+            Value headerIndexBase = arith::MulIOp::create(
+                bodyBuilder, bodyLoc, routeIndex, connectionsPerRoute);
+            for (std::size_t connectionOffset = 0;
+                 connectionOffset < kMaxGeneratedFabricConnectionsPerRoute;
+                 ++connectionOffset) {
+              Value offset = arith::ConstantIndexOp::create(
+                  bodyBuilder, bodyLoc, connectionOffset);
+              Value headerIndex = arith::AddIOp::create(
+                  bodyBuilder, bodyLoc, headerIndexBase, offset);
+              Value headerIndexI32 = arith::IndexCastOp::create(
+                  bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), headerIndex);
+              ttk::RoutingPlaneSetUnicastRouteOp::create(
+                  bodyBuilder, bodyLoc, routeId, headerIndexI32,
+                  target.destinationDeviceId, target.destinationMeshId,
+                  target.destinationHopCount);
+            }
             scf::YieldOp::create(bodyBuilder, bodyLoc);
           });
     }
