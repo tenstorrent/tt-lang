@@ -7,6 +7,9 @@
 DEFAULT_TILE_SIZE = 32
 SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])
 SUPPORTED_MATH_FIDELITIES = ("LoFi", "HiFi2", "HiFi3", "HiFi4")
+SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS = frozenset(
+    ["HEIGHT_SHARDED", "WIDTH_SHARDED", "BLOCK_SHARDED"]
+)
 
 
 def validate_math_fidelity(math_fidelity: str | None) -> None:
