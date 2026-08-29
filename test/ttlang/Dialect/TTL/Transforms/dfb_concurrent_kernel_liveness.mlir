@@ -375,6 +375,14 @@ func.func @loop_lifecycle()
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: ttl.bind_cb{cb_index = 0,
 // REUSE: ttl.bind_cb{cb_index = 1,
+// DISABLED-LABEL: func.func @loop_and_post_loop_access
+// DISABLED-SAME: ttl.base_cta_index = 2 : i32
+// DISABLED: ttl.bind_cb{cb_index = 0,
+// DISABLED: ttl.bind_cb{cb_index = 1,
+// REPEAT-LABEL: func.func @loop_and_post_loop_access
+// REPEAT-SAME: ttl.base_cta_index = 2 : i32
+// REPEAT: ttl.bind_cb{cb_index = 0,
+// REPEAT: ttl.bind_cb{cb_index = 1,
 
 func.func @loop_and_post_loop_access()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
