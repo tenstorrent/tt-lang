@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <utility>
 
@@ -225,6 +226,63 @@ clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
   }
 }
 
+using RecordInductionMap =
+    std::map<std::pair<LaunchExecutionLocation, std::uint64_t>, std::uint64_t>;
+
+static RecordInductionMap buildLocalRecordInductionValues(
+    const LocalPipeNetParticipantPlan &participantPlan) {
+  RecordInductionMap inductionValues;
+  for (auto [nodeIndex, recordOffset, recordCount] :
+       llvm::enumerate(participantPlan.recordOffsetsByNode,
+                       participantPlan.recordCountsByNode)) {
+    int64_t nodeX = static_cast<int64_t>(nodeIndex) % participantPlan.gridX;
+    int64_t nodeY = static_cast<int64_t>(nodeIndex) / participantPlan.gridX;
+    for (int64_t iterationIndex = recordOffset;
+         iterationIndex < recordOffset + recordCount; ++iterationIndex) {
+      bool inserted =
+          inductionValues
+              .try_emplace(
+                  std::make_pair(
+                      LaunchExecutionLocation({nodeX, nodeY}),
+                      static_cast<std::uint64_t>(
+                          participantPlan.recordIndices[iterationIndex])),
+                  static_cast<std::uint64_t>(iterationIndex))
+              .second;
+      assert(inserted && "participant plan must select each record once");
+    }
+  }
+  return inductionValues;
+}
+
+static RecordInductionMap buildGridMajorRecordInductionValues(
+    PipeNetRecordsAttr records, PipeRole role,
+    const GridMajorPipeRecordIndexTables &tables) {
+  RecordInductionMap inductionValues;
+  for (auto [iterationIndex, edgeBlock] : llvm::enumerate(tables.edgeBlocks)) {
+    int64_t blockStart = edgeBlock * tables.gridArea;
+    for (int64_t nodeIndex = 0; nodeIndex < tables.gridArea; ++nodeIndex) {
+      int64_t recordIndex = blockStart + nodeIndex;
+      DeviceTransferAttr transfer =
+          records.getPipes()[recordIndex].getDeviceTransfer();
+      DeviceRefAttr endpoint = role == PipeRole::Source
+                                   ? transfer.getEdge().getSource()
+                                   : transfer.getEdge().getDestination();
+      bool inserted =
+          inductionValues
+              .try_emplace(
+                  std::make_pair(
+                      LaunchExecutionLocation(
+                          {nodeIndex % tables.gridX, nodeIndex / tables.gridX},
+                          transfer.getDomain(), endpoint),
+                      static_cast<std::uint64_t>(recordIndex)),
+                  static_cast<std::uint64_t>(iterationIndex))
+              .second;
+      assert(inserted && "grid-major plan must select each record once");
+    }
+  }
+  return inductionValues;
+}
+
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
 static bool
 tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
@@ -262,7 +320,9 @@ tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
   foreachLoweringInfo.controlOps.push_back(forOp);
-  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
+  foreachLoweringInfo.recordLoops[forOp] = {
+      records, recordSelection,
+      buildLocalRecordInductionValues(*participantPlan)};
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = buildConstantIndexTableLookup(
@@ -312,7 +372,9 @@ tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
       rewriter, loc, tableData.edgeOffsetsByDevice, nextDevice);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
   foreachLoweringInfo.controlOps.push_back(forOp);
-  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
+  foreachLoweringInfo.recordLoops[forOp] = {
+      records, recordSelection,
+      buildGridMajorRecordInductionValues(records, role, tableData)};
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value edgeBlock = buildConstantIndexTableLookup(
@@ -424,7 +486,7 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
       arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
-  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection};
+  foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection, {}};
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = forOp.getInductionVar();

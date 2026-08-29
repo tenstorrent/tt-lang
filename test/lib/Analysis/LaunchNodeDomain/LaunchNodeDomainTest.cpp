@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetExecutionUtils.h"
 
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -65,6 +66,39 @@ bool verifyLaunchNodeDomainAlgebra() {
   return valid;
 }
 
+bool verifyPipeNetRecordInductionValues() {
+  using mlir::tt::ttl::getPipeNetRecordLoopInductionValue;
+  using mlir::tt::ttl::LaunchExecutionLocation;
+  using mlir::tt::ttl::PipeNetRecordLoop;
+  using mlir::tt::ttl::PipeNetRecordSelection;
+
+  PipeNetRecordLoop directLoop{
+      mlir::tt::ttl::PipeNetRecordsAttr(), PipeNetRecordSelection::Source, {}};
+  LaunchExecutionLocation leftNode({0, 0});
+  LaunchExecutionLocation rightNode({1, 0});
+  std::optional<std::uint64_t> directInduction =
+      getPipeNetRecordLoopInductionValue(directLoop, leftNode, 4);
+
+  PipeNetRecordLoop indirectLoop{mlir::tt::ttl::PipeNetRecordsAttr(),
+                                 PipeNetRecordSelection::Destination,
+                                 {}};
+  indirectLoop.indirectInductionValues.try_emplace({leftNode, 4}, 1);
+  indirectLoop.indirectInductionValues.try_emplace({rightNode, 4}, 3);
+  std::optional<std::uint64_t> leftInduction =
+      getPipeNetRecordLoopInductionValue(indirectLoop, leftNode, 4);
+  std::optional<std::uint64_t> rightInduction =
+      getPipeNetRecordLoopInductionValue(indirectLoop, rightNode, 4);
+  std::optional<std::uint64_t> absentInduction =
+      getPipeNetRecordLoopInductionValue(indirectLoop, leftNode, 2);
+
+  bool valid = directInduction == 4 && leftInduction == 1 &&
+               rightInduction == 3 && !absentInduction;
+  if (!valid) {
+    llvm::errs() << "PipeNet record induction validation failed\n";
+  }
+  return valid;
+}
+
 } // namespace
 
 int main(int argumentCount, char **argumentValues) {
@@ -73,6 +107,9 @@ int main(int argumentCount, char **argumentValues) {
     return 1;
   }
   if (!verifyLaunchNodeDomainAlgebra()) {
+    return 1;
+  }
+  if (!verifyPipeNetRecordInductionValues()) {
     return 1;
   }
 

@@ -24,7 +24,9 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -35,7 +37,16 @@ enum class PipeNetRecordSelection { Source, Destination };
 struct PipeNetRecordLoop {
   PipeNetRecordsAttr records;
   PipeNetRecordSelection selection;
+  /// Empty when the loop induction value is the original record index.
+  std::map<std::pair<LaunchExecutionLocation, std::uint64_t>, std::uint64_t>
+      indirectInductionValues;
 };
+
+/// Return the loop induction value that selects `recordIndex` at `location`.
+std::optional<std::uint64_t>
+getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
+                                   const LaunchExecutionLocation &location,
+                                   std::uint64_t recordIndex);
 
 /// The record selected by one active PipeNet callback loop.
 struct ActivePipeNetRecord {

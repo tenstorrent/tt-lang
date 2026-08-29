@@ -1527,6 +1527,13 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
          "selected pipe execution requires a valid record index");
   Operation *recordLoop = getSelectedRecordLoop(pipeRef, analysisState);
   auto forOp = cast<scf::ForOp>(recordLoop);
+  const PipeNetRecordLoop &recordLoopInfo =
+      analysisState.pipeRecordLoops.at(recordLoop);
+  std::optional<std::uint64_t> maybeInductionValue =
+      getPipeNetRecordLoopInductionValue(recordLoopInfo, location, recordIndex);
+  if (!maybeInductionValue) {
+    return std::nullopt;
+  }
 
   auto &recordCache = analysisState.recordExecutionCountAnalyses[recordLoop];
   if (!recordCache.sharedState) {
@@ -1538,7 +1545,7 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
       recordCache.analysesByContext.getOrCreate(context, [&] {
         Value inductionVariable = forOp.getInductionVar();
         llvm::APInt inductionValue(IndexType::kInternalStorageBitWidth,
-                                   recordIndex);
+                                   *maybeInductionValue);
         PipeRecordAttr record = pipeRef.getRecords().getPipes()[recordIndex];
         return std::make_unique<ExecutionCountAnalysis>(
             *recordCache.sharedState,

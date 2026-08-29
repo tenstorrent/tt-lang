@@ -12,6 +12,20 @@
 namespace mlir::tt::ttl {
 
 std::optional<std::uint64_t>
+getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
+                                   const LaunchExecutionLocation &location,
+                                   std::uint64_t recordIndex) {
+  if (recordLoop.indirectInductionValues.empty()) {
+    return recordIndex;
+  }
+  auto iteration =
+      recordLoop.indirectInductionValues.find({location, recordIndex});
+  return iteration == recordLoop.indirectInductionValues.end()
+             ? std::nullopt
+             : std::optional<std::uint64_t>(iteration->second);
+}
+
+std::optional<std::uint64_t>
 getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
                             Operation *loopOp) {
   auto activeIt = llvm::find_if(llvm::reverse(activeRecords),
@@ -137,12 +151,12 @@ namespace {
 
 static std::optional<PipeNetRecordLoop> getHighLevelRecordLoop(Operation *op) {
   if (auto foreachSrc = mlir::dyn_cast<PipeNetForeachSrcOp>(op)) {
-    return PipeNetRecordLoop{foreachSrc.getRecords(),
-                             PipeNetRecordSelection::Source};
+    return PipeNetRecordLoop{
+        foreachSrc.getRecords(), PipeNetRecordSelection::Source, {}};
   }
   if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(op)) {
-    return PipeNetRecordLoop{foreachDst.getRecords(),
-                             PipeNetRecordSelection::Destination};
+    return PipeNetRecordLoop{
+        foreachDst.getRecords(), PipeNetRecordSelection::Destination, {}};
   }
   return std::nullopt;
 }
