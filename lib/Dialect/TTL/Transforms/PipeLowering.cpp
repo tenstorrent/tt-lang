@@ -3886,7 +3886,7 @@ buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
   return tables;
 }
 
-static Value lowerDeviceRoleRecords(
+static Value lowerDeviceRoleQuery(
     Operation *op, PipeNetRecordsAttr records, PipeRole role,
     bool deduplicateRecords, Value initialValue,
     llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>
@@ -3942,7 +3942,7 @@ static Value lowerSelectedRolePredicate(Operation *op,
                                         ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
   Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
-  return lowerDeviceRoleRecords(
+  return lowerDeviceRoleQuery(
       op, records, role, /*deduplicateRecords=*/true, initialMatch,
       [](OpBuilder &builder, Location bodyLoc, Value accumulatedMatch,
          Value recordMatches) {
@@ -3957,7 +3957,7 @@ static Value lowerDeviceDestinationCount(
     ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
   Value initialCount = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  return lowerDeviceRoleRecords(
+  return lowerDeviceRoleQuery(
       op, records, PipeRole::Destination, /*deduplicateRecords=*/false,
       initialCount,
       [](OpBuilder &builder, Location bodyLoc, Value accumulatedCount,
