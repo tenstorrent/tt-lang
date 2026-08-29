@@ -41,9 +41,9 @@
 // COALESCED: %[[SENDER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[SENDER_MANAGER]],
 // COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
 // COALESCED-NOT: ttkernel.routing_plane.open_connections
-// COALESCED: ttkernel.routing_plane.fused_write_atomic_inc(%[[SENDER_MANAGER]], %[[SENDER_ROUTE_ID]],
+// COALESCED: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[SENDER_MANAGER]], %[[SENDER_ROUTE_ID]],
 // COALESCED-NOT: ttkernel.routing_plane.close_connections
-// COALESCED: ttkernel.routing_plane.fused_write_atomic_inc(%[[SENDER_MANAGER]], %[[SENDER_ROUTE_ID]],
+// COALESCED: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[SENDER_MANAGER]], %[[SENDER_ROUTE_ID]],
 // COALESCED-NOT: ttkernel.routing_plane.open_connections
 // COALESCED: ttkernel.routing_plane.close_connections(%[[SENDER_MANAGER]],
 // COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
@@ -52,9 +52,10 @@
 // COALESCED: %[[RECEIVER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_MANAGER]],
 // COALESCED-NOT: ttkernel.routing_plane.create_connection_manager
 // COALESCED-NOT: ttkernel.routing_plane.open_connections
-// COALESCED: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER]], %[[RECEIVER_ROUTE_ID]],
+// COALESCED-NOT: ttkernel.routing_plane.atomic_inc
+// COALESCED: ttkernel.experimental.semaphore_wait_min({{.*}}, %c2048_i32)
 // COALESCED-NOT: ttkernel.routing_plane.close_connections
-// COALESCED: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER]], %[[RECEIVER_ROUTE_ID]],
+// COALESCED: ttkernel.experimental.semaphore_wait_min({{.*}}, %c2048_i32)
 // COALESCED-NOT: ttkernel.routing_plane.open_connections
 // COALESCED: ttkernel.routing_plane.close_connections(%[[RECEIVER_MANAGER]],
 // COALESCED-NOT: ttkernel.routing_plane.create_connection_manager

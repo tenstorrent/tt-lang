@@ -371,6 +371,7 @@ static bool mayModifyRoutingPlaneHeader(Operation *operation) {
                RoutingPlaneSetUnicastRouteOp, RoutingPlaneAtomicIncOp,
                RoutingPlaneSetFusedWriteAtomicIncStateOp,
                RoutingPlaneFusedWriteAtomicIncWithStateOp,
+               RoutingPlaneStripedFusedWriteAtomicIncOp,
                RoutingPlaneFusedWriteAtomicIncOp,
                CloseRoutingPlaneConnectionsOp>(candidate) ||
            isa<CallOpInterface>(candidate);

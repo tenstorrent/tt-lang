@@ -22,6 +22,11 @@
 // CHECK: packetHeader->to_noc_fused_unicast_write_atomic_inc(
 // CHECK: sender.send_payload_without_header_non_blocking_from_address<posted>(
 // CHECK-NEXT: sourceAddress, sizeBytes);
+// CHECK-LABEL: FORCE_INLINE void routing_plane_striped_fused_write_atomic_inc(
+// CHECK: if (connectionCount != 2 || sizeBytes < 2) {
+// CHECK: const uint32_t firstStripeSize = sizeBytes / 2;
+// CHECK: firstSender.send_payload_flush_non_blocking_from_address<posted>(
+// CHECK: secondSender.send_payload_flush_blocking_from_address<posted>(
 // CHECK-LABEL: void kernel_main() {
 // CHECK: size_t [[RUNTIME_ARG_BASE:.*]] = 5;
 // CHECK: tt::tt_fabric::RoutingPlaneConnectionManager [[MANAGER:.*]];
@@ -36,6 +41,7 @@
 // CHECK: bool [[CONFIGURED:.*]] = experimental::routing_plane_set_fused_write_atomic_inc_state([[ROUTE_ID]], [[INDEX]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc_with_state([[MANAGER]], [[ROUTE_ID]], [[INDEX]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc_with_state<true>([[MANAGER]], [[ROUTE_ID]], [[INDEX]],
+// CHECK: experimental::routing_plane_striped_fused_write_atomic_inc<true>([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[INDEX]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[INDEX]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc<true>([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[INDEX]],
 // CHECK: if ([[COUNT]] != 0) {
@@ -93,6 +99,11 @@ module {
       %size) posted true
       : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32,
          i32) -> ()
+    ttkernel.routing_plane.striped_fused_write_atomic_inc(
+      %manager, %route_id, %connection_index, %connection_index, %count,
+      %source, %size, %destination_address, %semaphore_address) {posted = true}
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
+         i32, !ttkernel.noc_addr, !ttkernel.noc_addr) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
       %manager, %route_id, %connection_index, %connection_index, %source, %size,
       %destination_address, %semaphore_address, %increment)

@@ -106,32 +106,34 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
-FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
-                                                      int64_t blockSpan) {
+static FailureOr<PipeTransferPayload>
+getPipeTransferPayload(Operation *operation, Value dfb, IntegerAttr byteCountAttr,
+                       int64_t blockSpan) {
   FailureOr<CircularBufferType> maybeDFBType =
-      utils::getTTLCircularBufferType(sendOp.getSrc());
+      utils::getTTLCircularBufferType(dfb);
   if (failed(maybeDFBType)) {
-    sendOp.emitError("pipe transfer source must have a TTL DFB type");
+    operation->emitError("pipe transfer endpoint must have a TTL DFB type");
     return failure();
   }
   CircularBufferType dfbType = *maybeDFBType;
   auto tileType = llvm::dyn_cast<ttcore::TileType>(dfbType.getElementType());
   if (!tileType) {
-    sendOp.emitError("pipe transfer source DFB element type must be tile");
+    operation->emitError("pipe transfer DFB element type must be tile");
     return failure();
   }
   if (blockSpan <= 0 || dfbType.getBlockCount() % blockSpan != 0) {
-    sendOp.emitError("source DFB block count must be divisible by pipe "
-                     "transfer block span");
+    operation->emitError("DFB block count must be divisible by pipe transfer "
+                         "block span");
     return failure();
   }
 
-  if (IntegerAttr byteCountAttr = sendOp.getByteCountAttr()) {
+  if (byteCountAttr) {
     int64_t byteCount = byteCountAttr.getInt();
     std::optional<int64_t> maybeSizeBytes =
         llvm::checkedMul(byteCount, blockSpan);
     if (!maybeSizeBytes) {
-      sendOp.emitError("byte-counted pipe transfer payload exceeds int64_t");
+      operation->emitError(
+          "byte-counted pipe transfer payload exceeds int64_t");
       return failure();
     }
     return PipeTransferPayload{blockSpan, byteCount, *maybeSizeBytes};
@@ -140,18 +142,24 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
   std::optional<int64_t> maybeElementCount =
       llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
   if (!maybeElementCount) {
-    sendOp.emitError("pipe transfer element count exceeds int64_t");
+    operation->emitError("pipe transfer element count exceeds int64_t");
     return failure();
   }
   int64_t elementSizeBytes = tileType.getSizeBytes();
   std::optional<int64_t> maybeSizeBytes =
       llvm::checkedMul(*maybeElementCount, elementSizeBytes);
   if (!maybeSizeBytes) {
-    sendOp.emitError("pipe transfer payload size exceeds int64_t");
+    operation->emitError("pipe transfer payload size exceeds int64_t");
     return failure();
   }
   return PipeTransferPayload{*maybeElementCount, elementSizeBytes,
                              *maybeSizeBytes};
+}
+
+FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
+                                                      int64_t blockSpan) {
+  return getPipeTransferPayload(sendOp, sendOp.getSrc(),
+                                sendOp.getByteCountAttr(), blockSpan);
 }
 
 static FailureOr<PipeSendPlan>
@@ -180,7 +188,7 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
 static FailureOr<PipePostPlan>
 buildPipePostPlan(PipeTransferPostOp postOp,
                   ArrayRef<PipeResourceInfo> resources,
-                  const FabricRoutePlan *fabricRoutePlan) {
+                  int64_t blockSpan, const FabricRoutePlan *fabricRoutePlan) {
   ArrayRef<std::size_t> fabricRouteIndices =
       fabricRoutePlan
           ? fabricRoutePlan->lookupRouteIndices(postOp.getOperation())
@@ -189,19 +197,25 @@ buildPipePostPlan(PipeTransferPostOp postOp,
       llvm::map_to_vector(resources, [](const PipeResourceInfo &resource) {
         return resource.addressStorage.mode;
       });
-  if (llvm::all_of(resources, [](const PipeResourceInfo &resource) {
-        return resource.addressStorage.usesComputedReceiverAddress();
-      })) {
-    return PipePostPlan{/*addressPublication=*/std::nullopt,
-                        std::move(addressModes),
-                        SmallVector<std::size_t>(fabricRouteIndices)};
-  }
-
   Value receiverDFB = getAttachedCB(postOp.getDst());
   if (!receiverDFB) {
     postOp.emitError("pipe receive destination is not attached to a DFB");
     return failure();
   }
+  FailureOr<PipeTransferPayload> maybePayload = getPipeTransferPayload(
+      postOp, receiverDFB, postOp.getByteCountAttr(), blockSpan);
+  if (failed(maybePayload)) {
+    return failure();
+  }
+  if (llvm::all_of(resources, [](const PipeResourceInfo &resource) {
+        return resource.addressStorage.usesComputedReceiverAddress();
+      })) {
+    return PipePostPlan{/*addressPublication=*/std::nullopt,
+                        std::move(addressModes),
+                        SmallVector<std::size_t>(fabricRouteIndices),
+                        maybePayload->sizeBytes};
+  }
+
   FailureOr<CircularBufferType> maybeDFBType =
       utils::getTTLCircularBufferType(receiverDFB);
   if (failed(maybeDFBType)) {
@@ -217,7 +231,8 @@ buildPipePostPlan(PipeTransferPostOp postOp,
   return PipePostPlan{
       PipeReceiverAddressPublicationPlan{
           receiverDFB, static_cast<int64_t>(tileType.getSizeBytes())},
-      std::move(addressModes), SmallVector<std::size_t>(fabricRouteIndices)};
+      std::move(addressModes), SmallVector<std::size_t>(fabricRouteIndices),
+      maybePayload->sizeBytes};
 }
 
 template <typename Resources>
@@ -645,16 +660,19 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
       }
       insertTransferPlan(*maybeSendPlan);
     } else if (postOp) {
+      PipeTransferCreateOp transferCreate =
+          transferIndex.getTransferCreate(operation);
+      int64_t blockSpan = getPipeTransferBlockSpan(transferCreate);
       FailureOr<PipePostPlan> maybePostPlan = [&]() {
         if (const auto *staticResource =
                 std::get_if<PipeResourceInfo>(&resources)) {
           return buildPipePostPlan(
               postOp, ArrayRef<PipeResourceInfo>(staticResource, 1),
-              fabricRoutePlan);
+              blockSpan, fabricRoutePlan);
         }
         return buildPipePostPlan(
             postOp, std::get<SmallVector<PipeResourceInfo>>(resources),
-            fabricRoutePlan);
+            blockSpan, fabricRoutePlan);
       }();
       if (failed(maybePostPlan)) {
         return failure();

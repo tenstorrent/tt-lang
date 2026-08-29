@@ -184,6 +184,7 @@ struct PipePostPlan {
   std::optional<PipeReceiverAddressPublicationPlan> addressPublication;
   SmallVector<PipeAddressMode> addressModes;
   SmallVector<std::size_t> fabricRouteIndices;
+  int64_t payloadSizeBytes = 0;
 };
 
 /// Receiver-wait lowering has no operation-specific decisions.

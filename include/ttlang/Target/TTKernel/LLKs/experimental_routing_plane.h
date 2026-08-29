@@ -110,6 +110,66 @@ static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
       reinterpret_cast<uint32_t>(packetHeader), sizeof(PACKET_HEADER_TYPE));
 }
 
+template <bool posted = false>
+FORCE_INLINE void routing_plane_striped_fused_write_atomic_inc(
+    tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t routeId,
+    uint32_t routeIndexBase, uint32_t connectionIndexBase,
+    uint32_t connectionCount, uint32_t sourceAddress, uint32_t sizeBytes,
+    uint64_t destinationAddress, uint64_t semaphoreAddress) {
+  if (connectionCount != 2 || sizeBytes < 2) {
+    routing_plane_fused_write_atomic_inc<posted>(
+        manager, routeId, routeIndexBase, connectionIndexBase, sourceAddress,
+        sizeBytes, destinationAddress, semaphoreAddress, sizeBytes);
+    return;
+  }
+
+  const uint32_t firstStripeSize = sizeBytes / 2;
+  const uint32_t secondStripeSize = sizeBytes - firstStripeSize;
+  const uint32_t maxPacketSize = tt::tt_fabric::get_fabric_max_packet_size();
+  if (firstStripeSize > maxPacketSize || secondStripeSize > maxPacketSize) {
+    routing_plane_fused_write_atomic_inc<posted>(
+        manager, routeId, routeIndexBase, connectionIndexBase, sourceAddress,
+        firstStripeSize, destinationAddress, semaphoreAddress, firstStripeSize);
+    routing_plane_fused_write_atomic_inc<posted>(
+        manager, routeId, routeIndexBase + 1, connectionIndexBase + 1,
+        sourceAddress + firstStripeSize, secondStripeSize,
+        destinationAddress + firstStripeSize, semaphoreAddress,
+        secondStripeSize);
+    return;
+  }
+
+  auto *firstPacketHeader =
+      PacketHeaderPool::header_table[routeId].first + routeIndexBase;
+  auto *secondPacketHeader = firstPacketHeader + 1;
+  firstPacketHeader->to_noc_fused_unicast_write_atomic_inc(
+      tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader{
+          destinationAddress, semaphoreAddress, firstStripeSize, false},
+      firstStripeSize);
+  secondPacketHeader->to_noc_fused_unicast_write_atomic_inc(
+      tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader{
+          destinationAddress + firstStripeSize, semaphoreAddress,
+          secondStripeSize, false},
+      secondStripeSize);
+
+  auto &firstSender =
+      manager.get(static_cast<uint8_t>(connectionIndexBase)).sender;
+  firstSender.wait_for_empty_write_slot();
+  firstSender.send_payload_without_header_non_blocking_from_address<posted>(
+      sourceAddress, firstStripeSize);
+  firstSender.send_payload_flush_non_blocking_from_address<posted>(
+      reinterpret_cast<uint32_t>(firstPacketHeader),
+      sizeof(PACKET_HEADER_TYPE));
+
+  auto &secondSender =
+      manager.get(static_cast<uint8_t>(connectionIndexBase + 1)).sender;
+  secondSender.wait_for_empty_write_slot();
+  secondSender.send_payload_without_header_non_blocking_from_address<posted>(
+      sourceAddress + firstStripeSize, secondStripeSize);
+  secondSender.send_payload_flush_blocking_from_address<posted>(
+      reinterpret_cast<uint32_t>(secondPacketHeader),
+      sizeof(PACKET_HEADER_TYPE));
+}
+
 } // namespace experimental
 
 #endif // TTLANG_TARGET_TTKERNEL_LLKS_EXPERIMENTAL_ROUTING_PLANE_H

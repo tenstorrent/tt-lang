@@ -2729,6 +2729,31 @@ public:
   }
 };
 
+class TTKernelRoutingPlaneStripedFusedWriteAtomicIncOpRewriter
+    : public OpConversionPattern<
+          ttkernel::RoutingPlaneStripedFusedWriteAtomicIncOp> {
+  using Op = ttkernel::RoutingPlaneStripedFusedWriteAtomicIncOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    ArrayAttr templateArguments;
+    auto posted = op.getPosted();
+    if (posted && *posted) {
+      templateArguments = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "true")});
+    }
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(),
+        "experimental::routing_plane_striped_fused_write_atomic_inc", nullptr,
+        templateArguments, adaptor.getOperands());
+    return success();
+  }
+};
+
 class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
     : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
   using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
@@ -3598,6 +3623,7 @@ public:
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
                  TTKernelRoutingPlaneSetFusedWriteAtomicIncStateOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncWithStateOpRewriter,
+                 TTKernelRoutingPlaneStripedFusedWriteAtomicIncOpRewriter,
                  TTKernelRoutingPlaneSetUnicastRouteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,

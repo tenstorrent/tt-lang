@@ -2523,12 +2523,12 @@ public:
   void emitFusedWriteAtomicIncrement(Value remoteX, Value remoteY,
                                      Value sourceAddress,
                                      Value destinationAddress, Value sizeBytes,
-                                     Value semaphoreAddress, Value increment) {
-    ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
+                                     Value semaphoreAddress) {
+    ttk::RoutingPlaneStripedFusedWriteAtomicIncOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildRouteIndex(),
-        buildConnectionIndex(), sourceAddress, sizeBytes,
+        buildConnectionIndex(), buildConnectionCount(), sourceAddress, sizeBytes,
         buildRemoteNocAddress(remoteX, remoteY, destinationAddress),
-        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment,
+        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress),
         rewriter.getBoolAttr(true));
   }
 
@@ -2565,6 +2565,17 @@ private:
                                     argIndex);
   }
 
+  Value buildConnectionCount() {
+    Value firstConnectionCountIndex = arith::ConstantIndexOp::create(
+        rewriter, loc, 1 + runtime.routeCount);
+    Value argIndex = arith::AddIOp::create(
+        rewriter, loc, firstConnectionCountIndex, routeIndex);
+    argIndex = arith::AddIOp::create(rewriter, loc, runtime.runtimeArgBase,
+                                    argIndex);
+    return ttk::GetArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                    argIndex);
+  }
+
   Value buildRouteIndex() {
     Value connectionsPerRoute = arith::ConstantIndexOp::create(
         rewriter, loc, runtime.maxConnectionsPerRoute);
@@ -2587,8 +2598,7 @@ public:
                              Value destinationY, Value routeIndex,
                              const FabricRuntimeInfo &runtime,
                              ConversionPatternRewriter &rewriter)
-      : loc(op->getLoc()), destinationX(destinationX),
-        destinationY(destinationY), rewriter(rewriter),
+      : destinationX(destinationX), destinationY(destinationY),
         routeEmitter(op, routeIndex, runtime, rewriter) {}
 
   void preparePayloadWrite() override {}
@@ -2609,18 +2619,15 @@ public:
            "fabric payload must be prepared before completion signaling");
     routeEmitter.emitFusedWriteAtomicIncrement(
         destinationX, destinationY, sourceAddress, destinationAddress,
-        sizeBytes, receiverCompletionCounterAddr,
-        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+        sizeBytes, receiverCompletionCounterAddr);
     return success();
   }
 
   void emitCompletionSignalBarrier() override {}
 
 private:
-  Location loc;
   Value destinationX;
   Value destinationY;
-  ConversionPatternRewriter &rewriter;
   FabricRouteEmitter routeEmitter;
   Value sourceAddress;
   Value destinationAddress;
@@ -2970,12 +2977,12 @@ static Value buildSelectedCounterTableIndex(
 /// or reordered, so each token must retain the sequence of its own post.
 static Value incrementPipePostSequence(Location loc, Value sequenceCounter,
                                        Value sequenceIndex,
+                                       Value sequenceIncrement,
                                        ConversionPatternRewriter &rewriter) {
   Value previousSequence = memref::LoadOp::create(
       rewriter, loc, sequenceCounter, ValueRange{sequenceIndex});
-  Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
   Value tokenSequence =
-      arith::AddIOp::create(rewriter, loc, previousSequence, one);
+      arith::AddIOp::create(rewriter, loc, previousSequence, sequenceIncrement);
   memref::StoreOp::create(rewriter, loc, tokenSequence, sequenceCounter,
                           ValueRange{sequenceIndex});
   return tokenSequence;
@@ -3638,8 +3645,10 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
 
   Value tokenSequence;
+  Value completionIncrement = arith::ConstantIntOp::create(
+      rewriter, loc, usesFabric ? postPlan.payloadSizeBytes : 1, 32);
   if (allRecordsHaveSingleExecution) {
-    tokenSequence = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+    tokenSequence = completionIncrement;
   } else {
     auto sequenceIt = postSequenceCounters.find(func);
     if (sequenceIt == postSequenceCounters.end()) {
@@ -3655,7 +3664,8 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
         loc, completionCounters, sequenceIt->second, fields.recordIndex,
         rewriter);
     tokenSequence = incrementPipePostSequence(
-        loc, sequenceIt->second.values, sequenceIndex, rewriter);
+        loc, sequenceIt->second.values, sequenceIndex, completionIncrement,
+        rewriter);
   }
   rewriter.replaceOp(op, tokenSequence);
   return success();
@@ -3757,8 +3767,10 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
 
   Value tokenSequence;
+  Value completionIncrement = arith::ConstantIntOp::create(
+      rewriter, loc, usesFabric ? postPlan.payloadSizeBytes : 1, 32);
   if (pipeResource.completion.singleExecution) {
-    tokenSequence = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+    tokenSequence = completionIncrement;
   } else {
     FailureOr<PipeCounterTableEntry> maybeSequenceCounter =
         lookupPipeCounterTableEntry(postSequenceCounters, func,
@@ -3772,7 +3784,8 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     Value sequenceIndex = arith::ConstantIndexOp::create(
         rewriter, loc, maybeSequenceCounter->index);
     tokenSequence = incrementPipePostSequence(
-        loc, maybeSequenceCounter->values, sequenceIndex, rewriter);
+        loc, maybeSequenceCounter->values, sequenceIndex, completionIncrement,
+        rewriter);
   }
   rewriter.replaceOp(op, tokenSequence);
   return success();

@@ -3006,14 +3006,45 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
         grid_rows=1,
     )
 
-    assert kernel.runtime_args[0][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0]
-    assert kernel.runtime_args[1][0] == [0] * 5
+    assert kernel.runtime_args[0][0] == [1, 0, 1, 1, 0, 0, 0xA0, 0xB0]
+    assert kernel.runtime_args[1][0] == [0] * 6
     assert fake_ttnn.fabric_setup_calls == [
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (0, 0)),
     ]
     assert fake_ttnn.fabric_config_calls == 1
     assert fake_ttnn.fabric_direction_calls == [
         (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+    ]
+
+
+def test_routing_plane_stripes_one_route_over_distinct_links(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    destination = _FakeFabricNodeId(0, 1)
+    route = kernel_runner.FabricRouteSpec(
+        (0, 0), (0, 1), ((0, 0),), 0, max_connection_count=2
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].runtime_args[0][0][:6] == [2, 0, 2, 1, 0, 0]
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 0),
+            [destination, destination],
+            [0, 1],
+            0,
+            (0, 0),
+        )
     ]
 
 
@@ -3069,7 +3100,7 @@ def test_routing_plane_respects_kernel_execution_range(monkeypatch):
     )
 
     assert kernel.runtime_args[0][0] == []
-    assert kernel.runtime_args[1][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0]
+    assert kernel.runtime_args[1][0] == [1, 0, 1, 1, 0, 0, 0xA0, 0xB0]
     assert fake_ttnn.fabric_setup_calls == [
         (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (1, 0)),
     ]
@@ -3109,6 +3140,8 @@ def test_routing_plane_reuses_connection_for_one_direction(monkeypatch):
         1,
         0,
         0,
+        1,
+        1,
         1,
         2,
         0,
@@ -3157,9 +3190,11 @@ def test_routing_plane_uses_separate_connections_for_directions(monkeypatch):
             (0, 0),
         )
     ]
-    assert program.kernels[0].runtime_args[0][0][:9] == [
+    assert program.kernels[0].runtime_args[0][0][:11] == [
         2,
         0,
+        1,
+        1,
         1,
         1,
         2,
@@ -3201,7 +3236,7 @@ def test_routing_plane_connects_one_dimensional_route_to_neighbor(monkeypatch):
             (0, 0),
         )
     ]
-    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
+    assert program.kernels[0].runtime_args[0][0][:6] == [1, 0, 1, 3, 0, 3]
 
 
 def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypatch):
@@ -3230,7 +3265,7 @@ def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypat
             (0, 0),
         )
     ]
-    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
+    assert program.kernels[0].runtime_args[0][0][:6] == [1, 0, 1, 3, 0, 3]
 
 
 def test_routing_plane_rejects_nonadjacent_neighbor_exchange(monkeypatch):
@@ -3531,8 +3566,8 @@ def test_routing_plane_preserves_existing_runtime_args(monkeypatch):
 
     assert program.kernels[0].common_runtime_args[0] == 0
     assert program.kernels[1].common_runtime_args[0] == 1
-    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 1, 0, 0]
-    assert program.kernels[1].runtime_args[0][0][:6] == [0x44, 1, 0, 1, 0, 0]
+    assert program.kernels[0].runtime_args[0][0][:6] == [1, 0, 1, 1, 0, 0]
+    assert program.kernels[1].runtime_args[0][0][:7] == [0x44, 1, 0, 1, 1, 0, 0]
 
 
 def test_routing_plane_rejects_missing_base_slot_before_setup(monkeypatch):
@@ -3583,8 +3618,8 @@ def test_routing_plane_pads_heterogeneous_caller_runtime_args(monkeypatch):
     )
 
     assert kernel.common_runtime_args[0] == 3
-    assert kernel.runtime_args[0][0][:8] == [0x10, 0, 0, 1, 0, 1, 0, 0]
-    assert kernel.runtime_args[1][0] == [0x20, 0x21, 0x22, 0, 0, 0, 0, 0]
+    assert kernel.runtime_args[0][0][:9] == [0x10, 0, 0, 1, 0, 1, 1, 0, 0]
+    assert kernel.runtime_args[1][0] == [0x20, 0x21, 0x22, 0, 0, 0, 0, 0, 0]
 
 
 def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):
@@ -7379,8 +7414,9 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
             kernel_runner.FabricRouteSpec(
                 local_device=(0, 0, 0),
                 remote_device=(0, 0, 1),
-                source_nodes=((0, 0), (1, 0)),
-                route_index=2,
+                    source_nodes=((0, 0), (1, 0)),
+                    route_index=2,
+                    max_connection_count=2,
             )
         ]
     ]
@@ -7407,7 +7443,10 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
         "DEVICE_DOMAIN = DeviceDomain.product(**{'batch': (1,), "
         "'mesh': (1, 2)})" in source
     )
-    assert "FabricRouteSpec((0, 0, 0), (0, 0, 1), ((0, 0), (1, 0)), 2)" in source
+    assert (
+        "FabricRouteSpec((0, 0, 0), (0, 0, 1), ((0, 0), (1, 0)), 2, 2)"
+        in source
+    )
     assert "device_domain=DEVICE_DOMAIN" in source
     assert "kernel_fabric_routes=KERNEL_FABRIC_ROUTES" in source
     assert "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = [0]" in source

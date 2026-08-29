@@ -7,19 +7,19 @@
 // The receiver therefore posts once per edge and needs one DFB slot.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
 // CHECK-LABEL: func.func @senders
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc
-// CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc
+// CHECK-NOT: ttkernel.routing_plane.striped_fused_write_atomic_inc
 // CHECK-LABEL: func.func @receivers
 // CHECK: ttkernel.cb_reserve_back
 // CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: %[[MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[MANAGER]],
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[MANAGER]], %[[CONNECTION_COUNT]],
+// CHECK-NEXT: %[[ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[MANAGER]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.routing_plane.close_connections(%[[MANAGER]],
 // CHECK-NEXT: ttkernel.noc_semaphore_set
-// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min({{.*}}, %c4096_i32)
 // CHECK-NEXT: ttkernel.cb_push_back
 // CHECK-NOT: ttkernel.cb_reserve_back
 // CHECK: return

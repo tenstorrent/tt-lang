@@ -12,10 +12,12 @@
 // CHECK-LABEL: func.func @senders
 // CHECK-SAME: ttl.fabric_routes = [
 // CHECK-SAME: local = #ttl.device_ref<coordinates = [0]>
+// CHECK-SAME: max_connection_count = 2 : i64
 // CHECK-SAME: remote = #ttl.device_ref<coordinates = [1]>
 // CHECK-SAME: route_index = 0 : i64
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>]
 // CHECK-SAME: local = #ttl.device_ref<coordinates = [2]>
+// CHECK-SAME: max_connection_count = 2 : i64
 // CHECK-SAME: remote = #ttl.device_ref<coordinates = [3]>
 // CHECK-SAME: route_index = 0 : i64
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>]
@@ -30,9 +32,9 @@
 // CHECK-NEXT: %[[RUNTIME_ARG_BASE_0:.*]] = arith.addi %[[FABRIC_BASE_INDEX_0]],
 // CHECK: scf.if %[[IS_DEVICE_0]] {
 // CHECK-NEXT: %[[CONNECTION_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[CONNECTION_COUNT_0:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]] runtime_arg_base = %[[RUNTIME_ARG_BASE_0]]
+// CHECK-NEXT: %[[ROUTE_ID_0:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]] header_count = %{{.*}} runtime_arg_base = %[[RUNTIME_ARG_BASE_0]]
 // CHECK: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER_0]], %[[CONNECTION_COUNT_0]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[CONNECTION_MANAGER_0]], %[[ROUTE_ID_0]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
 // CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER_0]], %[[CONNECTIONS_0]])
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_2:.*]] = ttkernel.get_common_arg_val
@@ -43,12 +45,12 @@
 // CHECK-NEXT: %[[RUNTIME_ARG_BASE_2:.*]] = arith.addi %[[FABRIC_BASE_INDEX_2]],
 // CHECK: scf.if %[[IS_DEVICE_2]] {
 // CHECK-NEXT: %[[CONNECTION_MANAGER_2:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[CONNECTION_COUNT_2:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]] runtime_arg_base = %[[RUNTIME_ARG_BASE_2]]
+// CHECK-NEXT: %[[ROUTE_ID_2:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]] header_count = %{{.*}} runtime_arg_base = %[[RUNTIME_ARG_BASE_2]]
 // CHECK: %[[PAYLOAD_1:.*]] = ttkernel.get_write_ptr
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER_2]], %[[CONNECTION_COUNT_2]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[CONNECTION_MANAGER_2]], %[[ROUTE_ID_2]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
 // CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER_2]], %[[CONNECTIONS_2]])
 // CHECK-NEXT: }
-// CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK-NOT: ttkernel.routing_plane.striped_fused_write_atomic_inc
 // CHECK-LABEL: func.func @receivers
 // CHECK: %[[RECEIVER_DFB_0:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK-NEXT: %[[RECEIVER_DFB_1:.*]] = ttkernel.get_compile_time_arg_val(2)
@@ -61,10 +63,10 @@
 // CHECK: scf.if %[[IS_DEVICE_3]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_1]],
 // CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER_3:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_COUNT_3:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_3]]
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTION_COUNT_3]],
+// CHECK-NEXT: %[[RECEIVER_ROUTE_ID_3:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]] header_count = %{{.*}} runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_3]]
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_ROUTE_ID_3]],
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER_3]], %[[RECEIVER_CONNECTIONS_3]])
-// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %c4096_i32)
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_1]],
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_1:.*]] = ttkernel.get_common_arg_val
@@ -76,10 +78,10 @@
 // CHECK: scf.if %[[IS_DEVICE_1]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_0]],
 // CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER_1:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_COUNT_1:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_1]]
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTION_COUNT_1]],
+// CHECK-NEXT: %[[RECEIVER_ROUTE_ID_1:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]] header_count = %{{.*}} runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE_1]]
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_ROUTE_ID_1]],
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER_1]], %[[RECEIVER_CONNECTIONS_1]])
-// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %c4096_i32)
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_0]],
 // CHECK-NEXT: }
 // CHECK-NOT: ttkernel.experimental.semaphore_wait_min

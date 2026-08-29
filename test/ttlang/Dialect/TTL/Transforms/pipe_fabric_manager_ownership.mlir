@@ -38,13 +38,13 @@
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[SENDER_OWNERSHIP_0]], %[[SENDER_GENERATION_1]])
 // CHECK-NEXT: %[[SENDER_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[SENDER_COUNT_0:.*]] = ttkernel.routing_plane.open_connections %[[SENDER_MANAGER_0]],
-// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[SENDER_MANAGER_0]], %[[SENDER_COUNT_0]],
+// CHECK: ttkernel.routing_plane.striped_fused_write_atomic_inc(%[[SENDER_MANAGER_0]], %[[SENDER_COUNT_0]],
 // CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[SENDER_MANAGER_0]],
 // CHECK-NEXT: ttkernel.noc_semaphore_set(%[[SENDER_OWNERSHIP_0]], %[[SENDER_GENERATION_2]])
 
-// The receiver must release the manager immediately after publishing readiness.
-// Waiting for payload completion before release would deadlock with the sender's
-// ownership wait.
+// The one-shot receiver requires no readiness message, but it must release its
+// manager before waiting for payload completion so the sender can acquire the
+// paired ownership interval.
 // CHECK-LABEL: func.func @receiver_node
 // CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "generated.1", kind = generated_receiver,
 // CHECK-SAME: interferingIntervals = []>]
@@ -56,10 +56,10 @@
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[RECEIVER_OWNERSHIP_0]], %[[RECEIVER_GENERATION_0]])
 // CHECK-NEXT: %[[RECEIVER_MANAGER_0:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[RECEIVER_COUNT_0:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_MANAGER_0]],
-// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_MANAGER_0]], %[[RECEIVER_COUNT_0]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.routing_plane.close_connections(%[[RECEIVER_MANAGER_0]],
 // CHECK-NEXT: ttkernel.noc_semaphore_set(%[[RECEIVER_OWNERSHIP_0]], %[[RECEIVER_GENERATION_1]])
-// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %c2048_i32)
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @idle_compute() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>} {

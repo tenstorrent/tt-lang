@@ -4728,6 +4728,35 @@ def TTKernel_RoutingPlaneFusedWriteAtomicIncWithStateOp :
   }];
 }
 
+def TTKernel_RoutingPlaneStripedFusedWriteAtomicIncOp :
+    TTKernel_Op<"routing_plane.striped_fused_write_atomic_inc"> {
+  let summary = "Stripe a write across routing-plane connections";
+  let description = [{
+    Splits `sizeBytes` across the consecutive fabric connections beginning at
+    `connectionIndexBase`. Each stripe writes a disjoint payload range and
+    increments the same remote completion accumulator by its stripe byte count.
+    The total increment therefore equals `sizeBytes`, independent of the active
+    connection count. The consecutive packet headers beginning at
+    `routeIndexBase` retain independent command state. The optional `posted`
+    attribute suppresses NOC responses for worker-to-router writes.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$routeIndexBase,
+    I32:$connectionIndexBase,
+    I32:$connectionCount,
+    I32:$sourceAddress,
+    I32:$sizeBytes,
+    TTKernel_NocAddr:$destinationAddress,
+    TTKernel_NocAddr:$semaphoreAddress,
+    OptionalAttr<BoolAttr>:$posted
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
   let summary = "Write a payload and increment a remote semaphore";
