@@ -61,7 +61,7 @@ def add_kernel_f32(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
+# CHECK-SAME: attributes {dst_full_sync_en = false, fp32_dest_acc_en = true, ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>, buffer = l1, grid = [1, 1], memory = interleaved>>

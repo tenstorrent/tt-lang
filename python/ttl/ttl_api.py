@@ -2425,6 +2425,18 @@ def _lower_program_to_kernel(
                 ctx,
             )
 
+            # Compute creation needs explicit DST constraints before the final
+            # kernel-wide configuration analysis resolves automatic choices.
+            if ct.kernel_type == "compute":
+                if fp32_dest_acc_en is not None:
+                    ct.func_entry.attributes["fp32_dest_acc_en"] = BoolAttr.get(
+                        fp32_dest_acc_en, ctx
+                    )
+                if dst_full_sync_en is not None:
+                    ct.func_entry.attributes["dst_full_sync_en"] = BoolAttr.get(
+                        dst_full_sync_en, ctx
+                    )
+
             # Tag noc functions with their index so pipe semaphore allocation
             # and TTNN reader/writer role assignment can distinguish threads.
             if ct.kernel_type == "datamovement":

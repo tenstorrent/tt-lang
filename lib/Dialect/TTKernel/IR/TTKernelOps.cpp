@@ -25,6 +25,44 @@
 
 namespace mlir::tt::ttkernel {
 
+::mlir::LogicalResult ExperimentalRowNormalizationBlockOp::verify() {
+  if (getNumTiles() < 1 || getNumTiles() > 8) {
+    return emitOpError("num_tiles must be in the range [1, 8]");
+  }
+  if (!getHasGamma() && getGammaCb() != getInputCb()) {
+    return emitOpError("gamma_cb must equal input_cb when has_gamma is false");
+  }
+  if (getDtype() != ttcore::DataType::BFloat16) {
+    return emitOpError("supports bf16 DFBs only");
+  }
+
+  const llvm::APFloat &scale = getScaleAttr().getValue();
+  const llvm::APFloat &epsilon = getEpsilonAttr().getValue();
+  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+    return emitOpError("scale must be finite and positive");
+  }
+  if (!epsilon.isFinite() || epsilon.isZero() || epsilon.isNegative()) {
+    return emitOpError("epsilon must be finite and positive");
+  }
+
+  auto inputCBType = mlir::cast<CBType>(getInputCb().getType());
+  auto gammaCBType = mlir::cast<CBType>(getGammaCb().getType());
+  auto outputCBType = mlir::cast<CBType>(getOutputCb().getType());
+  if (inputCBType.getElementType() != outputCBType.getElementType()) {
+    return emitOpError("input and output dataflow buffer types must match");
+  }
+  if (getHasGamma() &&
+      gammaCBType.getElementType() != outputCBType.getElementType()) {
+    return emitOpError("gamma and output dataflow buffer types must match");
+  }
+  auto outputTileType =
+      mlir::dyn_cast<ttcore::TileType>(outputCBType.getElementType());
+  if (!outputTileType || outputTileType.getDataType() != getDtype()) {
+    return emitOpError("dtype must match the output tile data type");
+  }
+  return success();
+}
+
 void ComputeKernelHWStartupOp::print(::mlir::OpAsmPrinter &printer) {
   printer << "(" << getIcb0();
   if (getIcb1()) {
