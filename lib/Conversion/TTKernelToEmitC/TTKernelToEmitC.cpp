@@ -2948,6 +2948,7 @@ public:
         TTKernelCastToL1PtrOpToEmitCOpRewriter,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetSemaphoreOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreReachedOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreWaitMinOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreIncOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreWaitOp>,

@@ -73,8 +73,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         %recv_handle = ttl.copy %pipe, %recv
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv_handle : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv_handle : !ttl.receive_request
         ttl.cb_push %dst_dfb
             : <[1, 1], !ttcore.tile<32x32, f32>, 4>
         %received = ttl.cb_wait %dst_dfb
@@ -132,8 +132,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       %receive = ttl.copy %pipe, %reserved
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
       ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       %first = ttl.cb_wait %dfb
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -145,8 +145,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       %receive_again = ttl.copy %pipe, %reserved_again
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive_again : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive_again : !ttl.receive_request
       ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       ttl.yield
     }

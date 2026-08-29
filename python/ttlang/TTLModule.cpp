@@ -514,4 +514,20 @@ void populateTTLModule(nb::module_ &m) {
             return wrap(SelectedPipeDstType::get(unwrap(ctx)));
           },
           nb::arg("context"));
+
+  tt_type_class<ReceiveRequestType>(m, "ReceiveRequestType")
+      .def_static(
+          "get",
+          [](MlirContext ctx) {
+            return wrap(ReceiveRequestType::get(unwrap(ctx)));
+          },
+          nb::arg("context"));
+
+  tt_type_class<ReadyReceiveType>(m, "ReadyReceiveType")
+      .def_static(
+          "get",
+          [](MlirContext ctx) {
+            return wrap(ReadyReceiveType::get(unwrap(ctx)));
+          },
+          nb::arg("context"));
 }

@@ -37,6 +37,11 @@ findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
 FailureOr<std::optional<CopyOp>>
 findUniquePipeReceiveCopy(ValueOriginAnalysis &analysis, Value value);
 
+/// Returns every high-level pipe receive whose request may reach `value`.
+/// Fails unless at least one receive and no other origin reaches the value.
+FailureOr<SmallVector<CopyOp>>
+findPipeReceiveCopies(ValueOriginAnalysis &analysis, Value value);
+
 /// Returns every internal receive post whose token may reach `token`. Fails
 /// unless at least one post reaches the token.
 FailureOr<SmallVector<PipeTransferPostOp>>

@@ -1575,13 +1575,23 @@ def _get_pipe_computed_address_dfb_allocation_bytes(
             max_allocation_bytes = max(
                 max_allocation_bytes, _get_dfb_allocation(config).total_size
             )
-        if max_allocation_bytes == 0:
-            raise ValueError(
-                f"computed-address receiver DFB[{dfb_index}] has no "
-                "compiler-managed storage"
-            )
-        allocation_bytes_by_index[dfb_index] = max_allocation_bytes
+        if max_allocation_bytes > 0:
+            allocation_bytes_by_index[dfb_index] = max_allocation_bytes
     return allocation_bytes_by_index
+
+
+def _uses_tensor_backed_computed_address(
+    config: PhysicalDFBConfig, dfb_index: int
+) -> bool:
+    if not config.storage_segments:
+        return False
+    tensor_backed = [segment.is_tensor_backed for segment in config.storage_segments]
+    if any(tensor_backed) and not all(tensor_backed):
+        raise ValueError(
+            f"computed-address receiver DFB {dfb_index} requires either "
+            "tensor-backed storage on every segment or compiler storage"
+        )
+    return all(tensor_backed)
 
 
 def build_pipe_computed_address_dfb_tensors(
@@ -1593,7 +1603,7 @@ def build_pipe_computed_address_dfb_tensors(
     kernel_specs: Optional[List[KernelSpec]] = None,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> Dict[int, Any]:
-    """Allocate hidden L1 backing tensors for computed pipe receiver DFBs."""
+    """Allocate hidden L1 backing for computed pipe receiver scratch DFBs."""
     dfb_indices = sorted(set(pipe_computed_address_dfb_indices or []))
     if not dfb_indices:
         return {}
@@ -1618,11 +1628,16 @@ def build_pipe_computed_address_dfb_tensors(
             )
         config = cb_configs[dfb_index]
         _validate_physical_dfb_config(config, dfb_index)
-        backing_cores = (
-            set(program_cores)
-            if config.allocation_nodes is None
-            else set(config.allocation_nodes)
-        )
+        if _uses_tensor_backed_computed_address(config, dfb_index):
+            continue
+        if config.allocation_nodes is not None:
+            backing_cores = set(config.allocation_nodes)
+        elif config.storage_segments:
+            backing_cores = {
+                node for segment in config.storage_segments for node in segment.nodes
+            }
+        else:
+            backing_cores = set(program_cores)
         outside_program = backing_cores - program_cores
         if outside_program:
             raise ValueError(
@@ -1644,6 +1659,41 @@ def build_pipe_computed_address_dfb_tensors(
             backing_core_ranges, allocation_bytes_by_index[dfb_index], device
         )
     return backing_tensors
+
+
+def _get_tensor_backed_computed_address_bases(
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    dfb_indices: List[int],
+) -> Dict[int, int]:
+    bases = {}
+    for dfb_index in sorted(set(dfb_indices)):
+        if dfb_index < 0 or dfb_index >= len(cb_configs):
+            raise ValueError(
+                f"computed-address receiver DFB index {dfb_index} is invalid"
+            )
+        config = cb_configs[dfb_index]
+        if not _uses_tensor_backed_computed_address(config, dfb_index):
+            continue
+        segment_bases = set()
+        for segment in config.storage_segments:
+            tensor_index = segment.tensor_index
+            assert tensor_index is not None
+            if tensor_index < 0 or tensor_index >= len(tensors):
+                raise ValueError(
+                    f"computed-address receiver DFB {dfb_index} references "
+                    f"invalid tensor index {tensor_index}"
+                )
+            segment_bases.add(
+                int(tensors[tensor_index].buffer_address()) + segment.byte_offset
+            )
+        if len(segment_bases) != 1:
+            raise ValueError(
+                f"computed-address receiver DFB {dfb_index} requires one "
+                "tensor-backed base address across its launch nodes"
+            )
+        bases[dfb_index] = segment_bases.pop()
+    return bases
 
 
 def build_pipe_runtime_resources(
@@ -1670,6 +1720,7 @@ def build_pipe_runtime_resources(
 
     computed_address_dfb_tensors = {}
     computed_address_dfb_allocation_bytes = {}
+    tensor_backed_computed_address_bases = {}
     if computed_address_dfb_indices:
         if cb_configs is None:
             raise ValueError(
@@ -1690,6 +1741,11 @@ def build_pipe_runtime_resources(
             device=resource_device,
             kernel_specs=kernel_specs,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        )
+        tensor_backed_computed_address_bases = (
+            _get_tensor_backed_computed_address_bases(
+                tensors, cb_configs, computed_address_dfb_indices
+            )
         )
 
     scratch_tensors = build_pipe_sram_scratch_tensors(
@@ -1718,6 +1774,7 @@ def build_pipe_runtime_resources(
         dfb_index: int(tensor.buffer_address())
         for dfb_index, tensor in computed_address_dfb_tensors.items()
     }
+    computed_address_base_addresses.update(tensor_backed_computed_address_bases)
     l1_buffer_addresses = frozenset(
         [
             *(int(tensor.buffer_address()) for tensor in scratch_tensors),
@@ -2974,10 +3031,13 @@ def build_cb_descriptors(
             raise ValueError(f"DFB[{dfb_index}] has conflicting hidden backing tensors")
         backing_tensors[dfb_index] = tensor
     for dfb_index in pipe_backing_tensors:
-        if cb_configs[dfb_index].storage_segments:
+        if any(
+            segment.is_tensor_backed
+            for segment in cb_configs[dfb_index].storage_segments
+        ):
             raise ValueError(
                 f"DFB[{dfb_index}] cannot combine PipeNet computed-address "
-                "storage with finalized storage segments"
+                "backing with tensor-backed storage segments"
             )
     _validate_tensor_backing_aliases(tensors, cb_configs)
 
