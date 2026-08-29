@@ -77,6 +77,7 @@ def _select_participant_mesh_shape(
 
 def make_tree_all_reduce_operation(
     mesh_shape: tuple[int, ...],
+    options: str | None = None,
 ) -> Callable[[ttnn.Tensor, ttnn.Tensor], None]:
     mesh_shape = tuple(mesh_shape)
     if prod(mesh_shape) != NUM_DEVICES:
@@ -108,7 +109,7 @@ def make_tree_all_reduce_operation(
         )
     )
 
-    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    @ttl.operation(grid=(1, 1), device_domain=device_domain, options=options)
     def tree_all_reduce(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
         local_send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         local_reduce_dfb = ttl.make_dataflow_buffer_like(

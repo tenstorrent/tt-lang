@@ -71,7 +71,10 @@ def participant_mesh(participant_mesh_shape):
 
 @pytest.fixture(scope="module")
 def tree_all_reduce(participant_mesh_shape):
-    return make_tree_all_reduce_operation(participant_mesh_shape)
+    return make_tree_all_reduce_operation(
+        participant_mesh_shape,
+        options="--ttl-pipe-global-semaphores-only",
+    )
 
 
 # Verify that the explicit pairwise tree reduces four input tiles and
