@@ -3843,7 +3843,7 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
   }
 };
 
-struct PipeRoleTables {
+struct DevicePipeRoleTables {
   SmallVector<int64_t> minX;
   SmallVector<int64_t> minY;
   SmallVector<int64_t> maxX;
@@ -3853,9 +3853,9 @@ struct PipeRoleTables {
   std::size_t size() const { return minX.size(); }
 };
 
-static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
-                                          PipeRole role,
-                                          bool deduplicateRecords) {
+static DevicePipeRoleTables
+buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
+                          bool deduplicateRecords) {
   using PipeRoleRecord =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
   SmallVector<PipeRoleRecord> roleRecords;
@@ -3863,7 +3863,7 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
       assert(facts.device &&
-             "selected device role requires device transfer records");
+             "device role query requires device transfer records");
       roleRecords.emplace_back(
           facts.minX, facts.minY, facts.maxX, facts.maxY,
           getLogicalDeviceIndex(facts.deviceDomain, facts.device));
@@ -3875,7 +3875,7 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
                       roleRecords.end());
   }
 
-  PipeRoleTables tables;
+  DevicePipeRoleTables tables;
   for (auto [minX, minY, maxX, maxY, deviceIndex] : roleRecords) {
     tables.minX.push_back(minX);
     tables.minY.push_back(minY);
@@ -3886,15 +3886,17 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
   return tables;
 }
 
-static Value lowerSelectedRolePredicate(Operation *op,
-                                        PipeNetRecordsAttr records,
-                                        PipeRole role,
-                                        ConversionPatternRewriter &rewriter) {
+static Value lowerDeviceRoleRecords(
+    Operation *op, PipeNetRecordsAttr records, PipeRole role,
+    bool deduplicateRecords, Value initialValue,
+    llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>
+        accumulateRecord,
+    ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
-  PipeRoleTables tables =
-      buildPipeRoleTables(records, role, /*deduplicateRecords=*/true);
+  DevicePipeRoleTables tables =
+      buildDevicePipeRoleTables(records, role, deduplicateRecords);
   DeviceTransferAttr transfer = records.getPipes().front().getDeviceTransfer();
-  assert(transfer && "selected device role requires device transfer records");
+  assert(transfer && "device role query requires device transfer records");
 
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
@@ -3905,10 +3907,9 @@ static Value lowerSelectedRolePredicate(Operation *op,
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value upper = arith::ConstantIndexOp::create(rewriter, loc, tables.size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
 
   auto loop = scf::ForOp::create(
-      rewriter, loc, lower, upper, step, ValueRange{initialMatch},
+      rewriter, loc, lower, upper, step, ValueRange{initialValue},
       [&](OpBuilder &builder, Location bodyLoc, Value recordIndex,
           ValueRange iterArgs) {
         Value minX = buildConstantIndexTableLookup(builder, bodyLoc,
@@ -3928,63 +3929,47 @@ static Value lowerSelectedRolePredicate(Operation *op,
                                   currentDevice, roleDevice);
         Value recordMatches = arith::AndIOp::create(
             builder, bodyLoc, coordinateMatches, deviceMatches);
-        Value accumulatedMatch = arith::OrIOp::create(
+        Value accumulatedValue = accumulateRecord(
             builder, bodyLoc, iterArgs.front(), recordMatches);
-        scf::YieldOp::create(builder, bodyLoc, accumulatedMatch);
+        scf::YieldOp::create(builder, bodyLoc, accumulatedValue);
       });
   return loop.getResult(0);
+}
+
+static Value lowerSelectedRolePredicate(Operation *op,
+                                        PipeNetRecordsAttr records,
+                                        PipeRole role,
+                                        ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
+  return lowerDeviceRoleRecords(
+      op, records, role, /*deduplicateRecords=*/true, initialMatch,
+      [](OpBuilder &builder, Location bodyLoc, Value accumulatedMatch,
+         Value recordMatches) {
+        return Value(arith::OrIOp::create(builder, bodyLoc, accumulatedMatch,
+                                         recordMatches));
+      },
+      rewriter);
 }
 
 static Value lowerDeviceDestinationCount(
     Operation *op, PipeNetRecordsAttr records,
     ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
-  PipeRoleTables tables = buildPipeRoleTables(
-      records, PipeRole::Destination, /*deduplicateRecords=*/false);
-  DeviceTransferAttr transfer = records.getPipes().front().getDeviceTransfer();
-  assert(transfer && "selected destination count requires device transfers");
-
-  Value nodeX =
-      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
-  Value nodeY =
-      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-  Value currentDevice = CurrentDeviceIndexOp::create(
-      rewriter, loc, rewriter.getIndexType(), transfer.getDomain());
-  Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  Value upper = arith::ConstantIndexOp::create(rewriter, loc, tables.size());
-  Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
   Value initialCount = arith::ConstantIndexOp::create(rewriter, loc, 0);
-
-  auto loop = scf::ForOp::create(
-      rewriter, loc, lower, upper, step, ValueRange{initialCount},
-      [&](OpBuilder &builder, Location bodyLoc, Value recordIndex,
-          ValueRange iterArgs) {
-        Value minX = buildConstantIndexTableLookup(builder, bodyLoc,
-                                                   tables.minX, recordIndex);
-        Value minY = buildConstantIndexTableLookup(builder, bodyLoc,
-                                                   tables.minY, recordIndex);
-        Value maxX = buildConstantIndexTableLookup(builder, bodyLoc,
-                                                   tables.maxX, recordIndex);
-        Value maxY = buildConstantIndexTableLookup(builder, bodyLoc,
-                                                   tables.maxY, recordIndex);
-        Value roleDevice = buildConstantIndexTableLookup(
-            builder, bodyLoc, tables.deviceIndex, recordIndex);
-        Value coordinateMatches = buildNodeRangeMatch(
-            builder, bodyLoc, nodeX, nodeY, minX, minY, maxX, maxY);
-        Value deviceMatches =
-            arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
-                                  currentDevice, roleDevice);
-        Value recordMatches = arith::AndIOp::create(
-            builder, bodyLoc, coordinateMatches, deviceMatches);
+  return lowerDeviceRoleRecords(
+      op, records, PipeRole::Destination, /*deduplicateRecords=*/false,
+      initialCount,
+      [](OpBuilder &builder, Location bodyLoc, Value accumulatedCount,
+         Value recordMatches) {
         Value zero = arith::ConstantIndexOp::create(builder, bodyLoc, 0);
         Value one = arith::ConstantIndexOp::create(builder, bodyLoc, 1);
         Value increment = arith::SelectOp::create(
             builder, bodyLoc, recordMatches, one, zero);
-        Value count =
-            arith::AddIOp::create(builder, bodyLoc, iterArgs.front(), increment);
-        scf::YieldOp::create(builder, bodyLoc, count);
-      });
-  return loop.getResult(0);
+        return Value(arith::AddIOp::create(builder, bodyLoc, accumulatedCount,
+                                          increment));
+      },
+      rewriter);
 }
 
 static std::optional<Value>
