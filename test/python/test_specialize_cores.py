@@ -7,11 +7,11 @@
 Per-core specialization is opt-in via the compiler option `specialize_cores`
 (enable with `--ttl-specialize-cores`; disabled by default). It is a single
 module pass (`ttkernel-specialize-cores`) run at the TTKernel level right
-before EmitC: for each kernel that branches on a core coordinate it emits one
-clone per launch coordinate, replacing the coordinate reads with constants and
-tagging each clone with `ttl.core_coord`. The runtime bridge
-(`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a per-kernel core
-range for dispatch.
+before EmitC: for each kernel whose conditional or loop bounds depend on a core
+coordinate it emits one clone per launch coordinate, replacing the coordinate
+reads with constants and tagging each clone with `ttl.core_coord`. The runtime
+bridge (`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a per-kernel
+core range for dispatch.
 
 Op bodies are built by `_make_matmul_op` / `_make_branch_swap_op` so default
 and specialized runs get distinct op objects (and compilation caches) without
@@ -27,6 +27,8 @@ Coverage:
     cloned per core. Checks torch PCC, match vs unspecialized, and that clones
     cover the launch grid (MLIR-only clone/fold checks live in
     `test/ttlang/Dialect/TTKernel/Transforms/specialize_cores.mlir`).
+  * coordinate_loop_copy: reader and writer loop bounds depend on `core_x`.
+    Checks bf16/fp32 exact results and per-core clones for both kernels.
   * emit_runner_no_crash: `TTLANG_EMIT_RUNNER` must not IndexError when
     kernels are cloned (per-clone tensor indices / core ranges).
   * emit_runner_executes: emitted runner, run cold, reproduces the swap
@@ -53,6 +55,7 @@ import ttl.dialects.ttl as ttl_dialect
 import ttl.ttl_api as ttl_api
 from ttl.ir import Context, Module
 from ttlang_test_utils import assert_pcc, to_dram
+from utils.correctness import assert_allclose
 
 TILE_SIZE = 32
 
@@ -271,6 +274,64 @@ def test_specialize_cores_branch_matches_reference(device, monkeypatch, tmp_path
 
     # The reader branches on core_x, so it must be cloned once per core.
     _assert_reader_cloned(str(final_mlir))
+
+
+@ttl.operation(grid=(GRID_X, 1))
+def coordinate_loop_copy(inp, out):
+    loop_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+    @ttl.datamovement()
+    def dm_read_coordinate_loop():
+        node_x, _node_y = ttl.node(dims=2)
+        for column_index in range(node_x + 1):
+            with loop_dfb.reserve() as loop_block:
+                ttl.copy(inp[node_x, column_index], loop_block).wait()
+
+    @ttl.datamovement()
+    def dm_write_coordinate_loop():
+        node_x, _node_y = ttl.node(dims=2)
+        for column_index in range(node_x + 1):
+            with loop_dfb.wait() as loop_block:
+                ttl.copy(loop_block, out[node_x, column_index]).wait()
+
+
+def _assert_coordinate_loop_cloned(final_mlir_path):
+    with open(final_mlir_path) as final_mlir_file:
+        final_mlir = final_mlir_file.read()
+
+    expected_coords = {(0, 0), (1, 0)}
+    for kernel_name in ("dm_read_coordinate_loop", "dm_write_coordinate_loop"):
+        assert f"func.func @{kernel_name}()" not in final_mlir
+        clone_matches = re.findall(
+            rf"func\.func @{kernel_name}_c(\d+)_(\d+)", final_mlir
+        )
+        clone_coords = {(int(node_x), int(node_y)) for node_x, node_y in clone_matches}
+        assert clone_coords == expected_coords
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_specialize_cores_coordinate_loop_matches_reference(
+    device, monkeypatch, tmp_path, dtype
+):
+    """Coordinate-dependent loop bounds specialize and execute correctly."""
+    torch.manual_seed(0)
+    tensor_shape = (GRID_X * TILE_SIZE, GRID_X * TILE_SIZE)
+    input_host = torch.randn(tensor_shape, dtype=dtype)
+    expected = torch.zeros_like(input_host)
+    expected[:TILE_SIZE, :TILE_SIZE] = input_host[:TILE_SIZE, :TILE_SIZE]
+    expected[TILE_SIZE:, :] = input_host[TILE_SIZE:, :]
+
+    inp = to_dram(input_host, device)
+    out = to_dram(torch.zeros_like(input_host), device)
+    final_mlir = tmp_path / f"coordinate_loop_{dtype}_final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+
+    coordinate_loop_copy(inp, out, options="--ttl-specialize-cores")
+    ttnn.synchronize_device(device)
+
+    actual = ttnn.to_torch(out).float()
+    assert_allclose(actual, expected.float(), rtol=0.0, atol=0.0)
+    _assert_coordinate_loop_cloned(str(final_mlir))
 
 
 # An extra DFB is live only on column-0 cores. The reader and compute both
