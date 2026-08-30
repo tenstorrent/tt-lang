@@ -2,6 +2,7 @@
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel)' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s --check-prefix=PUBLISHED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=POSTED
 // The grouping pass must not expand any record-selected callback transfer.
 // RUN: ttlang-opt %s --split-input-file -ttl-form-pipe-transports | FileCheck %s --check-prefix=FORM
 
@@ -672,15 +673,15 @@ func.func @mixed_static_and_selected_receiver()
 
 // A one-shot selected point-to-point record has one fixed receiver slot, so
 // ordered posted writes can carry both payload and completion.
-// CHECK-LABEL: func.func @selected_one_shot_sender
-// CHECK-NOT: ttkernel.noc_async_write_barrier
-// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
-// CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
-// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
-// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
-// CHECK-NOT: ttkernel.noc_async_atomic_barrier
-// CHECK: return
+// POSTED-LABEL: func.func @selected_one_shot_sender
+// POSTED-NOT: ttkernel.noc_async_write_barrier
+// POSTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// POSTED: ttkernel.experimental.semaphore_wait
+// POSTED: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// POSTED-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// POSTED-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+// POSTED-NOT: ttkernel.noc_async_atomic_barrier
+// POSTED: return
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @selected_one_shot_sender()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

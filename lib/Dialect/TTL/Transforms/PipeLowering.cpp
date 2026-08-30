@@ -2832,7 +2832,9 @@ static LogicalResult lowerSelectedPipeTransferSend(
   // valid only when every possible record has one fixed receiver slot and its
   // completion counter receives exactly one update.
   bool useOrderedPostedProtocol =
-      !usesFabric && !fields.isCollective &&
+      transferPlan.getSynchronizationProtocol() ==
+          PipeSynchronizationProtocol::ReceiverPost &&
+      !fields.isCollective &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
       llvm::all_of(resources, hasOneShotRemoteFixedReceiver);
 
@@ -3063,6 +3065,8 @@ LogicalResult lowerPipeTransferSend(
   // only when value one is the counter's complete lifetime state.
   bool useOrderedPostedProtocol =
       !usesFabric && !usePageWrites &&
+      transferPlan.getSynchronizationProtocol() ==
+          PipeSynchronizationProtocol::ReceiverPost &&
       hasOneShotRemoteFixedReceiver(pipeResource) &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
       transportStream.getCreditCompletion() ==
@@ -3248,9 +3252,9 @@ LogicalResult lowerPipeTransferSend(
     return failure();
   }
 
-  // Fallback atomics require remote payload completion first. Ordered posted
-  // writes instead place completion after payload and flush before source
-  // reuse.
+  // Fallback atomics wait for remote payload completion. Ordered writes on the
+  // same NoC and static virtual channel preserve payload-before-completion
+  // visibility, and the final posted flush permits source reuse.
   Value receiverCompletionCounterAddr = buildPipeCounterAddress(
       loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
   transport->emitPayloadWriteBarrier();
