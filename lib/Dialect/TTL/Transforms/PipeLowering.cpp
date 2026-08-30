@@ -4005,16 +4005,16 @@ lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
 
 // Local records permit one launch-node-indexed count-table lookup.
 static FailureOr<Value>
-lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
-                           ConversionPatternRewriter &rewriter) {
+lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
+                          PipeRole role,
+                          ConversionPatternRewriter &rewriter) {
   FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
   if (failed(launchGrid)) {
     return failure();
   }
   auto [gridX, gridY] = *launchGrid;
   FailureOr<LocalPipeNetParticipantPlan> participantPlan =
-      buildLocalPipeNetParticipantPlan(records, PipeRole::Destination, gridX,
-                                       gridY);
+      buildLocalPipeNetParticipantPlan(records, role, gridX, gridY);
   if (failed(participantPlan)) {
     return failure();
   }
@@ -4032,6 +4032,21 @@ lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
 
+static FailureOr<Value>
+lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
+                        PipeRole role,
+                        ConversionPatternRewriter &rewriter) {
+  FailureOr<Value> recordCount =
+      lowerLocalRoleRecordCount(op, records, role, rewriter);
+  if (failed(recordCount)) {
+    return failure();
+  }
+  Value zero = arith::ConstantIndexOp::create(rewriter, op->getLoc(), 0);
+  return arith::CmpIOp::create(rewriter, op->getLoc(),
+                              arith::CmpIPredicate::ne, *recordCount, zero)
+      .getResult();
+}
+
 // Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
 // named PipeNet. `roleBuilder` produces the i1 match for one static pipe.
 template <typename Op>
@@ -4042,8 +4057,18 @@ static LogicalResult lowerRolePredicate(
         roleBuilder) {
   auto loc = op.getLoc();
   if (PipeNetRecordsAttr records = op.getRecordsAttr()) {
-    rewriter.replaceOp(op,
-                       lowerSelectedRolePredicate(op, records, role, rewriter));
+    if (records.getPipes().front().getDeviceTransfer()) {
+      rewriter.replaceOp(
+          op, lowerSelectedRolePredicate(op, records, role, rewriter));
+      return success();
+    }
+    FailureOr<Value> localPredicate =
+        lowerLocalRolePredicate(op, records, role, rewriter);
+    if (failed(localPredicate)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot build a local PipeNet participant plan");
+    }
+    rewriter.replaceOp(op, *localPredicate);
     return success();
   }
   int64_t netId = op.getPipeNetId();
@@ -4127,8 +4152,8 @@ struct PipeNetDestinationCountLowering
                   : lowerDeviceDestinationCountByRecord(op, records, rewriter));
       return success();
     }
-    FailureOr<Value> localCount =
-        lowerLocalDestinationCount(op, records, rewriter);
+    FailureOr<Value> localCount = lowerLocalRoleRecordCount(
+        op, records, PipeRole::Destination, rewriter);
     if (succeeded(localCount)) {
       rewriter.replaceOp(op, *localCount);
       return success();
