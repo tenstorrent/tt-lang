@@ -26,6 +26,7 @@ def test_ttl_passes_registered():
         "ttl-assign-dst",
         "ttl-lower-to-loops",
         "ttl-annotate-cb-associations",
+        "ttkernel-unroll-static-pipenet-record-loops",
     ]
 
     for pass_name in func_passes:
@@ -39,6 +40,7 @@ def test_ttl_passes_registered():
         # CHECK: ttl-assign-dst pass registered
         # CHECK: ttl-lower-to-loops pass registered
         # CHECK: ttl-annotate-cb-associations pass registered
+        # CHECK: ttkernel-unroll-static-pipenet-record-loops pass registered
 
     # Module-level passes.
     module_passes = [

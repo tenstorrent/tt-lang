@@ -2891,6 +2891,12 @@ def _lower_program_to_kernel(
         ]
         if compiler_options.specialize_cores:
             pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
+        else:
+            pipeline_passes += [
+                "func.func(ttkernel-unroll-static-pipenet-record-loops)",
+                "canonicalize",
+                "cse",
+            ]
         pipeline_passes += [
             "convert-ttkernel-to-emitc",
             "symbol-dce",
