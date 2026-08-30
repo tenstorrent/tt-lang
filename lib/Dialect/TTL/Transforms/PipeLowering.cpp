@@ -2799,7 +2799,8 @@ static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
       (pipe.srcX != pipe.dstStartX || pipe.srcY != pipe.dstStartY);
   const std::optional<PipeComputedAddressInfo> &computedAddress =
       resource.addressStorage.computedAddress;
-  return hasRemoteSingleReceiver && resource.completion.hasSingleUpdate &&
+  return hasRemoteSingleReceiver &&
+         resource.completion.hasSingleLifetimeUpdate &&
          resource.addressStorage.usesComputedReceiverDFB() && computedAddress &&
          !computedAddress->usesDynamicSlotCounter();
 }
@@ -4389,7 +4390,7 @@ struct PipeTransferAllocationUnit {
   std::optional<int64_t> maybeCompletionCounterColor;
 
   /// Whether this unit is the only update to its completion-counter lifetime.
-  bool hasSingleCompletionUpdate = false;
+  bool hasSingleLifetimeCompletionUpdate = false;
 
   /// Deterministic order used by first-fit interval coloring.
   bool operator<(const PipeTransferAllocationUnit &rhs) const {
@@ -5066,12 +5067,13 @@ LogicalResult buildPipeResourcePlan(
   for (const CompletionCounterGroup &group : completionGroups) {
     assert(!group.unitIndices.empty() &&
            "completion counter group must contain a transfer");
-    bool hasSingleCompletionUpdate =
+    bool hasSingleLifetimeCompletionUpdate =
         group.unitIndices.size() == 1 &&
         executesOnceAtEveryReceiver(units[group.unitIndices.front()],
                                     pipeGraph);
     for (std::size_t unitIndex : group.unitIndices) {
-      units[unitIndex].hasSingleCompletionUpdate = hasSingleCompletionUpdate;
+      units[unitIndex].hasSingleLifetimeCompletionUpdate =
+          hasSingleLifetimeCompletionUpdate;
     }
 
     SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
@@ -5180,7 +5182,7 @@ LogicalResult buildPipeResourcePlan(
         unit.pipe,
         unit.transferContract,
         PipeCompletionInfo{completionCounters[completionColor],
-                           unit.hasSingleCompletionUpdate},
+                           unit.hasSingleLifetimeCompletionUpdate},
         maybeReadyCounter,
         addressStorage,
     };

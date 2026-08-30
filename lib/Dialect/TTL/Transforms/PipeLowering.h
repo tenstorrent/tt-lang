@@ -162,7 +162,7 @@ struct PipeCompletionInfo {
   PipeCounterInfo counter;
   /// Exactly one update over this counter's lifetime permits an absolute store
   /// instead of atomic accumulation.
-  bool hasSingleUpdate = false;
+  bool hasSingleLifetimeUpdate = false;
 };
 
 /// Address storage used by one transfer-allocation unit.
