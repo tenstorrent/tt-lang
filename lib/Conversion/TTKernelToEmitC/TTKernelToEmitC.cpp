@@ -1314,13 +1314,13 @@ public:
     SmallVector<Attribute> templateArgs;
     templateArgs.push_back(
         emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
-    if (packedWords.size() == 1) {
+    if (packedWords.size() == 1 && op.getValues().size() * bitsPerValue <= 32) {
       IntegerType wordType =
-          IntegerType::get(rewriter.getContext(), 64,
+          IntegerType::get(rewriter.getContext(), 32,
                            IntegerType::SignednessSemantics::Unsigned);
       auto packedWord = emitc::LiteralOp::create(
           rewriter, op.getLoc(), wordType,
-          "0x" + llvm::utohexstr(packedWords.front()) + "ULL");
+          "0x" + llvm::utohexstr(packedWords.front()) + "U");
       auto call = emitc::CallOpaqueOp::create(
           rewriter, op.getLoc(), resultType,
           "experimental::constant_table_lookup_word", ArrayAttr(),

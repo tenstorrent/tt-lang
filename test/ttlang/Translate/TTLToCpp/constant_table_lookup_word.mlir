@@ -5,7 +5,7 @@
 
 // CHECK: constant_table_lookup_word
 // CHECK-LABEL: void kernel_main()
-// CHECK: experimental::constant_table_lookup_word<4>({{.*}}, 0x853ULL)
+// CHECK: experimental::constant_table_lookup_word<4>({{.*}}, 0x853U)
 func.func @kernel_main() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
   %index = arith.constant 1 : index
   %value = ttkernel.experimental.constant_table_lookup %index, [3, 5, 8] : index
