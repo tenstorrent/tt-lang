@@ -191,6 +191,68 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Purpose: a one-shot payload larger than the target's one-packet limit keeps
+// completion signaling on the barrier and atomic protocol.
+// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=grouped credit_completion=immediate group=3
+// PLAN-NEXT: PipeTransport:   source blocks=6 block_span=3 stage_depth=2 ownership=dfb scratch_offset=0 scratch_bytes=0 pages=3 page_bytes=4096 loops=0
+// PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 1 block_count=9 slot_span=3 group_depth=3 ownership=dfb scratch_offset=0 scratch_bytes=0 loops=0 address=recurrence(initial=0, stride=3, modulus=9, executions=1)
+// PLAN-NEXT: PipeTransport:   completion endpoints=[0] source_reuse=after_completion_group
+// LOWERED-LABEL: func.func @oversized_one_shot_transport
+// LOWERED-NOT: posted true
+// LOWERED: ttkernel.experimental.semaphore_wait(
+// LOWERED: ttkernel.noc_async_write %{{.*}}, core
+// LOWERED-NEXT: ttkernel.noc_async_write_barrier
+// LOWERED: ttkernel.noc_semaphore_inc
+// LOWERED-NEXT: ttkernel.noc_async_atomic_barrier
+// LOWERED-NOT: posted true
+// LOWERED: return
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @oversized_one_shot_transport()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 6} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 6>
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 9} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 9>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe {
+        block_span = 3 : i64,
+        destination_group_depth = 3 : i64,
+        expectedReceivers = 1 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst_dfb {num_tiles = 3 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 9>
+          -> tensor<1x3x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x3x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %dst_dfb {num_tiles = 3 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 9>
+      %ready = ttl.cb_wait %dst_dfb {num_tiles = 3 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 9>
+          -> tensor<1x3x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_dfb {num_tiles = 3 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 9>
+    }
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src_dfb
+          : (!ttl.pipe_transfer,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 6>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Purpose: repeated transfers retain accumulated completion signaling even
 // when the receiver address recurrence is static and exact.
 // PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=scalar credit_completion=immediate group=1
