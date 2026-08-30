@@ -18,12 +18,12 @@
 // CHECK-NEXT: %[[LOWER:.*]] = ttkernel.experimental.constant_table_lookup %[[DEVICE]], [0, 1, 2] : index
 // CHECK-NEXT: %[[UPPER:.*]] = ttkernel.experimental.constant_table_lookup %[[NEXT_DEVICE]], [0, 1, 2] : index
 // CHECK: scf.for %[[EDGE_POSITION:.*]] = %[[LOWER]] to %[[UPPER]] step
-// CHECK-NOT: ttl.pipenet_local_record_loop
 // CHECK-NEXT: %[[EDGE_BLOCK:.*]] = ttkernel.experimental.constant_table_lookup %[[EDGE_POSITION]], [0, 1] : index
 // CHECK-NEXT: %[[EDGE_OFFSET:.*]] = arith.muli %[[EDGE_BLOCK]], %{{.*}} : index
 // CHECK-NEXT: %[[RECORD:.*]] = arith.addi %[[EDGE_OFFSET]], %[[NODE_INDEX]] : index
 // CHECK-NOT: arith.cmpi
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK-NOT: ttl.pipenet_local_record_loop
 
 // Each device is also the destination of one reverse edge. Destination
 // lowering uses the same compact range and row-major record calculation.
@@ -38,12 +38,12 @@
 // CHECK-NEXT: %[[DST_LOWER:.*]] = ttkernel.experimental.constant_table_lookup %[[DST_DEVICE]], [0, 1, 2] : index
 // CHECK-NEXT: %[[DST_UPPER:.*]] = ttkernel.experimental.constant_table_lookup %[[DST_NEXT_DEVICE]], [0, 1, 2] : index
 // CHECK: scf.for %[[DST_EDGE_POSITION:.*]] = %[[DST_LOWER]] to %[[DST_UPPER]] step
-// CHECK-NOT: ttl.pipenet_local_record_loop
 // CHECK-NEXT: %[[DST_EDGE_BLOCK:.*]] = ttkernel.experimental.constant_table_lookup %[[DST_EDGE_POSITION]], [1, 0] : index
 // CHECK-NEXT: %[[DST_EDGE_OFFSET:.*]] = arith.muli %[[DST_EDGE_BLOCK]], %{{.*}} : index
 // CHECK-NEXT: %[[DST_RECORD:.*]] = arith.addi %[[DST_EDGE_OFFSET]], %[[DST_NODE_INDEX]] : index
 // CHECK-NOT: arith.cmpi
 // CHECK: ttkernel.routing_plane.atomic_inc
+// CHECK-NOT: ttl.pipenet_local_record_loop
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
 #records = #ttl.pipenet_records<net 0 name "grid_major" pipes [
