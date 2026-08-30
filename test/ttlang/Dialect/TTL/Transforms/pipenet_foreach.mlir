@@ -733,3 +733,72 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+// Local record specialization chooses the protocol independently for each
+// record. The remote record uses posted completion while the loopback record
+// retains cumulative completion signaling.
+// POSTED-LABEL: func.func @selected_mixed_loopback_sender
+// POSTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// POSTED: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// POSTED-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// POSTED-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+// POSTED: ttkernel.noc_async_write %{{.*}}, core
+// POSTED-NEXT: ttkernel.noc_async_write_barrier
+// POSTED: ttkernel.noc_semaphore_inc
+// POSTED-NEXT: ttkernel.noc_async_atomic_barrier
+// POSTED: return
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @selected_mixed_loopback_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "selected_mixed_loopback" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %send = ttl.copy %src_dfb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.selected_pipe_src)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func @selected_mixed_loopback_receiver()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "selected_mixed_loopback" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %reserved = ttl.cb_reserve %dst_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %dst_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      ttl.yield
+    }
+    func.return
+  }
+}
