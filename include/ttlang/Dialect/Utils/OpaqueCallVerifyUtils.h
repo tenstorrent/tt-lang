@@ -67,14 +67,14 @@ verifyOpaqueCallUnsignedArgIndices(Operation *op,
   return success();
 }
 
-inline LogicalResult verifyOpaqueCallDFBDescriptorIndices(
-    Operation *op, std::optional<ArrayRef<int32_t>> indices) {
+inline LogicalResult
+verifyOpaqueCallDFBDescriptorIndices(Operation *op,
+                                     std::optional<ArrayRef<int32_t>> indices) {
   if (!indices) {
     return success();
   }
-  auto negativeIndex = llvm::find_if(*indices, [](int32_t index) {
-    return index < 0;
-  });
+  auto negativeIndex =
+      llvm::find_if(*indices, [](int32_t index) { return index < 0; });
   if (negativeIndex != indices->end()) {
     return op->emitOpError("DFB descriptor index must be nonnegative, got ")
            << *negativeIndex;

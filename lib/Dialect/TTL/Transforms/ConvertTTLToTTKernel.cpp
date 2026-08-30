@@ -241,8 +241,7 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   return static_cast<int32_t>(*dfbIndex);
 }
 
-static void
-sortAndDeduplicateDFBIndices(SmallVectorImpl<int32_t> &dfbIndices) {
+static void sortAndDeduplicateDFBIndices(SmallVectorImpl<int32_t> &dfbIndices) {
   llvm::sort(dfbIndices);
   dfbIndices.erase(llvm::unique(dfbIndices), dfbIndices.end());
 }
@@ -269,8 +268,7 @@ collectValidatedUserManagedDFBIndices(ModuleOp module) {
     if (bind->hasAttr(kCompilerAllocatedAttrName)) {
       return WalkResult::advance();
     }
-    FailureOr<int32_t> dfbIndex =
-        getValidatedDFBIndex(bind.getResult(), bind);
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(bind.getResult(), bind);
     if (failed(dfbIndex)) {
       return WalkResult::interrupt();
     }
@@ -2635,8 +2633,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
            ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
            DFBReconfigurationLowering, GetDfbIdLowering>(typeConverter, &ctx);
-  patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
-                                   *userManagedDFBIndices);
+  patterns.add<OpaqueCallLowering>(typeConverter, &ctx, *userManagedDFBIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);
