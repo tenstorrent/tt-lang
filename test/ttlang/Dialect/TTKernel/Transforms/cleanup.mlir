@@ -108,6 +108,44 @@ func.func @preserve_posted_write_after_interference(%src: i32, %dst: i32) {
 
 // -----
 
+// An inline L1 write may use the ordinary write command, so later one-packet
+// setup cannot move across it.
+// CHECK-LABEL: func.func @preserve_posted_write_after_inline_l1_write
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write %{{.*}}, core{{.*}}posted true
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+// CHECK: return
+func.func @preserve_posted_write_after_inline_l1_write(
+    %src: i32, %dst: i32) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c0_i8 = arith.constant 0 : i8
+  %c1_i32 = arith.constant 1 : i32
+  %size = arith.constant 896 : i32
+  %byte_enable = arith.constant 15 : i8
+  %ready_sem = ttkernel.get_semaphore(%c1)
+      : (index) -> !ttkernel.local_semaphore
+  %ready_addr = ttkernel.reinterpret_cast(%ready_sem)
+      : (!ttkernel.local_semaphore) -> !ttkernel.l1_addr_ptr
+  ttkernel.experimental.semaphore_wait(%ready_addr, %c1_i32)
+      : (!ttkernel.l1_addr_ptr, i32) -> ()
+  ttkernel.noc_inline_dw_write(
+      core[%c1, %c0], %dst, %c1_i32, %byte_enable, noc %c0_i8)
+      : (index, index, i32, i32, i8, i8) -> ()
+  %dst_x = ttkernel.experimental.convert_logical_x_to_translated(%c1)
+      : (index) -> index
+  %dst_y = ttkernel.experimental.convert_logical_y_to_translated(%c0)
+      : (index) -> index
+  ttkernel.noc_async_write
+      %src, core[%dst_x, %dst_y], %dst, %size, noc %c0_i8 posted true
+      : (i32, index, index, i32, i32, i8) -> ()
+  func.return
+}
+
+// -----
+
 // A destination coordinate loaded after the wait cannot move before it. The
 // generic posted write remains valid without speculative memory motion.
 // CHECK-LABEL: func.func @preserve_posted_write_with_loaded_coordinate
