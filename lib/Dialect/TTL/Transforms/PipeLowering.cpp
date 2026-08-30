@@ -3238,8 +3238,9 @@ LogicalResult lowerPipeTransferSend(
     return failure();
   }
 
-  // Wait for payload writes to complete before signaling receiver completion.
-  // Without this barrier, the receiver may wake up before all data arrives.
+  // Fallback atomics require remote payload completion first. Ordered posted
+  // writes instead place completion after payload and flush before source
+  // reuse.
   Value receiverCompletionCounterAddr = buildPipeCounterAddress(
       loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
   transport->emitPayloadWriteBarrier();
