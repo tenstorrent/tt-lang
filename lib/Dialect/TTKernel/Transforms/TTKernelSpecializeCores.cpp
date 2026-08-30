@@ -2,21 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//===----------------------------------------------------------------------===//
-// TTKernelSpecializeCores (per-core specialization)
-//
-// A single module pass that runs at the TTKernel level, right before EmitC
-// conversion. For every kernel function whose control flow branches on a core
-// coordinate (i.e. an `scf.if` whose condition is derived from
-// `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_`), the pass clones the
-// function once per launch coordinate. In each clone, the coordinate reads are
-// replaced by `arith.constant`s for that core, so the following
-// `canonicalize` / `cse` fold the now-constant branch conditions and delete the
-// untaken regions. Each clone is tagged with a `ttl.core_coord` attribute (the
-// coordinate it serves) and the runtime bridge (ttl_api.py) turns that into a
-// per-kernel core range for dispatch.
-//===----------------------------------------------------------------------===//
-
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -71,40 +56,49 @@ static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
   return std::pair<int64_t, int64_t>{gridX, gridY};
 }
 
-/// Return true when `condition` is derived from a core
-/// coordinate reads (`ttkernel.my_logical_x_` / `my_logical_y_`).
-static bool conditionDependsOnCore(Value condition) {
+static bool valueDependsOnCore(Value rootValue) {
   llvm::DenseSet<Value> visited;
-  SmallVector<Value> worklist{condition};
+  SmallVector<Value> worklist{rootValue};
   while (!worklist.empty()) {
-    Value value = worklist.pop_back_val();
-    if (!visited.insert(value).second) {
+    Value currentValue = worklist.pop_back_val();
+    if (!visited.insert(currentValue).second) {
       continue;
     }
-    Operation *op = value.getDefiningOp();
-    if (!op) {
+    Operation *definingOp = currentValue.getDefiningOp();
+    if (!definingOp) {
       continue;
     }
-    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(op)) {
+    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(definingOp)) {
       return true;
     }
-    worklist.append(op->operand_begin(), op->operand_end());
+    worklist.append(definingOp->operand_begin(), definingOp->operand_end());
   }
   return false;
 }
 
-/// Return true when `func` has any `scf.if` whose condition branches on a core
-/// coordinate. Only such functions need per-core clones.
-static bool funcBranchesOnCore(func::FuncOp func) {
-  bool found = false;
-  func.walk([&](scf::IfOp ifOp) {
-    if (conditionDependsOnCore(ifOp.getCondition())) {
-      found = true;
+static bool functionControlFlowDependsOnCore(func::FuncOp function) {
+  bool dependsOnCore = false;
+  function.walk([&](scf::IfOp ifOp) {
+    if (valueDependsOnCore(ifOp.getCondition())) {
+      dependsOnCore = true;
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
   });
-  return found;
+  if (dependsOnCore) {
+    return true;
+  }
+
+  function.walk([&](scf::ForOp forOp) {
+    if (valueDependsOnCore(forOp.getLowerBound()) ||
+        valueDependsOnCore(forOp.getUpperBound()) ||
+        valueDependsOnCore(forOp.getStep())) {
+      dependsOnCore = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return dependsOnCore;
 }
 
 /// Replace every CoordOp in func clone with an arith.constant of coord.
@@ -173,7 +167,7 @@ struct TTKernelSpecializeCoresPass
     // functions still get specialized.
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (!funcBranchesOnCore(func)) {
+      if (!functionControlFlowDependsOnCore(func)) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
