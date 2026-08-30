@@ -5099,7 +5099,9 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
 // DFB resource metadata and index query
 //===----------------------------------------------------------------------===//
 
-def TTKernel_DFBResourceUseOp : TTKernel_Op<"dfb_resource_use"> {
+def TTKernel_DFBResourceUseOp
+    : TTKernel_Op<"dfb_resource_use",
+                  [HasAncestor<"::mlir::func::FuncOp">]> {
     let summary = "Declare required physical DFB descriptors";
     let description = [{
       Declares that the enclosing kernel function requires the finalized
