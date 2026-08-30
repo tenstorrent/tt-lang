@@ -104,6 +104,30 @@ func.func @inline_word_write_invalidates_async_write_state(
 
 // -----
 
+// Stateful lowering must preserve posted response mode on both operations;
+// mixing response modes would program and issue different command semantics.
+// CHECK-LABEL: func.func @posted_write_preserves_response_mode
+// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// CHECK: scf.for
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
+func.func @posted_write_preserves_response_mode(
+    %src_addr: i32, %dst_addr: i32) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %noc = arith.constant 0 : i8
+  %size = arith.constant 896 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    ttkernel.noc_async_write
+        %src_addr, core[%c1, %c0], %dst_addr, %size, noc %noc posted true
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  func.return
+}
+
+// -----
+
 // A call in the loop may execute another NoC write and must prevent resident
 // write-command reuse across iterations.
 // CHECK-LABEL: func.func private @reprogram_write
