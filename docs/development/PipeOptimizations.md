@@ -91,6 +91,44 @@ emits `noc_async_write_multicast_loopback_src` for the data write to
 keep the multicast topology uniform across all receivers including
 the source core.
 
+### One-shot posted point-to-point protocol
+
+A same-device point-to-point transfer can replace the payload barrier and
+completion atomic when planning proves all of the following:
+
+- The transfer has one receiver and uses a fixed computed receiver DFB address.
+- The completion counter receives exactly one update over its complete
+  lifetime. Repeated transfers and counters shared by a wait-any completion
+  group therefore retain cumulative atomics.
+- The payload fits the target's one-packet limit and does not require
+  page-addressed writes.
+- Completion is immediate. Fabric, multicast, receiver-published addressing,
+  and iteration-domain credit completion retain their existing protocols.
+
+The eligible sender uses one ordered posted sequence:
+
+```text
+program one-packet write state
+wait for receiver readiness and reset the readiness counter
+issue the payload write with posted one-packet state
+store completion value 1 with a posted inline word write
+flush posted writes before source reuse
+```
+
+Writes issued on one NoC are observed in order, so receiver-visible completion
+follows receiver-visible payload data. The final flush waits for the posted
+writes to leave the sender; it does not add a remote acknowledgement. The
+receiver keeps the same completion wait and observes no protocol semantic
+change.
+
+TTKernel cleanup may move one-packet state configuration before the blocking
+receiver-readiness wait. It does so only when the destination coordinates,
+size, and NoC value are pure computations that can dominate the wait, and no
+intervening operation or resolved call may reprogram or consume the resident
+write command. Otherwise the generic posted payload write remains in place.
+Record-selected sends use the posted protocol only when every possible record
+satisfies the same proof.
+
 ### Grouped PipeTransport lowering
 
 Repeated point-to-point transfers previously retained the scalar protocol
