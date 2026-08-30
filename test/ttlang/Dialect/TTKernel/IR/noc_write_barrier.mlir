@@ -38,3 +38,14 @@ func.func @remove_redundant_barrier() {
   ttkernel.noc_async_write_barrier(%noc) : (i8) -> ()
   func.return
 }
+
+// CHECK-LABEL: func.func @departure_wait_does_not_issue_write
+// CHECK-COUNT-1: ttkernel.noc_async_write_barrier
+// CHECK: ttkernel.noc_async_writes_flushed
+func.func @departure_wait_does_not_issue_write() {
+  %noc = arith.constant 0 : i8
+  ttkernel.noc_async_write_barrier(%noc) : (i8) -> ()
+  ttkernel.noc_async_writes_flushed(%noc) : (i8) -> ()
+  ttkernel.noc_async_write_barrier(%noc) : (i8) -> ()
+  func.return
+}
