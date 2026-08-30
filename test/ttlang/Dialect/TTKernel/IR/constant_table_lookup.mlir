@@ -14,7 +14,8 @@ func.func @canonicalize_constant_index() -> index {
 }
 
 // A dynamic index preserves the table lookup and its input.
-// CHECK-LABEL: func.func @retain_dynamic_index(%[[INDEX:.*]]: index)
+// CHECK-LABEL: func.func @retain_dynamic_index
+// CHECK-SAME: (%[[INDEX:.*]]: index)
 // CHECK-NEXT:    %[[VALUE:.*]] = ttkernel.experimental.constant_table_lookup
 // CHECK-SAME:      %[[INDEX]], [3, 5, 8] : index
 // CHECK-NEXT:    return %[[VALUE]] : index

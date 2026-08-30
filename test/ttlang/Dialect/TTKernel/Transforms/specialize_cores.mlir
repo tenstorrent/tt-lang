@@ -171,10 +171,9 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 // CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
 
 // FOLDED-LABEL: func.func @kloop_c0_0
-// FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
-// FOLDED-DAG:     %[[LOOP_ZERO_0:.*]] = arith.constant 0 : index
-// FOLDED-DAG:     %[[LOOP_ONE_0:.*]] = arith.constant 1 : index
-// FOLDED:         scf.for %{{.*}} = %[[LOOP_ZERO_0]] to %[[LOOP_ONE_0]] step %[[LOOP_ONE_0]]
+// FOLDED-NEXT:    %[[LOOP_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-NEXT:    call @consume(%[[LOOP_ZERO_0]]) : (index) -> ()
+// FOLDED-NEXT:    return
 // FOLDED-LABEL: func.func @kloop_c0_1
 // FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
 // FOLDED-DAG:     %[[LOOP_ZERO_1:.*]] = arith.constant 0 : index
