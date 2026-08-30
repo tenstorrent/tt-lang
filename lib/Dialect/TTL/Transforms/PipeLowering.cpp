@@ -2790,7 +2790,7 @@ static Value incrementPipePostSequence(Location loc, Value sequenceCounter,
 static bool hasOneShotFixedReceiverAddress(const PipeResourceInfo &resource) {
   const std::optional<PipeComputedAddressInfo> &computedAddress =
       resource.addressStorage.computedAddress;
-  return resource.completion.singleExecution &&
+  return resource.completion.hasSingleUpdate &&
          resource.addressStorage.usesComputedReceiverDFB() && computedAddress &&
          !computedAddress->usesDynamicSlotCounter();
 }
@@ -2819,8 +2819,8 @@ static LogicalResult lowerSelectedPipeTransferSend(
       "selected fabric route table must match the resource table");
 
   // Record-selected transfers remain scalar. An absolute completion store is
-  // valid only when every possible record has one fixed receiver slot and one
-  // execution.
+  // valid only when every possible record has one fixed receiver slot and its
+  // completion counter receives exactly one update.
   bool usePostedCompletion =
       !usesFabric && !fields.isCollective &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
@@ -4378,6 +4378,9 @@ struct PipeTransferAllocationUnit {
   /// Completion-counter color; disjoint receiver sets may share one color.
   std::optional<int64_t> maybeCompletionCounterColor;
 
+  /// Whether this unit is the only update to its completion-counter lifetime.
+  bool hasSingleCompletionUpdate = false;
+
   /// Deterministic order used by first-fit interval coloring.
   bool operator<(const PipeTransferAllocationUnit &rhs) const {
     return std::make_tuple(interval.startOrdinal, pipe.srcX, pipe.srcY,
@@ -5051,6 +5054,15 @@ LogicalResult buildPipeResourcePlan(
   SmallVector<SmallVector<PipeCounterLocation>>
       fabricCompletionLocationsByColor;
   for (const CompletionCounterGroup &group : completionGroups) {
+    assert(!group.unitIndices.empty() &&
+           "completion counter group must contain a transfer");
+    bool hasSingleCompletionUpdate =
+        group.unitIndices.size() == 1 &&
+        hasSingleExecution(units[group.unitIndices.front()], pipeGraph);
+    for (std::size_t unitIndex : group.unitIndices) {
+      units[unitIndex].hasSingleCompletionUpdate = hasSingleCompletionUpdate;
+    }
+
     SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
         group.usesFabric ? fabricCompletionLocationsByColor
                          : nodeLocalCompletionLocationsByColor;
@@ -5157,7 +5169,7 @@ LogicalResult buildPipeResourcePlan(
         unit.pipe,
         unit.transferContract,
         PipeCompletionInfo{completionCounters[completionColor],
-                           hasSingleExecution(unit, pipeGraph)},
+                           unit.hasSingleCompletionUpdate},
         maybeReadyCounter,
         addressStorage,
     };
