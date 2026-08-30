@@ -3929,8 +3929,8 @@ static Value lowerDeviceRoleQuery(
                                   currentDevice, roleDevice);
         Value recordMatches = arith::AndIOp::create(
             builder, bodyLoc, coordinateMatches, deviceMatches);
-        Value accumulatedValue = accumulateRecord(
-            builder, bodyLoc, iterArgs.front(), recordMatches);
+        Value accumulatedValue =
+            accumulateRecord(builder, bodyLoc, iterArgs.front(), recordMatches);
         scf::YieldOp::create(builder, bodyLoc, accumulatedValue);
       });
   return loop.getResult(0);
@@ -3947,14 +3947,14 @@ static Value lowerSelectedRolePredicate(Operation *op,
       [](OpBuilder &builder, Location bodyLoc, Value accumulatedMatch,
          Value recordMatches) {
         return Value(arith::OrIOp::create(builder, bodyLoc, accumulatedMatch,
-                                         recordMatches));
+                                          recordMatches));
       },
       rewriter);
 }
 
-static Value lowerDeviceDestinationCount(
-    Operation *op, PipeNetRecordsAttr records,
-    ConversionPatternRewriter &rewriter) {
+static Value
+lowerDeviceDestinationCountByRecord(Operation *op, PipeNetRecordsAttr records,
+                                    ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
   Value initialCount = arith::ConstantIndexOp::create(rewriter, loc, 0);
   return lowerDeviceRoleQuery(
@@ -3964,27 +3964,51 @@ static Value lowerDeviceDestinationCount(
          Value recordMatches) {
         Value zero = arith::ConstantIndexOp::create(builder, bodyLoc, 0);
         Value one = arith::ConstantIndexOp::create(builder, bodyLoc, 1);
-        Value increment = arith::SelectOp::create(
-            builder, bodyLoc, recordMatches, one, zero);
+        Value increment =
+            arith::SelectOp::create(builder, bodyLoc, recordMatches, one, zero);
         return Value(arith::AddIOp::create(builder, bodyLoc, accumulatedCount,
-                                          increment));
+                                           increment));
       },
       rewriter);
 }
 
-static std::optional<Value>
+static FailureOr<Value>
+lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
+                                   ConversionPatternRewriter &rewriter) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
+    return failure();
+  }
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<DevicePipeNetParticipantPlan> participantPlan =
+      buildDevicePipeNetParticipantPlan(records, PipeRole::Destination, gridX,
+                                        gridY);
+  if (failed(participantPlan)) {
+    return failure();
+  }
+
+  Location loc = op->getLoc();
+  DeviceDomainAttr deviceDomain =
+      records.getPipes().front().getDeviceTransfer().getDomain();
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), deviceDomain);
+  return buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByDevice, currentDevice);
+}
+
+static FailureOr<Value>
 lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
                            ConversionPatternRewriter &rewriter) {
   FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
   if (failed(launchGrid)) {
-    return std::nullopt;
+    return failure();
   }
   auto [gridX, gridY] = *launchGrid;
   FailureOr<LocalPipeNetParticipantPlan> participantPlan =
       buildLocalPipeNetParticipantPlan(records, PipeRole::Destination, gridX,
                                        gridY);
   if (failed(participantPlan)) {
-    return std::nullopt;
+    return failure();
   }
 
   Location loc = op->getLoc();
@@ -3994,10 +4018,8 @@ lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
       ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
   Value gridXValue =
       arith::ConstantIndexOp::create(rewriter, loc, participantPlan->gridX);
-  Value nodeRowOffset =
-      arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
-  Value nodeIndex =
-      arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
   return buildConstantIndexTableLookup(
       rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
@@ -4087,12 +4109,17 @@ struct PipeNetDestinationCountLowering
                   ConversionPatternRewriter &rewriter) const override {
     PipeNetRecordsAttr records = op.getRecords();
     if (records.getPipes().front().getDeviceTransfer()) {
-      rewriter.replaceOp(op,
-                         lowerDeviceDestinationCount(op, records, rewriter));
+      FailureOr<Value> plannedCount =
+          lowerPlannedDeviceDestinationCount(op, records, rewriter);
+      rewriter.replaceOp(
+          op, succeeded(plannedCount)
+                  ? *plannedCount
+                  : lowerDeviceDestinationCountByRecord(op, records, rewriter));
       return success();
     }
-    if (std::optional<Value> localCount =
-            lowerLocalDestinationCount(op, records, rewriter)) {
+    FailureOr<Value> localCount =
+        lowerLocalDestinationCount(op, records, rewriter);
+    if (succeeded(localCount)) {
       rewriter.replaceOp(op, *localCount);
       return success();
     }
@@ -4106,10 +4133,9 @@ struct PipeNetDestinationCountLowering
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
     for (PipeRecordAttr record : records.getPipes()) {
-      PipeType pipeType = getPipeTypeFromRecord(
-          rewriter.getContext(), record, records.getPipeNetId());
-      Value matches =
-          buildDstMatch(rewriter, loc, nodeX, nodeY, pipeType);
+      PipeType pipeType = getPipeTypeFromRecord(rewriter.getContext(), record,
+                                                records.getPipeNetId());
+      Value matches = buildDstMatch(rewriter, loc, nodeX, nodeY, pipeType);
       Value increment =
           arith::SelectOp::create(rewriter, loc, matches, one, zero);
       count = arith::AddIOp::create(rewriter, loc, count, increment);

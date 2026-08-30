@@ -15,12 +15,9 @@
 #include "ttlang/Dialect/TTL/Transforms/PipeNetParticipantPlan.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeRecordLoweringUtils.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/CheckedArithmetic.h"
 
 #include <cstdint>
-#include <limits>
 #include <map>
-#include <optional>
 #include <utility>
 
 namespace mlir::tt::ttl {
@@ -36,116 +33,6 @@ constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
 static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
   return !records.getPipes().front().getDeviceTransfer() &&
          records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
-}
-
-struct GridMajorPipeRecordIndexTables {
-  int64_t gridX = 0;
-  int64_t gridArea = 0;
-  SmallVector<int64_t> edgeOffsetsByDevice;
-  SmallVector<int64_t> edgeBlocks;
-  SmallVector<int64_t> sourceDeviceIndices;
-  SmallVector<int64_t> destinationDeviceIndices;
-};
-
-static FailureOr<int64_t> getDeviceCount(DeviceDomainAttr domain) {
-  std::uint64_t deviceCount = 1;
-  for (DeviceDomainComponentAttr component : domain.getComponents()) {
-    for (int64_t extent : component.getExtent().asArrayRef()) {
-      if (extent <= 0) {
-        return failure();
-      }
-      std::optional<std::uint64_t> maybeDeviceCount = llvm::checkedMulUnsigned(
-          deviceCount, static_cast<std::uint64_t>(extent));
-      if (!maybeDeviceCount ||
-          *maybeDeviceCount >
-              static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
-        return failure();
-      }
-      deviceCount = *maybeDeviceCount;
-    }
-  }
-  return static_cast<int64_t>(deviceCount);
-}
-
-static FailureOr<GridMajorPipeRecordIndexTables>
-buildGridMajorPipeRecordIndexTables(PipeNetRecordsAttr records, PipeRole role,
-                                    Operation *op) {
-  DeviceTransferAttr firstTransfer =
-      records.getPipes().front().getDeviceTransfer();
-  if (!firstTransfer) {
-    return failure();
-  }
-  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
-  FailureOr<int64_t> deviceCount = getDeviceCount(firstTransfer.getDomain());
-  if (failed(launchGrid) || failed(deviceCount)) {
-    return failure();
-  }
-  auto [gridX, gridY] = *launchGrid;
-  std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
-  if (!maybeGridArea || records.getPipes().size() % *maybeGridArea != 0) {
-    return failure();
-  }
-  int64_t gridArea = *maybeGridArea;
-  if (records.getPipes().size() >
-      static_cast<std::size_t>(std::numeric_limits<int64_t>::max())) {
-    return failure();
-  }
-  int64_t recordCount = static_cast<int64_t>(records.getPipes().size());
-  int64_t edgeCount = recordCount / gridArea;
-  if (*deviceCount >= recordCount) {
-    return failure();
-  }
-
-  SmallVector<SmallVector<int64_t>> edgeBlocksByDevice(
-      static_cast<std::size_t>(*deviceCount));
-  GridMajorPipeRecordIndexTables tables;
-  tables.gridX = gridX;
-  tables.gridArea = gridArea;
-  tables.sourceDeviceIndices.reserve(edgeCount);
-  tables.destinationDeviceIndices.reserve(edgeCount);
-  for (int64_t edgeBlock = 0; edgeBlock < edgeCount; ++edgeBlock) {
-    int64_t blockStart = edgeBlock * gridArea;
-    PipeRecordAttr firstRecord = records.getPipes()[blockStart];
-    DeviceTransferAttr transfer = firstRecord.getDeviceTransfer();
-    if (!transfer || transfer.getDomain() != firstTransfer.getDomain()) {
-      return failure();
-    }
-    for (int64_t nodeIndex = 0; nodeIndex < gridArea; ++nodeIndex) {
-      PipeRecordAttr record = records.getPipes()[blockStart + nodeIndex];
-      int64_t expectedX = nodeIndex % gridX;
-      int64_t expectedY = nodeIndex / gridX;
-      if (record.getDeviceTransfer() != transfer ||
-          record.getSrcX() != expectedX || record.getSrcY() != expectedY ||
-          record.getDstStartX() != expectedX ||
-          record.getDstStartY() != expectedY ||
-          record.getDstEndX() != expectedX ||
-          record.getDstEndY() != expectedY) {
-        return failure();
-      }
-    }
-
-    int64_t sourceDeviceIndex = getLogicalDeviceIndex(
-        transfer.getDomain(), transfer.getEdge().getSource());
-    int64_t destinationDeviceIndex = getLogicalDeviceIndex(
-        transfer.getDomain(), transfer.getEdge().getDestination());
-    if (sourceDeviceIndex < 0 || sourceDeviceIndex >= *deviceCount ||
-        destinationDeviceIndex < 0 || destinationDeviceIndex >= *deviceCount) {
-      return failure();
-    }
-    tables.sourceDeviceIndices.push_back(sourceDeviceIndex);
-    tables.destinationDeviceIndices.push_back(destinationDeviceIndex);
-    int64_t endpointDeviceIndex =
-        role == PipeRole::Source ? sourceDeviceIndex : destinationDeviceIndex;
-    edgeBlocksByDevice[endpointDeviceIndex].push_back(edgeBlock);
-  }
-
-  tables.edgeOffsetsByDevice.push_back(0);
-  for (ArrayRef<int64_t> edgeBlocks : edgeBlocksByDevice) {
-    tables.edgeBlocks.append(edgeBlocks.begin(), edgeBlocks.end());
-    tables.edgeOffsetsByDevice.push_back(
-        static_cast<int64_t>(tables.edgeBlocks.size()));
-  }
-  return tables;
 }
 
 template <typename SelectOp, typename SelectedType>
@@ -179,7 +66,7 @@ buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
 template <typename SelectOp, typename SelectedType>
 static SelectOp buildGridMajorSelectedPipe(
     OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
-    const GridMajorPipeRecordIndexTables &tables, Value recordIndex,
+    const DevicePipeNetParticipantPlan &tables, Value recordIndex,
     Value edgeBlock, Value nodeX, Value nodeY) {
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
   Value sourceDeviceIndex = buildConstantIndexTableLookup(
@@ -256,7 +143,7 @@ static RecordInductionMap buildLocalRecordInductionValues(
 
 static RecordInductionMap buildGridMajorRecordInductionValues(
     PipeNetRecordsAttr records, PipeRole role,
-    const GridMajorPipeRecordIndexTables &tables) {
+    const DevicePipeNetParticipantPlan &tables) {
   RecordInductionMap inductionValues;
   for (auto [iterationIndex, edgeBlock] : llvm::enumerate(tables.edgeBlocks)) {
     int64_t blockStart = edgeBlock * tables.gridArea;
@@ -343,12 +230,21 @@ tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
                                 PipeNetRecordSelection recordSelection,
                                 SmallVectorImpl<Operation *> &foreachWorklist) {
   PipeNetRecordsAttr records = op.getRecords();
-  FailureOr<GridMajorPipeRecordIndexTables> tables =
-      buildGridMajorPipeRecordIndexTables(records, role, op);
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
+    return false;
+  }
+  auto [launchGridX, launchGridY] = *launchGrid;
+  FailureOr<DevicePipeNetParticipantPlan> tables =
+      buildDevicePipeNetParticipantPlan(records, role, launchGridX,
+                                        launchGridY);
   if (failed(tables)) {
     return false;
   }
-  const GridMajorPipeRecordIndexTables &tableData = *tables;
+  if (tables->recordCountsByDevice.size() >= records.getPipes().size()) {
+    return false;
+  }
+  const DevicePipeNetParticipantPlan &tableData = *tables;
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   Value nodeX =
