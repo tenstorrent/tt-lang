@@ -1311,15 +1311,30 @@ public:
     SmallVector<uint64_t> packedWords =
         packConstantTable(op.getValues(), bitsPerValue);
 
+    SmallVector<Attribute> templateArgs;
+    templateArgs.push_back(
+        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
+    if (packedWords.size() == 1) {
+      IntegerType wordType =
+          IntegerType::get(rewriter.getContext(), 64,
+                           IntegerType::SignednessSemantics::Unsigned);
+      auto packedWord = emitc::LiteralOp::create(
+          rewriter, op.getLoc(), wordType,
+          "0x" + llvm::utohexstr(packedWords.front()) + "ULL");
+      auto call = emitc::CallOpaqueOp::create(
+          rewriter, op.getLoc(), resultType,
+          "experimental::constant_table_lookup_word", ArrayAttr(),
+          rewriter.getArrayAttr(templateArgs),
+          ValueRange{adaptor.getIndex(), packedWord});
+      rewriter.replaceOp(op, call.getResult(0));
+      return success();
+    }
+
     emitc::GlobalOp table =
         getOrCreateConstantTableGlobal(rewriter, op, packedWords);
     auto tableRef = emitc::GetGlobalOp::create(
         rewriter, op.getLoc(), table.getType(), table.getSymName());
 
-    SmallVector<Attribute> templateArgs;
-    templateArgs.reserve(1);
-    templateArgs.push_back(
-        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
     auto call = emitc::CallOpaqueOp::create(
         rewriter, op.getLoc(), resultType,
         "experimental::constant_table_lookup", ArrayAttr(),

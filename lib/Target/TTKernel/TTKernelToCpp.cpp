@@ -140,7 +140,8 @@ public:
         emitLlk(experimental_coord_translation_generated,
                 experimental_coord_translation_generated_len);
       }
-      if (callee == "experimental::constant_table_lookup") {
+      if (callee == "experimental::constant_table_lookup" ||
+          callee == "experimental::constant_table_lookup_word") {
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
       }

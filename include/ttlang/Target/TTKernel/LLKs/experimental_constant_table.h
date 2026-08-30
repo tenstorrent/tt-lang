@@ -10,6 +10,23 @@
 
 namespace experimental {
 
+// Wormhole NCRISC has 16 KiB of instruction memory; share repeated lookup code.
+#if defined(ARCH_WORMHOLE) && defined(COMPILE_FOR_NCRISC)
+#define TTLANG_CONSTANT_TABLE_WORD_INLINE __attribute__((noinline)) inline
+#else
+#define TTLANG_CONSTANT_TABLE_WORD_INLINE FORCE_INLINE
+#endif
+
+template <std::size_t BitsPerValue>
+TTLANG_CONSTANT_TABLE_WORD_INLINE std::size_t
+constant_table_lookup_word(std::size_t index, std::uint64_t packed_word) {
+  static_assert(BitsPerValue > 0 && BitsPerValue < 64);
+  constexpr std::uint64_t value_mask = (std::uint64_t{1} << BitsPerValue) - 1;
+  return (packed_word >> (index * BitsPerValue)) & value_mask;
+}
+
+#undef TTLANG_CONSTANT_TABLE_WORD_INLINE
+
 template <std::size_t BitsPerValue>
 FORCE_INLINE std::size_t
 constant_table_lookup(std::size_t index, const std::uint64_t *packed_table) {
