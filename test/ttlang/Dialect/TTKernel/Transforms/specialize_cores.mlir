@@ -159,6 +159,16 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 // CHECK-LABEL: func.func @kloop_c0_1
 // CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
 // CHECK-NOT:     my_logical_y_
+// CHECK-NOT:   func.func @klower()
+// CHECK-LABEL: func.func @klower_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-LABEL: func.func @klower_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:   func.func @kstep()
+// CHECK-LABEL: func.func @kstep_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-LABEL: func.func @kstep_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
 
 // FOLDED-LABEL: func.func @kloop_c0_0
 // FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
@@ -171,6 +181,25 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 // FOLDED-DAG:     %[[LOOP_ONE_1:.*]] = arith.constant 1 : index
 // FOLDED-DAG:     %[[LOOP_TWO_1:.*]] = arith.constant 2 : index
 // FOLDED:         scf.for %{{.*}} = %[[LOOP_ZERO_1]] to %[[LOOP_TWO_1]] step %[[LOOP_ONE_1]]
+// FOLDED-LABEL: func.func @klower_c0_0
+// FOLDED-DAG:     %[[LOWER_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[LOWER_ONE_0:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[LOWER_THREE_0:.*]] = arith.constant 3 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOWER_ZERO_0]] to %[[LOWER_THREE_0]] step %[[LOWER_ONE_0]]
+// FOLDED-LABEL: func.func @klower_c0_1
+// FOLDED-DAG:     %[[LOWER_ONE_1:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[LOWER_THREE_1:.*]] = arith.constant 3 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOWER_ONE_1]] to %[[LOWER_THREE_1]] step %[[LOWER_ONE_1]]
+// FOLDED-LABEL: func.func @kstep_c0_0
+// FOLDED-DAG:     %[[STEP_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[STEP_ONE_0:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[STEP_FOUR_0:.*]] = arith.constant 4 : index
+// FOLDED:         scf.for %{{.*}} = %[[STEP_ZERO_0]] to %[[STEP_FOUR_0]] step %[[STEP_ONE_0]]
+// FOLDED-LABEL: func.func @kstep_c0_1
+// FOLDED-DAG:     %[[STEP_ZERO_1:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[STEP_TWO_1:.*]] = arith.constant 2 : index
+// FOLDED-DAG:     %[[STEP_FOUR_1:.*]] = arith.constant 4 : index
+// FOLDED:         scf.for %{{.*}} = %[[STEP_ZERO_1]] to %[[STEP_FOUR_1]] step %[[STEP_TWO_1]]
 
 module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
   func.func private @consume(index)
@@ -180,6 +209,28 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     %step = arith.constant 1 : index
     %core_y = "ttkernel.my_logical_y_"() : () -> index
     %upper = ttkernel.experimental.constant_table_lookup %core_y, [1, 2] : index
+    scf.for %record = %lower to %upper step %step {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @klower() {
+    %upper = arith.constant 3 : index
+    %step = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %lower = ttkernel.experimental.constant_table_lookup %core_y, [0, 1] : index
+    scf.for %record = %lower to %upper step %step {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @kstep() {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %step = ttkernel.experimental.constant_table_lookup %core_y, [1, 2] : index
     scf.for %record = %lower to %upper step %step {
       func.call @consume(%record) : (index) -> ()
     }
