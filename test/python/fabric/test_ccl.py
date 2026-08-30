@@ -252,6 +252,8 @@ def _make_point_to_point_operation(
 
 
 def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
+    device_count = prod(mesh_shape)
+    maximum_destination_count = device_count - 1
     device_domain = ttl.DeviceDomain(mesh_shape)
     root_device = tuple(0 for _extent in mesh_shape)
     gather_net = ttl.PipeNet(
@@ -260,23 +262,36 @@ def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
 
     @ttl.operation(grid=(1, 1), device_domain=device_domain)
     def graph_destination_count(inp, out):
-        output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, 1), block_count=maximum_destination_count
+        )
 
         @ttl.compute()
         def idle_compute():
             pass
 
         @ttl.datamovement()
-        def write_count():
-            destination_count = gather_net.destination_count()
-            with output_dfb.reserve() as output_block:
-                ttl.copy(inp[destination_count, 0], output_block).wait()
-            with output_dfb.wait() as output_block:
-                ttl.copy(output_block, out[0, 0]).wait()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            gather_net.if_src(send)
 
         @ttl.datamovement()
-        def idle_brisc():
-            pass
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+
+            gather_net.if_dst(receive)
+
+            for receive_index in range(gather_net.destination_count()):
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[receive_index, 0]).wait()
 
     return graph_destination_count
 
@@ -926,18 +941,22 @@ def test_graph_destination_count(
 ):
     device_count = prod(fabric_mesh_shape)
     operation = _make_graph_destination_count_operation(fabric_mesh_shape)
-    per_device_input = torch.cat(
+    inp_torch = torch.cat(
         [
             torch.full(
                 (TILE_SIZE, TILE_SIZE),
-                fill_value=destination_count,
+                fill_value=device_index + 1,
                 dtype=torch_dtype,
             )
-            for destination_count in range(device_count)
+            for device_index in range(device_count)
         ]
     )
-    inp_torch = per_device_input.repeat(device_count, 1)
-    out_torch = torch.zeros(device_count * TILE_SIZE, TILE_SIZE, dtype=torch_dtype)
+    maximum_destination_count = device_count - 1
+    out_torch = torch.zeros(
+        device_count * maximum_destination_count * TILE_SIZE,
+        TILE_SIZE,
+        dtype=torch_dtype,
+    )
 
     with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
@@ -948,7 +967,12 @@ def test_graph_destination_count(
         result = _compose(mesh, out)
 
     expected = torch.zeros_like(out_torch)
-    expected[:TILE_SIZE, :] = device_count - 1
+    for receive_index, source_device_index in enumerate(range(1, device_count)):
+        source_value = source_device_index + 1
+        expected[
+            receive_index * TILE_SIZE : (receive_index + 1) * TILE_SIZE,
+            :,
+        ] = source_value
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 

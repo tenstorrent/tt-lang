@@ -777,7 +777,6 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
 
-                # Check for PipeNet role and record-count query calls.
                 if self._is_pipenet_query_call(node):
                     return self._handle_pipenet_query(node)
 
