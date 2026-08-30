@@ -323,12 +323,16 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
 // CHECK: %[[DST_A:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
-// CHECK: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_A]], %{{.*}}, noc %{{.*}}
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_A]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: ttkernel.noc_async_write {{.*}}
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
 // CHECK: %[[DST_B:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
-// CHECK: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_B]], %{{.*}}, noc %{{.*}}
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_B]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: ttkernel.noc_async_write {{.*}}
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
