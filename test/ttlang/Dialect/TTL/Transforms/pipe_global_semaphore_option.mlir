@@ -1,7 +1,7 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=false})' | FileCheck %s --check-prefix=LOCAL
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-capacity-sync=false pipe-global-semaphores-only=false})' | FileCheck %s --check-prefix=LOCAL
 // Global-only mode must not lower any counter to a local semaphore lookup.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true})' | FileCheck %s --check-prefix=GLOBAL --implicit-check-not=ttkernel.get_semaphore
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-global-semaphores-only=true l1-budget-override=12480})' -o /dev/null
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-capacity-sync=false pipe-global-semaphores-only=true})' | FileCheck %s --check-prefix=GLOBAL --implicit-check-not=ttkernel.get_semaphore
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-capacity-sync=false pipe-computed-addresses=false pipe-global-semaphores-only=true l1-budget-override=16576})' -o /dev/null
 
 // Summary: Verifies that the PipeNet counter-storage option preserves the
 // allocation plan while selecting local or GlobalSemaphore storage.
@@ -24,10 +24,12 @@
 // LOCAL: %[[LOCAL_READY_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_READY_COUNTER]])
 // LOCAL: %[[LOCAL_COMPLETION_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
-// LOCAL: %[[LOCAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}})
+// LOCAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // LOCAL: ttkernel.experimental.semaphore_wait(%[[LOCAL_READY_PTR]]
 // LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[LOCAL_READY_PTR]]
-// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
+// LOCAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 
 // GLOBAL-LABEL: module attributes
 // GLOBAL-SAME: ttl.pipe_global_semaphore_count = 2 : i64
@@ -44,10 +46,12 @@
 // GLOBAL: %[[GLOBAL_READY_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_READY_COUNTER]])
 // GLOBAL: %[[GLOBAL_COMPLETION_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
-// GLOBAL: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}})
+// GLOBAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // GLOBAL: ttkernel.experimental.semaphore_wait(%[[GLOBAL_READY_PTR]]
 // GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_READY_PTR]]
-// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
+// GLOBAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,
@@ -57,20 +61,24 @@ module attributes {
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %reserved = ttl.cb_reserve %dst
-          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
       %receive = ttl.copy %pipe, %reserved
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.receive_request
       ttl.wait %receive : !ttl.receive_request
-      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.copy %src, %pipe
