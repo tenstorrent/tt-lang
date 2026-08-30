@@ -2,15 +2,11 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores,canonicalize,cse)' | FileCheck %s --check-prefix=FOLDED
 
 // Summary: per-core specialization is a single module pass run at the TTKernel
-// level. For every kernel whose control flow branches on a core coordinate (an
-// `scf.if` whose condition is derived from `ttkernel.my_logical_x_` /
-// `my_logical_y_`), it clones the function once per launch coordinate, replaces
-// the coordinate reads with constants for that core, and tags the clone with
-// `ttl.core_coord`. Downstream canonicalize/cse fold the now-constant
-// conditions and delete the untaken regions. Kernels that only use coordinates
-// as data (no branch) are left as a single whole-grid binary. The pass does not
-// special-case pipe participants: any kernel that branches on a coordinate is
-// cloned, whether or not the module uses pipes.
+// level. It clones kernels whose `scf.if` conditions or `scf.for` bounds depend
+// on core coordinates, replaces coordinate reads with constants, and tags each
+// clone with `ttl.core_coord`. Downstream canonicalization resolves the
+// coordinate-dependent control flow. Coordinate-only data uses remain in one
+// whole-grid kernel.
 
 // -- Test 1: coordinate used only as data -> no branch, no specialization. ----
 // The coordinates feed an addi that reaches the return (a data use) and drive
@@ -153,7 +149,47 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 
 // -----
 
-// -- Test 5: single-core launch grid is a legitimate no-op. ------------------
+// -- Test 5: coordinate-dependent loop bounds require specialization. -------
+// A table-selected upper bound becomes constant in every per-core clone.
+
+// CHECK-NOT:   func.func @kloop()
+// CHECK-LABEL: func.func @kloop_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_y_
+// CHECK-LABEL: func.func @kloop_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:     my_logical_y_
+
+// FOLDED-LABEL: func.func @kloop_c0_0
+// FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
+// FOLDED-DAG:     %[[LOOP_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[LOOP_ONE_0:.*]] = arith.constant 1 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOOP_ZERO_0]] to %[[LOOP_ONE_0]] step %[[LOOP_ONE_0]]
+// FOLDED-LABEL: func.func @kloop_c0_1
+// FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
+// FOLDED-DAG:     %[[LOOP_ZERO_1:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[LOOP_ONE_1:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[LOOP_TWO_1:.*]] = arith.constant 2 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOOP_ZERO_1]] to %[[LOOP_TWO_1]] step %[[LOOP_ONE_1]]
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func private @consume(index)
+
+  func.func @kloop() {
+    %lower = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %upper = ttkernel.experimental.constant_table_lookup %core_y, [1, 2] : index
+    scf.for %record = %lower to %upper step %step {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// -- Test 6: single-core launch grid is a legitimate no-op. ------------------
 // A valid `ttl.launch_grid` whose product is <= 1 has nothing to specialize
 // CHECK-LABEL: func.func @ksingle
 // CHECK-NOT:     ttl.core_coord
@@ -178,7 +214,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// -- Test 6: functions with symbol uses are skipped, others still clone. -----
+// -- Test 7: functions with symbol uses are skipped, others still clone. -----
 // `kcallee` branches on a coordinate but is referenced by `kcaller`, so it is
 // left unspecialized (erasing it would leave a dangling call). `kleaf` has no
 // symbol uses and is still cloned per core.
