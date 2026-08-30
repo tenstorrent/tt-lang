@@ -1,3 +1,4 @@
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttkernel-unroll-static-pipenet-record-loops))' | FileCheck %s --check-prefix=PASS --implicit-check-not=ttl.pipenet_local_record_loop
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttkernel-unroll-static-pipenet-record-loops),canonicalize)' | FileCheck %s
 
 // Summary: Verifies static local PipeNet record loops are fully unrolled and
@@ -5,6 +6,9 @@
 
 func.func private @consume(index)
 
+// PASS-LABEL: func.func @unroll_static
+// PASS-NOT:     scf.for
+// PASS:         return
 // CHECK-LABEL: func.func @unroll_static
 // CHECK-NOT:     scf.for
 // CHECK-NOT:     ttkernel.experimental.constant_table_lookup
@@ -26,6 +30,9 @@ func.func @unroll_static() {
   return
 }
 
+// PASS-LABEL: func.func @inline_single_iteration
+// PASS-NOT:     scf.for
+// PASS:         return
 // CHECK-LABEL: func.func @inline_single_iteration
 // CHECK-NOT:     scf.for
 // CHECK:         %[[THIRTEEN:.*]] = arith.constant 13 : index
@@ -42,6 +49,10 @@ func.func @inline_single_iteration() {
   return
 }
 
+// PASS-LABEL: func.func @erase_zero_iterations
+// PASS-NOT:     scf.for
+// PASS-NOT:     call @consume
+// PASS:         return
 // CHECK-LABEL: func.func @erase_zero_iterations
 // CHECK-NOT:     scf.for
 // CHECK-NOT:     call @consume
@@ -55,6 +66,10 @@ func.func @erase_zero_iterations() {
   return
 }
 
+// PASS-LABEL: func.func @retain_dynamic
+// PASS:         scf.for
+// PASS:         call @consume
+// PASS:         return
 // CHECK-LABEL: func.func @retain_dynamic
 // CHECK:         scf.for
 // CHECK-NOT:     ttl.pipenet_local_record_loop
@@ -69,6 +84,10 @@ func.func @retain_dynamic(%upper : index) {
   return
 }
 
+// PASS-LABEL: func.func @retain_unmarked
+// PASS:         scf.for
+// PASS:         call @consume
+// PASS:         return
 // CHECK-LABEL: func.func @retain_unmarked
 // CHECK:         scf.for
 // CHECK-NOT:     ttl.pipenet_local_record_loop
@@ -86,6 +105,9 @@ func.func @retain_unmarked() {
 
 // Nested callbacks can produce nested record loops. Post-order unrolling must
 // fully expand both loops without invalidating the outer loop handle.
+// PASS-LABEL: func.func @unroll_nested
+// PASS-NOT:     scf.for
+// PASS:         return
 // CHECK-LABEL: func.func @unroll_nested
 // CHECK-NOT:     scf.for
 // CHECK-DAG:     %[[ZERO:.*]] = arith.constant 0 : index
