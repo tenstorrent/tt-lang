@@ -33,10 +33,12 @@ concurrency:
 
 jobs:
   pre-commit:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
   check-tt-metal-version:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     name: Verify tt-metal version (third-party/tt-metal-version)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -47,6 +49,7 @@ jobs:
       - run: .github/scripts/check-tt-metal-version.sh
 
   resolve-docker-tag:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     name: Resolve docker tag for this branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -126,6 +129,7 @@ jobs:
     secrets: inherit
 
   changes:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     name: Detect wheel/container-affecting changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -226,10 +230,12 @@ jobs:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   test-sim:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   test-scripts:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     uses: ./.github/workflows/call-test-scripts.yml
 
   test-dist-tutorials:
@@ -270,7 +276,7 @@ jobs:
         uses: actions/deploy-pages@v5
 
   check-all-green:
-    if: always()
+    if: ${{ always() && (github.event_name != 'pull_request' || github.base_ref == 'main') }}
     needs:
       - pre-commit
       - check-tt-metal-version
