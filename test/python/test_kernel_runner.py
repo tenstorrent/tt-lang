@@ -7505,6 +7505,9 @@ def test_emit_runner_source_preserves_positional_options():
         3,
         4,
         123,
+        None,
+        None,
+        None,
         False,
         None,
     )
@@ -7534,6 +7537,9 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
         3,
         4,
         123,
+        None,
+        None,
+        None,
         False,
         None,
     )
