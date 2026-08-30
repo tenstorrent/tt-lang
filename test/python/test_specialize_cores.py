@@ -301,12 +301,13 @@ def _assert_coordinate_loop_cloned(final_mlir_path):
 
     expected_coords = {(0, 0), (1, 0)}
     for kernel_name in ("dm_read_coordinate_loop", "dm_write_coordinate_loop"):
-        assert f"func.func @{kernel_name}()" not in final_mlir
+        assert re.search(rf"func\.func @{kernel_name}\b", final_mlir) is None
         clone_matches = re.findall(
             rf"func\.func @{kernel_name}_c(\d+)_(\d+)", final_mlir
         )
         clone_coords = {(int(node_x), int(node_y)) for node_x, node_y in clone_matches}
         assert clone_coords == expected_coords
+        assert len(clone_matches) == len(expected_coords)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
