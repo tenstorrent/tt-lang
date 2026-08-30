@@ -4626,8 +4626,8 @@ buildWaitAnyCompletionGroups(ModuleOp module,
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection) {
-  // Selected transfers publish receiver addresses, so their sender must wait
-  // until the matching table entry has been initialized.
+  // Selected transfers use record-indexed receiver-post synchronization, so
+  // the sender must wait for the matching receiver reservation.
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {
     return true;
   }
@@ -4785,16 +4785,8 @@ static ComputedAddressPlan buildComputedAddressPlan(
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     PipeTransferAllocationUnit &unit = indexedUnit.value();
-    const PipeTransferNode &transferNode =
-        pipeGraph.getPipeTransferNode(unit.transferNodeId);
-    // Local table-driven transfers retain receiver publication because it
-    // produces substantially smaller kernels. Device transfers cannot publish
-    // receiver-local addresses directly, so they require this computation.
-    if (isSelectedTransferUnit(unit) && !transferNode.deviceTransfer) {
-      continue;
-    }
     const PipeReceiverEndpoint *receiverEndpoint =
-        pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
+        pipeGraph.getProvenReceiverAddressEndpoint(unit.transferNodeId);
     if (!receiverEndpoint) {
       continue;
     }
