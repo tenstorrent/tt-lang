@@ -1924,6 +1924,11 @@ methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
 these ops; coordinate comparisons over `ttl.node(dims=2)` against
 integer constants also work and are evaluated per coord.
 
+Frontend predicate ops carry their static PipeNet record table. Local
+predicates reuse the participant plan to load one per-node record count and
+compare it with zero. Logical-device predicates additionally match the current
+device. Predicates without a record table retain PipeNet-index lowering.
+
 `visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
 each region according to the parent op:
 

@@ -26,16 +26,17 @@ same arith chain the runtime evaluates. A straight-line kernel
 without any PipeNet must not contain the predicate machinery.
 """
 
-# Frontend emits the predicate op for `if net.is_active()`.
+# Frontend emits the predicate op with the static PipeNet record table.
 # INITIAL: ttl.is_active
+# INITIAL-SAME: records = #ttl.pipenet_records<
 
 # A unified PipeNet source callback receives the compiler-owned affinity.
 # LOGICAL: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<pipe_source>", role = "pipe_source">
 
 # After lowering, the user's guard survives as an emitc.if; the
-# predicate chain reduces to a logical_or over the per-pipe role
-# matches.
-# FINAL: emitc.logical_or
+# predicate becomes one launch-node-indexed table lookup.
+# FINAL: experimental::constant_table_lookup
+# FINAL-NOT: emitc.logical_or
 # FINAL: emitc.if
 
 # A kernel without any PipeNet contains neither the emitc.if nor the
