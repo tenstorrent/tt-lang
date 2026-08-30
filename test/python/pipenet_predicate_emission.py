@@ -21,9 +21,9 @@
 """Frontend-pipeline integration check for the PipeNet verifier.
 
 `net.is_active()` lowers to `ttl.is_active`, which the verifier
-recognizes structurally. After lowering the predicate becomes the
-same arith chain the runtime evaluates. A straight-line kernel
-without any PipeNet must not contain the predicate machinery.
+recognizes structurally. After lowering, the table-planned predicate remains
+the runtime guard. A straight-line kernel without any PipeNet must not contain
+the predicate machinery.
 """
 
 # Frontend emits the predicate op with the static PipeNet record table.
@@ -39,9 +39,9 @@ without any PipeNet must not contain the predicate machinery.
 # FINAL-NOT: emitc.logical_or
 # FINAL: emitc.if
 
-# A kernel without any PipeNet contains neither the emitc.if nor the
-# logical_or. There is no role predicate to evaluate.
-# NO-PIPENET-NOT: emitc.logical_or
+# A kernel without any PipeNet contains neither the table lookup nor its guard.
+# NO-PIPENET-NOT: experimental::constant_table_lookup
+# NO-PIPENET-NOT: emitc.if
 
 import os
 
