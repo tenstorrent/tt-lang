@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -ttkernel-annotate-dfb-use | FileCheck %s
+// RUN: ttlang-opt %s -ttkernel-annotate-dfb-use | FileCheck %s --implicit-check-not=ttkernel.dfb_resource_use
 
 // Records physical DFB compile-time argument indices on ttkernel.thread
 // functions after walking get_compile_time_arg_val uses and propagating
@@ -9,7 +9,10 @@
 // CHECK-NEXT: func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
 
 // CHECK-LABEL: func.func @calls_helper()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
+
+// CHECK-LABEL: func.func @marker_only()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1>
 
 // CHECK-LABEL: func.func @calls_unknown()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
@@ -27,6 +30,7 @@ module {
   func.func private @unknown()
 
   func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
+    ttkernel.dfb_resource_use {indices = array<i32: 0>}
     %scalar_dfb_id = ttkernel.get_compile_time_arg_val(1) : () -> i32
     %dfb = ttkernel.get_compile_time_arg_val(2)
         : () -> !ttkernel.cb<3, !ttcore.tile<32x32, bf16>>
@@ -41,6 +45,13 @@ module {
       ttl.base_cta_index = 3 : i32,
       ttkernel.thread = #ttkernel.thread<compute>} {
     func.call @helper() : () -> ()
+    return
+  }
+
+  func.func @marker_only() attributes {
+      ttl.base_cta_index = 3 : i32,
+      ttkernel.thread = #ttkernel.thread<noc>} {
+    ttkernel.dfb_resource_use {indices = array<i32: 1>}
     return
   }
 

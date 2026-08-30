@@ -1,7 +1,7 @@
 // Verify opaque_call lowering from TTL to TTKernel.
 // Checks template arg forwarding, DFB-to-CB conversion for func_args,
 // get_dfb_id lowering, tensor func-arg TensorAccessor materialization,
-// and ttl.raw_addr lowering.
+// DFB resource-use preservation, and ttl.raw_addr lowering.
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --split-input-file %s | FileCheck %s
 
 // Void call with no args lowers directly.
@@ -27,6 +27,7 @@ func.func @call_with_template_args() attributes {ttl.kernel_thread = #ttkernel.t
 // A finalized DFB index becomes an unsigned static argument.
 // CHECK-LABEL: func.func @call_with_dfb_template_arg
 // CHECK-NOT: ttkernel.get_dfb_id
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 2>}
 // CHECK: ttkernel.opaque_call "drain" template_args [2 : ui32]() {header = "drain.hpp"} : () -> ()
 func.func @call_with_dfb_template_arg() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -36,8 +37,21 @@ func.func @call_with_dfb_template_arg() attributes {ttl.kernel_thread = #ttkerne
 
 // -----
 
+// A DFB index alone is static metadata and does not require a host descriptor.
+// CHECK-LABEL: func.func @call_with_index_only_dfb_template_arg
+// CHECK-NOT: ttkernel.dfb_resource_use
+// CHECK: ttkernel.opaque_call "select" template_args [4 : ui32]() {header = "select.hpp"} : () -> ()
+func.func @call_with_index_only_dfb_template_arg() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 4, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  ttl.opaque_call "select" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {header = "select.hpp"} : () -> ()
+  return
+}
+
+// -----
+
 // A DFB template operand preserves its finalized index and allocation geometry.
 // CHECK-LABEL: func.func @call_with_dfb_descriptor
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 2>}
 // CHECK: ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<2, 6, 4, 4096>]() {header = "describe.hpp"} : () -> ()
 func.func @call_with_dfb_descriptor() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 2, block_count = 4} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 4>
@@ -49,6 +63,7 @@ func.func @call_with_dfb_descriptor() attributes {ttl.kernel_thread = #ttkernel.
 
 // Subtile dimensions change bytes per page, not the number of pages in a block.
 // CHECK-LABEL: func.func @call_with_subtile_dfb_descriptor
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 2>}
 // CHECK: ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<2, 6, 4, 32>]() {header = "describe.hpp"} : () -> ()
 func.func @call_with_subtile_dfb_descriptor() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 2, block_count = 4} : !ttl.cb<[2, 3], !ttcore.tile<1x16, bf16>, 4>
@@ -60,6 +75,7 @@ func.func @call_with_subtile_dfb_descriptor() attributes {ttl.kernel_thread = #t
 
 // Scalar DFBs use one scalar element per page rather than tile storage size.
 // CHECK-LABEL: func.func @call_with_scalar_dfb_descriptor
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 2>}
 // CHECK: ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<2, 6, 4, 4>]() {header = "describe.hpp"} : () -> ()
 func.func @call_with_scalar_dfb_descriptor() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 2, block_count = 4} : !ttl.cb<[2, 3], f32, 4>
@@ -72,6 +88,7 @@ func.func @call_with_scalar_dfb_descriptor() attributes {ttl.kernel_thread = #tt
 // DFB func_arg is lowered to an unsigned physical index.
 // CHECK-LABEL: func.func @call_with_dfb_func_arg
 // CHECK: %[[CB_IDX:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> ui32
+// CHECK-NEXT: ttkernel.dfb_resource_use {indices = array<i32: 1>}
 // CHECK-NEXT: ttkernel.opaque_call "use_cb"(%[[CB_IDX]]) {header = "use_cb.hpp"} : (ui32) -> ()
 func.func @call_with_dfb_func_arg() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -262,10 +279,26 @@ func.func @call_with_row_major_tensor(
 // TTKernel call arguments or protocol operations.
 // CHECK-LABEL: func.func @dfb_protocol_metadata
 // CHECK-NOT: ttkernel.cb_
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 3>}
 // CHECK: ttkernel.opaque_call "hidden_protocol"() {header = "hidden_protocol.hpp"} : () -> ()
 // CHECK-NOT: ttkernel.cb_
 func.func @dfb_protocol_metadata() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %dfb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.opaque_call "hidden_protocol" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "hidden_protocol.hpp", unknown_dfb_access} : () -> ()
+  return
+}
+
+// -----
+
+// Unknown access retains every user-managed DFB without exposing compiler-owned
+// intermediates to external code.
+// CHECK-LABEL: func.func @unknown_dfb_access
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 1, 5>}
+// CHECK-NEXT: ttkernel.opaque_call "unknown"() {header = "unknown.hpp"} : () -> ()
+func.func @unknown_dfb_access() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %user_low = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %compiler = ttl.bind_cb {cb_index = 3, block_count = 1} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %user_high = ttl.bind_cb {cb_index = 5, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  ttl.opaque_call "unknown" () {header = "unknown.hpp", unknown_dfb_access} : () -> ()
   return
 }

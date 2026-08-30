@@ -11,10 +11,12 @@
 // CHECK-DAG: %[[SECOND_OFFSET:.*]] = arith.constant 16 : i32
 // CHECK-DAG: %[[ALL_LOW:.*]] = arith.constant 4 : i32
 // CHECK: %[[SCRATCH_BASE:.*]] = ttkernel.get_common_arg_val
-// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH_BASE]], %[[SELECTED_LOW]], %[[SELECTED_HIGH]])
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 33>}
+// CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH_BASE]], %[[SELECTED_LOW]], %[[SELECTED_HIGH]])
 // CHECK: %[[SECOND_BASE:.*]] = ttkernel.get_common_arg_val
 // CHECK: %[[SECOND_STATE:.*]] = arith.addi %[[SECOND_BASE]], %[[SECOND_OFFSET]] : i32
-// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SECOND_STATE]], %[[ALL_LOW]], %[[SELECTED_HIGH]])
+// CHECK: ttkernel.dfb_resource_use {indices = array<i32: 2, 33>}
+// CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SECOND_STATE]], %[[ALL_LOW]], %[[SELECTED_HIGH]])
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @reset_masks()

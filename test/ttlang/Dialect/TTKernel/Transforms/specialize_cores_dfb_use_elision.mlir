@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' | FileCheck %s --implicit-check-not=ttkernel.dfb_resource_use
 
 // This characterizes the kernel half of per-core specialization. Core (0, 0)
 // retains its DFB use while core (0, 1) has the complete DFB-dependent branch
@@ -20,6 +20,14 @@
 // CHECK-NOT: scf.if
 // CHECK: return
 
+// Resource markers remain branch-local through specialization and are consumed
+// after their indices are recorded.
+// CHECK-NOT: func.func @conditional_resource_user()
+// CHECK-LABEL: func.func @conditional_resource_user_c0_0
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
+// CHECK-LABEL: func.func @conditional_resource_user_c0_1
+// CHECK-SAME: ttl.used_dfb_indices = array<i32>
+
 module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
   func.func @conditional_dfb_user() attributes {
       ttl.base_cta_index = 1 : i32,
@@ -33,6 +41,18 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
           : () -> !ttkernel.cb<3, !ttcore.tile<32x32, bf16>>
       ttkernel.cb_wait_front(%dfb, %pages)
           : (!ttkernel.cb<3, !ttcore.tile<32x32, bf16>>, i32) -> ()
+    }
+    return
+  }
+
+  func.func @conditional_resource_user() attributes {
+      ttl.base_cta_index = 1 : i32,
+      ttkernel.thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %is_active = arith.cmpi eq, %y, %c0 : index
+    scf.if %is_active {
+      ttkernel.dfb_resource_use {indices = array<i32: 0>}
     }
     return
   }

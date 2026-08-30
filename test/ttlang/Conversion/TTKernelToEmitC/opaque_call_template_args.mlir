@@ -18,6 +18,7 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // A descriptor becomes a C++ type argument in its original list position.
 // EMITC-LABEL: func.func @dfb_descriptor_template_to_emitc
 // EMITC-NOT: emitc.literal
+// EMITC-NOT: dfb_resource_use
 // EMITC: emitc.call_opaque "describe"
 // EMITC-SAME: template_args = [#emitc.opaque<"11">, #emitc.opaque<"ttlang::DFBDescriptor<3, 2, 4, 4096>">]
 // EMITC-SAME: ttlang.opaque_header = "describe.hpp"
@@ -31,6 +32,7 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // CPP: #include "describe.hpp"
 // CPP: describe<11, ttlang::DFBDescriptor<3, 2, 4, 4096>>();
 func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+  ttkernel.dfb_resource_use {indices = array<i32: 3>}
   ttkernel.opaque_call "describe" template_args [11 : si32, #ttkernel.dfb_descriptor<3, 2, 4, 4096>] () {header = "describe.hpp"} : () -> ()
   return
 }
