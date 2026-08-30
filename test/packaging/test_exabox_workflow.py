@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import yaml
+
 from conftest import REPO_ROOT
 
 CALL_BUILD = REPO_ROOT / ".github" / "workflows" / "call-build.yml"
@@ -24,11 +26,28 @@ UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
 
 def test_pull_request_ci_targets_main_only() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
+    ci_jobs = yaml.safe_load(ci_workflow)["jobs"]
+    pull_request_guard = (
+        "${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}"
+    )
 
     assert (
         '  pull_request:\n    branches: ["main"]\n'
         "    types: [opened, synchronize, reopened, ready_for_review, edited]"
         in ci_workflow
+    )
+    root_jobs = {
+        job_name: job for job_name, job in ci_jobs.items() if "needs" not in job
+    }
+    assert root_jobs["build-docs"]["if"].endswith(
+        "github.event_name != 'pull_request' }}"
+    )
+    for job_name, job in root_jobs.items():
+        if job_name != "build-docs":
+            assert job["if"] == pull_request_guard
+    assert ci_jobs["check-all-green"]["if"] == (
+        "${{ always() && (github.event_name != 'pull_request' || "
+        "github.base_ref == 'main') }}"
     )
 
 
