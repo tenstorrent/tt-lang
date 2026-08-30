@@ -493,11 +493,15 @@ func.func @static_subview_pipe_transfer_computed_address() attributes { "ttl.ker
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[BASE0:.*]] = ttkernel.get_common_arg_val
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[BASE0]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[BASE0]], {{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: %[[BASE1:.*]] = ttkernel.get_common_arg_val
 // CHECK: %[[DST_ADDR1:.*]] = arith.addi %[[BASE1]], %[[SLOT1_OFFSET]]
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[DST_ADDR1]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_ADDR1]], {{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: arith.remui
 // CHECK-NOT: arith.muli
 // CHECK-NOT: ttkernel.load_from_l1
@@ -949,19 +953,20 @@ func.func @same_source_sequential_transfers_use_distinct_sync_state() attributes
 // CHECK-LABEL: func.func @same_pipe_key_nonoverlapping_transfers_reuse_storage
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: %[[READY_IDX:.*]] = arith.constant 2 : index
-// CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: return
 func.func @same_pipe_key_nonoverlapping_transfers_reuse_storage() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>

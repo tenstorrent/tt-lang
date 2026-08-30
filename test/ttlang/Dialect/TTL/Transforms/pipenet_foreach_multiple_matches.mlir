@@ -63,11 +63,11 @@ func.func @gather_receiver()
 // CHECK: %[[READY_SEM:.*]] = ttkernel.get_semaphore(%[[READY_INDEX]])
 // CHECK: %[[READY_ADDR:.*]] = ttkernel.reinterpret_cast(%[[READY_SEM]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
-// CHECK: ttkernel.noc_async_write %
+// CHECK: ttkernel.noc_async_write %{{.*}}posted true
 // CHECK: %[[COMPLETION_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: %[[COMPLETION_SEM:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
-// CHECK: %[[COMPLETION_NOC_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_SEM]], {{.*}})
-// CHECK: ttkernel.noc_semaphore_inc(%[[COMPLETION_NOC_ADDR]], {{.*}})
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[COMPLETION_SEM]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
