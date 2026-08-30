@@ -3880,7 +3880,9 @@ def TTKernel_NocAsyncWriteBarrierOp
            TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncWriteBarrier";
     let description = [{
-      Waits for all outstanding write transactions on the given NOC.
+      Waits for remote completion of all outstanding non-posted write
+      transactions on the selected NoC. Posted writes are not observed because
+      they do not request remote acknowledgements.
     }];
 
     let arguments = (ins Optional<I8>:$noc);
