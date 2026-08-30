@@ -450,27 +450,6 @@ getValidatedDFBResourceIndices(ValueRange dfbs, Operation *op) {
   return indices;
 }
 
-static FailureOr<SmallVector<int32_t>>
-collectUserManagedDFBResourceIndices(ModuleOp module) {
-  SmallVector<int32_t> indices;
-  WalkResult result = module.walk([&](BindCBOp bind) -> WalkResult {
-    if (bind->hasAttr(kCompilerAllocatedAttrName)) {
-      return WalkResult::advance();
-    }
-    FailureOr<int32_t> index = getValidatedDFBIndex(bind.getResult(), bind);
-    if (failed(index)) {
-      return WalkResult::interrupt();
-    }
-    indices.push_back(*index);
-    return WalkResult::advance();
-  });
-  if (result.wasInterrupted()) {
-    return failure();
-  }
-  sortAndDeduplicateDFBIndices(indices);
-  return indices;
-}
-
 static void createDFBResourceUse(Location location, ArrayRef<int32_t> indices,
                                  RewriterBase &rewriter) {
   if (indices.empty()) {
@@ -1505,18 +1484,19 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Synchronized DFB reset lowering
+// DFB resource lowering
 //===----------------------------------------------------------------------===//
 
-struct DFBResetLoweringPlan {
+struct DFBResourceLoweringPlan {
   DenseMap<SynchronizedDFBResetAttr, int64_t> stateOffsetByReset;
+  SmallVector<int32_t> userManagedIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
   uint64_t allDFBMask = 0;
 };
 
-static FailureOr<DFBResetLoweringPlan>
-buildDFBResetLoweringPlan(ModuleOp module) {
+static FailureOr<DFBResourceLoweringPlan>
+buildDFBResourceLoweringPlan(ModuleOp module) {
   SmallVector<SynchronizedDFBResetAttr> orderedResets;
   if (failed(collectSynchronizedDFBResets(module, orderedResets))) {
     return failure();
@@ -1532,7 +1512,7 @@ buildDFBResetLoweringPlan(ModuleOp module) {
     return failure();
   }
 
-  DFBResetLoweringPlan plan;
+  DFBResourceLoweringPlan plan;
   for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
     plan.stateOffsetByReset.try_emplace(
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
@@ -1553,11 +1533,15 @@ buildDFBResetLoweringPlan(ModuleOp module) {
       return WalkResult::interrupt();
     }
     plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    if (!bind->hasAttr(kCompilerAllocatedAttrName)) {
+      plan.userManagedIndices.push_back(static_cast<int32_t>(*dfbIndex));
+    }
     return WalkResult::advance();
   });
   if (allocationResult.wasInterrupted()) {
     return failure();
   }
+  sortAndDeduplicateDFBIndices(plan.userManagedIndices);
 
   if (!orderedResets.empty()) {
     Builder builder(module.getContext());
@@ -1570,7 +1554,7 @@ buildDFBResetLoweringPlan(ModuleOp module) {
 static LogicalResult lowerDFBReset(Operation *operation,
                                    SynchronizedDFBResetAttr reset,
                                    uint64_t dfbMask,
-                                   const DFBResetLoweringPlan &plan,
+                                   const DFBResourceLoweringPlan &plan,
                                    ConversionPatternRewriter &rewriter) {
   auto stateOffsetIt = plan.stateOffsetByReset.find(reset);
   if (stateOffsetIt == plan.stateOffsetByReset.end()) {
@@ -1602,7 +1586,7 @@ static LogicalResult lowerDFBReset(Operation *operation,
 
 struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   ResetDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
-                    const DFBResetLoweringPlan &plan)
+                    const DFBResourceLoweringPlan &plan)
       : OpConversionPattern(typeConverter, context), plan(plan) {}
 
   LogicalResult
@@ -1620,12 +1604,12 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   }
 
 private:
-  const DFBResetLoweringPlan &plan;
+  const DFBResourceLoweringPlan &plan;
 };
 
 struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   ResetAllDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
-                       const DFBResetLoweringPlan &plan)
+                       const DFBResourceLoweringPlan &plan)
       : OpConversionPattern(typeConverter, context), plan(plan) {}
 
   LogicalResult
@@ -1635,7 +1619,7 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   }
 
 private:
-  const DFBResetLoweringPlan &plan;
+  const DFBResourceLoweringPlan &plan;
 };
 
 //===----------------------------------------------------------------------===//
@@ -2374,12 +2358,6 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
-  FailureOr<SmallVector<int32_t>> userManagedDFBResourceIndices =
-      collectUserManagedDFBResourceIndices(mod);
-  if (failed(userManagedDFBResourceIndices)) {
-    return failure();
-  }
-
   // Preserve the generated record-selection regions so pipe graph ordering
   // does not mistake them for independent user control flow.
   PipeForeachLoweringInfo foreachLoweringInfo;
@@ -2432,9 +2410,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
 
   PipePlanningOptions pipePlanningOptions;
-  FailureOr<DFBResetLoweringPlan> resetLoweringPlan =
-      buildDFBResetLoweringPlan(mod);
-  if (failed(resetLoweringPlan)) {
+  FailureOr<DFBResourceLoweringPlan> dfbResourceLoweringPlan =
+      buildDFBResourceLoweringPlan(mod);
+  if (failed(dfbResourceLoweringPlan)) {
     return failure();
   }
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
@@ -2443,7 +2421,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
   pipePlanningOptions.trailingSramScratchBytes =
-      resetLoweringPlan->scratchBytes;
+      dfbResourceLoweringPlan->scratchBytes;
   pipePlanningOptions.trailingSramScratchAlignment = 4;
   pipePlanningOptions.fabricRoutePlan = &fabricRoutePlan;
   FailureOr<PipeModulePlan> maybePipeModulePlan =
@@ -2453,7 +2431,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
-  resetLoweringPlan->scratchBaseOffset =
+  dfbResourceLoweringPlan->scratchBaseOffset =
       pipeModulePlan.getTrailingSramScratchOffset();
   FailureOr<FinalizedDFBStorageFootprint> allocationFootprint =
       getFinalizedDFBStorageFootprint(mod);
@@ -2530,8 +2508,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
       typeConverter, &ctx, pipeTransportPlan);
-  patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
-                                                        *resetLoweringPlan);
+  patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(
+      typeConverter, &ctx, *dfbResourceLoweringPlan);
   patterns
       .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
@@ -2543,7 +2521,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
            SelectedPipeSourceCoordinatesLowering,
            SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
   patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
-                                   *userManagedDFBResourceIndices);
+                                   dfbResourceLoweringPlan->userManagedIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);
