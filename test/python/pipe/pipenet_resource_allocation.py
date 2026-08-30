@@ -34,8 +34,10 @@ node. make_expected_output computes the full GRID_DIM=7 expected tensor.
 """
 
 import contextlib  # noqa: E402
-import io  # noqa: E402
 import os  # noqa: E402
+import shutil  # noqa: E402
+import sys  # noqa: E402
+import tempfile  # noqa: E402
 
 import torch  # noqa: E402
 import ttnn  # noqa: E402
@@ -58,6 +60,28 @@ def get_output_k_pairs(grid_dim):
 # GRID_DIM=7 emits enough TTKernel code to exceed TT-Metal's default 90112-byte
 # Tensix kernel config buffer.
 KERNEL_CONFIG_BUFFER_RESERVE_BYTES = 128 * 1024
+
+
+@contextlib.contextmanager
+def redirect_output_file_descriptors(target_file):
+    """Redirect Python and native stdout and stderr writes to target_file."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    stdout_file_descriptor = sys.stdout.fileno()
+    stderr_file_descriptor = sys.stderr.fileno()
+    saved_stdout_file_descriptor = os.dup(stdout_file_descriptor)
+    saved_stderr_file_descriptor = os.dup(stderr_file_descriptor)
+    try:
+        os.dup2(target_file.fileno(), stdout_file_descriptor)
+        os.dup2(target_file.fileno(), stderr_file_descriptor)
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout_file_descriptor, stdout_file_descriptor)
+        os.dup2(saved_stderr_file_descriptor, stderr_file_descriptor)
+        os.close(saved_stdout_file_descriptor)
+        os.close(saved_stderr_file_descriptor)
 
 
 def make_ksplit_resource_allocation_kernel(grid_dim):
@@ -391,7 +415,7 @@ def open_reproducer_device():
     return ttnn.open_device(device_id=0)
 
 
-def main():
+def run_reproducer():
     device = open_reproducer_device()
     try:
         grid_dim = GRID_DIM
@@ -406,21 +430,30 @@ def main():
 
         input_tensor = to_dram(input_torch, device)
         output_tensor = to_dram(output_torch, device)
-        output_context = (
-            contextlib.redirect_stdout(io.StringIO())
-            if os.environ.get("TTLANG_SUPPRESS_KERNEL_OUTPUT") == "1"
-            else contextlib.nullcontext()
-        )
-        with output_context:
-            ksplit_resource_allocation(input_tensor, output_tensor)
-
+        ksplit_resource_allocation(input_tensor, output_tensor)
         ttnn.synchronize_device(device)
         result_torch = ttnn.to_torch(output_tensor).float()
         expected_torch = make_expected_output(input_torch, grid_dim).float()
         assert_allclose(result_torch, expected_torch, rtol=0.0, atol=0.0)
-        print("PASS: ksplit_resource_allocation result verified")
     finally:
         ttnn.close_device(device)
+
+
+def main():
+    with tempfile.TemporaryFile() as test_output:
+        try:
+            with redirect_output_file_descriptors(test_output):
+                run_reproducer()
+        except Exception as exception:
+            print(
+                f"PIPE_TEST_EXCEPTION={type(exception).__name__}: {exception}",
+                file=sys.stderr,
+            )
+            raise
+        finally:
+            test_output.seek(0)
+            shutil.copyfileobj(test_output, sys.stdout.buffer)
+    print("PASS: ksplit_resource_allocation result verified")
 
 
 if __name__ == "__main__":
