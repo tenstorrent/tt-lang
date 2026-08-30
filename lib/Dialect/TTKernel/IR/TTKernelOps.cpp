@@ -718,6 +718,24 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
   });
 }
 
+::mlir::LogicalResult DFBResourceUseOp::verify() {
+  if (getIndices().empty()) {
+    return emitOpError("requires at least one DFB index");
+  }
+  int32_t previousIndex = -1;
+  for (int32_t index : getIndices()) {
+    if (index < 0) {
+      return emitOpError("DFB index must be nonnegative, got ") << index;
+    }
+    if (index <= previousIndex) {
+      return emitOpError(
+          "DFB indices must be strictly increasing without duplicates");
+    }
+    previousIndex = index;
+  }
+  return success();
+}
+
 ::mlir::LogicalResult OpaqueCallOp::verify() {
   if (failed(mlir::tt::utils::verifyOpaqueCallNames(getOperation(), getCallee(),
                                                     getHeader()))) {

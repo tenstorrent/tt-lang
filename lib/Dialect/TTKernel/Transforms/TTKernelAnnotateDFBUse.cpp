@@ -131,8 +131,9 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
   return dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
 }
 
-static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
-                                 DFBSet &used) {
+static LogicalResult
+collectDirectDFBUses(func::FuncOp func, int64_t dfbCount, DFBSet &used,
+                     SmallVectorImpl<ttk::DFBResourceUseOp> &resourceUses) {
   func.walk([&](ttk::GetCompileArgValOp op) {
     if (isPrintOnly(op)) {
       return;
@@ -142,6 +143,21 @@ static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
       used.insert(static_cast<int32_t>(index));
     }
   });
+
+  WalkResult result = func.walk([&](ttk::DFBResourceUseOp use) -> WalkResult {
+    for (int32_t index : use.getIndices()) {
+      if (index >= dfbCount) {
+        use.emitOpError("DFB index ")
+            << index << " is outside the enclosing function's DFB range [0, "
+            << dfbCount << ")";
+        return WalkResult::interrupt();
+      }
+      used.insert(index);
+    }
+    resourceUses.push_back(use);
+    return WalkResult::advance();
+  });
+  return result.wasInterrupted() ? failure() : success();
 }
 
 static void recordAllDFBs(func::FuncOp func, int64_t maxDFBCount,
@@ -217,6 +233,7 @@ struct TTKernelAnnotateDFBUsePass
     ModuleOp module = getOperation();
     llvm::DenseMap<Operation *, DFBSet> usedDFBs;
     llvm::SmallDenseSet<Operation *> conservative;
+    SmallVector<ttk::DFBResourceUseOp> resourceUses;
     // Maximum DFB index in the module.
     int64_t maxDFBCount = 0;
 
@@ -228,7 +245,11 @@ struct TTKernelAnnotateDFBUsePass
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
-      collectDirectDFBUses(func, dfbCount, usedDFBs[func.getOperation()]);
+      if (failed(collectDirectDFBUses(
+              func, dfbCount, usedDFBs[func.getOperation()], resourceUses))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     CallGraph callgraph(module);
@@ -238,6 +259,10 @@ struct TTKernelAnnotateDFBUsePass
     }
 
     dropUnusedPrintOnlyDFBGets(module, usedDFBs, maxDFBCount);
+
+    for (ttk::DFBResourceUseOp use : resourceUses) {
+      use.erase();
+    }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (!getKernelThreadType(func)) {
