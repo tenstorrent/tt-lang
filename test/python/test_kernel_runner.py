@@ -5755,6 +5755,32 @@ def test_storage_group_partitions_disjoint_residency_signatures(
     assert _descriptor_cores(descriptors_by_index[1]) == {(1, 0)}
 
 
+def test_allocation_nodes_scope_unspecialized_segmented_dfb_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+                allocation_nodes=((1, 0),),
+            )
+        ],
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(1, 0)}
+
+
 # An exact empty allocation domain installs no runtime descriptor.
 def test_empty_allocation_nodes_omit_dfb_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
