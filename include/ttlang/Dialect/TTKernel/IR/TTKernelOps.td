@@ -5114,8 +5114,21 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
 }
 
 //===----------------------------------------------------------------------===//
-// DFB index query
+// DFB resource metadata and index query
 //===----------------------------------------------------------------------===//
+
+def TTKernel_DFBResourceUseOp : TTKernel_Op<"dfb_resource_use"> {
+    let summary = "Declare required physical DFB descriptors";
+    let description = [{
+      Declares that the enclosing kernel function requires the finalized
+      physical DFB descriptors identified by `indices`. The indices are
+      strictly increasing and contain no duplicates. This metadata emits no
+      device code.
+    }];
+    let arguments = (ins DenseI32ArrayAttr:$indices);
+    let assemblyFormat = "attr-dict";
+    let hasVerifier = 1;
+}
 
 def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
     let summary = "Get the integer index for a dataflow buffer";
