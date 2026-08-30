@@ -1,6 +1,7 @@
 // Summary: Verifies record-selected callbacks coexist with static grouping.
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel)' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s --check-prefix=PUBLISHED
 // The grouping pass must not expand any record-selected callback transfer.
 // RUN: ttlang-opt %s --split-input-file -ttl-form-pipe-transports | FileCheck %s --check-prefix=FORM
 
@@ -305,7 +306,7 @@ func.func private @foreach_dst_receive_table_driven_sender()
 // CHECK-LABEL: func.func @foreach_dst_receive_table_driven
 // CHECK: memref.alloca
 // CHECK: scf.for
-// CHECK-COUNT-1: ttkernel.noc_inline_dw_write(
+// CHECK-NOT: ttkernel.noc_inline_dw_write(
 // CHECK-COUNT-1: ttkernel.experimental.semaphore_wait_min(
 // CHECK-NOT: ttl.pipenet_foreach_dst
 // CHECK-NOT: ttl.select_pipe_dst
@@ -494,8 +495,8 @@ func.func @nested_foreach_receiver()
 
 // -----
 
-// Local selected loopback records publish receiver DFB addresses to keep the
-// table-driven sender kernel compact.
+// Local selected loopback records use receiver DFB addresses computed by the
+// sender. Disabling computed addresses retains receiver publication.
 
 module attributes {ttl.launch_grid = array<i64: 5, 1>} {
 
@@ -523,13 +524,22 @@ func.func @loopback_collective_sender()
 }
 
 // CHECK-LABEL: func.func @loopback_collective_sender
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: ttkernel.get_common_arg_val
+// CHECK-NOT: ttkernel.load_from_l1
 // CHECK-LABEL: func.func @loopback_collective_receiver
-// CHECK: ttkernel.store_to_l1
-// CHECK: ttkernel.noc_inline_dw_write
+// CHECK-NOT: ttkernel.store_to_l1
+// CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: return
+
+// PUBLISHED-LABEL: func.func @loopback_collective_sender
+// PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+// PUBLISHED: ttkernel.load_from_l1
+// PUBLISHED-LABEL: func.func @loopback_collective_receiver
+// PUBLISHED: ttkernel.store_to_l1
+// PUBLISHED: ttkernel.noc_inline_dw_write
 func.func @loopback_collective_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
