@@ -10,6 +10,7 @@
 
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -1585,6 +1586,34 @@ getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
   return getBranchDomainsImpl(condition, current, state, coordCache);
 }
 
+static std::optional<LaunchNodeDomain>
+getSCFForLaunchNodeDomain(scf::ForOp forOp,
+                          const LaunchNodeDomain &current,
+                          const LaunchNodeDomainState &state) {
+  const std::set<LaunchNodeCoord> *candidateNodes =
+      current.getUpperBoundNodes();
+  if (!candidateNodes) {
+    return std::nullopt;
+  }
+
+  LaunchNodeDomain nonzeroTripCountDomain;
+  LoopInductionBindings emptyBindings;
+  for (LaunchNodeCoord node : *candidateNodes) {
+    std::optional<std::uint64_t> tripCount = tt::getLoopTripCount(
+        forOp, emptyBindings, [node, &state](Value value) {
+          return evaluateLaunchLocationContextValue(
+              value, LaunchExecutionLocation(node), &state);
+        });
+    if (!tripCount) {
+      return std::nullopt;
+    }
+    if (*tripCount > 0) {
+      nonzeroTripCountDomain.nodes.insert(node);
+    }
+  }
+  return current.intersectWith(nonzeroTripCountDomain);
+}
+
 /// Decode the PipeNet role metadata carried by one `ttl.pipenet_scope`.
 static std::optional<PipeNetScopeLaunchNodeDomains>
 getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
@@ -1740,6 +1769,12 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
         unanalyzableOp =
             pickEarlierBySourceLoc(unanalyzableOp, domains.unanalyzableOp);
         narrowed = (*regionTo == 0) ? domains.thenDomain : domains.elseDomain;
+      })
+      .Case<scf::ForOp>([&](scf::ForOp forOp) {
+        if (std::optional<LaunchNodeDomain> loopDomain =
+                getSCFForLaunchNodeDomain(forOp, before.getDomain(), state)) {
+          narrowed = std::move(*loopDomain);
+        }
       })
       .Case<affine::AffineIfOp>([&](affine::AffineIfOp ifOp) {
         LaunchNodeDomainResult condDomain =
