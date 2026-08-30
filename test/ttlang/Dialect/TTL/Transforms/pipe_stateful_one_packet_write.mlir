@@ -74,15 +74,15 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// An inline word write uses a separate NoC command buffer, so it does not
-// prevent reuse of the resident asynchronous-write command on the same core.
-// CHECK-LABEL: func.func @inline_word_write_preserves_async_write_state
-// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// An inline L1 write may use the ordinary asynchronous-write command, so the
+// loop cannot reuse resident write state across iterations.
+// CHECK-LABEL: func.func @inline_word_write_invalidates_async_write_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
 // CHECK: scf.for
 // CHECK: ttkernel.noc_inline_dw_write
-// CHECK: ttkernel.noc_async_write_one_packet_with_state
-// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
-func.func @inline_word_write_preserves_async_write_state(
+// CHECK: ttkernel.noc_async_write{{[ (]}}
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+func.func @inline_word_write_invalidates_async_write_state(
     %src_addr: i32, %dst_addr: i32) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
