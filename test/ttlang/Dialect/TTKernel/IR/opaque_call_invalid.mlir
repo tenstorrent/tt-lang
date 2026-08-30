@@ -88,3 +88,21 @@ func.func @unsigned_arg_not_integer(%arg0: f32) {
   ttkernel.opaque_call "foo" (%arg0) {header = "h.hpp", unsigned_arg_indices = array<i32: 0>} : (f32) -> ()
   return
 }
+
+// -----
+
+// Physical DFB indices are nonnegative.
+func.func @negative_dfb_descriptor_index() {
+  // expected-error @below {{'ttkernel.opaque_call' op DFB descriptor index must be nonnegative, got -1}}
+  ttkernel.opaque_call "foo" () {dfb_descriptor_indices = array<i32: -1>, header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+
+// DFB descriptor indices have one canonical order without duplicates.
+func.func @dfb_descriptor_indices_not_increasing() {
+  // expected-error @below {{'ttkernel.opaque_call' op DFB descriptor indices must be strictly increasing}}
+  ttkernel.opaque_call "foo" () {dfb_descriptor_indices = array<i32: 1, 1>, header = "h.hpp"} : () -> ()
+  return
+}

@@ -23,6 +23,9 @@
 // CHECK-LABEL: func.func @cycle_b()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
 
+// CHECK-LABEL: func.func @opaque_only()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 3>
+
 module {
   func.func private @unknown()
 
@@ -74,6 +77,13 @@ module {
       ttkernel.thread = #ttkernel.thread<compute>} {
     %0 = ttkernel.get_compile_time_arg_val(1) : () -> i32
     func.call @cycle_a() : () -> ()
+    return
+  }
+
+  func.func @opaque_only() attributes {
+      ttl.base_cta_index = 4 : i32,
+      ttkernel.thread = #ttkernel.thread<compute>} {
+    ttkernel.opaque_call "describe" () {dfb_descriptor_indices = array<i32: 1, 3>, header = "describe.hpp"} : () -> ()
     return
   }
 }

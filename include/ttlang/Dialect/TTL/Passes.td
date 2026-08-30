@@ -1482,14 +1482,18 @@ def TTKernelAnnotateDFBUse
   let summary = "Record physical DFB indices used by each TTKernel function";
   let description = [{
     Runs after per-core specialization and canonicalization.
-    For each `ttkernel.thread` function, records the
-    sorted physical DFB indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
+    For each `ttkernel.thread` function, records the sorted physical DFB
+    indices reached through surviving `ttkernel.get_compile_time_arg_val`
+    operations below `ttl.base_cta_index` or listed in a surviving
+    `ttkernel.opaque_call`'s `dfb_descriptor_indices`. Helpers stay in the
     call-graph analysis so their uses propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
     every DFB before tensor-accessor arguments, including DFB ids passed to
     opaque externs as scalar values.
+
+    Opaque-call descriptor metadata preserves DFB requirements whose TTL
+    operands became static C++ metadata or were removed during lowering. The
+    metadata does not add a C++ function argument.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or

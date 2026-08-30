@@ -28,3 +28,13 @@ func.func @unsigned_func_arg(%arg0: i32) {
   ttkernel.opaque_call "use_address" (%arg0) {header = "address.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
   return
 }
+
+// -----
+
+// DFB metadata round trips without adding C++ operands.
+// CHECK-LABEL: func.func @descriptor_metadata
+// CHECK: ttkernel.opaque_call "reset"() {dfb_descriptor_indices = array<i32: 1, 3>, header = "reset.hpp"} : () -> ()
+func.func @descriptor_metadata() {
+  ttkernel.opaque_call "reset" () {dfb_descriptor_indices = array<i32: 1, 3>, header = "reset.hpp"} : () -> ()
+  return
+}

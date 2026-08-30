@@ -388,6 +388,12 @@ they do not emit reserve, push, wait, or pop calls. Dependency-only operands,
 protocol effects, and non-transactional access metadata leave the generated
 C++ call signature unchanged.
 
+After physical DFB allocation, lowering records each dependency's finalized
+index as TTKernel call metadata. Per-core specialization uses this metadata to
+retain descriptors required by the external call, including dependencies that
+do not become C++ arguments. Unknown external access records every user-managed
+DFB in the enclosing kernel.
+
 The IR stores each effect as a generated enum and a typed attribute. Its
 dependency index identifies an element of the value sequence returned by the
 call's `getDFBDependencyOperands()` interface method. Operation adaptation may
