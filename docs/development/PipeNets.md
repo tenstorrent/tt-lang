@@ -1935,7 +1935,8 @@ each region according to the parent op:
 | `ttl.if_src %pipe` body | intersect with `pipe.src` |
 | `ttl.if_dst %pipe` body | intersect with `pipe.dst` |
 | `ttl.pipenet_scope` body | unchanged after checking current domain is contained in declared role union |
-| `scf.for`/`scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
+| `scf.for` body | intersect with nodes whose statically evaluated trip count is nonzero; unchanged when any candidate node cannot be evaluated |
+| `scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
 
 For `scf.if`, the condition's domain is determined structurally:
 
