@@ -1,6 +1,8 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=PLAN
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=LOWER
 
+// Verify one-page planning and lowering for a byte-counted PipeNet transfer.
+
 // PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0)
 // PLAN-NEXT: PipeTransport:   source {{.*}} pages=1 page_bytes=896
 // PLAN-NEXT: PipeTransport:   endpoint 0 {{.*}}

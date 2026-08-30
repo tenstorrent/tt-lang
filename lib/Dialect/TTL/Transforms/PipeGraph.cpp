@@ -1121,20 +1121,10 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
 
     if (sendByteCount) {
       Value destinationDFB = getAttachedCB(postOp.getDst());
-      if (!destinationDFB) {
-        auto diag = postOp.emitError(
-            "byte-counted pipe receiver requires an attached dataflow buffer");
-        diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
-        return failure();
-      }
+      assert(destinationDFB &&
+             "pipe transfer verifier requires an attached receiver DFB");
       auto destinationDFBType =
-          dyn_cast<CircularBufferType>(destinationDFB.getType());
-      if (!destinationDFBType) {
-        auto diag = postOp.emitError(
-            "byte-counted pipe receiver has an invalid dataflow-buffer type");
-        diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
-        return failure();
-      }
+          cast<CircularBufferType>(destinationDFB.getType());
       auto sourceTile =
           dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
       auto destinationTile =

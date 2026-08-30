@@ -1,5 +1,7 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})'
 
+// Verify byte-count agreement, compatibility, and one-block PipeNet transfers.
+
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @sender_receiver_count_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

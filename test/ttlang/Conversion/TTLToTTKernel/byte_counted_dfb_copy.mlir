@@ -1,5 +1,7 @@
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel --canonicalize -cse | FileCheck %s
 
+// Verify that a byte-counted DFB block copy lowers to one local NoC read.
+
 // CHECK-LABEL: func.func @copy_valid_prefix_between_dfb_blocks
 // CHECK-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK-DAG: %[[SIZE:.*]] = arith.constant 896 : i32

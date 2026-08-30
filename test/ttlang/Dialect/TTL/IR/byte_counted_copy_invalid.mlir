@@ -1,5 +1,7 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics
 
+// Verify the structural, type, and capacity contracts for byte-counted copies.
+
 func.func @missing_byte_count()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -281,5 +283,41 @@ func.func @pipe_receiver_capacity_required() {
       : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<14x1x!ttcore.tile<1x32, bf16>>)
       -> !ttl.receive_request
+  func.return
+}
+
+// -----
+
+func.func @block_copy_requires_tiled_elements()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], f32, 1>
+  %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], f32, 1>
+  %src_wait = ttl.cb_wait %src_dfb
+      : <[1, 1], f32, 1> -> tensor<1x1xf32>
+  %src = ttl.attach_cb %src_wait, %src_dfb
+      : (tensor<1x1xf32>, !ttl.cb<[1, 1], f32, 1>) -> tensor<1x1xf32>
+  %dst_reserve = ttl.cb_reserve %dst_dfb
+      : <[1, 1], f32, 1> -> tensor<1x1xf32>
+  %dst = ttl.attach_cb %dst_reserve, %dst_dfb
+      : (tensor<1x1xf32>, !ttl.cb<[1, 1], f32, 1>) -> tensor<1x1xf32>
+  // expected-error @below {{byte-counted dataflow-buffer copies require tiled element types}}
+  %copy = ttl.copy %src, %dst {byte_count = 4 : i64}
+      : (tensor<1x1xf32>, tensor<1x1xf32>)
+      -> !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+func.func @byte_count_rejects_ordinary_tensor_copy() {
+  %src = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %dst = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{byte_count is supported only for dataflow-buffer block copies and pipe copies}}
+  %copy = ttl.copy %src, %dst {byte_count = 896 : i64}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      -> !ttl.transfer_handle<read>
   func.return
 }
