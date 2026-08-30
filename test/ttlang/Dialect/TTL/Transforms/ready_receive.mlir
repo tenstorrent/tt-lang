@@ -289,6 +289,23 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // GLOBAL: scf.if
 // GLOBAL: scf.while
 // GLOBAL: ttkernel.experimental.semaphore_reached
+// The candidate merges two post origins into one completion-counter group.
+// Per-origin counts do not prove that the complete group has one update, so
+// both branches retain cumulative atomic completion.
+// RECEIVER-POST-LABEL: func.func @merged_request_origins
+// RECEIVER-POST: scf.if
+// RECEIVER-POST: ttkernel.noc_async_write %{{.*}} : (
+// RECEIVER-POST: ttkernel.noc_async_write_barrier
+// RECEIVER-POST: ttkernel.noc_semaphore_inc
+// RECEIVER-POST: ttkernel.noc_async_atomic_barrier
+// RECEIVER-POST: } else {
+// RECEIVER-POST: ttkernel.noc_async_write %{{.*}} : (
+// RECEIVER-POST: ttkernel.noc_async_write_barrier
+// RECEIVER-POST: ttkernel.noc_semaphore_inc
+// RECEIVER-POST: ttkernel.noc_async_atomic_barrier
+// RECEIVER-POST-NOT: ttkernel.noc_inline_dw_write
+// RECEIVER-POST-NOT: posted true
+// RECEIVER-POST: scf.while
 
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @merged_request_origins(%condition: i1) -> index
@@ -303,11 +320,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %dst = ttl.cb_reserve %landing
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      %then_request = ttl.copy %pipe, %dst
+      %then_request = ttl.copy %pipe, %dst {byte_count = 2048 : i64}
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.receive_request
-      %send = ttl.copy %source, %pipe
+      %send = ttl.copy %source, %pipe {byte_count = 2048 : i64}
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
           -> !ttl.transfer_handle<write>
@@ -317,11 +334,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %dst = ttl.cb_reserve %landing
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      %else_request = ttl.copy %pipe, %dst
+      %else_request = ttl.copy %pipe, %dst {byte_count = 2048 : i64}
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.receive_request
-      %send = ttl.copy %source, %pipe
+      %send = ttl.copy %source, %pipe {byte_count = 2048 : i64}
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
           -> !ttl.transfer_handle<write>
