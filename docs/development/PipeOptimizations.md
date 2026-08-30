@@ -117,11 +117,11 @@ store completion value 1 with a posted inline word write
 flush posted writes before source reuse
 ```
 
-Writes issued on one NoC are observed in order, so receiver-visible completion
-follows receiver-visible payload data. The final flush waits for the posted
-writes to leave the sender; it does not add a remote acknowledgement. The
-receiver keeps the same completion wait and observes no protocol semantic
-change.
+Writes issued on the same NoC and static virtual channel are observed in order
+across command buffers, so receiver-visible completion follows
+receiver-visible payload data. The final flush waits for the posted writes to
+leave the sender; it does not add a remote acknowledgement. The receiver keeps
+the same completion wait and observes no protocol semantic change.
 
 TTKernel cleanup may move one-packet state configuration before the blocking
 receiver-readiness wait. It does so only when the destination coordinates,
