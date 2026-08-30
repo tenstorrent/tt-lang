@@ -61,6 +61,10 @@ MlirType ttlangTTKernelTensorAccessorTypeGet(MlirContext ctx) {
   return wrap(TensorAccessorType::get(unwrap(ctx)));
 }
 
+MlirType ttlangTTKernelLocalTensorAccessorTypeGet(MlirContext ctx) {
+  return wrap(LocalTensorAccessorType::get(unwrap(ctx)));
+}
+
 MlirType ttlangTTKernelTensorAccessorPageMappingTypeGet(MlirContext ctx) {
   return wrap(TensorAccessorPageMappingType::get(unwrap(ctx)));
 }
