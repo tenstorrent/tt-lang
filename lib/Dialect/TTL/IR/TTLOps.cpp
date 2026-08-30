@@ -48,6 +48,37 @@
 
 namespace mlir::tt::ttl {
 
+namespace {
+
+static bool isSupportedLayoutElementType(Type elementType) {
+  if (isa<ttcore::TileType>(elementType)) {
+    return true;
+  }
+  if (isa<Float32Type, BFloat16Type>(elementType)) {
+    return true;
+  }
+  auto integerType = dyn_cast<IntegerType>(elementType);
+  if (!integerType) {
+    return false;
+  }
+  if (integerType.isSigned()) {
+    return integerType.getWidth() == 32;
+  }
+  if (!integerType.isUnsigned()) {
+    return false;
+  }
+  return integerType.getWidth() == 8 || integerType.getWidth() == 16 ||
+         integerType.getWidth() == 32;
+}
+
+static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded;
+}
+
+} // namespace
+
 llvm::LogicalResult LogicalKernelAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, LogicalKernelKind,
     StringAttr identity, StringAttr operation, StringAttr role) {
@@ -568,6 +599,11 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                    ArrayRef<int64_t> shape, Type elementType,
                    BufferType bufferType, ArrayRef<int64_t> grid,
                    TensorMemoryLayout memoryLayout) {
+  if (!isSupportedLayoutElementType(elementType)) {
+    return emitError() << "layout element type must be a ttcore tile or one of "
+                          "f32, bf16, si32, ui32, ui16, or ui8, got "
+                       << elementType;
+  }
   if (shape.empty()) {
     return emitError() << "layout shape must not be empty";
   }
@@ -3117,14 +3153,9 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
-  if (!isNocKernelThread(getOperation()) &&
-      llvm::any_of(getArgOperands(), [](Value operand) {
-        return isa<RankedTensorType>(operand.getType());
-      })) {
-    return emitOpError(
-        "tensor function arguments require a data movement (noc) thread");
-  }
-  for (Value operand : getArgOperands()) {
+  std::optional<ttkernel::ThreadType> kernelThread =
+      getKernelThreadType(getEnclosingKernelThread(getOperation()));
+  for (auto [operandIndex, operand] : llvm::enumerate(getArgOperands())) {
     auto tensorType = mlir::dyn_cast<RankedTensorType>(operand.getType());
     if (!tensorType) {
       continue;
@@ -3135,13 +3166,44 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                          "slices/views are not supported");
     }
     auto layout = mlir::cast<tt::ttl::LayoutAttr>(tensorType.getEncoding());
-    auto tileType =
-        mlir::dyn_cast<tt::ttcore::TileType>(layout.getElementType());
-    if (!tileType ||
-        (tileType.getDataType() != tt::ttcore::DataType::BFloat16 &&
-         tileType.getDataType() != tt::ttcore::DataType::Float32)) {
-      return emitOpError(
-          "TensorAccessor operands support only bf16 and f32 tile types");
+    if (!kernelThread || (*kernelThread != ttkernel::ThreadType::Noc &&
+                          *kernelThread != ttkernel::ThreadType::Compute)) {
+      return emitOpError("tensor operands require a compute or data movement "
+                         "kernel");
+    }
+    BufferType bufferType = layout.getBufferType();
+    TensorMemoryLayout memoryLayout = layout.getMemoryLayout();
+    if (*kernelThread == ttkernel::ThreadType::Noc) {
+      if (bufferType == BufferType::SystemMemory) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses SystemMemory storage; "
+                  "data movement tensor accessors require DRAM, L1, or "
+                  "L1Small storage";
+      }
+      if (bufferType == BufferType::L1Small &&
+          !isShardedMemoryLayout(memoryLayout)) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses non-sharded L1Small "
+                  "storage; data movement L1Small tensor accessors require "
+                  "height-, width-, or block-sharded storage";
+      }
+      continue;
+    }
+    if (bufferType != BufferType::L1 && bufferType != BufferType::L1Small) {
+      return emitOpError("tensor operand ")
+             << operandIndex << " in a compute kernel uses "
+             << (bufferType == BufferType::DRAM ? "DRAM" : "SystemMemory")
+             << " storage; compute tensor accessors require sharded L1 or "
+                "L1Small storage";
+    }
+    if (!isShardedMemoryLayout(memoryLayout)) {
+      return emitOpError("tensor operand ")
+             << operandIndex
+             << " in a compute kernel uses a non-sharded memory layout; "
+                "compute tensor accessors require height-, width-, or "
+                "block-sharded L1 or L1Small storage";
     }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();
