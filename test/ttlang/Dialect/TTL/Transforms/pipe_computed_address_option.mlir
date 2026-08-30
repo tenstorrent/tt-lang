@@ -412,7 +412,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.noc_async_write
+  // COMPUTED: ttkernel.noc_async_write %
+  // COMPUTED: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.noc_semaphore_inc
+  // COMPUTED: ttkernel.noc_async_atomic_barrier
+  // COMPUTED-NOT: posted true
   // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @loopback_point_to_point
@@ -432,11 +436,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %recv_dst = ttl.cb_reserve %dst_cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %recv = ttl.copy %pipe, %recv_dst
+    %recv = ttl.copy %pipe, %recv_dst {byte_count = 2048 : i64}
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.receive_request
-    %send = ttl.copy %src_cb, %pipe
+    %send = ttl.copy %src_cb, %pipe {byte_count = 2048 : i64}
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
         -> !ttl.transfer_handle<write>
