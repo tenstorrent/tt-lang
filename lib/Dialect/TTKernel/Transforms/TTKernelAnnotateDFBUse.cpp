@@ -131,17 +131,35 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
   return dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
 }
 
-static void collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
-                                 DFBSet &used) {
-  func.walk([&](ttk::GetCompileArgValOp op) {
-    if (isPrintOnly(op)) {
+static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
+                                          DFBSet &used) {
+  func.walk([&](ttk::GetCompileArgValOp getArg) {
+    if (isPrintOnly(getArg)) {
       return;
     }
-    int64_t index = static_cast<int64_t>(op.getArgIndex());
+    int64_t index = static_cast<int64_t>(getArg.getArgIndex());
     if (index >= 0 && index < dfbCount) {
       used.insert(static_cast<int32_t>(index));
     }
   });
+
+  WalkResult result = func.walk([&](ttk::OpaqueCallOp call) -> WalkResult {
+    std::optional<ArrayRef<int32_t>> indices = call.getDfbDescriptorIndices();
+    if (!indices) {
+      return WalkResult::advance();
+    }
+    for (int32_t index : *indices) {
+      if (index < 0 || index >= dfbCount) {
+        call.emitOpError("DFB descriptor index ")
+            << index << " is outside [0, " << dfbCount - 1
+            << "] for the enclosing function";
+        return WalkResult::interrupt();
+      }
+      used.insert(index);
+    }
+    return WalkResult::advance();
+  });
+  return result.wasInterrupted() ? failure() : success();
 }
 
 static void recordAllDFBs(func::FuncOp func, int64_t maxDFBCount,
@@ -228,7 +246,11 @@ struct TTKernelAnnotateDFBUsePass
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
-      collectDirectDFBUses(func, dfbCount, usedDFBs[func.getOperation()]);
+      if (failed(collectDirectDFBUses(func, dfbCount,
+                                      usedDFBs[func.getOperation()]))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     CallGraph callgraph(module);

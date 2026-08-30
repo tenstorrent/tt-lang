@@ -727,6 +727,10 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
+  if (failed(mlir::tt::utils::verifyOpaqueCallDFBDescriptorIndices(
+          getOperation(), getDfbDescriptorIndices()))) {
+    return failure();
+  }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();
   if (!templateArgs) {
     return success();
