@@ -6,6 +6,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -13,7 +14,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Support/LogicalResult.h"
-#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
@@ -57,21 +58,20 @@ static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
 }
 
 static bool valueDependsOnCore(Value rootValue) {
-  llvm::DenseSet<Value> visited;
-  SmallVector<Value> worklist{rootValue};
-  while (!worklist.empty()) {
-    Value currentValue = worklist.pop_back_val();
-    if (!visited.insert(currentValue).second) {
-      continue;
-    }
-    Operation *definingOp = currentValue.getDefiningOp();
-    if (!definingOp) {
-      continue;
-    }
-    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(definingOp)) {
+  BackwardSliceOptions options;
+  options.inclusive = true;
+  options.omitBlockArguments = false;
+  options.omitUsesFromAbove = false;
+
+  llvm::SetVector<Operation *> backwardSlice;
+  if (failed(getBackwardSlice(rootValue, &backwardSlice, options))) {
+    // Specializing conservatively preserves coordinate-dependent semantics.
+    return true;
+  }
+  for (Operation *operation : backwardSlice) {
+    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(operation)) {
       return true;
     }
-    worklist.append(definingOp->operand_begin(), definingOp->operand_end());
   }
   return false;
 }
