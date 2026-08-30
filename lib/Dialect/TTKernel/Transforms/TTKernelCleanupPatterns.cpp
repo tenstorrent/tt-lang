@@ -364,11 +364,13 @@ struct UseStatefulNocWriteInLoop : OpRewritePattern<NocAsyncWriteOp> {
       rewriter.setInsertionPointToStart(&setupIf.getThenRegion().front());
     }
     NocAsyncWriteOnePacketSetStateOp::create(
-        rewriter, loc, destinationNocAddress, op.getSize(), op.getNoc());
+        rewriter, loc, destinationNocAddress, op.getSize(), op.getNoc(),
+        op.getPostedAttr());
 
     rewriter.setInsertionPoint(op);
     NocAsyncWriteOnePacketWithStateOp::create(
-        rewriter, loc, op.getSrcLocalL1Addr(), op.getDstAddress(), op.getNoc());
+        rewriter, loc, op.getSrcLocalL1Addr(), op.getDstAddress(), op.getNoc(),
+        op.getPostedAttr());
     rewriter.eraseOp(op);
     return success();
   }

@@ -708,12 +708,10 @@ void NocAsyncWriteBarrierOp::getCanonicalizationPatterns(
           return success();
         }
       }
-      if (mlir::isa<NocAsyncWriteOp, NocAsyncWriteTileOp,
-                    NocAsyncWriteOnePacketWithTridOp, NocAsyncWriteMulticastOp,
-                    NocAsyncWriteMulticastOnePacketOp,
-                    NocAsyncWriteMulticastLoopbackSrcOp, NocInlineDwWriteOp>(
-              it) ||
-          it->getNumRegions() > 0) {
+      bool issuesOrConfiguresWrite =
+          accessesNocCommand(it, NocCommandClass::Write) &&
+          !mlir::isa<NocAsyncWriteBarrierOp, NocAsyncWritesFlushedOp>(it);
+      if (issuesOrConfiguresWrite || it->getNumRegions() > 0) {
         break;
       }
     }
