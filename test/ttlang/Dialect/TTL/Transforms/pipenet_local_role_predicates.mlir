@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-verify-pipenet-guards,convert-ttl-to-ttkernel)' | FileCheck %s
 
 #records = #ttl.pipenet_records<net 0 name "local_roles" pipes [
   <srcX = 0, srcY = 0, dstStartX = 3, dstStartY = 0,

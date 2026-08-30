@@ -502,6 +502,11 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](SelectPipeDstOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
+  module.walk([&](PipeNetPredicateOpInterface predicate) {
+    if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
+      recordPipeNetRecords(records, predicate->getLoc());
+    }
+  });
 }
 
 static std::optional<llvm::APInt>
