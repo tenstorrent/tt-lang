@@ -96,16 +96,16 @@ the source core.
 A same-device point-to-point transfer to another core can replace the payload
 barrier and completion atomic when planning proves all of the following:
 
-- The transfer has one remote receiver and uses a fixed computed receiver DFB
-  address.
+- The transfer uses receiver-post synchronization, has one remote receiver,
+  and uses a fixed computed receiver DFB address.
 - The completion counter receives exactly one update over its complete
   lifetime. Repeated transfers and counters shared by a wait-any completion
   group therefore retain cumulative atomics.
 - The payload fits the target's one-packet limit and does not require
   page-addressed writes.
-- Completion is immediate. Fabric, multicast, loopback, receiver-published
-  addressing, and iteration-domain credit completion retain their existing
-  protocols.
+- Completion is immediate. Capacity synchronization, fabric, multicast,
+  loopback, receiver-published addressing, and iteration-domain credit
+  completion retain their existing protocols.
 
 The eligible sender uses one ordered posted sequence:
 

@@ -9,33 +9,62 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @point_to_point_pipe
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED-NOT: posted true
   // COMPUTED: ttkernel.noc_async_write
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED-NEXT: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.noc_semaphore_inc
+  // COMPUTED-NEXT: ttkernel.noc_async_atomic_barrier
   // COMPUTED-NOT: ttkernel.load_from_l1
+  // COMPUTED-NOT: posted true
   // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @point_to_point_pipe
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED-NOT: posted true
   // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED-NOT: posted true
   // PUBLISHED: ttkernel.load_from_l1
+  // PUBLISHED-NOT: posted true
   // PUBLISHED: ttkernel.noc_async_write
+  // PUBLISHED-NEXT: ttkernel.noc_async_write_barrier
+  // PUBLISHED: ttkernel.noc_semaphore_inc
+  // PUBLISHED-NEXT: ttkernel.noc_async_atomic_barrier
+  // PUBLISHED-NOT: posted true
+  // PUBLISHED: return
+
+  // RECEIVER-POST-LABEL: func.func @point_to_point_pipe
+  // RECEIVER-POST-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // RECEIVER-POST-NOT: ttkernel.store_to_l1
+  // RECEIVER-POST-NOT: ttkernel.noc_async_write_barrier
+  // RECEIVER-POST: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+  // RECEIVER-POST-NOT: ttkernel.noc_async_write_barrier
+  // RECEIVER-POST: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+  // RECEIVER-POST-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+  // RECEIVER-POST-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+  // RECEIVER-POST-NOT: ttkernel.noc_async_write_barrier
+  // RECEIVER-POST-NOT: ttkernel.noc_async_atomic_barrier
+  // RECEIVER-POST: return
   func.func @point_to_point_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %recv_dst = ttl.cb_reserve %dst_cb
-          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.receive_request
       ttl.wait %recv : !ttl.receive_request
-      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst_cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.copy %src_cb, %pipe

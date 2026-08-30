@@ -757,8 +757,8 @@ release cannot race with a sender update.
 3. The sender signals receiver completion after the payload write barrier,
    using the transfer node's receiver-completion counter. `CA/CC` retains the
    cumulative atomic mechanism because its completion is coupled to
-   iteration-domain credit. Eligible one-shot point-to-point transfers to a
-   remote core in other modes may use the ordered posted mechanism described in
+   iteration-domain credit. Eligible one-shot `CA/RP` point-to-point transfers
+   to a remote core may use the ordered posted mechanism described in
    `PipeOptimizations.md`.
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.

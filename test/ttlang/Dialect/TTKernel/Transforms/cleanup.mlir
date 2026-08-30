@@ -225,3 +225,62 @@ func.func @preserve_posted_write_after_nested_call(
       : (i32, index, index, i32, i32, i8) -> ()
   func.return
 }
+
+// -----
+
+// Cumulative semaphore waits are also valid scheduling points.
+// CHECK-LABEL: func.func @schedule_posted_write_state_before_wait_min
+// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK: return
+func.func @schedule_posted_write_state_before_wait_min(%src: i32, %dst: i32) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c0_i8 = arith.constant 0 : i8
+  %c1_i32 = arith.constant 1 : i32
+  %size = arith.constant 896 : i32
+  %ready_sem = ttkernel.get_semaphore(%c1)
+      : (index) -> !ttkernel.local_semaphore
+  %ready_addr = ttkernel.reinterpret_cast(%ready_sem)
+      : (!ttkernel.local_semaphore) -> !ttkernel.l1_addr_ptr
+  ttkernel.experimental.semaphore_wait_min(%ready_addr, %c1_i32)
+      : (!ttkernel.l1_addr_ptr, i32) -> ()
+  %dst_x = ttkernel.experimental.convert_logical_x_to_translated(%c1)
+      : (index) -> index
+  %dst_y = ttkernel.experimental.convert_logical_y_to_translated(%c0)
+      : (index) -> index
+  ttkernel.noc_async_write
+      %src, core[%dst_x, %dst_y], %dst, %size, noc %c0_i8 posted true
+      : (i32, index, index, i32, i32, i8) -> ()
+  func.return
+}
+
+// -----
+
+// A dataflow-buffer wait can overlap the same command setup.
+// CHECK-LABEL: func.func @schedule_posted_write_state_before_dfb_wait
+// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// CHECK: ttkernel.cb_wait_front
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK: return
+func.func @schedule_posted_write_state_before_dfb_wait(%src: i32, %dst: i32)
+    attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c0_i8 = arith.constant 0 : i8
+  %c1_i32 = arith.constant 1 : i32
+  %size = arith.constant 896 : i32
+  %dfb = ttkernel.get_compile_time_arg_val(0)
+      : () -> !ttkernel.cb<0, !ttcore.tile<32x32, bf16>>
+  ttkernel.cb_wait_front(%dfb, %c1_i32)
+      : (!ttkernel.cb<0, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  %dst_x = ttkernel.experimental.convert_logical_x_to_translated(%c1)
+      : (index) -> index
+  %dst_y = ttkernel.experimental.convert_logical_y_to_translated(%c0)
+      : (index) -> index
+  ttkernel.noc_async_write
+      %src, core[%dst_x, %dst_y], %dst, %size, noc %c0_i8 posted true
+      : (i32, index, index, i32, i32, i8) -> ()
+  func.return
+}
