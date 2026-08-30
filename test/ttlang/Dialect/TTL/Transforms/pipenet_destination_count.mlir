@@ -38,7 +38,7 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
 // -----
 
 #device_domain = #ttl.device_domain<
-    components = <name = "device", extent = [3]>>
+    components = <name = "device", extent = [4]>>
 #device_records = #ttl.pipenet_records<net 1 name "device_gather" pipes [
   #ttl.pipe_record<
       srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
@@ -46,21 +46,14 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
       deviceTransfer = <
         domain = #device_domain,
         edge = <source = <coordinates = [0]>,
-                destination = <coordinates = [2]>>>>,
+                destination = <coordinates = [3]>>>>,
   #ttl.pipe_record<
       srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
       dstEndX = 0, dstEndY = 0,
       deviceTransfer = <
         domain = #device_domain,
         edge = <source = <coordinates = [0]>,
-                destination = <coordinates = [2]>>>>,
-  #ttl.pipe_record<
-      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
-      dstEndX = 0, dstEndY = 0,
-      deviceTransfer = <
-        domain = #device_domain,
-        edge = <source = <coordinates = [1]>,
-                destination = <coordinates = [2]>>>>,
+                destination = <coordinates = [3]>>>>,
   #ttl.pipe_record<
       srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
       dstEndX = 0, dstEndY = 0,
@@ -76,7 +69,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // CHECK-LABEL: func.func @device_destination_count
   // CHECK-NOT: scf.for
   // CHECK: ttkernel.get_common_arg_val
-  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 1, 3]
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 1, 0, 2]
   func.func @device_destination_count()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %count = ttl.pipenet_destination_count {

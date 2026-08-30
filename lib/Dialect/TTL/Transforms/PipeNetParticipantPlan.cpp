@@ -111,7 +111,7 @@ buildDevicePipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
   int64_t gridArea = *maybeGridArea;
   int64_t recordCount = static_cast<int64_t>(records.getPipes().size());
   int64_t edgeCount = recordCount / gridArea;
-  // Dense device tables must remain O(records); an N-device gather has N-1
+  // Dense device tables must remain O(records); a 1x1 N-device gather has N-1
   // records and requires one additional zero-count table entry.
   if (*deviceCount - 1 > recordCount) {
     return failure();
