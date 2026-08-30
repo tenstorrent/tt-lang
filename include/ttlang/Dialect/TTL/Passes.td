@@ -1471,6 +1471,27 @@ def TTKernelSpecializeCores
   ];
 }
 
+def TTKernelUnrollStaticPipeNetRecordLoops
+    : Pass<"ttkernel-unroll-static-pipenet-record-loops",
+           "::mlir::func::FuncOp"> {
+  let summary = "Unroll static local PipeNet record loops";
+  let description = [{
+    Fully unrolls compiler-marked local PipeNet record loops whose bounds are
+    constant. Per-core specialization makes those bounds constant when they
+    depend on a launch coordinate. Unrolling exposes the selected record index
+    to canonicalization, which can replace immutable record-table lookups with
+    constants.
+
+    A loop with dynamic bounds remains structurally unchanged. Its temporary
+    compiler marker is removed because no later pass consumes it.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 def TTKernelAnnotateDFBUse
     : Pass<"ttkernel-annotate-dfb-use", "::mlir::ModuleOp"> {
   let summary = "Record physical DFB indices used by each TTKernel function";

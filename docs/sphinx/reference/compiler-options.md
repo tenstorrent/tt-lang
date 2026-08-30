@@ -186,7 +186,8 @@ The pipeline runs these passes and subpasses in order:
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- Without core specialization, `ttkernel-unroll-static-pipenet-record-loops`, canonicalization, and CSE still run to consume compiler-owned loop markers and optimize any already-static local record loops.
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -388,7 +389,8 @@ unspecialized with a warning so erasing the original does not leave dangling
 `SymbolRefAttr`s; unrelated functions in the module are still specialized.
 Each clone replaces coordinate reads with `arith.constant`s and is tagged with
 `ttl.core_coord` for runtime dispatch. Downstream `canonicalize` / `cse` fold
-the now-constant conditions and loop bounds.
+the now-constant conditions and loop bounds. Static local PipeNet record loops
+are then fully unrolled so record-table lookups can fold to constants.
 `ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
 synchronized resets, and external-call dependencies on each specialized
 function. Debug prints of a DFB remain only on cores that still have a
@@ -403,4 +405,19 @@ registered `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline:
 ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
 # Or stand-alone:
 ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-and-annotate-dfb-use)'
+```
+
+#### `ttkernel-unroll-static-pipenet-record-loops`
+
+Fully unroll compiler-marked local PipeNet record loops after their bounds
+become constant. This exposes each selected record index to canonicalization,
+which replaces immutable record-table lookups with constants. Dynamic loop
+bounds remain unchanged, and their temporary compiler marker is removed.
+
+The full TTL-to-TTKernel pipeline runs this pass even when core specialization
+is disabled so the marker never reaches code generation. In that case, loops
+whose bounds still depend on runtime coordinates remain loops.
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(func.func(ttkernel-unroll-static-pipenet-record-loops),canonicalize)'
 ```
