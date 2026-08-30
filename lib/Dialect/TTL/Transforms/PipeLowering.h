@@ -160,6 +160,9 @@ class PipeTransportStream;
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
   PipeCounterInfo counter;
+  /// An exact single update permits an absolute completion store instead of
+  /// atomic accumulation.
+  bool singleExecution = false;
 };
 
 /// Address storage used by one transfer-allocation unit.
