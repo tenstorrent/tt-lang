@@ -7,7 +7,11 @@
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <cassert>
+#include <optional>
 
 namespace mlir::tt::ttl {
 
@@ -28,8 +32,16 @@ struct TTKernelUnrollStaticPipeNetRecordLoopsPass
     });
 
     for (scf::ForOp recordLoop : recordLoops) {
-      if (!recordLoop.getStaticTripCount()) {
+      assert(recordLoop.getInitArgs().empty() &&
+             recordLoop.getNumResults() == 0 &&
+             "local PipeNet record loops cannot carry values");
+      std::optional<APInt> tripCount = recordLoop.getStaticTripCount();
+      if (!tripCount) {
         recordLoop->removeAttr(kPipeNetLocalRecordLoopAttrName);
+        continue;
+      }
+      if (tripCount->isZero()) {
+        recordLoop.erase();
         continue;
       }
       if (failed(loopUnrollFull(recordLoop))) {
