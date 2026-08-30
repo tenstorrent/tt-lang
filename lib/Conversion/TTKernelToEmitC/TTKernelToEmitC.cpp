@@ -2219,6 +2219,19 @@ public:
 } // namespace
 
 namespace {
+class DFBResourceUseOpRewriter
+    : public OpConversionPattern<ttkernel::DFBResourceUseOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::DFBResourceUseOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class GetDfbIdOpRewriter : public OpConversionPattern<ttkernel::GetDfbIdOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -3405,7 +3418,8 @@ public:
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
         typeConverter, context, "pack_tile");
 
-    patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
+    patterns.add<DFBResourceUseOpRewriter, GetDfbIdOpRewriter>(typeConverter,
+                                                               context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(
         typeConverter, context, state, "push_back");
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPopFrontOp>>(
