@@ -52,6 +52,13 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
       dstEndX = 0, dstEndY = 0,
       deviceTransfer = <
         domain = #device_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [2]>>>>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #device_domain,
         edge = <source = <coordinates = [1]>,
                 destination = <coordinates = [2]>>>>,
   #ttl.pipe_record<
@@ -69,11 +76,41 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // CHECK-LABEL: func.func @device_destination_count
   // CHECK-NOT: scf.for
   // CHECK: ttkernel.get_common_arg_val
-  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 1, 2]
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 1, 3]
   func.func @device_destination_count()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %count = ttl.pipenet_destination_count {
         pipe_net_id = 1 : i64, records = #device_records} : index
+    func.call @consume(%count) : (index) -> ()
+    func.return
+  }
+}
+
+// -----
+
+#sparse_device_domain = #ttl.device_domain<
+    components = <name = "device", extent = [4]>>
+#sparse_device_records = #ttl.pipenet_records<net 2 name "sparse_device" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #sparse_device_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [3]>>>>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func private @consume(index)
+
+  // CHECK-LABEL: func.func @sparse_device_destination_count
+  // CHECK: scf.for
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [3]
+  // CHECK: arith.addi
+  func.func @sparse_device_destination_count()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %count = ttl.pipenet_destination_count {
+        pipe_net_id = 2 : i64, records = #sparse_device_records} : index
     func.call @consume(%count) : (index) -> ()
     func.return
   }

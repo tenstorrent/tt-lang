@@ -24,8 +24,8 @@ from sim.program import _dedupe_pipe_nets  # type: ignore[reportPrivateUsage]
 _NET_OF_ANOTHER_OPERATION = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 1))])
 
 
-class TestPipeNetPredicates:
-    """PipeNet.is_src / is_dst / is_active use ttl.node(); run inside @ttl.operation."""
+class TestPipeNetQueries:
+    """PipeNet role predicates and destination counts use ttl.node()."""
 
     @pytest.mark.parametrize(
         ("pipes", "expected_counts"),
