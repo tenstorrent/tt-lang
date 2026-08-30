@@ -1544,6 +1544,32 @@ def TTKernelAnnotateDFBUse
   let dependentDialects = [];
 }
 
+def TTKernelFinalizeTensorRuntimeArgs
+    : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
+  let summary = "Finalize tensor common runtime arguments";
+  let description = [{
+    Compacts each kernel function's tensor-address prefix after dead-code
+    elimination. Surviving `ttkernel.get_common_arg_val` indices are rewritten
+    to the compact prefix, compiler-managed indices following that prefix are
+    shifted by the number of removed tensor addresses, and
+    `ttl.crta_indices` retains the corresponding global tensor indices.
+
+    The pass also records the surviving tensors used to construct
+    `LocalTensorAccessor` values in `ttl.local_tensor_indices`. The runtime uses
+    this metadata to require local tensor shards on every executing core.
+
+    Dynamic common-argument indices represented by
+    `ttkernel.experimental.constant_table_lookup` are rewritten with the same
+    mapping. Functions containing common-argument accesses hidden in verbatim
+    C++ retain the complete tensor prefix because those indices cannot be
+    analyzed structurally.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect"
+  ];
+}
+
 def TTKernelCombinePackTiles
     : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
   let summary = "Combine consecutive pack_tile ops into pack_tile_block";

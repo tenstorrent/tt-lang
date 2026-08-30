@@ -27,6 +27,8 @@ def test_compiled_kernel_configuration_is_extracted(monkeypatch):
               func.func @compute_kernel() attributes {
                 dst_full_sync_en = true,
                 fp32_dest_acc_en = true,
+                ttl.crta_indices = [2, 4],
+                ttl.local_tensor_indices = [4],
                 ttl.unpack_to_dest_fp32 = array<i32: 3, 17>
               } {
                 return
@@ -51,7 +53,25 @@ def test_compiled_kernel_configuration_is_extracted(monkeypatch):
     assert noc_kernels == []
     assert compute_kernel.fp32_dest_acc_en
     assert compute_kernel.dst_full_sync_en
+    assert compute_kernel.tensor_indices == [2, 4]
+    assert compute_kernel.local_tensor_indices == [4]
     assert compute_kernel.unpack_to_dest_fp32 == [3, 17]
+
+
+def test_kernel_metadata_preserves_local_tensor_indices(tmp_path):
+    compute_kernel = KernelSpec(
+        name="compute_kernel",
+        thread_type=ThreadType.COMPUTE,
+        source="void kernel_main() {}",
+        tensor_indices=[2, 4],
+        local_tensor_indices=[4],
+    )
+
+    kernel_builder.write_kernels([], compute_kernel, tmp_path / "kernels")
+    metadata = kernel_builder.load_kernel_metadata(tmp_path / "kernels")
+
+    assert metadata["compute_kernel"]["tensor_indices"] == [2, 4]
+    assert metadata["compute_kernel"]["local_tensor_indices"] == [4]
 
 
 def test_missing_compiler_configuration_is_rejected(monkeypatch):
