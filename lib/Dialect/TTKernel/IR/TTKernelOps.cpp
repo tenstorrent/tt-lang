@@ -622,24 +622,44 @@ void MyLogicalYOp::inferResultRanges(
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
 }
 
+static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
+                                                   ArrayRef<int64_t> values) {
+  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+    return failure();
+  }
+  return values[index];
+}
+
+OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
+  auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
+  if (!indexAttr) {
+    return {};
+  }
+  FailureOr<int64_t> tableValue =
+      lookupConstantTableValue(indexAttr.getInt(), getValues());
+  if (failed(tableValue)) {
+    return {};
+  }
+  return IntegerAttr::get(getResult().getType(), *tableValue);
+}
+
 void ConstantTableLookupOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *) {
-  patterns.add(+[](ConstantTableLookupOp op,
+  patterns.add(+[](ConstantTableLookupOp lookupOp,
                    PatternRewriter &rewriter) -> LogicalResult {
     APInt indexValue;
-    if (!matchPattern(op.getIndex(), m_ConstantInt(&indexValue))) {
-      return rewriter.notifyMatchFailure(op, "index is not constant");
+    if (!matchPattern(lookupOp.getIndex(), m_ConstantInt(&indexValue))) {
+      return rewriter.notifyMatchFailure(lookupOp, "index is not constant");
     }
 
-    int64_t index = indexValue.getSExtValue();
-    ArrayRef<int64_t> values = op.getValues();
-    if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
-      return rewriter.notifyMatchFailure(op, "index is outside table bounds");
+    FailureOr<int64_t> tableValue = lookupConstantTableValue(
+        indexValue.getSExtValue(), lookupOp.getValues());
+    if (failed(tableValue)) {
+      return rewriter.notifyMatchFailure(lookupOp,
+                                         "index is outside table bounds");
     }
 
-    Value constant =
-        arith::ConstantIndexOp::create(rewriter, op.getLoc(), values[index]);
-    rewriter.replaceOp(op, constant);
+    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp, *tableValue);
     return success();
   });
 }
