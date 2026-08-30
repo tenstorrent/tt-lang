@@ -65,9 +65,7 @@ def test_local_role_predicates(device, dtype, to_device):
 
     expected = torch.zeros(3 * TILE, GRID_X * TILE, dtype=dtype)
     expected[0:TILE, 0 : 2 * TILE] = inp_torch[:, 0 : 2 * TILE]
-    expected[TILE : 2 * TILE, 2 * TILE : 4 * TILE] = inp_torch[
-        :, 2 * TILE : 4 * TILE
-    ]
+    expected[TILE : 2 * TILE, 2 * TILE : 4 * TILE] = inp_torch[:, 2 * TILE : 4 * TILE]
     expected[2 * TILE : 3 * TILE, 0 : 4 * TILE] = inp_torch[:, 0 : 4 * TILE]
 
     assert_allclose(expected.float(), ttnn.to_torch(out).float(), rtol=0.0, atol=0.0)

@@ -4006,8 +4006,7 @@ lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
 // Local records permit one launch-node-indexed count-table lookup.
 static FailureOr<Value>
 lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
-                          PipeRole role,
-                          ConversionPatternRewriter &rewriter) {
+                          PipeRole role, ConversionPatternRewriter &rewriter) {
   FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
   if (failed(launchGrid)) {
     return failure();
@@ -4034,16 +4033,15 @@ lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
 
 static FailureOr<Value>
 lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
-                        PipeRole role,
-                        ConversionPatternRewriter &rewriter) {
+                        PipeRole role, ConversionPatternRewriter &rewriter) {
   FailureOr<Value> recordCount =
       lowerLocalRoleRecordCount(op, records, role, rewriter);
   if (failed(recordCount)) {
     return failure();
   }
   Value zero = arith::ConstantIndexOp::create(rewriter, op->getLoc(), 0);
-  return arith::CmpIOp::create(rewriter, op->getLoc(),
-                              arith::CmpIPredicate::ne, *recordCount, zero)
+  return arith::CmpIOp::create(rewriter, op->getLoc(), arith::CmpIPredicate::ne,
+                               *recordCount, zero)
       .getResult();
 }
 
@@ -4152,8 +4150,8 @@ struct PipeNetDestinationCountLowering
                   : lowerDeviceDestinationCountByRecord(op, records, rewriter));
       return success();
     }
-    FailureOr<Value> localCount = lowerLocalRoleRecordCount(
-        op, records, PipeRole::Destination, rewriter);
+    FailureOr<Value> localCount =
+        lowerLocalRoleRecordCount(op, records, PipeRole::Destination, rewriter);
     if (succeeded(localCount)) {
       rewriter.replaceOp(op, *localCount);
       return success();
