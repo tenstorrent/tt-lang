@@ -46,6 +46,7 @@
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
@@ -65,10 +66,6 @@ namespace {
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
-// Maps local args to global tensor indices for common runtime args (buffer
-// addresses). CRTA is filtered per-thread, containing only addresses for
-// tensors this thread uses.
-constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 // PipeGraph is defined in PipeGraph.h.
@@ -458,7 +455,7 @@ static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  int32_t baseCTA, int32_t globalTensorIdx,
                                  int32_t crtaIndex, Value bankBase,
-                                 Value pageSize) {
+                                 Value pageSize = Value()) {
   std::string ctaExpr =
       "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
       std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
@@ -841,15 +838,16 @@ getBaseCTAAndGlobalTensorIdx(unsigned argIdx, Operation *op) {
            << kBaseCTAIndexAttrName << " attribute";
   }
 
-  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
+  auto crtaIndicesAttr =
+      parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndicesAttr) {
     return op->emitError("function missing ")
-           << kCRTAIndicesAttr << " attribute";
+           << kCRTAIndicesAttrName << " attribute";
   }
 
   if (argIdx >= crtaIndicesAttr.size()) {
     return op->emitError("argument index out of range for ")
-           << kCRTAIndicesAttr;
+           << kCRTAIndicesAttrName;
   }
 
   int32_t baseCTA = static_cast<int32_t>(baseCTAAttr.getInt());
@@ -874,7 +872,7 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
         "materialization; Python layer should reject tensors without layout");
   }
 
-  // TTL layouts are always tiled. Compute page size from tile element type.
+  // Native tensor copies operate on tiles and override the accessor page size.
   auto tileType =
       mlir::dyn_cast<tt::ttcore::TileType>(layoutAttr.getElementType());
   if (!tileType) {
@@ -1703,7 +1701,8 @@ struct OpaqueDFBArgument {
 
 struct OpaqueTensorArgument {
   Value tensor;
-  TensorAccessorInfo accessorInfo;
+  unsigned argIdx;
+  std::optional<std::pair<int32_t, int32_t>> ctaInfo;
 };
 
 using OpaqueArgumentPlan =
@@ -1741,6 +1740,8 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
 
     SmallVector<OpaqueArgumentPlan> argumentPlan;
     argumentPlan.reserve(op.getArgOperands().size());
+    std::optional<ttk::ThreadType> kernelThread =
+        getKernelThreadType(getEnclosingKernelThread(op));
     for (auto [originalArg, adaptedArg] :
          llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
       Type originalType = originalArg.getType();
@@ -1755,23 +1756,41 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       }
 
       if (mlir::isa<RankedTensorType>(originalType)) {
-        if (!isNocKernelThread(op)) {
-          return op.emitError(
-              "tensor operands require a data movement (noc) thread");
+        FailureOr<unsigned> argIdx = getTensorFuncArgIndex(originalArg);
+        if (failed(argIdx)) {
+          return rewriter.notifyMatchFailure(
+              op, "tensor must be a function argument for runtime arg mapping");
         }
-        FailureOr<TensorAccessorInfo> accessorInfo =
-            getTensorAccessorInfo(originalArg, op, rewriter);
-        if (failed(accessorInfo)) {
-          return failure();
+        if (!kernelThread || (*kernelThread != ttk::ThreadType::Noc &&
+                              *kernelThread != ttk::ThreadType::Compute)) {
+          return op.emitError(
+              "tensor operands require a compute or data movement kernel");
+        }
+        std::optional<std::pair<int32_t, int32_t>> ctaInfo;
+        if (*kernelThread == ttk::ThreadType::Noc) {
+          FailureOr<std::pair<int32_t, int32_t>> resolvedCTAInfo =
+              getBaseCTAAndGlobalTensorIdx(*argIdx, op);
+          if (failed(resolvedCTAInfo)) {
+            return failure();
+          }
+          ctaInfo = *resolvedCTAInfo;
+        }
+        auto tensorType = mlir::cast<RankedTensorType>(originalType);
+        if (!mlir::isa_and_nonnull<tt::ttl::LayoutAttr>(
+                tensorType.getEncoding())) {
+          return op.emitError(
+              "tensor must have ttl.layout encoding for accessor "
+              "materialization");
         }
         argumentPlan.push_back(
-            OpaqueTensorArgument{originalArg, *accessorInfo});
+            OpaqueTensorArgument{originalArg, *argIdx, ctaInfo});
         continue;
       }
 
       argumentPlan.push_back(OpaqueScalarArgument{adaptedArg});
     }
 
+    llvm::DenseMap<Value, Value> materializedTensorAccessors;
     SmallVector<Value> convertedArgs;
     convertedArgs.reserve(argumentPlan.size());
     for (const OpaqueArgumentPlan &argument : argumentPlan) {
@@ -1787,10 +1806,25 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
       const auto &tensor = std::get<OpaqueTensorArgument>(argument);
-      Value bankBase =
-          getCommonRuntimeArg(tensor.accessorInfo.argIdx, location, rewriter);
-      convertedArgs.push_back(materializeTensorAccessor(
-          tensor.tensor, bankBase, tensor.accessorInfo, rewriter));
+      auto existingAccessor = materializedTensorAccessors.find(tensor.tensor);
+      if (existingAccessor != materializedTensorAccessors.end()) {
+        convertedArgs.push_back(existingAccessor->second);
+        continue;
+      }
+      Value bankBase = getCommonRuntimeArg(tensor.argIdx, location, rewriter);
+      Value accessor;
+      if (tensor.ctaInfo) {
+        auto [baseCTA, globalTensorIdx] = *tensor.ctaInfo;
+        accessor =
+            buildTensorAccessor(location, rewriter, baseCTA, globalTensorIdx,
+                                static_cast<int32_t>(tensor.argIdx), bankBase);
+      } else {
+        accessor =
+            ttk::LocalTensorAccessorOp::create(rewriter, location, bankBase)
+                .getResult();
+      }
+      materializedTensorAccessors.insert({tensor.tensor, accessor});
+      convertedArgs.push_back(accessor);
     }
 
     ArrayAttr templateArgsAttr;
