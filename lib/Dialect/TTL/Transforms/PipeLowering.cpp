@@ -1787,13 +1787,10 @@ public:
   void emitRemoteReceiverAddressPublish(Value senderTableAddress,
                                         Value publishedAddress) {
     TranslatedCore sourceCore = getSourceCore();
-    auto byteEnableAll = arith::ConstantOp::create(
-        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
     // An inline NoC write does not update the sender's local SRAM when the
     // sender is also this receiver, so that case uses a direct L1 store.
-    ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
-                                    senderTableAddress, publishedAddress,
-                                    byteEnableAll, nocVal);
+    emitUnicastInlineWordWrite(sourceCore, senderTableAddress, publishedAddress,
+                               /*posted=*/false);
   }
 
   void emitAddressPublishBarrier() override {
@@ -1854,18 +1851,25 @@ protected:
     return {translatedX, translatedY};
   }
 
+  void emitUnicastInlineWordWrite(TranslatedCore destinationCore,
+                                  Value destinationAddress, Value value,
+                                  bool posted) {
+    Value byteEnableAll = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+    ttk::NocInlineDwWriteOp::create(
+        rewriter, loc, destinationCore.x, destinationCore.y, destinationAddress,
+        value, byteEnableAll, nocVal,
+        posted ? rewriter.getBoolAttr(true) : BoolAttr());
+  }
+
   void emitUnicastCompletionSignal(TranslatedCore destinationCore,
                                    Value receiverCompletionCounterAddr,
                                    bool posted) {
     if (posted) {
       Value completionValue =
           arith::ConstantIntOp::create(rewriter, loc, 1, 32);
-      Value byteEnableAll = arith::ConstantOp::create(
-          rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-      ttk::NocInlineDwWriteOp::create(
-          rewriter, loc, destinationCore.x, destinationCore.y,
-          receiverCompletionCounterAddr, completionValue, byteEnableAll, nocVal,
-          rewriter.getBoolAttr(true));
+      emitUnicastInlineWordWrite(destinationCore, receiverCompletionCounterAddr,
+                                 completionValue, /*posted=*/true);
       return;
     }
 
@@ -4714,8 +4718,8 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
   return locations;
 }
 
-static bool hasSingleExecution(const PipeTransferAllocationUnit &unit,
-                               const PipeGraph &pipeGraph) {
+static bool executesOnceAtEveryReceiver(const PipeTransferAllocationUnit &unit,
+                                        const PipeGraph &pipeGraph) {
   return llvm::all_of(pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId),
                       [&](PipeReceiverEndpointId endpointId) {
                         const PipeReceiverEndpoint &endpoint =
@@ -5060,7 +5064,8 @@ LogicalResult buildPipeResourcePlan(
            "completion counter group must contain a transfer");
     bool hasSingleCompletionUpdate =
         group.unitIndices.size() == 1 &&
-        hasSingleExecution(units[group.unitIndices.front()], pipeGraph);
+        executesOnceAtEveryReceiver(units[group.unitIndices.front()],
+                                    pipeGraph);
     for (std::size_t unitIndex : group.unitIndices) {
       units[unitIndex].hasSingleCompletionUpdate = hasSingleCompletionUpdate;
     }
