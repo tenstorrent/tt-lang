@@ -123,8 +123,8 @@ observable only after the payload. A sender-ready increment means that the
 receiver has reserved destination storage; it does not mean that the payload
 write is complete. Repeated, shared, collective, receiver-authored, and
 capacity-credit transfers signal completion with a payload barrier followed by
-an atomic increment. An eligible one-shot `CA/RP` point-to-point transfer may
-instead use ordered posted payload and completion writes.
+an atomic increment. An eligible one-shot `CA/RP` point-to-point transfer to a
+remote core may instead use ordered posted payload and completion writes.
 
 | Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` |
 | --- | --- | --- | --- |
@@ -133,7 +133,7 @@ instead use ordered posted payload and completion writes.
 | Receiver increments the sender-ready counter | After the published address is visible | After reserving the block | No |
 | Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted | The receiver has available DFB capacity |
 | Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
-| Sender signals receiver completion | Payload barrier followed by an atomic increment | Ordered posted store for an eligible one-shot point-to-point transfer; otherwise barrier and atomic increment | Payload barrier followed by an atomic increment |
+| Sender signals receiver completion | Payload barrier followed by an atomic increment | Ordered posted store for an eligible one-shot point-to-point transfer to a remote core; otherwise barrier and atomic increment | Payload barrier followed by an atomic increment |
 | Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity counter |
 | Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
 | Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
@@ -757,8 +757,8 @@ release cannot race with a sender update.
 3. The sender signals receiver completion after the payload write barrier,
    using the transfer node's receiver-completion counter. `CA/CC` retains the
    cumulative atomic mechanism because its completion is coupled to
-   iteration-domain credit. Eligible one-shot point-to-point transfers in
-   other modes may use the ordered posted mechanism described in
+   iteration-domain credit. Eligible one-shot point-to-point transfers to a
+   remote core in other modes may use the ordered posted mechanism described in
    `PipeOptimizations.md`.
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.

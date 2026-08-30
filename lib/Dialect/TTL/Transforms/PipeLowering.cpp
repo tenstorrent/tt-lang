@@ -2792,10 +2792,14 @@ static Value incrementPipePostSequence(Location loc, Value sequenceCounter,
   return tokenSequence;
 }
 
-static bool hasOneShotFixedReceiverAddress(const PipeResourceInfo &resource) {
+static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
+  const PipeKey &pipe = resource.pipe;
+  bool hasRemoteSingleReceiver =
+      pipe.hasSingleReceiver() &&
+      (pipe.srcX != pipe.dstStartX || pipe.srcY != pipe.dstStartY);
   const std::optional<PipeComputedAddressInfo> &computedAddress =
       resource.addressStorage.computedAddress;
-  return resource.completion.hasSingleUpdate &&
+  return hasRemoteSingleReceiver && resource.completion.hasSingleUpdate &&
          resource.addressStorage.usesComputedReceiverDFB() && computedAddress &&
          !computedAddress->usesDynamicSlotCounter();
 }
@@ -2829,7 +2833,7 @@ static LogicalResult lowerSelectedPipeTransferSend(
   bool useOrderedPostedProtocol =
       !usesFabric && !fields.isCollective &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
-      llvm::all_of(resources, hasOneShotFixedReceiverAddress);
+      llvm::all_of(resources, hasOneShotRemoteFixedReceiver);
 
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   std::unique_ptr<PipeSendTransportEmitter> transport;
@@ -3057,8 +3061,8 @@ LogicalResult lowerPipeTransferSend(
   // Ordered posted writes can replace the payload barrier and atomic update
   // only when value one is the counter's complete lifetime state.
   bool useOrderedPostedProtocol =
-      !usesFabric && !usePageWrites && pipeType.hasSingleReceiver() &&
-      hasOneShotFixedReceiverAddress(pipeResource) &&
+      !usesFabric && !usePageWrites &&
+      hasOneShotRemoteFixedReceiver(pipeResource) &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
       transportStream.getCreditCompletion() ==
           PipeTransportCreditCompletion::Immediate;
