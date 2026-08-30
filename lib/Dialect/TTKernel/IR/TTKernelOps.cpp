@@ -637,8 +637,8 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
       return rewriter.notifyMatchFailure(op, "index is outside table bounds");
     }
 
-    Value constant = arith::ConstantIndexOp::create(
-        rewriter, op.getLoc(), values[index]);
+    Value constant =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), values[index]);
     rewriter.replaceOp(op, constant);
     return success();
   });
