@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not=ttl.pipenet_foreach
+// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not=ttl.pipenet_foreach --implicit-check-not=scf.if --implicit-check-not=ttkernel.load_from_l1 --implicit-check-not=ttkernel.store_to_l1
 
 // Verifies that table-driven callbacks execute in record order and that one
 // selected loopback record can provide both receive and send endpoints.
@@ -6,6 +6,7 @@
 // Each callback releases the single receiver DFB slot before the next
 // identical record executes.
 // CHECK-LABEL: func.func @record_order_loopback
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK-DAG: %[[ONE_I32:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[ONE:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[SEND_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -17,11 +18,12 @@
 // CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[SLICE_INDEX]], [0, 1, 2, 3, 4] : index
 // CHECK: ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [0, 0, 0, 0, 0]
 // CHECK: ttkernel.cb_reserve_back(%[[RECEIVER_DFB]], %[[ONE_I32]])
-// CHECK: scf.if
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: %[[SEND_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[SEND_DFB]])
-// CHECK: ttkernel.noc_async_write %[[SEND_WRITE_PTR]], core[{{.*}}]
+// CHECK: %[[RECEIVER_BASE:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[RECEIVER_ADDRESS:.*]] = arith.addi %[[RECEIVER_BASE]], %{{.*}} : i32
+// CHECK: ttkernel.noc_async_write %[[SEND_WRITE_PTR]], core[{{.*}}], %[[RECEIVER_ADDRESS]]
 // CHECK: ttkernel.noc_async_write_barrier
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min
