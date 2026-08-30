@@ -206,6 +206,7 @@ tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   Value upper = arith::AddIOp::create(rewriter, loc, lower, recordCount);
   Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
+  forOp->setAttr(kPipeNetLocalRecordLoopAttrName, rewriter.getUnitAttr());
   foreachLoweringInfo.controlOps.push_back(forOp);
   foreachLoweringInfo.recordLoops[forOp] = {
       records, recordSelection,
