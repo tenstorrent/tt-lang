@@ -257,7 +257,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // when the receiver address recurrence is static and exact.
 // PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=scalar credit_completion=immediate group=1
 // PLAN-NEXT: PipeTransport:   source blocks=2 block_span=1 stage_depth=2 ownership=dfb scratch_offset=0 scratch_bytes=0 pages=1 page_bytes=4096 loops=1
-// PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 1 block_count=2 slot_span=1 group_depth=1 ownership=dfb scratch_offset=0 scratch_bytes=0 loops=1 address=recurrence(initial=0, stride=1, modulus=2, executions=2)
+// PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 1 block_count=1 slot_span=1 group_depth=1 ownership=dfb scratch_offset=0 scratch_bytes=0 loops=1 address=recurrence(initial=0, stride=0, modulus=1, executions=2)
 // PLAN-NEXT: PipeTransport:   completion endpoints=[0] source_reuse=after_completion_group
 // LOWERED-LABEL: func.func @repeated_transport
 // LOWERED-NOT: posted true
@@ -274,8 +274,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe {
@@ -290,19 +290,19 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       ttl.if_dst %pipe
           : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
         %recv = ttl.cb_reserve %dst_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %token = ttl.pipe_transfer.post %transfer, %recv
             : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
             -> !ttl.pipe_token<net 0>
         ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
         ttl.cb_push %dst_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         %ready = ttl.cb_wait %dst_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
         ttl.cb_pop %dst_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       }
       ttl.if_src %pipe
           : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
