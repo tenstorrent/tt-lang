@@ -114,8 +114,9 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(
-          "Clone TTKernel functions that branch on a core coordinate once "
-          "per launch coordinate (ttkernel-specialize-cores)."),
+          "Clone TTKernel functions whose control flow depends on a core "
+          "coordinate once per launch coordinate "
+          "(ttkernel-specialize-cores)."),
       llvm::cl::init(false)};
 };
 
@@ -128,8 +129,8 @@ void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 /// Add the ordered PipeNet launch-domain and synchronization verifiers.
 void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
 
-/// Clone kernels per launch coordinate, fold unused branches, and record
-/// surviving DFB compile-time argument indices.
+/// Clone kernels per launch coordinate, fold coordinate-dependent control
+/// flow, and record surviving DFB compile-time argument indices.
 void buildTTKernelSpecializationPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();
