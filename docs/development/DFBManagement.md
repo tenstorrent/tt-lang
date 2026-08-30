@@ -128,7 +128,7 @@ convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
 ttkernel-insert-inits              (Module) Insert hardware init calls
   ... L1 accumulation, cleanup ...
 ttkernel-specialize-cores          (Module, optional) Clone coordinate-dependent kernels
-canonicalize, cse                  (Module, after specialization) Remove untaken coordinate branches
+canonicalize, cse                  (Module, after specialization) Resolve coordinate-dependent control flow
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses

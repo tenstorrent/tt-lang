@@ -171,9 +171,9 @@ void registerTTLPipelines() {
                              buildTTLAutoSyncPipeline);
   PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
-      "Specialize kernels per launch coordinate, fold unused branches, "
-      "compact tensor runtime arguments, and record surviving DFB "
-      "compile-time argument indices.",
+      "Specialize kernels per launch coordinate, fold coordinate-dependent "
+      "control flow, compact tensor runtime arguments, and record surviving "
+      "DFB compile-time argument indices.",
       buildTTKernelSpecializationPipeline);
 }
 
