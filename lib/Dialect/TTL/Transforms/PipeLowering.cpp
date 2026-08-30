@@ -1701,7 +1701,7 @@ public:
                                          Value totalSizeBytes) = 0;
   virtual void emitPayloadWriteBarrier() = 0;
   virtual LogicalResult
-  emitReceiverCompletionIncrement(Value receiverCompletionCounterAddr) = 0;
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) = 0;
   virtual void emitCompletionSignalBarrier() = 0;
 };
 
@@ -1738,10 +1738,11 @@ protected:
   };
 
 public:
-  NocPipeTransportEmitterBase(Operation *op, bool usePostedCompletion,
+  NocPipeTransportEmitterBase(Operation *op, bool useOrderedPostedProtocol,
                               ConversionPatternRewriter &rewriter)
       : loc(op->getLoc()), rewriter(rewriter),
-        usePostedCompletion(usePostedCompletion), nocIdx(getNocIndex(op)),
+        useOrderedPostedProtocol(useOrderedPostedProtocol),
+        nocIdx(getNocIndex(op)),
         nocVal(arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                          rewriter.getI8IntegerAttr(nocIdx))) {}
 
@@ -1814,14 +1815,14 @@ public:
   }
 
   void emitPayloadWriteBarrier() override {
-    if (usePostedCompletion) {
+    if (useOrderedPostedProtocol) {
       return;
     }
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
 
   void emitCompletionSignalBarrier() override {
-    if (usePostedCompletion) {
+    if (useOrderedPostedProtocol) {
       ttk::NocAsyncWritesFlushedOp::create(rewriter, loc, nocVal,
                                            rewriter.getBoolAttr(true));
       return;
@@ -1880,7 +1881,7 @@ protected:
 
   Location loc;
   ConversionPatternRewriter &rewriter;
-  bool usePostedCompletion;
+  bool useOrderedPostedProtocol;
   int64_t nocIdx;
   Value nocVal;
 };
@@ -1888,9 +1889,9 @@ protected:
 class NocPipeTransportEmitter final : public NocPipeTransportEmitterBase {
 public:
   NocPipeTransportEmitter(Operation *op, PipeType pipeType,
-                          bool usePostedCompletion,
+                          bool useOrderedPostedProtocol,
                           ConversionPatternRewriter &rewriter)
-      : NocPipeTransportEmitterBase(op, usePostedCompletion, rewriter),
+      : NocPipeTransportEmitterBase(op, useOrderedPostedProtocol, rewriter),
         pipeType(pipeType) {}
 
   LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
@@ -1924,7 +1925,7 @@ public:
       ttk::NocAsyncWriteOp::create(
           rewriter, loc, srcAddr, ValueRange{dstStartCore.x, dstStartCore.y},
           ValueRange{}, dstAddr, totalSizeBytes, nocVal,
-          usePostedCompletion ? rewriter.getBoolAttr(true) : BoolAttr());
+          useOrderedPostedProtocol ? rewriter.getBoolAttr(true) : BoolAttr());
       return success();
     }
 
@@ -1982,12 +1983,12 @@ public:
     return success();
   }
 
-  LogicalResult emitReceiverCompletionIncrement(
-      Value receiverCompletionCounterAddr) override {
+  LogicalResult
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) override {
     if (pipeType.hasSingleReceiver()) {
       TranslatedCore dstStartCore = getDstStartCore();
       emitUnicastCompletionSignal(dstStartCore, receiverCompletionCounterAddr,
-                                  usePostedCompletion);
+                                  useOrderedPostedProtocol);
       return success();
     }
 
@@ -2076,11 +2077,11 @@ class SelectedNocPipeTransportEmitter final
     : public NocPipeTransportEmitterBase {
 public:
   SelectedNocPipeTransportEmitter(Operation *op, SelectedPipeFields fields,
-                                  bool usePostedCompletion,
+                                  bool useOrderedPostedProtocol,
                                   ConversionPatternRewriter &rewriter)
-      : NocPipeTransportEmitterBase(op, usePostedCompletion, rewriter),
+      : NocPipeTransportEmitterBase(op, useOrderedPostedProtocol, rewriter),
         fields(fields) {
-    assert((!usePostedCompletion || !fields.isCollective) &&
+    assert((!useOrderedPostedProtocol || !fields.isCollective) &&
            "posted selected completion requires point-to-point records");
   }
 
@@ -2121,12 +2122,12 @@ public:
     return success();
   }
 
-  LogicalResult emitReceiverCompletionIncrement(
-      Value receiverCompletionCounterAddr) override {
+  LogicalResult
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) override {
     if (!fields.isCollective) {
       emitUnicastCompletionSignal(getDstStartCore(),
                                   receiverCompletionCounterAddr,
-                                  usePostedCompletion);
+                                  useOrderedPostedProtocol);
       return success();
     }
 
@@ -2160,7 +2161,7 @@ private:
     ttk::NocAsyncWriteOp::create(
         rewriter, loc, srcAddr, ValueRange{dstStartCore.x, dstStartCore.y},
         ValueRange{}, dstAddr, totalSizeBytes, nocVal,
-        usePostedCompletion ? rewriter.getBoolAttr(true) : BoolAttr());
+        useOrderedPostedProtocol ? rewriter.getBoolAttr(true) : BoolAttr());
   }
 
   void emitMulticastPayloadWrite(Value srcAddr, Value dstAddr,
@@ -2416,8 +2417,8 @@ public:
 
   void emitPayloadWriteBarrier() override {}
 
-  LogicalResult emitReceiverCompletionIncrement(
-      Value receiverCompletionCounterAddr) override {
+  LogicalResult
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) override {
     assert(sourceAddress && destinationAddress && sizeBytes &&
            "fabric payload must be prepared before completion signaling");
     routeEmitter.emitFusedWriteAtomicIncrement(
@@ -2821,7 +2822,7 @@ static LogicalResult lowerSelectedPipeTransferSend(
   // Record-selected transfers remain scalar. An absolute completion store is
   // valid only when every possible record has one fixed receiver slot and its
   // completion counter receives exactly one update.
-  bool usePostedCompletion =
+  bool useOrderedPostedProtocol =
       !usesFabric && !fields.isCollective &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
       llvm::all_of(resources, hasOneShotFixedReceiverAddress);
@@ -2849,7 +2850,7 @@ static LogicalResult lowerSelectedPipeTransferSend(
         rewriter);
   } else {
     transport = std::make_unique<SelectedNocPipeTransportEmitter>(
-        op, fields, usePostedCompletion, rewriter);
+        op, fields, useOrderedPostedProtocol, rewriter);
   }
 
   Value senderSemAddr = buildSelectedReadyCounterAddress(
@@ -2975,8 +2976,8 @@ static LogicalResult lowerSelectedPipeTransferSend(
   Value completionCounterAddress = buildSelectedPipeCounterAddress(
       op, loc, completionCounters, fields.recordIndex, pipeResourcePlan,
       rewriter);
-  if (failed(transport->emitReceiverCompletionIncrement(
-          completionCounterAddress))) {
+  if (failed(
+          transport->emitReceiverCompletionSignal(completionCounterAddress))) {
     return failure();
   }
   transport->emitCompletionSignalBarrier();
@@ -3051,7 +3052,7 @@ LogicalResult lowerPipeTransferSend(
       !usesFabric && shouldEmitPayloadPageWrites(op, pipeType, transportStream);
   // Ordered posted writes can replace the payload barrier and atomic update
   // only when value one is the counter's complete lifetime state.
-  bool usePostedCompletion =
+  bool useOrderedPostedProtocol =
       !usesFabric && !usePageWrites && pipeType.hasSingleReceiver() &&
       hasOneShotFixedReceiverAddress(pipeResource) &&
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
@@ -3107,7 +3108,7 @@ LogicalResult lowerPipeTransferSend(
         rewriter);
   } else {
     auto emitter = std::make_unique<NocPipeTransportEmitter>(
-        op, pipeType, usePostedCompletion, rewriter);
+        op, pipeType, useOrderedPostedProtocol, rewriter);
     nocTransport = emitter.get();
     transport = std::move(emitter);
   }
@@ -3245,7 +3246,7 @@ LogicalResult lowerPipeTransferSend(
       loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
   transport->emitPayloadWriteBarrier();
 
-  if (failed(transport->emitReceiverCompletionIncrement(
+  if (failed(transport->emitReceiverCompletionSignal(
           receiverCompletionCounterAddr))) {
     return failure();
   }
@@ -3348,7 +3349,7 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
   } else {
     SelectedNocPipeTransportEmitter transport(
-        op, fields, /*usePostedCompletion=*/false, rewriter);
+        op, fields, /*useOrderedPostedProtocol=*/false, rewriter);
     if (anyUsePublishedAddress) {
       auto emitAddressPublication = [&]() -> LogicalResult {
         Value publishedAddress = buildReceiverPublishedAddress(
@@ -3481,7 +3482,8 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
   } else {
     NocPipeTransportEmitter transport(op, pipeType,
-                                      /*usePostedCompletion=*/false, rewriter);
+                                      /*useOrderedPostedProtocol=*/false,
+                                      rewriter);
     if (postPlan.addressPublication) {
       AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
       Value publishedAddress = buildReceiverPublishedAddress(
