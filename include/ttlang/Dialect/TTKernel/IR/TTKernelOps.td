@@ -4238,7 +4238,7 @@ def TTKernel_ConstantTableLookupOp
     let assemblyFormat = [{
       $index `,` $values attr-dict `:` type($index)
     }];
-    let hasFolder = 1;
+    let hasCanonicalizer = 1;
     let hasVerifier = 1;
 }
 
