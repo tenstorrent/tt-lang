@@ -128,6 +128,11 @@ constexpr llvm::StringLiteral
 /// linearization stride for this dimension.
 constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 
+/// Marks a compiler-generated loop over the local PipeNet records selected for
+/// one launch node.
+constexpr llvm::StringLiteral
+    kPipeNetLocalRecordLoopAttrName("ttl.pipenet_local_record_loop");
+
 /// Marks an scf.for loop as iterating over a reduction dimension.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 

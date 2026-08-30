@@ -129,15 +129,18 @@ ttkernel-insert-inits              (Module) Insert hardware init calls
   ... L1 accumulation, cleanup ...
 ttkernel-specialize-cores          (Module, optional) Clone coordinate-dependent kernels
 canonicalize, cse                  (Module, after specialization) Resolve coordinate-dependent control flow
+ttkernel-unroll-static-pipenet-record-loops
+                                    (FuncOp) Unroll static local record loops
+canonicalize, cse                  (Module) Fold selected record tables
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses
 ```
 
-Tensor runtime-argument finalization runs with or without per-core
-specialization. Core specialization and DFB-use annotation are optional.
-Annotation follows canonicalization so an eliminated branch cannot keep an
-otherwise-unused DFB live on that clone's launch node.
+Core specialization and DFB-use annotation are optional. Record-loop unrolling,
+cleanup, and tensor runtime-argument finalization run in both modes. Finalization
+follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
+annotation then records only surviving DFB uses on each clone's launch node.
 
 `ttl-finalize-dfb-indices` must precede
 `ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.
