@@ -4045,8 +4045,6 @@ lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
       .getResult();
 }
 
-// Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
-// named PipeNet. `roleBuilder` produces the i1 match for one static pipe.
 template <typename Op>
 static LogicalResult lowerRolePredicate(
     Op op, ConversionPatternRewriter &rewriter,

@@ -14,6 +14,8 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
   // CHECK-NOT: scf.for
   // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [2, 1, 0, 0]
   // CHECK: arith.cmpi ne
+  // CHECK-NOT: ttkernel.experimental.constant_table_lookup
+  // CHECK-NOT: scf.for
   func.func @local_is_src() -> i1
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %predicate = ttl.is_src {
@@ -25,6 +27,8 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
   // CHECK-NOT: scf.for
   // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 0, 1, 2]
   // CHECK: arith.cmpi ne
+  // CHECK-NOT: ttkernel.experimental.constant_table_lookup
+  // CHECK-NOT: scf.for
   func.func @local_is_dst() -> i1
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %predicate = ttl.is_dst {
@@ -36,6 +40,8 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
   // CHECK-NOT: scf.for
   // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [2, 1, 1, 2]
   // CHECK: arith.cmpi ne
+  // CHECK-NOT: ttkernel.experimental.constant_table_lookup
+  // CHECK-NOT: scf.for
   func.func @local_is_active() -> i1
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %predicate = ttl.is_active {
