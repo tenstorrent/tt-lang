@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device regression for physical DFB descriptor dependencies."""
+"""Device regression for core-specialized physical DFB descriptor dependencies."""
 
 import os
 
@@ -32,7 +32,7 @@ def _make_external_descriptor_reset_kernel(data_format):
         participants=(compute_kernel, reader_kernel, writer_kernel),
     )
 
-    @ttl.operation(grid=(1, 1))
+    @ttl.operation(grid=(2, 1))
     def external_descriptor_reset_kernel(input_tensor, output_tensor):
         external_stream = ttl.make_dfb(
             data_format,
@@ -42,47 +42,53 @@ def _make_external_descriptor_reset_kernel(data_format):
 
         @ttl.compute(kernel=compute_kernel)
         def compute():
-            ttl.reset_dfbs(reset, dfbs=[external_stream])
+            core_x, _core_y = ttl.node(dims=2)
+            if core_x == 0:
+                ttl.reset_dfbs(reset, dfbs=[external_stream])
 
         @ttl.datamovement(kernel=reader_kernel)
         def read():
-            ttl.call_extern_func(
-                REPEATED_DFB_TRANSACTIONS_HEADER,
-                "read_high_water_dfb_logical_dm",
-                template_args=[ttl.dfb_descriptor(external_stream)],
-                func_args=[input_tensor],
-                dfb_effects=[
-                    ttl.DFBEffect.reserve(external_stream, tiles=8),
-                    ttl.DFBEffect.push(external_stream, tiles=4),
-                    ttl.DFBEffect.reserve(external_stream, tiles=8),
-                    ttl.DFBEffect.push(external_stream, tiles=4),
-                    ttl.DFBEffect.reserve(external_stream, tiles=8),
-                    ttl.DFBEffect.push(external_stream, tiles=4),
-                    ttl.DFBEffect.reserve(external_stream, tiles=8),
-                    ttl.DFBEffect.push(external_stream, tiles=4),
-                ],
-            )
-            ttl.reset_dfbs(reset, dfbs=[external_stream])
+            core_x, _core_y = ttl.node(dims=2)
+            if core_x == 0:
+                ttl.call_extern_func(
+                    REPEATED_DFB_TRANSACTIONS_HEADER,
+                    "read_high_water_dfb_logical_dm",
+                    template_args=[ttl.dfb_descriptor(external_stream)],
+                    func_args=[input_tensor],
+                    dfb_effects=[
+                        ttl.DFBEffect.reserve(external_stream, tiles=8),
+                        ttl.DFBEffect.push(external_stream, tiles=4),
+                        ttl.DFBEffect.reserve(external_stream, tiles=8),
+                        ttl.DFBEffect.push(external_stream, tiles=4),
+                        ttl.DFBEffect.reserve(external_stream, tiles=8),
+                        ttl.DFBEffect.push(external_stream, tiles=4),
+                        ttl.DFBEffect.reserve(external_stream, tiles=8),
+                        ttl.DFBEffect.push(external_stream, tiles=4),
+                    ],
+                )
+                ttl.reset_dfbs(reset, dfbs=[external_stream])
 
         @ttl.datamovement(kernel=writer_kernel)
         def write():
-            ttl.call_extern_func(
-                REPEATED_DFB_TRANSACTIONS_HEADER,
-                "write_high_water_dfb_logical_dm",
-                template_args=[ttl.dfb_descriptor(external_stream)],
-                func_args=[output_tensor],
-                dfb_effects=[
-                    ttl.DFBEffect.wait(external_stream, tiles=4),
-                    ttl.DFBEffect.pop(external_stream, tiles=4),
-                    ttl.DFBEffect.wait(external_stream, tiles=4),
-                    ttl.DFBEffect.pop(external_stream, tiles=4),
-                    ttl.DFBEffect.wait(external_stream, tiles=4),
-                    ttl.DFBEffect.pop(external_stream, tiles=4),
-                    ttl.DFBEffect.wait(external_stream, tiles=4),
-                    ttl.DFBEffect.pop(external_stream, tiles=4),
-                ],
-            )
-            ttl.reset_dfbs(reset, dfbs=[external_stream])
+            core_x, _core_y = ttl.node(dims=2)
+            if core_x == 0:
+                ttl.call_extern_func(
+                    REPEATED_DFB_TRANSACTIONS_HEADER,
+                    "write_high_water_dfb_logical_dm",
+                    template_args=[ttl.dfb_descriptor(external_stream)],
+                    func_args=[output_tensor],
+                    dfb_effects=[
+                        ttl.DFBEffect.wait(external_stream, tiles=4),
+                        ttl.DFBEffect.pop(external_stream, tiles=4),
+                        ttl.DFBEffect.wait(external_stream, tiles=4),
+                        ttl.DFBEffect.pop(external_stream, tiles=4),
+                        ttl.DFBEffect.wait(external_stream, tiles=4),
+                        ttl.DFBEffect.pop(external_stream, tiles=4),
+                        ttl.DFBEffect.wait(external_stream, tiles=4),
+                        ttl.DFBEffect.pop(external_stream, tiles=4),
+                    ],
+                )
+                ttl.reset_dfbs(reset, dfbs=[external_stream])
 
     return external_descriptor_reset_kernel
 
@@ -93,7 +99,7 @@ def _make_external_descriptor_reset_kernel(data_format):
     [to_dram, to_l1],
     ids=["dram", "l1"],
 )
-def test_external_descriptor_survives_synchronized_reset(
+def test_external_descriptor_survives_specialization_and_synchronized_reset(
     device,
     dtype,
     to_device,
@@ -115,7 +121,11 @@ def test_external_descriptor_survives_synchronized_reset(
     input_tensor = to_device(input_host, device)
     output_tensor = to_device(torch.zeros_like(input_host), device)
 
-    operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+    operation(
+        input_tensor,
+        output_tensor,
+        options="--ttl-reuse-user-dfbs --ttl-specialize-cores",
+    )
 
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
@@ -124,4 +134,8 @@ def test_external_descriptor_survives_synchronized_reset(
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
-    assert final_mlir_path.read_text().count("dfb_index =") == 1
+    final_mlir = final_mlir_path.read_text()
+    assert final_mlir.count("dfb_index =") == 1
+    assert final_mlir.count("ttl.core_coord") == 6
+    assert final_mlir.count("ttl.used_dfb_indices = array<i32: 0>") == 3
+    assert final_mlir.count("ttl.used_dfb_indices = array<i32>") == 3
