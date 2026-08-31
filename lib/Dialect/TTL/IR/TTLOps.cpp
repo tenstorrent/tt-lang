@@ -1868,6 +1868,10 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   auto validateMapStructure =
       [&](AffineMap map, RankedTensorType tensorTy, StringRef kind,
           size_t idx) -> mlir::LogicalResult {
+    if (map.getNumSymbols() != 0) {
+      return emitOpError() << kind << " " << idx
+                           << " indexing map must not contain symbols";
+    }
     llvm::SmallBitVector referencedDims(map.getNumDims(), false);
     for (auto [resIdx, expr] : llvm::enumerate(map.getResults())) {
       if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {

@@ -180,6 +180,34 @@ func.func @compute_nonzero_map_constant(
 
 // -----
 
+// Test: Indexing maps cannot contain affine symbols.
+func.func @compute_map_symbol(
+    %output_dfb: !ttl.cb<[2], !ttcore.tile<32x32, f32>, 1>) {
+  %c0 = arith.constant 0 : index
+  %init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
+  %attached_init = ttl.attach_cb %init, %output_dfb
+      : (tensor<2x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[2], !ttcore.tile<32x32, f32>, 1>)
+        -> tensor<2x!ttcore.tile<32x32, f32>>
+  %view = ttl.cb_reserve %output_dfb
+      : <[2], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{output 0 indexing map must not contain symbols}}
+  %result = ttl.compute
+      ins()
+      outs(%attached_init : tensor<2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0)[s0] -> (d0)>],
+       iterator_types = ["parallel"]} {
+  ^bb0(%output_tile: !ttcore.tile<32x32, f32>):
+    ttl.tile_store %output_tile, %view[%c0] from dst[%c0]
+        : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> tensor<2x!ttcore.tile<32x32, f32>>
+  return
+}
+
+// -----
+
 // Test: Broadcast constant on non-1 dimension
 func.func @compute_broadcast_dim_not_one(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
