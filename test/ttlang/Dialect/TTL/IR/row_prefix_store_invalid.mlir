@@ -155,7 +155,8 @@ func.func @tile_store_view_must_be_reserved(
       -> tensor<1x14x!ttcore.tile<1x32, bf16>>
   %c0 = arith.constant 0 : index
   // expected-error @below {{'ttl.tile_store' op row_prefix requires a producer-reserved view}}
-  ttl.tile_store %tile, %view[%c0, %c0] from dst[%c0] {row_prefix}
+  ttl.tile_store %tile, %view[%c0, %c0] from dst[%c0]
+      {row_prefix, store_kind = 1 : i32}
       : !ttcore.tile<32x32, bf16>, tensor<1x14x!ttcore.tile<1x32, bf16>>
   func.return
 }
