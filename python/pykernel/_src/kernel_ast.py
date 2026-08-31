@@ -1204,6 +1204,12 @@ class TTCompilerBase(PyKernelAstBase):
         assert len(node.comparators) == 1, "Only single comparators supported"
         lhs, rhs = self._visit_binary_operands(node.left, node.comparators[0])
 
+        if not hasattr(lhs, "type") or not hasattr(rhs, "type"):
+            raise TypeError(
+                "comparison operands must be compiler values, got "
+                f"{type(lhs).__name__} and {type(rhs).__name__}"
+            )
+
         lhs, rhs = self._coerce_binary_operands(
             lhs, rhs, node.left, node.comparators[0]
         )

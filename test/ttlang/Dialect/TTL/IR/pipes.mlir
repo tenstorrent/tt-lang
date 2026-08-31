@@ -221,9 +221,9 @@ func.func @pipe_transfer_one_iteration_selects_yield() {
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %pipe1 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 1
       : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1>
-  %transfer0 = ttl.pipe_transfer.create %pipe0 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer0 = ttl.pipe_transfer.create %pipe0 {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
-  %transfer1 = ttl.pipe_transfer.create %pipe1 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer1 = ttl.pipe_transfer.create %pipe1 {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 1> -> !ttl.pipe_transfer
   %transfer = scf.for %iter = %zero to %one step %one
       iter_args(%transfer_arg = %transfer0) -> (!ttl.pipe_transfer) {
@@ -257,5 +257,29 @@ func.func @pipe_transfer_kind_printing() {
   %collective_transfer = ttl.pipe_transfer.create %collective_pipe {kind = #ttl.pipe_transfer_kind<collective>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
 
+  func.return
+}
+
+// -----
+
+// Test: a pipe transfer reference preserves the logical-device transfer.
+// CHECK-LABEL: func.func @pipe_transfer_device_transfer
+// CHECK: %[[PIPE:.*]] = ttl.create_pipe
+// CHECK-SAME: deviceTransfer = #ttl.device_transfer
+// CHECK: ttl.pipe_transfer.create %[[PIPE]]
+// CHECK-SAME: deviceTransfer = #ttl.device_transfer
+#device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+func.func @pipe_transfer_device_transfer() {
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+      deviceTransfer = #device_transfer}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      deviceTransfer = #device_transfer,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+      -> !ttl.pipe_transfer
   func.return
 }

@@ -17,7 +17,7 @@ func.func @request_requires_pipe_receive_origin(
 
 // Distinct candidates cannot refer to the same receive copy.
 func.func @candidates_require_disjoint_receive_origins() {
-  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
       : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
@@ -44,7 +44,7 @@ func.func @candidates_require_disjoint_receive_origins() {
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @merged_pipenets(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
@@ -84,11 +84,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @merged_destination_streams(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %source = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 2}
+    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>

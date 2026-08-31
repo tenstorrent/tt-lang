@@ -10,9 +10,9 @@
 // CHECK-COUNT-2: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @loop_multiplicity_falls_back() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 4}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 4} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
     %pipe_a = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
@@ -77,9 +77,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 6, 1>} {
   func.func @partial_overlap_one_shot_computes_addresses() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe_a = ttl.create_pipe src(0, 0) dst(1, 0) to(4, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(4, 0) net 0>
@@ -159,9 +159,9 @@ module attributes {ttl.launch_grid = array<i64: 6, 1>} {
 // CHECK-NEXT: ttkernel.cb_pop_front(%[[MULTI_DFB]], %[[MULTI_ONE]])
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @multicast_post() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -201,7 +201,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   }
 
   func.func @multicast_consume() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
@@ -253,9 +253,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @cross_thread_single_slot_posts()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe_a = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
@@ -302,7 +302,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
   func.func @cross_thread_single_slot_consumer()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %ready_a = ttl.cb_wait %dst
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -325,9 +325,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK-COUNT-2: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @branch_order_falls_back(%condition: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe_a = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
@@ -387,9 +387,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @repeated_pipe_key_computes_addresses() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 4}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 4} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
     %pipe_a0 = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
@@ -397,48 +397,60 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
     %pipe_b = ttl.create_pipe src(1, 0) dst(2, 0) to(2, 0) net 1
         : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>
-    %recv_a0 = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 4>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post_a0 = ttl.copy %pipe_a0, %recv_a0
-        : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.receive_request
-    %send_a0 = ttl.copy %src, %pipe_a0
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send_a0 : !ttl.transfer_handle<write>
-    ttl.wait %post_a0 : !ttl.receive_request
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 4>
-    %recv_a1 = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 4>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post_a1 = ttl.copy %pipe_a1, %recv_a1
-        : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.receive_request
-    %send_a1 = ttl.copy %src, %pipe_a1
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send_a1 : !ttl.transfer_handle<write>
-    ttl.wait %post_a1 : !ttl.receive_request
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 4>
-    %recv_b = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 4>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %post_b = ttl.copy %pipe_b, %recv_b
-        : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.receive_request
-    %send_b = ttl.copy %src, %pipe_b
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send_b : !ttl.transfer_handle<write>
-    ttl.wait %post_b : !ttl.receive_request
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+    ttl.if_dst %pipe_a0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
+      %recv_a0 = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_a0 = ttl.copy %pipe_a0, %recv_a0
+          : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %post_a0 : !ttl.receive_request
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+    }
+    ttl.if_src %pipe_a0 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
+      %send_a0 = ttl.copy %src, %pipe_a0
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_a0 : !ttl.transfer_handle<write>
+    }
+    ttl.if_dst %pipe_a1 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
+      %recv_a1 = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_a1 = ttl.copy %pipe_a1, %recv_a1
+          : (!ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %post_a1 : !ttl.receive_request
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+    }
+    ttl.if_src %pipe_a1 : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
+      %send_a1 = ttl.copy %src, %pipe_a1
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_a1 : !ttl.transfer_handle<write>
+    }
+    ttl.if_dst %pipe_b : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1> {
+      %recv_b = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_b = ttl.copy %pipe_b, %recv_b
+          : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %post_b : !ttl.receive_request
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+    }
+    ttl.if_src %pipe_b : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1> {
+      %send_b = ttl.copy %src, %pipe_b
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_b : !ttl.transfer_handle<write>
+    }
     func.return
   }
 }
@@ -454,9 +466,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @common_loop_computes_addresses() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe_a = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
@@ -519,9 +531,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @invariant_dynamic_loop_computes_addresses(%upper: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -566,7 +578,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // CHECK: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @receiver_a() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
@@ -585,7 +597,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   }
 
   func.func @receiver_b() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(1, 0) dst(2, 0) to(2, 0) net 1
         : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>
@@ -604,7 +616,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   }
 
   func.func @sender_a() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(2, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
@@ -619,7 +631,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   }
 
   func.func @sender_b() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(1, 0) dst(2, 0) to(2, 0) net 1
         : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>

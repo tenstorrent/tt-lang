@@ -24,7 +24,6 @@ func.func @post_requires_reserved_destination() {
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %pipe {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
@@ -43,7 +42,6 @@ func.func @post_token_net_mismatch() {
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %pipe {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
@@ -201,7 +199,6 @@ func.func @wait_requires_uniform_semantics(
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %pipe {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
@@ -266,12 +263,10 @@ func.func @merged_token_requires_one_transfer_creation(%condition: i1) {
   %pipe1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer0 = ttl.pipe_transfer.create %pipe0 {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
   %transfer1 = ttl.pipe_transfer.create %pipe1 {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer

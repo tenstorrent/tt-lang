@@ -8,7 +8,7 @@ module attributes {
 } {
   func.func @pipe_receive()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_dst attributes {
         records = #ttl.pipenet_records<net 0 name "reset_pipe" pipes [
@@ -32,7 +32,7 @@ module attributes {
 
   func.func @pipe_and_reset()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_src attributes {
         records = #ttl.pipenet_records<net 0 name "reset_pipe" pipes [

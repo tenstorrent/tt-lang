@@ -8,16 +8,12 @@
 """End-to-end coverage for the `could not statically analyze the PipeNet
 guard` diagnostic from `ttl-verify-pipenet-guards`.
 
-The pipe-coupled `ttl.copy(blk, pipe)` is guarded by a predicate read from
-runtime tensor data. The verifier cannot evaluate that predicate for each
-launch coordinate. It rejects the program and attaches a note to the
-predicate it could not fold.
+The pipe sender is guarded by a predicate read from runtime tensor data. The
+verifier cannot prove that the surrounding reserve is restricted to the
+PipeNet source nodes, so it rejects the program.
 """
 
-# The Python frontend's diagnostic formatter renders the primary error
-# and each attached note with its own source-context block.
-# CHECK: could not statically analyze the PipeNet guard
-# CHECK: this expression is not statically analyzable
+# CHECK: error: could not statically analyze the PipeNet guard
 
 import os
 

@@ -198,6 +198,7 @@ def test_unified_operation_cache_forwards_runtime_resources(monkeypatch):
         "fp32_dest_acc_en": None,
         "dst_full_sync_en": None,
         "math_fidelity": None,
+        "device_domain": None,
         "runtime_resource_factory": None,
     }
 

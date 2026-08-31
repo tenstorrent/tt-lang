@@ -15,6 +15,7 @@ building and execution.
 
 from dataclasses import dataclass, field, replace
 import hashlib
+import itertools
 import json
 import operator
 import os
@@ -56,9 +57,22 @@ from .constants import (
     SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS,
 )
 from . import dtype_utils
+from .domains import DeviceRef
+from .fabric import FabricManagerClaim
+from ._src.fabric_target import (
+    FabricManagerIntervalKind,
+    FabricManagerIntervalSpec,
+    FabricRouteCache as _FabricRouteCache,
+    FabricRouteSpec,
+    apply_fabric_target_binding_plan as _apply_fabric_target_binding_plan,
+    build_fabric_target_binding_plan as _build_fabric_target_binding_plan,
+    configure_routing_plane_runtime_args as _configure_routing_plane_runtime_args,
+)
 from .kernel import Kernel, KernelKind, KernelSelector
 from .runtime_resources import (
     CoreRuntimeArgs,
+    FabricConnectionBinding,
+    FabricConnectionRequirement,
     KernelDefine,
     KernelRuntimeResources,
     ProgramRuntimeResources,
@@ -315,7 +329,12 @@ class KernelSpec:
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
+        extra_common_runtime_args: Per-kernel runtime args appended after
+            shared compiler-managed arguments.
+        fabric_runtime_arg_base_common_index: Common runtime argument index
+            containing the base of compiler-managed fabric unique arguments.
         logical_kernel: Target-independent selector retained across kernel cloning.
+        fabric_manager_intervals: Compiler-proven manager ownership intervals.
         used_dfb_indices: Physical DFB slots referenced by the final kernel body.
             None means metadata is unavailable and conservatively uses every DFB;
             an empty list means this kernel uses no DFBs.
@@ -328,7 +347,10 @@ class KernelSpec:
     compiler_include_paths: List[str] = field(default_factory=list)
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
+    extra_common_runtime_args: Optional[List[int]] = None
+    fabric_runtime_arg_base_common_index: Optional[int] = None
     logical_kernel: Optional[KernelSelector] = None
+    fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
     used_dfb_indices: Optional[List[int]] = None
 
 
@@ -367,6 +389,7 @@ class ProgramResourcePlan:
     semaphore_descriptors: Tuple[object, ...]
     kernel_descriptors: Tuple[_KernelDescriptorResourcePlan, ...]
     lifetimes: Tuple[object, ...]
+    fabric_connections: Tuple[FabricConnectionBinding, ...]
     structural_fingerprint: int
 
 
@@ -552,6 +575,14 @@ def _synchronize_or_retain_runtime_resources(
             portable_resource_lifetimes,
         )
         raise
+
+
+@dataclass(frozen=True)
+class MeshProgramPlacement:
+    """Device range for one program inside a mesh descriptor."""
+
+    start: Any
+    end: Optional[Any] = None
 
 
 def _format_logical_kernel(kernel: LogicalKernelId) -> str:
@@ -881,6 +912,7 @@ def _validate_runtime_resource_record_types(
         "semaphore_descriptors",
         "kernel_resources",
         "lifetimes",
+        "fabric_connections",
     ):
         field_value = getattr(resources, field_name)
         if not isinstance(field_value, tuple):
@@ -936,10 +968,36 @@ def _validate_runtime_resource_record_types(
                     f"@ttl.operation {operation_name!r}: semaphore descriptor "
                     f"{descriptor_index} must provide {field_name}"
                 )
+
+    for binding_index, binding in enumerate(resources.fabric_connections):
+        if not isinstance(binding, FabricConnectionBinding):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: fabric connection "
+                f"binding {binding_index} must be FabricConnectionBinding, "
+                f"got {type(binding).__name__}"
+            )
+        if not isinstance(binding.connections, tuple):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: fabric connection "
+                f"binding {binding_index} connections must be a tuple"
+            )
+        if not isinstance(binding.lifetimes, tuple):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: fabric connection "
+                f"binding {binding_index} lifetimes must be a tuple"
+            )
+        for requirement_index, requirement in enumerate(binding.connections):
+            if not isinstance(requirement, FabricConnectionRequirement):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "must be FabricConnectionRequirement, got "
+                    f"{type(requirement).__name__}"
+                )
     return resources
 
 
-_RESOURCE_PLAN_VERSION = 1
+_RESOURCE_PLAN_SCHEMA_VERSION = 2
 _RESOURCE_PLAN_PERSONALIZATION = b"ttlang-rr-plan"
 _RESOURCE_HASH_PERSONALIZATION = b"ttlang-rr-hash"
 
@@ -961,6 +1019,7 @@ def _digest_primitive_payload(payload: object, personalization: bytes) -> int:
 def _compute_resource_plan_fingerprint(
     kernel_descriptors: Tuple[_KernelDescriptorResourcePlan, ...],
     semaphore_descriptors: Tuple[_SemaphoreResourceFingerprint, ...],
+    fabric_connections: Tuple[FabricConnectionBinding, ...],
 ) -> int:
     kernel_payload = tuple(
         (
@@ -984,12 +1043,38 @@ def _compute_resource_plan_fingerprint(
         )
         for descriptor in semaphore_descriptors
     )
+    fabric_payload = tuple(
+        (
+            binding.claim.operation_identity,
+            binding.claim.identity,
+            binding.abi_identity,
+            tuple(
+                (
+                    tuple(
+                        value
+                        for coordinate in requirement.local_device.coordinates
+                        for value in coordinate
+                    ),
+                    tuple(
+                        value
+                        for coordinate in requirement.remote_device.coordinates
+                        for value in coordinate
+                    ),
+                    requirement.worker_nodes,
+                    requirement.fixed_link_index,
+                )
+                for requirement in binding.connections
+            ),
+        )
+        for binding in fabric_connections
+    )
     return _digest_primitive_payload(
         (
             "operation-runtime-resource-plan",
-            _RESOURCE_PLAN_VERSION,
+            _RESOURCE_PLAN_SCHEMA_VERSION,
             kernel_payload,
             semaphore_payload,
+            fabric_payload,
         ),
         _RESOURCE_PLAN_PERSONALIZATION,
     )
@@ -1002,6 +1087,7 @@ def plan_program_runtime_resources(
     kernel_specs: Sequence[KernelSpec],
     operation_core_ranges: object,
     first_free_semaphore_id: int,
+    device_domain: Optional[Any] = None,
 ) -> ProgramResourcePlan:
     resources = _validate_runtime_resource_record_types(
         resources,
@@ -1073,6 +1159,236 @@ def plan_program_runtime_resources(
                     f"cores {overlap}"
                 )
 
+    external_claim_kernels = {}
+    for kernel_spec_index, kernel_spec in enumerate(kernel_specs):
+        logical_kernel = descriptor_identities[kernel_spec_index]
+        seen_interval_identities = set()
+        for interval in kernel_spec.fabric_manager_intervals:
+            if not isinstance(interval, FabricManagerIntervalSpec):
+                raise TypeError(
+                    f"kernel descriptor {kernel_spec_index} fabric manager "
+                    "interval must be FabricManagerIntervalSpec, got "
+                    f"{type(interval).__name__}"
+                )
+            if interval.identity in seen_interval_identities:
+                raise ValueError(
+                    f"kernel descriptor {kernel_spec_index} repeats fabric "
+                    f"manager interval {interval.identity!r}"
+                )
+            seen_interval_identities.add(interval.identity)
+            if interval.kind == FabricManagerIntervalKind.EXTERNAL:
+                if interval.claim is None:
+                    raise ValueError(
+                        f"external fabric manager interval {interval.identity!r} "
+                        "has no claim identity"
+                    )
+                claim_key = interval.claim
+                existing_kernel = external_claim_kernels.setdefault(
+                    claim_key, logical_kernel
+                )
+                if existing_kernel != logical_kernel:
+                    raise ValueError(
+                        f"fabric manager claim {interval.claim!r} selects "
+                        "multiple logical kernels"
+                    )
+            elif interval.claim is not None:
+                raise ValueError(
+                    f"generated fabric manager interval {interval.identity!r} "
+                    "must not name an external claim"
+                )
+
+    seen_fabric_bindings = set()
+    normalized_fabric_connections = []
+    domain_devices = (
+        None
+        if device_domain is None
+        else frozenset(
+            mesh_coordinate
+            for mesh_coordinate, _ in _iter_device_domain_coordinates(device_domain)
+        )
+    )
+    for binding_index, binding in enumerate(resources.fabric_connections):
+        if not isinstance(binding.claim, FabricManagerClaim):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: fabric connection "
+                f"binding {binding_index} claim must be FabricManagerClaim, "
+                f"got {type(binding.claim).__name__}"
+            )
+        claim_key = binding.claim.identity
+        if claim_key in seen_fabric_bindings:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: fabric manager claim "
+                f"{binding.claim.identity!r} was bound more than once"
+            )
+        seen_fabric_bindings.add(claim_key)
+        logical_kernel = external_claim_kernels.get(claim_key)
+        if logical_kernel is None:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: fabric connection binding "
+                f"selects undeclared claim {binding.claim.identity!r}"
+            )
+        selected_kernel = _normalize_logical_kernel_selector(
+            binding.claim.kernel,
+            operation_name=operation_name,
+            source=f"fabric connection binding {binding_index}",
+        )
+        if selected_kernel != logical_kernel:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: fabric connection binding "
+                f"for claim {binding.claim.identity!r} selects "
+                f"{_format_logical_kernel(selected_kernel)}, expected "
+                f"{_format_logical_kernel(logical_kernel)}"
+            )
+        if not isinstance(binding.abi_identity, str) or not binding.abi_identity:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: fabric connection binding "
+                f"{binding_index} abi_identity must be a nonempty string"
+            )
+        if not binding.connections:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: fabric connection binding "
+                f"{binding_index} must contain at least one requirement"
+            )
+        matching_coordinates = frozenset(
+            coordinate
+            for descriptor_index in descriptors_by_identity[logical_kernel]
+            for coordinate in descriptor_coordinates[descriptor_index]
+        )
+        seen_requirements = set()
+        normalized_requirements = []
+        for requirement_index, requirement in enumerate(binding.connections):
+            if not isinstance(requirement.local_device, DeviceRef) or not isinstance(
+                requirement.remote_device, DeviceRef
+            ):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "devices must be DeviceRef values"
+                )
+            if requirement.local_device == requirement.remote_device:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "must connect distinct devices"
+                )
+            local_device = tuple(
+                value
+                for coordinate in requirement.local_device.coordinates
+                for value in coordinate
+            )
+            remote_device = tuple(
+                value
+                for coordinate in requirement.remote_device.coordinates
+                for value in coordinate
+            )
+            if domain_devices is None:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    "bindings require a device_domain"
+                )
+            for field_name, coordinates in (
+                ("local_device", local_device),
+                ("remote_device", remote_device),
+            ):
+                if coordinates not in domain_devices:
+                    raise ValueError(
+                        f"@ttl.operation {operation_name!r}: fabric connection "
+                        f"binding {binding_index} requirement "
+                        f"{requirement_index} {field_name} {coordinates} is "
+                        "outside the device domain"
+                    )
+            if (
+                not isinstance(requirement.worker_nodes, tuple)
+                or not requirement.worker_nodes
+            ):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "worker_nodes must be a nonempty tuple"
+                )
+            normalized_worker_nodes = tuple(
+                (
+                    _normalize_index(
+                        node[0],
+                        operation_name=operation_name,
+                        field="fabric worker node x",
+                    ),
+                    _normalize_index(
+                        node[1],
+                        operation_name=operation_name,
+                        field="fabric worker node y",
+                    ),
+                )
+                for node in requirement.worker_nodes
+                if isinstance(node, tuple) and len(node) == 2
+            )
+            if len(normalized_worker_nodes) != len(requirement.worker_nodes):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "worker_nodes entries must be (x, y) tuples"
+                )
+            if len(set(normalized_worker_nodes)) != len(normalized_worker_nodes):
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "worker_nodes must not contain duplicates"
+                )
+            normalized_worker_nodes = tuple(sorted(normalized_worker_nodes))
+            outside_nodes = frozenset(normalized_worker_nodes) - matching_coordinates
+            if outside_nodes:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    f"has nodes outside its logical kernel range: {tuple(outside_nodes)}"
+                )
+            fixed_link_index = _normalize_index(
+                requirement.fixed_link_index,
+                operation_name=operation_name,
+                field="fabric fixed_link_index",
+            )
+            if fixed_link_index < 0:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} requirement {requirement_index} "
+                    "fixed_link_index must be nonnegative"
+                )
+            requirement_identity = (
+                requirement.local_device,
+                requirement.remote_device,
+                normalized_worker_nodes,
+            )
+            if requirement_identity in seen_requirements:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: fabric connection "
+                    f"binding {binding_index} repeats requirement "
+                    f"{requirement_index}"
+                )
+            seen_requirements.add(requirement_identity)
+            normalized_requirements.append(
+                FabricConnectionRequirement(
+                    local_device=requirement.local_device,
+                    remote_device=requirement.remote_device,
+                    worker_nodes=normalized_worker_nodes,
+                    fixed_link_index=fixed_link_index,
+                )
+            )
+        normalized_fabric_connections.append(
+            FabricConnectionBinding(
+                claim=binding.claim,
+                connections=tuple(normalized_requirements),
+                abi_identity=binding.abi_identity,
+                lifetimes=binding.lifetimes,
+            )
+        )
+
+    missing_claims = set(external_claim_kernels) - seen_fabric_bindings
+    if missing_claims:
+        missing_names = tuple(sorted(missing_claims))
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: missing fabric connection "
+            f"bindings for claims {missing_names}"
+        )
     descriptor_runtime_args: Dict[int, List[_CoreRuntimeArgsPlan]] = {}
     descriptor_defines: Dict[int, Tuple[Tuple[str, str], ...]] = {}
     seen_resource_identities = set()
@@ -1155,10 +1471,19 @@ def plan_program_runtime_resources(
     return ProgramResourcePlan(
         semaphore_descriptors=resources.semaphore_descriptors,
         kernel_descriptors=kernel_descriptor_plans,
-        lifetimes=resources.lifetimes,
+        lifetimes=(
+            *resources.lifetimes,
+            *(
+                owner
+                for binding in resources.fabric_connections
+                for owner in binding.lifetimes
+            ),
+        ),
+        fabric_connections=tuple(normalized_fabric_connections),
         structural_fingerprint=_compute_resource_plan_fingerprint(
             kernel_descriptor_plans,
             semaphore_fingerprints,
+            tuple(normalized_fabric_connections),
         ),
     )
 
@@ -1274,6 +1599,7 @@ def build_kernel_descriptors(
     pipe_computed_address_base_addresses: Optional[Dict[int, int]] = None,
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
+    device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
 ) -> List[Any]:
@@ -1297,6 +1623,8 @@ def build_kernel_descriptors(
             after tensor buffer addresses and computed receiver DFB bases.
         expected_extra_common_runtime_args: Expected number of compiler-managed
             pipe runtime args from the compiled resource plan.
+        device_coordinates: Logical device coordinates appended to common
+            runtime arguments for device-domain dispatch.
         descriptor_resource_plans: Immutable caller resource plans aligned with
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
@@ -1350,6 +1678,16 @@ def build_kernel_descriptors(
             )
         common_runtime_args.extend(computed_address_base_args)
         common_runtime_args.extend(extra_args)
+        if spec.fabric_runtime_arg_base_common_index is not None:
+            if len(common_runtime_args) != spec.fabric_runtime_arg_base_common_index:
+                raise RuntimeError(
+                    "fabric runtime argument base common index mismatch: "
+                    f"compiler selected {spec.fabric_runtime_arg_base_common_index}, "
+                    f"host constructed {len(common_runtime_args)} arguments"
+                )
+            common_runtime_args.append(0)
+        common_runtime_args.extend(device_coordinates or [])
+        common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
         # Prefer per-kernel core_ranges (specialize-cores clones); otherwise
         # fall back to the whole-grid core_ranges.
@@ -1524,11 +1862,10 @@ def build_pipe_global_semaphores(
 ) -> Tuple[List[Any], List[int]]:
     """Allocate GlobalSemaphores used by compiler-managed PipeNet counters.
 
-    PipeNet coordinates are per-device core coordinates. When tensors live on
-    a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
-    device shards; this allocates one MeshDevice GlobalSemaphore object whose
-    address is passed to that replicated program. It does not create an
-    inter-chip PipeNet or assign per-mesh-coordinate pipe synchronization state.
+    A MeshDevice GlobalSemaphore has one common L1 address on the selected nodes
+    of every device. Fabric atomics target the receiver device's instance at
+    that address; node-local PipeNets use the same storage after local semaphore
+    ids are exhausted.
     """
     if count <= 0:
         return [], []
@@ -1778,6 +2115,19 @@ def build_pipe_runtime_resources(
         for dfb_index, tensor in computed_address_dfb_tensors.items()
     }
     computed_address_base_addresses.update(tensor_backed_computed_address_bases)
+    if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
+        for dfb_index, tensor in computed_address_dfb_tensors.items():
+            device_addresses = [
+                int(device_tensor.buffer_address())
+                for device_tensor in ttnn.get_device_tensors(tensor)
+            ]
+            print(
+                "computed DFB addresses:",
+                dfb_index,
+                computed_address_base_addresses[dfb_index],
+                device_addresses,
+                flush=True,
+            )
     l1_buffer_addresses = frozenset(
         [
             *(int(tensor.buffer_address()) for tensor in scratch_tensors),
@@ -2254,7 +2604,7 @@ def combine_program_hash_with_runtime_resources(
     return _digest_primitive_payload(
         (
             "operation-runtime-resource-program-hash",
-            _RESOURCE_PLAN_VERSION,
+            _RESOURCE_PLAN_SCHEMA_VERSION,
             normalized_program_hash,
             structural_fingerprint,
         ),
@@ -3209,6 +3559,129 @@ def build_generic_op_io_tensors(
     return io_tensors
 
 
+def build_program_descriptor(
+    kernel_descriptors: List[Any],
+    cb_descriptors: List[Any],
+    semaphore_descriptors: List[Any],
+) -> Any:
+    """Build the single-device descriptor used by current intra-chip execution."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    return ttnn.ProgramDescriptor(
+        kernels=kernel_descriptors,
+        cbs=cb_descriptors,
+        semaphores=semaphore_descriptors,
+    )
+
+
+def _build_mesh_coordinate(coord: Any) -> Any:
+    if isinstance(coord, (tuple, list)):
+        try:
+            return ttnn.MeshCoordinate(*coord)
+        except TypeError:
+            return ttnn.MeshCoordinate(coord)
+    return coord
+
+
+def _build_mesh_coordinate_range(placement: Any) -> Any:
+    if isinstance(placement, MeshProgramPlacement):
+        start = _build_mesh_coordinate(placement.start)
+        end = _build_mesh_coordinate(
+            placement.start if placement.end is None else placement.end
+        )
+        return ttnn.MeshCoordinateRange(start, end)
+    if isinstance(placement, (tuple, list)):
+        coord = _build_mesh_coordinate(placement)
+        return ttnn.MeshCoordinateRange(coord, coord)
+    return placement
+
+
+def build_mesh_program_descriptor(
+    program_descriptor: Any,
+    mesh_program_placements: List[Any],
+) -> Any:
+    """Build a mesh descriptor that runs a program over selected device ranges."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if not mesh_program_placements:
+        raise ValueError("mesh_program_placements must not be empty")
+
+    mesh_program_descriptor = ttnn.MeshProgramDescriptor()
+    for placement in mesh_program_placements:
+        mesh_range = _build_mesh_coordinate_range(placement)
+        mesh_program_descriptor[mesh_range] = program_descriptor
+    return mesh_program_descriptor
+
+
+def _iter_device_domain_coordinates(device_domain):
+    component_coordinates = []
+    for component in device_domain.components:
+        component_coordinates.append(
+            tuple(itertools.product(*(range(extent) for extent in component.extent)))
+        )
+    for coordinates in itertools.product(*component_coordinates):
+        runtime_coordinates = [
+            value for coordinate in coordinates for value in coordinate
+        ]
+        yield tuple(runtime_coordinates), runtime_coordinates
+
+
+def build_device_mesh_program_descriptor(
+    program_descriptors: Dict[tuple, Any],
+) -> Any:
+    """Build a mesh descriptor containing one program per logical device."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if not program_descriptors:
+        raise ValueError("program_descriptors must not be empty")
+
+    mesh_program_descriptor = ttnn.MeshProgramDescriptor()
+    for mesh_coordinate, program_descriptor in program_descriptors.items():
+        coordinate = _build_mesh_coordinate(mesh_coordinate)
+        mesh_range = ttnn.MeshCoordinateRange(coordinate, coordinate)
+        mesh_program_descriptor[mesh_range] = program_descriptor
+    return mesh_program_descriptor
+
+
+def configure_routing_plane_runtime_args(
+    program_descriptor: Any,
+    kernel_fabric_routes: List[List[FabricRouteSpec]],
+    kernel_fabric_runtime_arg_base_common_indices: List[Optional[int]],
+    mesh_device: Any,
+    device_coordinates: tuple,
+    grid_cols: int,
+    grid_rows: int,
+    fabric_route_cache: Optional[_FabricRouteCache] = None,
+    kernel_fabric_manager_intervals: Optional[
+        List[Tuple[FabricManagerIntervalSpec, ...]]
+    ] = None,
+    external_fabric_connections: Tuple[FabricConnectionBinding, ...] = (),
+) -> None:
+    """Attach validated routing-plane target bindings to one device program."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    _configure_routing_plane_runtime_args(
+        ttnn_api=ttnn,
+        program_descriptor=program_descriptor,
+        kernel_fabric_routes=kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices=(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
+        mesh_device=mesh_device,
+        device_coordinates=device_coordinates,
+        grid_cols=grid_cols,
+        grid_rows=grid_rows,
+        kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        external_fabric_connections=external_fabric_connections,
+        route_cache=fabric_route_cache,
+    )
+
+
 def _run_kernel_on_device_impl(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -3220,6 +3693,10 @@ def _run_kernel_on_device_impl(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
+    mesh_program_placements: Optional[List[Any]] = None,
+    device_domain: Optional[Any] = None,
+    kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    fabric_route_cache: Optional[_FabricRouteCache] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
@@ -3247,6 +3724,14 @@ def _run_kernel_on_device_impl(
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
+        mesh_program_placements: Optional mesh device ranges. When present,
+            execution uses ttnn.MeshProgramDescriptor instead of
+            ttnn.ProgramDescriptor.
+        fabric_route_cache: Optional cache owned by a compiled kernel.
+            Direction results are reused while the mesh and fabric
+            configuration remain unchanged.
+        device: Optional device used for hidden runtime allocations and fabric
+            binding. Tensor-backed calls infer it from the first device tensor.
         num_dfb_resets: Number of synchronized DFB reset boundaries. A nonzero
             count requires zero-initialized compiler scratch state.
         runtime_resource_factory: Optional callback that returns declarative
@@ -3280,6 +3765,16 @@ def _run_kernel_on_device_impl(
         )
 
     resource_plan = None
+    requires_fabric_bindings = any(
+        interval.kind == FabricManagerIntervalKind.EXTERNAL
+        for kernel_spec in kernel_specs
+        for interval in kernel_spec.fabric_manager_intervals
+    )
+    if requires_fabric_bindings and runtime_resource_factory is None:
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: external fabric manager "
+            "claims require a runtime_resource_factory"
+        )
     if runtime_resource_factory is not None:
         try:
             program_resources = runtime_resource_factory(
@@ -3298,6 +3793,7 @@ def _run_kernel_on_device_impl(
             kernel_specs=kernel_specs,
             operation_core_ranges=core_ranges,
             first_free_semaphore_id=num_pipe_sync_semaphores,
+            device_domain=device_domain,
         )
 
     # Build tensor accessor args.
@@ -3331,30 +3827,6 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
 
-    # Build kernel descriptors.
-    kernel_descriptors = build_kernel_descriptors(
-        kernel_specs=kernel_specs,
-        tensors=tensors,
-        tensor_accessor_args=tensor_accessor_args,
-        core_ranges=core_ranges,
-        grid_cols=grid_cols,
-        grid_rows=grid_rows,
-        num_cbs=len(cb_configs),
-        pipe_computed_address_base_addresses=(
-            pipe_runtime_resources.computed_address_base_addresses
-        ),
-        extra_common_runtime_args=pipe_runtime_resources.extra_common_runtime_args,
-        expected_extra_common_runtime_args=(
-            pipe_runtime_resources.expected_extra_common_runtime_args
-        ),
-        descriptor_resource_plans=(
-            resource_plan.kernel_descriptors if resource_plan is not None else None
-        ),
-        dfb_reconfiguration_runtime_args=(
-            reconfiguration_resources.configuration_runtime_args
-        ),
-    )
-
     # Build CB descriptors.
     cb_descriptors = build_cb_descriptors(
         tensors=tensors,
@@ -3370,20 +3842,114 @@ def _run_kernel_on_device_impl(
     if resource_plan is not None:
         semaphore_descriptors.extend(resource_plan.semaphore_descriptors)
 
-    # Build and execute program.
-    program = ttnn.ProgramDescriptor(
-        kernels=kernel_descriptors,
-        cbs=cb_descriptors,
-        semaphores=semaphore_descriptors,
-    )
     normalized_program_hash = normalize_program_hash(program_hash)
     if resource_plan is not None:
         normalized_program_hash = combine_program_hash_with_runtime_resources(
             normalized_program_hash,
             resource_plan.structural_fingerprint,
         )
-    if normalized_program_hash is not None:
-        program.custom_program_hash = normalized_program_hash
+
+    def build_device_program(device_coordinates=None):
+        kernel_descriptors = build_kernel_descriptors(
+            kernel_specs=kernel_specs,
+            tensors=tensors,
+            tensor_accessor_args=tensor_accessor_args,
+            core_ranges=core_ranges,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            num_cbs=len(cb_configs),
+            pipe_computed_address_base_addresses=(
+                pipe_runtime_resources.computed_address_base_addresses
+            ),
+            extra_common_runtime_args=(
+                pipe_runtime_resources.extra_common_runtime_args
+            ),
+            expected_extra_common_runtime_args=(
+                pipe_runtime_resources.expected_extra_common_runtime_args
+            ),
+            device_coordinates=device_coordinates,
+            descriptor_resource_plans=(
+                resource_plan.kernel_descriptors if resource_plan is not None else None
+            ),
+            dfb_reconfiguration_runtime_args=(
+                reconfiguration_resources.configuration_runtime_args
+            ),
+        )
+        program_descriptor = build_program_descriptor(
+            kernel_descriptors=kernel_descriptors,
+            cb_descriptors=cb_descriptors,
+            semaphore_descriptors=semaphore_descriptors,
+        )
+        if normalized_program_hash is not None:
+            program_descriptor.custom_program_hash = normalized_program_hash
+        return program_descriptor
+
+    if device_domain is not None:
+        mesh_device = device if device is not None else _first_device(tensors)
+        fabric_routes = kernel_fabric_routes or [[] for _ in kernel_specs]
+        external_fabric_connections = (
+            resource_plan.fabric_connections if resource_plan is not None else ()
+        )
+        has_fabric_target_bindings = any(fabric_routes) or bool(
+            external_fabric_connections
+        )
+        program_descriptors = {}
+        fabric_binding_plans = {}
+        for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
+            device_domain
+        ):
+            device_program = build_device_program(runtime_coordinates)
+            program_descriptors[mesh_coordinate] = device_program
+            if not has_fabric_target_bindings:
+                configure_routing_plane_runtime_args(
+                    program_descriptor=device_program,
+                    kernel_fabric_routes=fabric_routes,
+                    kernel_fabric_runtime_arg_base_common_indices=[
+                        spec.fabric_runtime_arg_base_common_index
+                        for spec in kernel_specs
+                    ],
+                    mesh_device=mesh_device,
+                    device_coordinates=mesh_coordinate,
+                    grid_cols=grid_cols,
+                    grid_rows=grid_rows,
+                    fabric_route_cache=fabric_route_cache,
+                )
+                continue
+            fabric_binding_plans[mesh_coordinate] = _build_fabric_target_binding_plan(
+                ttnn_api=ttnn,
+                program_descriptor=device_program,
+                kernel_fabric_routes=fabric_routes,
+                kernel_fabric_runtime_arg_base_common_indices=[
+                    spec.fabric_runtime_arg_base_common_index for spec in kernel_specs
+                ],
+                kernel_fabric_manager_intervals=[
+                    spec.fabric_manager_intervals for spec in kernel_specs
+                ],
+                external_fabric_connections=external_fabric_connections,
+                mesh_device=mesh_device,
+                device_coordinates=mesh_coordinate,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                route_cache=fabric_route_cache,
+            )
+        for mesh_coordinate, device_program in program_descriptors.items():
+            if mesh_coordinate not in fabric_binding_plans:
+                continue
+            _apply_fabric_target_binding_plan(
+                ttnn_api=ttnn,
+                program_descriptor=device_program,
+                plan=fabric_binding_plans[mesh_coordinate],
+                device_coordinates=mesh_coordinate,
+            )
+        program = build_device_mesh_program_descriptor(program_descriptors)
+    else:
+        program_descriptor = build_device_program()
+        program = program_descriptor
+        if mesh_program_placements is not None:
+            program = build_mesh_program_descriptor(
+                program_descriptor=program_descriptor,
+                mesh_program_placements=mesh_program_placements,
+            )
 
     # ttnn.generic_op requires io_tensors to contain at least one input
     # and one output (size >= 2).  Output-only kernels (e.g. fill with no
@@ -3490,6 +4056,10 @@ def run_kernel_on_device(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
+    mesh_program_placements: Optional[List[Any]] = None,
+    device_domain: Optional[Any] = None,
+    kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    fabric_route_cache: Optional[_FabricRouteCache] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
@@ -3507,6 +4077,10 @@ def run_kernel_on_device(
         "pipe_sram_scratch_bytes": pipe_sram_scratch_bytes,
         "num_pipe_global_semaphores": num_pipe_global_semaphores,
         "num_dfb_resets": num_dfb_resets,
+        "mesh_program_placements": mesh_program_placements,
+        "device_domain": device_domain,
+        "kernel_fabric_routes": kernel_fabric_routes,
+        "fabric_route_cache": fabric_route_cache,
         "runtime_resource_factory": runtime_resource_factory,
         "operation_name": operation_name,
         "runtime_resource_cache": runtime_resource_cache,
@@ -3592,6 +4166,63 @@ def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
     )
 
 
+def _mesh_program_placement_to_source(placement: Any) -> str:
+    if isinstance(placement, MeshProgramPlacement):
+        return f"MeshProgramPlacement({placement.start!r}, {placement.end!r})"
+    if isinstance(placement, (tuple, list)):
+        return repr(tuple(placement))
+    raise TypeError(
+        "standalone runner mesh placements must be coordinate tuples "
+        "or MeshProgramPlacement values"
+    )
+
+
+def _device_domain_to_source(device_domain: Optional[Any]) -> str:
+    if device_domain is None:
+        return "None"
+    components = {
+        component.name: tuple(component.extent)
+        for component in device_domain.components
+    }
+    if len(components) == 1:
+        name, extent = next(iter(components.items()))
+        return f"DeviceDomain({extent!r}, name={name!r})"
+    return f"DeviceDomain.product(**{components!r})"
+
+
+def _fabric_routes_to_source(
+    kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]],
+) -> str:
+    if kernel_fabric_routes is None:
+        return "None"
+    kernel_routes = []
+    for routes in kernel_fabric_routes:
+        route_sources = [
+            "FabricRouteSpec("
+            f"{route.local_device!r}, {route.remote_device!r}, "
+            f"{route.source_nodes!r}, {route.route_index!r})"
+            for route in routes
+        ]
+        kernel_routes.append("[" + ", ".join(route_sources) + "]")
+    return "[" + ", ".join(kernel_routes) + "]"
+
+
+def _fabric_manager_intervals_to_source(kernel_specs: List[KernelSpec]) -> str:
+    kernel_intervals = []
+    for spec in kernel_specs:
+        interval_sources = [
+            "FabricManagerIntervalSpec("
+            f"{interval.identity!r}, "
+            f"FabricManagerIntervalKind({interval.kind.value!r}), "
+            f"{interval.claim!r}, {interval.route_indices!r}, "
+            f"{interval.interfering_intervals!r}, {interval.launch_nodes!r})"
+            for interval in spec.fabric_manager_intervals
+        ]
+        suffix = "," if interval_sources else ""
+        kernel_intervals.append("(" + ", ".join(interval_sources) + suffix + ")")
+    return "[" + ", ".join(kernel_intervals) + "]"
+
+
 def _append_physical_dfb_config_source(
     lines: List[str],
     config: PhysicalDFBConfig,
@@ -3666,6 +4297,9 @@ def emit_runner_source(
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
     program_hash: Optional[int] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
+    device_domain: Optional[Any] = None,
+    kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> str:
@@ -3678,6 +4312,8 @@ def emit_runner_source(
 
     program_hash, if provided, is normalized to uint64 and embedded as the
     emitted runner's tt-metal program-cache key.
+    mesh_program_placements, if provided, selects the device ranges that run
+    the emitted program.
     """
     lines = []
 
@@ -3688,14 +4324,19 @@ def emit_runner_source(
     lines.append("")
     lines.append("import ttnn")
     lines.append("")
-    lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.dataflow_buffer import DFBStorageSegment")
     lines.append("from ttl.dataflow_buffer import DFBConfigurationEpoch")
     lines.append("from ttl.dataflow_buffer import DFBReconfigurationPlan")
+    lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
+    lines.append("from ttl.domains import DeviceDomain")
     lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.kernel_runner import (")
-    lines.append("    KernelRuntimeResourceCache,")
+    lines.append("    FabricManagerIntervalKind,")
+    lines.append("    FabricManagerIntervalSpec,")
+    lines.append("    FabricRouteSpec,")
     lines.append("    KernelSpec,")
+    lines.append("    KernelRuntimeResourceCache,")
+    lines.append("    MeshProgramPlacement,")
     lines.append("    attach_runtime_resource_finalizer,")
     lines.append("    run_kernel_on_device,")
     lines.append(")")
@@ -3710,6 +4351,25 @@ def emit_runner_source(
     lines.append(f"NUM_DFB_RESETS = {num_dfb_resets}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
+    if mesh_program_placements is None:
+        lines.append("MESH_PROGRAM_PLACEMENTS = None")
+    else:
+        lines.append("MESH_PROGRAM_PLACEMENTS = [")
+        for placement in mesh_program_placements:
+            lines.append(f"    {_mesh_program_placement_to_source(placement)},")
+        lines.append("]")
+    lines.append(f"DEVICE_DOMAIN = {_device_domain_to_source(device_domain)}")
+    lines.append(
+        "KERNEL_FABRIC_ROUTES = " f"{_fabric_routes_to_source(kernel_fabric_routes)}"
+    )
+    lines.append(
+        "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = "
+        f"{[spec.fabric_runtime_arg_base_common_index for spec in kernel_specs]!r}"
+    )
+    lines.append(
+        "KERNEL_FABRIC_MANAGER_INTERVALS = "
+        f"{_fabric_manager_intervals_to_source(kernel_specs)}"
+    )
     lines.append("class _RuntimeResourceOwner:")
     lines.append("    pass")
     lines.append("")
@@ -3767,6 +4427,13 @@ def emit_runner_source(
     lines.append("KERNEL_NOC_INDICES = [")
     for spec in kernel_specs:
         lines.append(f"    {_serialize_noc_role(spec)!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [")
+    for spec in kernel_specs:
+        extra_args = list(spec.extra_common_runtime_args or [])
+        lines.append(f"    {extra_args!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
     lines.append("CB_CONFIGS = [")
@@ -3858,8 +4525,20 @@ def emit_runner_source(
         "KERNEL_CORE_RANGES[kernel_idx]),"
     )
     lines.append(
+        "                extra_common_runtime_args="
+        "KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx],"
+    )
+    lines.append(
+        "                fabric_runtime_arg_base_common_index="
+        "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES[kernel_idx],"
+    )
+    lines.append(
         "                logical_kernel=_logical_kernel_from_spec("
         "KERNEL_LOGICAL_IDENTITIES[kernel_idx]),"
+    )
+    lines.append(
+        "                fabric_manager_intervals="
+        "KERNEL_FABRIC_MANAGER_INTERVALS[kernel_idx],"
     )
     lines.append(
         "                used_dfb_indices=KERNEL_USED_DFB_INDICES[kernel_idx],"
@@ -3877,6 +4556,9 @@ def emit_runner_source(
     lines.append("        num_dfb_resets=NUM_DFB_RESETS,")
     lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
     lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
+    lines.append("        mesh_program_placements=MESH_PROGRAM_PLACEMENTS,")
+    lines.append("        device_domain=DEVICE_DOMAIN,")
+    lines.append("        kernel_fabric_routes=KERNEL_FABRIC_ROUTES,")
     if requires_runtime_resource_factory:
         lines.append("        runtime_resource_factory=runtime_resource_factory,")
     lines.append("        operation_name=OPERATION_NAME,")
@@ -3905,6 +4587,9 @@ def emit_runner_file(
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
     program_hash: Optional[int] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
+    device_domain: Optional[Any] = None,
+    kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> str:
@@ -3913,6 +4598,8 @@ def emit_runner_file(
 
     program_hash, if provided, is forwarded to the emitted runner as its
     normalized tt-metal program-cache key.
+    mesh_program_placements, if provided, is forwarded as the emitted
+    program's device ranges.
 
     Returns the output path.
     """
@@ -3930,6 +4617,9 @@ def emit_runner_file(
         num_dfb_resets=num_dfb_resets,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
+        kernel_fabric_routes=kernel_fabric_routes,
         requires_runtime_resource_factory=requires_runtime_resource_factory,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
@@ -3944,6 +4634,10 @@ def emit_runner_file(
 
 __all__ = [
     "KernelSpec",
+    "FabricManagerIntervalKind",
+    "FabricManagerIntervalSpec",
+    "FabricRouteSpec",
+    "MeshProgramPlacement",
     "LogicalKernelId",
     "ProgramResourcePlan",
     "PipeRuntimeResources",
@@ -3962,6 +4656,10 @@ __all__ = [
     "normalize_program_hash",
     "combine_program_hash_with_runtime_resources",
     "build_generic_op_io_tensors",
+    "build_device_mesh_program_descriptor",
+    "configure_routing_plane_runtime_args",
+    "build_mesh_program_descriptor",
+    "build_program_descriptor",
     "plan_program_runtime_resources",
     "attach_runtime_resource_finalizer",
     "release_cached_runtime_resources",

@@ -7,17 +7,17 @@
 // identical record executes.
 // CHECK-LABEL: func.func @record_order_loopback
 // CHECK-DAG: %[[ONE_I32:.*]] = arith.constant 1 : i32
-// CHECK-DAG: %[[FIVE:.*]] = arith.constant 5 : index
 // CHECK-DAG: %[[ONE:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[ZERO:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[SEND_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[RECEIVER_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: scf.for %[[RECORD:.*]] = %[[ZERO]] to %[[FIVE]] step %[[ONE]] {
-// CHECK: ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0, 0, 0, 0]
-// CHECK: scf.if
+// CHECK: %[[RECORD_OFFSET:.*]] = ttkernel.experimental.constant_table_lookup %[[NODE_INDEX:.*]], [0] : index
+// CHECK: %[[RECORD_COUNT:.*]] = ttkernel.experimental.constant_table_lookup %[[NODE_INDEX]], [5] : index
+// CHECK: %[[RECORD_END:.*]] = arith.addi %[[RECORD_OFFSET]], %[[RECORD_COUNT]] : index
+// CHECK: scf.for %[[SLICE_INDEX:.*]] = %[[RECORD_OFFSET]] to %[[RECORD_END]] step %[[ONE]] {
+// CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[SLICE_INDEX]], [0, 1, 2, 3, 4] : index
+// CHECK: ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [0, 0, 0, 0, 0]
 // CHECK: ttkernel.cb_reserve_back(%[[RECEIVER_DFB]], %[[ONE_I32]])
-// CHECK: %[[RECEIVER_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[RECEIVER_DFB]])
-// CHECK: ttkernel.store_to_l1(%[[RECEIVER_WRITE_PTR]],
+// CHECK: scf.if
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: %[[SEND_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[SEND_DFB]])
@@ -31,9 +31,9 @@
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @record_order_loopback()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_dst attributes {
         records = #ttl.pipenet_records<net 0 name "loopback" pipes [

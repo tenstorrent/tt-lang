@@ -23,7 +23,7 @@
 // CHECK-NOT: ttkernel.cb_push_back
 // CHECK: return
 func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -38,7 +38,7 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
 // Define the receiver half so the transfer graph can prove the complete
 // protocol while the checks remain focused on sender lowering.
 func.func @sender_uses_published_unicast_address_receiver() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -78,7 +78,7 @@ func.func @sender_uses_published_unicast_address_receiver() attributes { "ttl.ke
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 2, 4>} {
 func.func @sender_uses_published_multicast_addresses() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -95,7 +95,7 @@ func.func @sender_uses_published_multicast_addresses() attributes { "ttl.kernel_
 // Define the receiver half so the transfer graph can prove the complete
 // protocol while the checks remain focused on sender lowering.
 func.func @sender_uses_published_multicast_addresses_receiver() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -129,7 +129,7 @@ func.func @sender_uses_published_multicast_addresses_receiver() attributes { "tt
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NEW]])
 // CHECK: ttkernel.cb_push_back
 func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %dst = ttl.bind_cb {cb_index = 5, block_count = 2}
+  %dst = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
       : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
@@ -148,7 +148,7 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
 // Define the sender half so the transfer graph can prove the complete protocol
 // while the checks remain focused on receiver lowering.
 func.func @receiver_publishes_reserved_dfb_address_sender() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
       : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
@@ -181,7 +181,7 @@ func.func @receiver_publishes_reserved_dfb_address_sender() attributes { "ttl.ke
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEXT]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %dst = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %dst = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
       : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
@@ -204,7 +204,7 @@ func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel
 
 // Match the receiver loop's two dynamic transfers from the source node.
 func.func @receiver_advances_wait_counter_inside_loop_sender() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %src = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %src = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
       : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>

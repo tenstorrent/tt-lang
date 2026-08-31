@@ -122,6 +122,17 @@ case "$PHASE" in
         activate_build
         .github/scripts/reset-tt-cards.sh
         ;;
+    fabric-pytests)
+        activate_build
+        unset TT_VISIBLE_DEVICES
+        timeout --signal=TERM --kill-after=15s 1800 \
+            python3 -m pytest \
+                -c build/test/pytest.ini \
+                --rootdir="${REPO_ROOT}/test" \
+                test/python/fabric \
+                -v -x --tb=long --timeout=300 --timeout-method=thread \
+                --junitxml=build/test/pytest-report-fabric-full.xml
+        ;;
     smoketest)
         activate_build
         python3 test/python/smoketest.py

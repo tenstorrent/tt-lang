@@ -15,9 +15,9 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPECAPACITYANALYSIS_H
 
 // PipeGraph contains one transfer node per send and its corresponding receiver
-// posts, one endpoint per receiver, and one physical DFB node per receiver
-// coordinate and finalized DFB index. Transfer nodes remain distinct even when
-// they have the same PipeKey.
+// posts, one endpoint per receiver, and one logical DFB lifecycle node per
+// receiver coordinate. Each lifecycle node also records its physical index.
+// Transfer nodes remain distinct even when they have the same PipeKey.
 //
 // The safety invariant is graph-local. For ordinary DFB storage, a receiver
 // pop may release sender capacity only when its receiver DFB node has exactly
@@ -64,7 +64,6 @@
 // not part of the analysis.
 
 #include "PipeGraph.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -110,8 +109,7 @@ public:
   getEndpointFacts(PipeReceiverEndpointId endpoint) const;
 
 private:
-  friend PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp,
-                                                        const PipeGraph &);
+  friend PipeCapacityAnalysisResult analyzePipeCapacity(const PipeGraph &);
 
   void addEndpointFacts(PipeCapacityEndpointFacts facts);
 
@@ -119,9 +117,8 @@ private:
   llvm::DenseMap<PipeReceiverEndpointId, std::size_t> factsIndexByEndpoint;
 };
 
-/// Prove capacity accounting facts for receiver endpoints in `module`.
-PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp module,
-                                               const PipeGraph &pipeGraph);
+/// Prove capacity accounting facts for the graph's receiver endpoints.
+PipeCapacityAnalysisResult analyzePipeCapacity(const PipeGraph &pipeGraph);
 
 } // namespace mlir::tt::ttl
 

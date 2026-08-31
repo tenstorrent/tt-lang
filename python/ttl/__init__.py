@@ -5,6 +5,19 @@
 # TT-Lang Python Package
 
 from ttl.version import __version__, build_info
+from ttl.domains import (
+    AllToAllTransfer,
+    AxisNeighborTransfer,
+    DeviceDomain,
+    DeviceRange,
+    DeviceRef,
+    DomainComponent,
+    GatherTransfer,
+    ScatterTransfer,
+    StencilTransfer,
+    TransferEdge,
+    TransferGraph,
+)
 
 # `ttl._sim_only_marker` is shipped by the tt-lang-sim wheel and absent from
 # the tt-lang wheel. Detection is marker-based, not try/except, so a broken
@@ -24,14 +37,32 @@ except ImportError:
 
 if _SIM_ONLY_INSTALL:
     _elementwise_all: list[str] = []
-    __all__ = ["__version__", "build_info"]
+    __all__ = [
+        "__version__",
+        "build_info",
+        "AllToAllTransfer",
+        "AxisNeighborTransfer",
+        "DeviceDomain",
+        "DeviceRange",
+        "DeviceRef",
+        "DomainComponent",
+        "GatherTransfer",
+        "ScatterTransfer",
+        "StencilTransfer",
+        "TransferEdge",
+        "TransferGraph",
+    ]
 else:
     from ttl.ttl import (
         operation,
         DFB,
         Kernel,
         KernelKind,
+        PIPE_SOURCE_KERNEL,
+        FabricManagerClaim,
         CoreRuntimeArgs,
+        FabricConnectionBinding,
+        FabricConnectionRequirement,
         KernelDefine,
         KernelRuntimeResources,
         ProgramRuntimeResources,
@@ -85,7 +116,11 @@ else:
         "DFB",
         "Kernel",
         "KernelKind",
+        "PIPE_SOURCE_KERNEL",
+        "FabricManagerClaim",
         "CoreRuntimeArgs",
+        "FabricConnectionBinding",
+        "FabricConnectionRequirement",
         "KernelDefine",
         "KernelRuntimeResources",
         "ProgramRuntimeResources",
@@ -105,6 +140,17 @@ else:
         "ReadyReceive",
         "Pipe",
         "PipeNet",
+        "AllToAllTransfer",
+        "AxisNeighborTransfer",
+        "DeviceDomain",
+        "DeviceRange",
+        "DeviceRef",
+        "DomainComponent",
+        "GatherTransfer",
+        "ScatterTransfer",
+        "StencilTransfer",
+        "TransferEdge",
+        "TransferGraph",
         "make_dataflow_buffer_like",
         "make_dfb",
         "make_tensor_backed_dfb",
