@@ -60,3 +60,52 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     return
   }
 }
+
+// -----
+
+// An exact access domain absorbs an unresolved access whose upper bound is
+// contained by it. The tensor-backed DFB therefore retains exact root storage.
+
+// COMMON: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_segments = [{nodes = {{\[\[0, 0\]\]}}, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}]}], ttl.launch_grid = array<i64: 2, 1>}
+// COMMON-LABEL: func.func @bounded_unknown_copy
+
+#l1 = #ttl.layout<
+    shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>,
+    buffer = l1, grid = [1, 1], memory = interleaved>
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @bounded_unknown_copy(
+      %source: tensor<1x1x!ttcore.tile<32x32, bf16>, #l1>,
+      %backing: tensor<1x1x!ttcore.tile<32x32, bf16>, #l1>,
+      %runtime: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 2048>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
+    %zero = arith.constant 0 : index
+    %is_root = arith.cmpi eq, %core_x, %zero : index
+    scf.if %is_root {
+      %reserved = ttl.cb_reserve %dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %runtime_coordinate = arith.addi %core_y, %runtime : index
+      %runtime_selected = arith.cmpi eq, %runtime_coordinate, %zero : index
+      scf.if %runtime_selected {
+        %read = ttl.copy %source, %dfb
+            : (tensor<1x1x!ttcore.tile<32x32, bf16>, #l1>,
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+            -> !ttl.transfer_handle<read>
+        ttl.wait %read : !ttl.transfer_handle<read>
+      }
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      %ready = ttl.cb_wait %dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    }
+    return
+  }
+}

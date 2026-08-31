@@ -5069,6 +5069,14 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       logicalDFB.launchDomain =
           logicalDFB.launchDomain.unionWith(access.launchDomain);
     }
+    if (llvm::any_of(logicalDFB.accesses,
+                     [](const DFBAccessOccurrence &access) {
+                       return !access.launchDomain.known &&
+                              (access.getProtocolEffect() ||
+                               access.opaqueExternalAccess);
+                     })) {
+      logicalDFB.launchDomain = LaunchNodeDomain::unknown();
+    }
   }
   for (SynchronizedResetOccurrence &reset : resetOccurrences) {
     const AccessDomain &resetDomain = getRefinedAccessDomain(reset.operation);

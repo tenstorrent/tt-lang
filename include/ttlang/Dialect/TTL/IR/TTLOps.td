@@ -601,6 +601,52 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 // Pipe operations (for multi-core communication)
 //===----------------------------------------------------------------------===//
 
+def TTL_IsDeviceOp : TTL_Op<"is_device", [Pure]> {
+  let summary = "Test whether the kernel executes on a logical device";
+  let description = [{
+    Returns true when the current logical device matches `device` in `domain`.
+    Logical device coordinates are runtime values supplied by the host. Target
+    lowering determines how those coordinates map to physical devices.
+  }];
+  let arguments = (ins
+    TTL_DeviceDomainAttr:$domain,
+    TTL_DeviceRefAttr:$device
+  );
+  let results = (outs I1:$result);
+  let assemblyFormat = "$device `in` $domain attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_CurrentDeviceIndexOp : TTL_Op<"current_device_index", [Pure]> {
+  let summary = "Get the current logical device index";
+  let description = [{
+    Returns the zero-based row-major order of the current logical device in
+    `domain`. Component and axis order follow the order stored in the domain.
+    The result depends only on the logical device coordinates, not on physical
+    device identifiers or fabric topology.
+  }];
+  let arguments = (ins TTL_DeviceDomainAttr:$domain);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$domain attr-dict `:` type($result)";
+}
+
+def TTL_IsDeviceInRangeOp : TTL_Op<"is_device_in_range", [Pure]> {
+  let summary = "Test whether the kernel executes in a logical device range";
+  let description = [{
+    Returns true when the current logical device is in the half-open `range`
+    within `domain`. Logical device coordinates are runtime values supplied by
+    the host. Target lowering determines how those coordinates map to physical
+    devices.
+  }];
+  let arguments = (ins
+    TTL_DeviceDomainAttr:$domain,
+    TTL_DeviceRangeAttr:$range
+  );
+  let results = (outs I1:$result);
+  let assemblyFormat = "$range `in` $domain attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
 def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let summary = "Create a pipe for core-to-core communication";
   let description = [{
@@ -635,7 +681,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     // `a_pipe_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
     OptionalAttr<StrAttr>:$pipeNetName,
-    OptionalAttr<BoolAttr>:$isCollective
+    OptionalAttr<BoolAttr>:$isCollective,
+    OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -666,7 +713,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstEndY),
             $_builder.getI64IntegerAttr(pipeNetId),
             /*pipeNetName=*/StringAttr(),
-            /*isCollective=*/BoolAttr());
+            /*isCollective=*/BoolAttr(),
+            /*deviceTransfer=*/DeviceTransferAttr());
     }]>
   ];
 }
@@ -733,9 +781,10 @@ def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
   let summary = "Iterate over source pipe records in a PipeNet";
   let description = [{
     Executes the body region once for each static PipeNet record whose source
-    coordinate matches the current launch node. The body receives a
-    `!ttl.selected_pipe_src` argument representing the selected record for that
-    iteration.
+    coordinate matches the current launch node. A graph record additionally
+    requires the current logical device to match its source endpoint. The body
+    receives a `!ttl.selected_pipe_src` argument representing the selected
+    record for that iteration.
 
     The records in `$records` are ordered by user PipeNet construction
     order. That order defines program order for a launch node that matches
@@ -756,9 +805,10 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
   let summary = "Iterate over destination pipe records in a PipeNet";
   let description = [{
     Executes the body region once for each static PipeNet record whose
-    destination range contains the current launch node. The body receives a
-    `!ttl.selected_pipe_dst` argument representing the selected record for that
-    iteration.
+    destination range contains the current launch node. A graph record
+    additionally requires the current logical device to match its destination
+    endpoint. The body receives a `!ttl.selected_pipe_dst` argument
+    representing the selected record for that iteration.
 
     The records in `$records` are ordered by user PipeNet construction
     order. That order defines program order for a launch node that matches
@@ -773,17 +823,19 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
   let hasVerifier = 1;
 }
 
-def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
-  let summary = "Represent a record selected by source iteration";
-  let description = [{
-    Represents a PipeNet record selected because the current launch node is its
-    source. The operands contain the selected record fields. `$recordIndex`
-    identifies the record in `$records`; the remaining operands contain that
-    record's coordinates and receiver count. `$srcInDstRange` is true when the
-    source coordinate belongs to the destination range. `$records` identifies
-    the PipeNet and its transfer contract.
-  }];
-
+class TTL_SelectPipeOp<string mnemonic, string role, Type pipeType>
+    : TTL_Op<mnemonic, [Pure]> {
+  let summary = "Represent a record selected by " # role # " iteration";
+  let description = "Represents a PipeNet record selected for " # role #
+      " iteration. The operands contain the selected record fields. "
+      "`$recordIndex` identifies the record in `$records`; the remaining "
+      "operands contain its coordinates and receiver count. "
+      "`$srcInDstRange` is true when the source coordinate belongs to the "
+      "destination range. `$records` identifies the PipeNet and transfer "
+      "contract. The device-index operands identify the logical-device edge "
+      "associated with the selected record. They remain explicit operands for "
+      "all records so selected-pipe IR has one stable operand contract; "
+      "device-index accessors separately require graph records.";
   let arguments = (ins
     Index:$recordIndex,
     Index:$srcX,
@@ -794,43 +846,74 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
     Index:$dstEndY,
     Index:$numDests,
     I1:$srcInDstRange,
+    Index:$sourceDeviceIndex,
+    Index:$destinationDeviceIndex,
     TTL_PipeNetRecordsAttr:$records
   );
-  let results = (outs TTL_SelectedPipeSrc:$pipe);
+  let results = (outs pipeType:$pipe);
   let assemblyFormat = [{
     `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
-    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)`
+    `devices` `(` $sourceDeviceIndex `,` $destinationDeviceIndex `)` attr-dict `:` type($pipe)
   }];
 }
 
-def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
-  let summary = "Represent a record selected by destination iteration";
-  let description = [{
-    Represents a PipeNet record selected because the current launch node is one
-    of its destinations. The operands contain the selected record fields.
-    `$recordIndex` identifies the record in `$records`; the remaining operands
-    contain that record's coordinates and receiver count. `$srcInDstRange` is
-    true when the source coordinate belongs to the destination range.
-    `$records` identifies the PipeNet and its transfer contract.
-  }];
+def TTL_SelectPipeSrcOp
+    : TTL_SelectPipeOp<"select_pipe_src", "source", TTL_SelectedPipeSrc>;
 
-  let arguments = (ins
-    Index:$recordIndex,
-    Index:$srcX,
-    Index:$srcY,
-    Index:$dstStartX,
-    Index:$dstStartY,
-    Index:$dstEndX,
-    Index:$dstEndY,
-    Index:$numDests,
-    I1:$srcInDstRange,
-    TTL_PipeNetRecordsAttr:$records
-  );
-  let results = (outs TTL_SelectedPipeDst:$pipe);
-  let assemblyFormat = [{
-    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
-    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+def TTL_SelectPipeDstOp
+    : TTL_SelectPipeOp<"select_pipe_dst", "destination", TTL_SelectedPipeDst>;
+
+def TTL_SelectedPipeSourceDeviceIndexOp
+    : TTL_Op<"selected_pipe_source_device_index", [Pure]> {
+  let summary = "Get the selected pipe record's logical source device index";
+  let description = [{
+    Returns the row-major logical-device index of the source endpoint stored in
+    the selected graph PipeNet record.
   }];
+  let arguments = (ins TTL_SelectedPipeDst:$pipe);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectedPipeDestinationDeviceIndexOp
+    : TTL_Op<"selected_pipe_destination_device_index", [Pure]> {
+  let summary = "Get the selected pipe record's logical destination device index";
+  let description = [{
+    Returns the row-major logical-device index of the destination endpoint
+    stored in the selected graph PipeNet record.
+  }];
+  let arguments = (ins TTL_SelectedPipeSrc:$pipe);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectedPipeSourceCoordinatesOp
+    : TTL_Op<"selected_pipe_source_coordinates", [Pure]> {
+  let summary = "Get the selected pipe record's source node coordinates";
+  let description = [{
+    Returns the source node coordinates stored in the selected PipeNet record.
+  }];
+  let arguments = (ins TTL_SelectedPipeDst:$pipe);
+  let results = (outs Index:$x, Index:$y);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectedPipeDestinationCoordinatesOp
+    : TTL_Op<"selected_pipe_destination_coordinates", [Pure]> {
+  let summary = "Get the selected pipe record's destination node coordinates";
+  let description = [{
+    Returns the inclusive start and end coordinates of the destination node
+    range stored in the selected PipeNet record. Point destinations have equal
+    start and end coordinates.
+  }];
+  let arguments = (ins TTL_SelectedPipeSrc:$pipe);
+  let results = (outs Index:$startX, Index:$startY, Index:$endX, Index:$endY);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+  let hasVerifier = 1;
 }
 
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
@@ -840,7 +923,9 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     transfer consists of one send and one corresponding post for each receiver.
     The sender and receiver callbacks may use different references because each
     constructs its pipe value independently. The attributes record the common
-    point-to-point or collective contract.
+    point-to-point or collective contract and the optional logical-device
+    transfer. The logical-device transfer is absent for transfers within one
+    device.
 
     `block_span` is the number of consecutive original DFB blocks delivered by
     one transfer. Scalar transfers use the default span of one. Grouping
@@ -859,6 +944,7 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
   let arguments = (ins
     TTL_PipeReference:$pipe,
     TTL_PipeTransferKindAttr:$kind,
+    OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
          $destination_group_depth
@@ -961,11 +1047,14 @@ def TTL_IsSrcOp : TTL_Op<"is_src",
     Returns `true` on nodes that match the `src` of at least one pipe in the
     named PipeNet, `false` elsewhere. The value-returning sibling of
     `ttl.if_src`; used as the condition of an `scf.if` to guard pipe-coupled
-    work without entering a region.
+    work without entering a region. When `records` is present, the current
+    logical device must also match the source endpoint in a record.
   }];
-  let arguments = (ins I64Attr:$pipe_net_id);
+  let arguments = (ins I64Attr:$pipe_net_id,
+                        OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
   let results = (outs I1:$result);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def TTL_IsDstOp : TTL_Op<"is_dst",
@@ -974,11 +1063,15 @@ def TTL_IsDstOp : TTL_Op<"is_dst",
   let description = [{
     Returns `true` on nodes whose coordinate falls within the `dst` range of
     at least one pipe in the named PipeNet, `false` elsewhere. The
-    value-returning sibling of `ttl.if_dst`.
+    value-returning sibling of `ttl.if_dst`. When `records` is present, the
+    current logical device must also match the destination endpoint in a
+    record.
   }];
-  let arguments = (ins I64Attr:$pipe_net_id);
+  let arguments = (ins I64Attr:$pipe_net_id,
+                        OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
   let results = (outs I1:$result);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def TTL_IsActiveOp : TTL_Op<"is_active",
@@ -987,10 +1080,14 @@ def TTL_IsActiveOp : TTL_Op<"is_active",
   let description = [{
     Returns `true` on nodes that are either a source or a destination of at
     least one pipe in the named PipeNet (the union of `is_src` and `is_dst`).
+    When `records` is present, node roles also include the corresponding
+    logical-device endpoints.
   }];
-  let arguments = (ins I64Attr:$pipe_net_id);
+  let arguments = (ins I64Attr:$pipe_net_id,
+                        OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
   let results = (outs I1:$result);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2261,6 +2358,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     unknown DFB access because condition evaluation is stable and repeat-safe
     rather than stateful.
 
+    `fabric_manager_effects` declares ownership effects for external fabric
+    connection managers. The enclosing operation binds each claim to one
+    logical kernel. Nonlocal verification requires balanced ownership and
+    rejects uses outside an acquired interval.
+
     Example:
     ```mlir
     ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
@@ -2278,6 +2380,8 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     Variadic<TTL_CircularBuffer>:$dependency_dfb_operands,
     OptionalAttr<ArrayAttr>:$template_args,
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
+    OptionalAttr<TypedArrayAttrBase<TTL_FabricManagerEffectAttr,
+                                    "fabric manager effects">>:$fabric_manager_effects,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
     OptionalAttr<TTL_DFBNonTransactionalAccessArrayAttr>:$dfb_accesses,
     UnitAttr:$unknown_dfb_access,

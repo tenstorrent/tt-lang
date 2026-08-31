@@ -52,7 +52,7 @@ from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttcore, ttkernel, ttl as ttl_dialect
 from ttl.ir import *
-from ttl.ir import DenseI32ArrayAttr
+from ttl.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, DictAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
@@ -123,15 +123,20 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    _FabricRouteCache,
     _detect_device_arch,
     _same_device,
     attach_runtime_resource_finalizer,
-    KernelRuntimeResourceCache,
-    KernelSpec,
+    FabricManagerIntervalKind,
+    FabricManagerIntervalSpec,
+    FabricRouteSpec,
     get_min_remaining_l1_excluding_cached_resources,
     get_min_remaining_l1_for_device,
-    run_kernel_on_device,
+    KernelRuntimeResourceCache,
+    KernelSpec,
+    MeshProgramPlacement,
     emit_runner_file,
+    run_kernel_on_device,
 )
 from .kernel import (
     Kernel,
@@ -141,9 +146,11 @@ from .kernel import (
     _bind_kernel_declarations,
     _format_kernel_capacity_error,
     _operation_identity,
+    _referenced_operation_values,
     _selector_implicit_role,
     _selector_kind,
 )
+from .fabric import FabricManagerClaim, _bind_fabric_manager_claims
 from .runtime_resources import ProgramRuntimeResources
 from .operators import (
     CopyTransferHandler,
@@ -271,13 +278,20 @@ def _validate_explicit_logical_kernel_uses(
 
 def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
     """Return logical kernels referenced by an explicit operation."""
-    closure = inspect.getclosurevars(function)
-    captures = dict(closure.globals)
-    captures.update(closure.nonlocals)
     return {
         name: value
-        for name, value in sorted(captures.items())
+        for name, value in _referenced_operation_values(function).items()
         if isinstance(value, Kernel)
+    }
+
+
+def _captured_fabric_manager_claims(
+    function: Callable,
+) -> Dict[str, FabricManagerClaim]:
+    return {
+        name: value
+        for name, value in _referenced_operation_values(function).items()
+        if isinstance(value, FabricManagerClaim)
     }
 
 
@@ -547,6 +561,58 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
+def _default_mesh_program_placements(args: tuple):
+    """Return a full-mesh placement for mesh tensor execution."""
+    for arg in args:
+        if not _is_mesh_tensor(arg):
+            continue
+        mesh_shape = tuple(int(dim) for dim in arg.device().shape)
+        start = tuple(0 for _ in mesh_shape)
+        end = tuple(dim - 1 for dim in mesh_shape)
+        return [MeshProgramPlacement(start, end)]
+    return None
+
+
+def _mesh_program_placements_from_device_domain(device_domain):
+    """Return the default mesh placement for a logical device domain."""
+    if device_domain is None:
+        return None
+
+    from math import prod
+    from .domains import DeviceDomain
+
+    if not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
+        )
+
+    extent = tuple(
+        int(dimension)
+        for component in device_domain.components
+        for dimension in component.extent
+    )
+    if prod(extent) <= 1:
+        return None
+    start = tuple(0 for _ in extent)
+    end = tuple(dim - 1 for dim in extent)
+    return [MeshProgramPlacement(start, end)]
+
+
+def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
+    """Return mesh placements from tensors, or from device_domain metadata."""
+    tensor_placements = _default_mesh_program_placements(args)
+    domain_placements = _mesh_program_placements_from_device_domain(device_domain)
+    if tensor_placements is None:
+        return domain_placements
+    if domain_placements is None:
+        return tensor_placements
+    if tensor_placements != domain_placements:
+        raise ValueError(
+            "mesh tensor shape does not match operation device_domain extent"
+        )
+    return tensor_placements
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -742,6 +808,11 @@ class CompiledTTNNKernel:
         num_dfb_resets=0,
         opaque_include_paths=None,
         kernel_pipe_computed_address_dfb_indices=None,
+        kernel_fabric_routes=None,
+        kernel_fabric_runtime_arg_base_common_indices=None,
+        kernel_fabric_manager_intervals=None,
+        mesh_program_placements=None,
+        device_domain=None,
         kernel_logical_selectors=None,
         operation_name="<anonymous>",
         runtime_resource_factory: Optional[
@@ -780,6 +851,14 @@ class CompiledTTNNKernel:
             num_dfb_resets: Number of synchronized DFB reset boundaries.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
+            kernel_fabric_routes: Per-kernel routing-plane connection metadata.
+            kernel_fabric_runtime_arg_base_common_indices: Per-kernel common
+                argument indices containing fabric unique-argument bases.
+            kernel_fabric_manager_intervals: Per-kernel fabric manager
+                ownership intervals.
+            mesh_program_placements: Optional mesh device ranges. When present,
+                execution uses ttnn.MeshProgramDescriptor.
+            device_domain: Logical device domain used for per-device dispatch.
             kernel_logical_selectors: Logical selector for each compiled kernel.
             operation_name: User-facing operation name for runtime diagnostics.
             runtime_resource_factory: Optional per-invocation resource callback.
@@ -808,6 +887,16 @@ class CompiledTTNNKernel:
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
+        self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
+        self.kernel_fabric_runtime_arg_base_common_indices = (
+            kernel_fabric_runtime_arg_base_common_indices
+            or [None for _ in kernel_paths]
+        )
+        self.kernel_fabric_manager_intervals = kernel_fabric_manager_intervals or [
+            () for _ in kernel_paths
+        ]
+        self.mesh_program_placements = mesh_program_placements
+        self.device_domain = device_domain
         self.kernel_logical_selectors = (
             list(kernel_logical_selectors)
             if kernel_logical_selectors is not None
@@ -850,6 +939,7 @@ class CompiledTTNNKernel:
                 self, self._runtime_resource_cache
             )
         self.opaque_include_paths = opaque_include_paths or []
+        self._fabric_route_cache = _FabricRouteCache()
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -882,7 +972,13 @@ class CompiledTTNNKernel:
                     kernel_idx
                 ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
+                fabric_runtime_arg_base_common_index=(
+                    self.kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
+                ),
                 logical_kernel=self.kernel_logical_selectors[kernel_idx],
+                fabric_manager_intervals=self.kernel_fabric_manager_intervals[
+                    kernel_idx
+                ],
                 used_dfb_indices=self.kernel_used_dfb_indices[kernel_idx],
             )
             kernel_specs.append(spec)
@@ -899,6 +995,10 @@ class CompiledTTNNKernel:
             num_dfb_resets=self.num_dfb_resets,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+            mesh_program_placements=self.mesh_program_placements,
+            device_domain=self.device_domain,
+            kernel_fabric_routes=self.kernel_fabric_routes,
+            fabric_route_cache=self._fabric_route_cache,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
             runtime_resource_cache=self._runtime_resource_cache,
@@ -1131,6 +1231,94 @@ def _get_kernel_crta_indices(module, kernel_name: str):
     return [int(IntegerAttr(idx).value) for idx in attr]
 
 
+def _get_kernel_fabric_routes(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(_ttl_ir.FABRIC_ROUTES_ATTR, None)
+    if attr is None:
+        return []
+
+    routes = []
+    for route_attr in ArrayAttr(attr):
+        route = DictAttr(route_attr)
+        local = ttl_dialect.DeviceRefAttr.maybe_downcast(route["local"])
+        remote = ttl_dialect.DeviceRefAttr.maybe_downcast(route["remote"])
+        if local is None or remote is None:
+            raise ValueError(
+                f"Expected DeviceRefAttr entries in ttl.fabric_routes on "
+                f"kernel '{kernel_name}'"
+            )
+        source_nodes = tuple(
+            tuple(DenseI64ArrayAttr(source_node))
+            for source_node in ArrayAttr(route["source_nodes"])
+        )
+        routes.append(
+            FabricRouteSpec(
+                local_device=tuple(
+                    value for coordinate in local.coordinates for value in coordinate
+                ),
+                remote_device=tuple(
+                    value for coordinate in remote.coordinates for value in coordinate
+                ),
+                source_nodes=source_nodes,
+                route_index=int(route["route_index"]),
+            )
+        )
+    return routes
+
+
+def _get_kernel_fabric_runtime_arg_base_common_index(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(
+        _ttl_ir.FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR, None
+    )
+    return None if attr is None else int(IntegerAttr(attr).value)
+
+
+def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(_ttl_ir.FABRIC_MANAGER_INTERVALS_ATTR, None)
+    if attr is None:
+        return ()
+
+    kind_map = {
+        _ttl_ir.FabricManagerIntervalKind.GeneratedReceiver: (
+            FabricManagerIntervalKind.GENERATED_RECEIVER
+        ),
+        _ttl_ir.FabricManagerIntervalKind.GeneratedSender: (
+            FabricManagerIntervalKind.GENERATED_SENDER
+        ),
+        _ttl_ir.FabricManagerIntervalKind.GeneratedMixed: (
+            FabricManagerIntervalKind.GENERATED_MIXED
+        ),
+        _ttl_ir.FabricManagerIntervalKind.External: (
+            FabricManagerIntervalKind.EXTERNAL
+        ),
+    }
+    intervals = []
+    for interval_attr in ArrayAttr(attr):
+        interval = ttl_dialect.FabricManagerIntervalAttr.maybe_downcast(interval_attr)
+        if interval is None:
+            raise ValueError(
+                "Expected FabricManagerIntervalAttr entries in "
+                f"ttl.fabric_manager_intervals on kernel {kernel_name!r}"
+            )
+        intervals.append(
+            FabricManagerIntervalSpec(
+                identity=interval.identity,
+                kind=kind_map[interval.kind],
+                claim=interval.claim,
+                route_indices=tuple(interval.route_indices),
+                interfering_intervals=tuple(interval.interfering_intervals),
+                launch_nodes=(
+                    None
+                    if interval.launch_nodes is None
+                    else tuple(tuple(node) for node in interval.launch_nodes)
+                ),
+            )
+        )
+    return tuple(intervals)
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -1152,6 +1340,8 @@ def _compile_ttnn_kernel(
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
+    mesh_program_placements=None,
+    device_domain=None,
     target_arch: Optional[str] = None,
     operation_name: str = "<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
@@ -1306,6 +1496,9 @@ def _compile_ttnn_kernel(
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
     specialized_tensor_indices = []
+    kernel_fabric_routes = []
+    kernel_fabric_runtime_arg_base_common_indices = []
+    kernel_fabric_manager_intervals = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -1336,6 +1529,13 @@ def _compile_ttnn_kernel(
             _get_kernel_optional_i32_array_attr(
                 module, name, _ttl_ir.USED_DFB_INDICES_ATTR
             )
+        )
+        kernel_fabric_routes.append(_get_kernel_fabric_routes(module, name))
+        kernel_fabric_manager_intervals.append(
+            _get_kernel_fabric_manager_intervals(module, name)
+        )
+        kernel_fabric_runtime_arg_base_common_indices.append(
+            _get_kernel_fabric_runtime_arg_base_common_index(module, name)
         )
 
         # The specialized clone's launch coordinates (None on the default,
@@ -1428,6 +1628,13 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_fabric_routes=kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices=(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
+        kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
         operation_name=operation_name,
         runtime_resource_factory=runtime_resource_factory,
@@ -1454,7 +1661,11 @@ def _compile_ttnn_kernel(
                     kernel_idx
                 ],
                 core_ranges=kernel_core_ranges[kernel_idx],
+                fabric_runtime_arg_base_common_index=(
+                    kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
+                ),
                 logical_kernel=kernel_logical_selectors[kernel_idx],
+                fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
                 used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
@@ -1478,6 +1689,9 @@ def _compile_ttnn_kernel(
             num_dfb_resets=num_dfb_resets,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
+            kernel_fabric_routes=kernel_fabric_routes,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         )
@@ -1501,18 +1715,11 @@ def _build_operation_pipenets(f: Callable, threads):
     def visit(func):
         if func is None:
             return
-        closure = getattr(func, "__closure__", None) or ()
-        for cell in closure:
-            try:
-                value = cell.cell_contents
-            except ValueError:
-                continue
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
-        fn_globals = getattr(func, "__globals__", None) or {}
-        for value in fn_globals.values():
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+        closure_vars = inspect.getclosurevars(func)
+        for namespace in (closure_vars.nonlocals, closure_vars.globals):
+            for value in namespace.values():
+                if isinstance(value, PipeNet) and id(value) not in seen:
+                    seen[id(value)] = value
 
     visit(f)
     for thread in threads:
@@ -1531,6 +1738,11 @@ def _build_pipenet_graph(nets):
 
     graph = OperationPipeNets()
     for net in nets:
+        if net.is_graph:
+            net_use = graph.add_graph_pipe_net(net.graph)
+            net._graph_edges = net_use.edges
+            net.pipe_net_id = net_use.pipe_net_id
+            continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
@@ -1564,6 +1776,8 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
+        from .domains import DeviceDomain
+
         if val is None:
             return val
         if isinstance(val, (int, float)):
@@ -1577,6 +1791,10 @@ def _collect_captures(
         elif isinstance(val, Pipe):
             return val
         elif isinstance(val, PipeNet):
+            return val
+        elif isinstance(val, DeviceDomain):
+            return val
+        elif isinstance(val, FabricManagerClaim):
             return val
         # A tuple or list of scalars is a compile-time shape or axis list. It
         # reaches the same consumers as the equivalent literal written inline,
@@ -2082,6 +2300,7 @@ def _compile(
             kwargs["_source_lines"] = source_lines
             kwargs["_line_offset"] = _get_source_line_offset(f)
             kwargs["debug_locations"] = True
+            kwargs["_logical_kernel"] = selected_kernel
 
             m = ast.parse(source_code)
             return _run_thread_compiler(
@@ -2204,6 +2423,7 @@ def _compile_kernel(
     math_fidelity: Optional[str] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    device_domain=None,
     l1_budget_override: int = 0,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
@@ -2227,6 +2447,7 @@ def _compile_kernel(
         math_fidelity: Optional TTNN compute math fidelity
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
+        device_domain: Optional logical device domain for mesh execution
         l1_budget_override: Explicit or device-derived L1 allocation budget
         runtime_resource_cache: Persistent resources shared by operation variants
 
@@ -2245,11 +2466,7 @@ def _compile_kernel(
 
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
-    # For mesh tensors, tensor.shape already returns the per-device shard
-    # dimensions, so no wrapping is needed.
-    is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
-
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
@@ -2310,6 +2527,10 @@ def _compile_kernel(
     )
 
     pipenets = _build_operation_pipenets(f, threads)
+    device_domain = pipenets.resolve_device_domain(device_domain)
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
 
     launch_grid = grid
 
@@ -2330,7 +2551,6 @@ def _compile_kernel(
         args=args,
         launch_grid=launch_grid,
         num_outs=num_outs,
-        pipenets=pipenets,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
@@ -2340,6 +2560,8 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
         logical_kernels=[thread._logical_kernel for thread in threads],
         operation_name=f.__name__,
         runtime_resource_factory=runtime_resource_factory,
@@ -2353,7 +2575,6 @@ def _lower_program_to_kernel(
     args,
     launch_grid,
     num_outs,
-    pipenets,
     target_arch,
     fp32_dest_acc_en,
     dst_full_sync_en,
@@ -2363,6 +2584,8 @@ def _lower_program_to_kernel(
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
+    mesh_program_placements,
+    device_domain,
     logical_kernels=None,
     operation_name="<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
@@ -2774,6 +2997,8 @@ def _lower_program_to_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
             target_arch=target_arch,
             operation_name=operation_name,
             runtime_resource_factory=runtime_resource_factory,
@@ -2941,6 +3166,7 @@ def pykernel_gen(
     options: Optional[str] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     _prepare_call: Optional[Callable] = None,
+    device_domain=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -2960,6 +3186,7 @@ def pykernel_gen(
         dst_full_sync_en: Optional override for dst_full_sync_en
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        device_domain: Optional logical device domain for mesh execution.
         runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
@@ -2990,8 +3217,13 @@ def pykernel_gen(
         iterator_types = []
 
     def _decorator(f):
-        _bind_kernel_declarations(
-            _captured_kernel_declarations(f), _operation_identity(f)
+        operation_identity = _operation_identity(f)
+        captured_kernels = _captured_kernel_declarations(f)
+        _bind_kernel_declarations(captured_kernels, operation_identity)
+        _bind_fabric_manager_claims(
+            _captured_fabric_manager_claims(f),
+            operation_identity,
+            captured_kernels,
         )
 
         def _compile_explicit(
@@ -3023,6 +3255,7 @@ def pykernel_gen(
                 math_fidelity=math_fidelity,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                device_domain=device_domain,
                 l1_budget_override=l1_budget_override,
                 runtime_resource_factory=runtime_resource_factory,
                 runtime_resource_cache=runtime_resource_cache,

@@ -34,7 +34,8 @@ printf 'python active:%s visible:%s home:%s runtime:%s metal:%s ld:%s args:%s\n'
 EOF
     cat > "$BIN/python3" <<'EOF'
 #!/usr/bin/env bash
-printf 'python3 active:%s args:%s\n' "${BUILD_ENV_ACTIVE:-}" "$*" >> "$CALLS"
+printf 'python3 active:%s visible:%s args:%s\n' \
+    "${BUILD_ENV_ACTIVE:-}" "${TT_VISIBLE_DEVICES:-}" "$*" >> "$CALLS"
 EOF
     cat > "$BIN/nproc" <<'EOF'
 #!/usr/bin/env bash
@@ -116,7 +117,7 @@ EOF
     run -0 "$SCRIPT" reset
 
     run cat "$CALLS"
-    assert_line --partial "python3 active:1 args:-m pip install -r dev-requirements.txt"
+    assert_line --partial "python3 active:1 visible: args:-m pip install -r dev-requirements.txt"
     assert_line "reset active:1 args:"
 }
 
@@ -125,8 +126,8 @@ EOF
     HW_TEST_WORKERS=8 run -0 "$SCRIPT" simulator
 
     run cat "$CALLS"
-    assert_line --partial "python3 active:1 args:test/python/smoketest.py"
-    assert_line --partial "python3 active:1 args:-m pytest test/sim -m requires_ttnn -v -n 8"
+    assert_line --partial "python3 active:1 visible: args:test/python/smoketest.py"
+    assert_line --partial "python3 active:1 visible: args:-m pytest test/sim -m requires_ttnn -v -n 8"
     assert_line --partial "--junitxml=build/test/sim-report.xml"
 }
 
@@ -147,6 +148,15 @@ EOF
     assert_line "hardware-pytest active:1 args:test/python build/test/pytest-report"
     assert_line "hardware-pytest active:1 args:test/me2e build/test/me2e-report"
     assert_line "hardware-pytest active:1 args:test/tutorial build/test/tutorial-report"
+}
+
+@test "fabric phase uses every visible device and writes its report" {
+    TT_VISIBLE_DEVICES=0,1 run -0 "$SCRIPT" fabric-pytests
+
+    run cat "$CALLS"
+    assert_line --partial "python3 active:1 visible: args:-m pytest"
+    assert_line --partial "test/python/fabric -v -x"
+    assert_line --partial "--junitxml=build/test/pytest-report-fabric-full.xml"
 }
 
 @test "examples phase dispatches the example runner" {

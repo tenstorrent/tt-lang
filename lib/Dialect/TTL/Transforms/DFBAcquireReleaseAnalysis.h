@@ -290,7 +290,6 @@ private:
   llvm::DenseMap<Operation *, DFBReleaseOwnership> releaseOwnership;
   llvm::DenseMap<Operation *, SmallVector<Operation *>> releaseIntervalOwners;
 };
-
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_TRANSFORMS_DFBACQUIRERELEASEANALYSIS_H

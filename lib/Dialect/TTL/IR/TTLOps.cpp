@@ -22,6 +22,9 @@
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <algorithm>
 #include <cstdint>
@@ -234,6 +237,97 @@ void TTLDialect::registerTypes() {
       >();
 }
 
+namespace {
+
+using EmitErrorFn = llvm::function_ref<mlir::InFlightDiagnostic()>;
+
+static LogicalResult
+verifyComponentCoordinates(DeviceDomainComponentAttr component,
+                           DenseI64ArrayAttr coordinate, EmitErrorFn emitError,
+                           llvm::StringRef context,
+                           bool allowUpperBound = false) {
+  ArrayRef<int64_t> extent = component.getExtent().asArrayRef();
+  ArrayRef<int64_t> values = coordinate.asArrayRef();
+  if (values.size() != extent.size()) {
+    return emitError() << context << " component '"
+                       << component.getName().getValue() << "' has rank "
+                       << values.size() << ", expected " << extent.size();
+  }
+  for (auto [axis, value] : llvm::enumerate(values)) {
+    bool upperBoundValid =
+        allowUpperBound ? value <= extent[axis] : value < extent[axis];
+    if (value < 0 || !upperBoundValid) {
+      return emitError() << context << " component '"
+                         << component.getName().getValue() << "' axis " << axis
+                         << " is out of bounds for extent " << extent[axis]
+                         << ", got " << value;
+    }
+  }
+  return success();
+}
+
+static LogicalResult verifyDeviceRefInDomain(DeviceDomainAttr domain,
+                                             DeviceRefAttr deviceRef,
+                                             EmitErrorFn emitError,
+                                             llvm::StringRef context,
+                                             bool allowUpperBound = false) {
+  llvm::ArrayRef<DeviceDomainComponentAttr> components = domain.getComponents();
+  llvm::ArrayRef<DenseI64ArrayAttr> coordinates = deviceRef.getCoordinates();
+  if (coordinates.size() != components.size()) {
+    return emitError() << context << " has " << coordinates.size()
+                       << " component coordinates, expected "
+                       << components.size();
+  }
+
+  for (auto [component, coordinate] : llvm::zip(components, coordinates)) {
+    if (failed(verifyComponentCoordinates(component, coordinate, emitError,
+                                          context, allowUpperBound))) {
+      return failure();
+    }
+  }
+  return success();
+}
+
+static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
+                                                      TransferEdgeAttr edge,
+                                                      EmitErrorFn emitError,
+                                                      llvm::StringRef context) {
+  if (mlir::failed(
+          verifyDeviceRefInDomain(domain, edge.getSource(), emitError,
+                                  (llvm::Twine(context) + ".source").str()))) {
+    return mlir::failure();
+  }
+  if (DeviceRefAttr destination = edge.getDestination()) {
+    if (failed(verifyDeviceRefInDomain(
+            domain, destination, emitError,
+            (llvm::Twine(context) + ".destination").str()))) {
+      return failure();
+    }
+    if (destination == edge.getSource()) {
+      return emitError() << context << " source must differ from destination";
+    }
+    return success();
+  }
+
+  DeviceRangeAttr destinationRange = edge.getDestinationRange();
+  if (mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getLo(), emitError,
+          (llvm::Twine(context) + ".destination_range.lo").str())) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getHi(), emitError,
+          (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
+    return mlir::failure();
+  }
+  if (deviceRangeContains(destinationRange, edge.getSource())) {
+    return emitError()
+           << context
+           << " source must not be contained in its destination range";
+  }
+  return mlir::success();
+}
+
+} // namespace
+
 llvm::LogicalResult
 SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                   int64_t start, int64_t stop, int64_t step) {
@@ -345,6 +439,129 @@ llvm::LogicalResult CircularBufferType::verify(
   return llvm::success();
 }
 
+llvm::LogicalResult DeviceDomainComponentAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, StringAttr name,
+    DenseI64ArrayAttr extent) {
+  if (name.getValue().empty()) {
+    return emitError() << "device domain component name must not be empty";
+  }
+  if (extent.empty()) {
+    return emitError() << "device domain component '" << name.getValue()
+                       << "' extent must not be empty";
+  }
+  for (auto [axis, dimension] : llvm::enumerate(extent.asArrayRef())) {
+    if (dimension <= 0) {
+      return emitError() << "device domain component '" << name.getValue()
+                         << "' extent axis " << axis
+                         << " must be positive, got " << dimension;
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceDomainAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<DeviceDomainComponentAttr> components) {
+  if (components.empty()) {
+    return emitError() << "device domain requires at least one component";
+  }
+
+  llvm::StringSet<> componentNames;
+  for (DeviceDomainComponentAttr component : components) {
+    llvm::StringRef name = component.getName().getValue();
+    if (!componentNames.insert(name).second) {
+      return emitError() << "duplicate device domain component name '" << name
+                         << "'";
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult
+DeviceRefAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                      llvm::ArrayRef<DenseI64ArrayAttr> coordinates) {
+  if (coordinates.empty()) {
+    return emitError() << "device reference requires at least one coordinate";
+  }
+  for (auto [componentIndex, coordinate] : llvm::enumerate(coordinates)) {
+    if (coordinate.empty()) {
+      return emitError() << "device reference component " << componentIndex
+                         << " coordinate must not be empty";
+    }
+    for (auto [axis, value] : llvm::enumerate(coordinate.asArrayRef())) {
+      if (value < 0) {
+        return emitError() << "device reference component " << componentIndex
+                           << " axis " << axis << " must be non-negative, got "
+                           << value;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceRangeAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, DeviceRefAttr lo,
+    DeviceRefAttr hi) {
+  if (lo.getCoordinates().size() != hi.getCoordinates().size()) {
+    return emitError() << "device range endpoints have different component "
+                          "counts";
+  }
+  for (auto [componentIndex, coordinatePair] : llvm::enumerate(
+           llvm::zip_equal(lo.getCoordinates(), hi.getCoordinates()))) {
+    auto [loCoordinate, hiCoordinate] = coordinatePair;
+    if (loCoordinate.size() != hiCoordinate.size()) {
+      return emitError() << "device range component " << componentIndex
+                         << " endpoints have different ranks";
+    }
+    for (auto [axis, valuePair] : llvm::enumerate(llvm::zip_equal(
+             loCoordinate.asArrayRef(), hiCoordinate.asArrayRef()))) {
+      auto [loValue, hiValue] = valuePair;
+      if (loValue >= hiValue) {
+        return emitError() << "device range component " << componentIndex
+                           << " axis " << axis
+                           << " requires lo < hi, got lo=" << loValue
+                           << ", hi=" << hiValue;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult TransferEdgeAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceRefAttr source, DeviceRefAttr destination,
+    DeviceRangeAttr destinationRange) {
+  if (static_cast<bool>(destination) == static_cast<bool>(destinationRange)) {
+    return emitError() << "transfer edge requires exactly one of destination "
+                          "or destination_range";
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, TransferEdgeAttr edge) {
+  return verifyTransferEdgeInDomain(domain, edge, emitError,
+                                    "device transfer edge");
+}
+
+mlir::LogicalResult IsDeviceOp::verify() {
+  return verifyDeviceRefInDomain(
+      getDomain(), getDevice(), [&]() { return emitOpError(); }, "device");
+}
+
+mlir::LogicalResult IsDeviceInRangeOp::verify() {
+  if (mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getLo(), [&]() { return emitOpError(); },
+          "range lower bound")) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getHi(), [&]() { return emitOpError(); },
+          "range upper bound", true))) {
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
 llvm::LogicalResult
 LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                    ArrayRef<int64_t> shape, Type elementType,
@@ -375,7 +592,7 @@ llvm::LogicalResult
 PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        int64_t srcX, int64_t srcY, int64_t dstStartX,
                        int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                       bool isCollective) {
+                       bool isCollective, DeviceTransferAttr deviceTransfer) {
   if (srcX < 0 || srcY < 0) {
     return emitError() << "source coordinates must be non-negative";
   }
@@ -405,6 +622,23 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
       })) {
     return emitError()
            << "all pipe records must be either point-to-point or collective";
+  }
+  DeviceTransferAttr firstTransfer = pipes.front().getDeviceTransfer();
+  DeviceDomainAttr deviceDomain =
+      firstTransfer ? firstTransfer.getDomain() : DeviceDomainAttr();
+  for (PipeRecordAttr record : pipes) {
+    DeviceTransferAttr transfer = record.getDeviceTransfer();
+    if (static_cast<bool>(transfer) != static_cast<bool>(firstTransfer)) {
+      return emitError()
+             << "pipe records must consistently identify device transfers";
+    }
+    if (transfer && transfer.getDomain() != deviceDomain) {
+      return emitError()
+             << "all pipe records must use the same logical device domain";
+    }
+    if (transfer && !transfer.getEdge().getDestination()) {
+      return emitError() << "graph pipe records require one destination device";
+    }
   }
   return llvm::success();
 }
@@ -696,6 +930,13 @@ verifyPipeNetForeachBody(mlir::Operation *op, mlir::Region &body,
     if (copy && (copy.getSrc() == pipeArg || copy.getDst() == pipeArg)) {
       continue;
     }
+    if (mlir::isa<mlir::tt::ttl::SelectedPipeSourceDeviceIndexOp,
+                  mlir::tt::ttl::SelectedPipeDestinationDeviceIndexOp,
+                  mlir::tt::ttl::SelectedPipeSourceCoordinatesOp,
+                  mlir::tt::ttl::SelectedPipeDestinationCoordinatesOp>(
+            use.getOwner())) {
+      continue;
+    }
     return op->emitOpError() << "selected pipe argument has unsupported use by "
                              << use.getOwner()->getName();
   }
@@ -710,6 +951,58 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
   return verifyPipeNetForeachBody(getOperation(), getBody(),
                                   SelectedPipeDstType::get(getContext()));
+}
+
+static mlir::LogicalResult
+verifySelectedPipeDeviceIndex(mlir::Operation *op, mlir::Value pipe,
+                              bool requirePointDestination) {
+  mlir::FailureOr<mlir::tt::ttl::SelectedPipeRecords> maybeRecords =
+      mlir::tt::ttl::getSelectedPipeRecords(pipe);
+  if (mlir::failed(maybeRecords)) {
+    return op->emitOpError()
+           << "requires a selected pipe with an associated record table";
+  }
+  for (mlir::tt::ttl::PipeRecordAttr record :
+       maybeRecords->records.getPipes()) {
+    mlir::tt::ttl::DeviceTransferAttr transfer = record.getDeviceTransfer();
+    if (!transfer) {
+      return op->emitOpError()
+             << "requires every selected record to identify a device transfer";
+    }
+    if (requirePointDestination && !transfer.getEdge().getDestination()) {
+      return op->emitOpError() << "does not support a device-range destination";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectedPipeSourceDeviceIndexOp::verify() {
+  return verifySelectedPipeDeviceIndex(getOperation(), getPipe(),
+                                       /*requirePointDestination=*/false);
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::SelectedPipeDestinationDeviceIndexOp::verify() {
+  return verifySelectedPipeDeviceIndex(getOperation(), getPipe(),
+                                       /*requirePointDestination=*/true);
+}
+
+static mlir::LogicalResult verifySelectedPipeCoordinates(mlir::Operation *op,
+                                                         mlir::Value pipe) {
+  if (mlir::failed(mlir::tt::ttl::getSelectedPipeRecords(pipe))) {
+    return op->emitOpError()
+           << "requires a selected pipe with an associated record table";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectedPipeSourceCoordinatesOp::verify() {
+  return verifySelectedPipeCoordinates(getOperation(), getPipe());
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::SelectedPipeDestinationCoordinatesOp::verify() {
+  return verifySelectedPipeCoordinates(getOperation(), getPipe());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
@@ -760,6 +1053,17 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   }
 
   Value pipe = traceUnrealizedCasts(getPipe());
+  if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(pipe.getType()) &&
+      getDeviceTransferAttr()) {
+    return emitOpError()
+           << "selected pipe device transfers are stored in the record table";
+  }
+  if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>();
+      createPipe &&
+      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+    return emitOpError()
+           << "deviceTransfer must match the defining ttl.create_pipe";
+  }
   if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
     switch (getKind().getValue()) {
     case PipeTransferKind::PointToPoint:
@@ -2732,6 +3036,34 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 //===----------------------------------------------------------------------===//
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
+
+template <typename PredicateOp>
+static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+  mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
+  int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
+  if (records && records.getPipeNetId() != pipeNetId) {
+    return op.emitOpError()
+           << "record table identifies PipeNet " << records.getPipeNetId()
+           << ", but pipe_net_id is " << pipeNetId;
+  }
+  if (records && !records.getPipes().front().getDeviceTransfer()) {
+    return op.emitOpError()
+           << "record table must identify logical-device transfers";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
 
 int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {
   return getPipeNetId();
