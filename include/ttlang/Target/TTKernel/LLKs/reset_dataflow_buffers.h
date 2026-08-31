@@ -166,8 +166,9 @@ struct ApplyConfigurations<Id, TotalBytes, NumPages, PageBytes, L1Format,
 } // namespace detail
 
 template <uint32_t RecordCount, uint32_t... Config>
-FORCE_INLINE void reset_dataflow_buffers(uint32_t word0, uint32_t word1,
-                                         uint32_t word2, uint32_t word3) {
+__attribute__((noinline)) static void
+reset_dataflow_buffers(uint32_t word0, uint32_t word1, uint32_t word2,
+                       uint32_t word3) {
   static_assert(sizeof...(Config) == RecordCount * detail::kConfigWords);
 
   detail::drain();
