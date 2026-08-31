@@ -119,6 +119,47 @@ func.func @mixed_store_kinds(
 
 // -----
 
+// CHECK-LABEL: ComputeOp creation plan @different_destination_types
+// CHECK:       rejected-source {{.*}} ttl.add
+// CHECK-SAME:  reason=row-prefix stores to one dataflow buffer require one destination tensor type
+func.func @different_destination_types(
+    %lhs: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %rhs: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 16, block_count = 1}
+      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+  %attached_lhs = ttl.attach_cb %lhs, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %attached_rhs = ttl.attach_cb %rhs, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
+        -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+  %short_output = tensor.extract_slice %output[0, 0] [1, 13] [1, 1]
+      : tensor<1x14x!ttcore.tile<1x32, bf16>>
+        to tensor<1x13x!ttcore.tile<1x32, bf16>>
+  %sum = ttl.add %attached_lhs, %attached_rhs
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %output {row_prefix}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x14x!ttcore.tile<1x32, bf16>>
+  ttl.store %sum, %short_output {row_prefix}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x13x!ttcore.tile<1x32, bf16>>
+  return
+}
+
+// -----
+
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_output
 // CHECK:       rejected-source {{.*}} ttl.mul
 // CHECK-SAME:  reason=row-prefix output is unsupported for row-normalization block creation
