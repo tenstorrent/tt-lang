@@ -86,6 +86,16 @@ def is_ttnn_available() -> bool:
     return _ttnn_available
 
 
+def requires_forwarding_link_indices(ttnn_module):
+    import pytest
+
+    return pytest.mark.xfail(
+        condition=not hasattr(ttnn_module, "get_forwarding_link_indices"),
+        reason="requires TTNN get_forwarding_link_indices()",
+        strict=True,
+    )
+
+
 def is_hardware_available() -> bool:
     """
     Check if Tenstorrent hardware is available.
@@ -169,39 +179,92 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
+def _get_current_fabric_mesh_shape(ttnn_module) -> tuple[int, ...]:
+    return tuple(
+        int(extent)
+        for extent in ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
+    )
+
+
+def _fabric_config_options(*, reliability_mode=None, router_config=None):
+    config_options = {}
+    if reliability_mode is not None:
+        config_options["reliability_mode"] = reliability_mode
+    if router_config is not None:
+        config_options["router_config"] = router_config
+    return config_options
+
+
+def get_fabric_mesh_shape(
+    *,
+    fabric_config: Any | None = None,
+    reliability_mode: Any | None = None,
+    router_config: Any | None = None,
+) -> tuple[int, ...]:
+    """Return the control-plane-discovered fabric mesh extent."""
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+    if fabric_config is None:
+        return _get_current_fabric_mesh_shape(ttnn_module)
+
+    try:
+        ttnn_module.set_fabric_config(
+            fabric_config,
+            **_fabric_config_options(
+                reliability_mode=reliability_mode,
+                router_config=router_config,
+            ),
+        )
+        return _get_current_fabric_mesh_shape(ttnn_module)
+    finally:
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
+
+
 @contextmanager
-def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
-    """Open a 1D fabric mesh spanning every visible device by default."""
+def open_fabric_mesh(
+    requested_mesh_shape: tuple[int, ...] | None = None,
+    *,
+    fabric_config: Any | None = None,
+    reliability_mode: Any | None = None,
+    router_config: Any | None = None,
+):
+    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
+    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
+    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
+    override topology discovery.
+    """
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
-    if requested_mesh_shape is None:
-        # FABRIC_1D requires a 1D topology even when physical discovery is 2-D.
-        requested_mesh_shape = (1, ttnn_module.get_num_devices())
-    else:
+    if fabric_config is None:
+        fabric_config = ttnn_module.FabricConfig.FABRIC_1D
+
+    if requested_mesh_shape is not None:
         requested_mesh_shape = tuple(requested_mesh_shape)
-    if (
-        len(requested_mesh_shape) != 2
-        or requested_mesh_shape[0] != 1
-        or requested_mesh_shape[1] < 1
-    ):
-        raise ValueError(
-            "FABRIC_1D requires a logical mesh shape of (1, num_devices) with "
-            "num_devices greater than zero"
-        )
 
     mesh_device = None
     try:
-        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.FABRIC_1D)
+        ttnn_module.set_fabric_config(
+            fabric_config,
+            **_fabric_config_options(
+                reliability_mode=reliability_mode,
+                router_config=router_config,
+            ),
+        )
+        if requested_mesh_shape is None:
+            requested_mesh_shape = _get_current_fabric_mesh_shape(ttnn_module)
         mesh_device = ttnn_module.open_mesh_device(
             ttnn_module.MeshShape(requested_mesh_shape)
         )
         yield mesh_device
     finally:
-        if mesh_device is not None:
-            ttnn_module.close_mesh_device(mesh_device)
-        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
+        try:
+            if mesh_device is not None:
+                ttnn_module.close_mesh_device(mesh_device)
+        finally:
+            ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
 
 # =============================================================================
@@ -226,16 +289,17 @@ def torch_dtype_from_env(var_name: str, default: str = "bf16"):
     return torch_dtype_from_name(os.environ.get(var_name, default))
 
 
-def to_dram(torch_tensor, device, tile=None):
+def to_dram(torch_tensor, device, tile=None, *, mesh_mapper=None):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
-        torch_tensor: Source torch tensor
-        device: TTNN device handle
-        tile: Optional physical tile dimensions
+        torch_tensor: Source torch tensor.
+        device: TTNN device or mesh handle.
+        mesh_mapper: Optional mapping from the source tensor to a device mesh.
+        tile: Optional physical tile dimensions.
 
     Returns:
-        TTNN tensor in DRAM with TILE_LAYOUT
+        TTNN tensor in DRAM with TILE_LAYOUT.
     """
     from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
 
@@ -251,6 +315,7 @@ def to_dram(torch_tensor, device, tile=None):
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=mesh_mapper,
         **tensor_kwargs,
     )
 
@@ -461,6 +526,7 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
 __all__ = [
     "is_ttnn_available",
     "is_hardware_available",
+    "requires_forwarding_link_indices",
     "require_ttnn",
     "require_hardware",
     "torch_dtype_from_name",

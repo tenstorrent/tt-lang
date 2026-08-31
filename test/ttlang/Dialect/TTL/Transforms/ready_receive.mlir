@@ -14,18 +14,15 @@
 // SEMANTICS-DAG: %[[C2:.*]] = arith.constant 2 : index
 // SEMANTICS-DAG: %[[C3:.*]] = arith.constant 3 : index
 // SEMANTICS-DAG: %[[COUNT:.*]] = arith.constant 4 : i32
-// SEMANTICS: %[[CTR0:.*]] = memref.alloca()
-// SEMANTICS: %[[CTR1:.*]] = memref.alloca()
-// SEMANTICS: %[[CTR2:.*]] = memref.alloca()
-// SEMANTICS: %[[CTR3:.*]] = memref.alloca()
+// SEMANTICS: %[[CTRS:.*]] = memref.alloca() : memref<4xi32>
 // SEMANTICS: %[[SEQ0:.*]] = arith.addi
-// SEMANTICS: memref.store %[[SEQ0]], %[[CTR0]]
+// SEMANTICS: memref.store %[[SEQ0]], %[[CTRS]]
 // SEMANTICS: %[[SEQ1:.*]] = arith.addi
-// SEMANTICS: memref.store %[[SEQ1]], %[[CTR1]]
+// SEMANTICS: memref.store %[[SEQ1]], %[[CTRS]]
 // SEMANTICS: %[[SEQ2:.*]] = arith.addi
-// SEMANTICS: memref.store %[[SEQ2]], %[[CTR2]]
+// SEMANTICS: memref.store %[[SEQ2]], %[[CTRS]]
 // SEMANTICS: %[[SEQ3:.*]] = arith.addi
-// SEMANTICS: memref.store %[[SEQ3]], %[[CTR3]]
+// SEMANTICS: memref.store %[[SEQ3]], %[[CTRS]]
 // SEMANTICS: %[[START:.*]] = arith.remui %{{.*}}, %[[COUNT]] : i32
 // SEMANTICS: scf.while
 // SEMANTICS: scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step
@@ -98,15 +95,15 @@
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @ready_receive(%start: index) -> index
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %source = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 2}
+    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing2 = ttl.bind_cb {cb_index = 3, block_count = 2}
+    %landing2 = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing3 = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %landing3 = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>
@@ -144,26 +141,28 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 3>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.receive_request
-    %send0 = ttl.copy %source, %pipe0
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send0 : !ttl.transfer_handle<write>
-    %send1 = ttl.copy %source, %pipe1
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 1>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send1 : !ttl.transfer_handle<write>
-    %send2 = ttl.copy %source, %pipe2
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 2>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send2 : !ttl.transfer_handle<write>
-    %send3 = ttl.copy %source, %pipe3
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 3>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send3 : !ttl.transfer_handle<write>
+    ttl.if_src %pipe0 : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0> {
+      %send0 = ttl.copy %source, %pipe0
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send0 : !ttl.transfer_handle<write>
+      %send1 = ttl.copy %source, %pipe1
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send1 : !ttl.transfer_handle<write>
+      %send2 = ttl.copy %source, %pipe2
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 2>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send2 : !ttl.transfer_handle<write>
+      %send3 = ttl.copy %source, %pipe3
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 3>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send3 : !ttl.transfer_handle<write>
+    }
     %ready = ttl.wait_any %request0, %request1, %request2, %request3 start %start
         : (!ttl.receive_request, !ttl.receive_request, !ttl.receive_request,
            !ttl.receive_request, index)
@@ -218,11 +217,11 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @ready_receive_capacity(%start: index) -> index
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %source = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 1}
+    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 1} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
@@ -294,9 +293,9 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @merged_request_origins(%condition: i1) -> index
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %source = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %landing = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %landing = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>

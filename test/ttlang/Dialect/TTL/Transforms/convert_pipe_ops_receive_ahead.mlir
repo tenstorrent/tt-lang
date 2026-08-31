@@ -21,9 +21,9 @@
 func.func @same_pipe_receive_ahead_across_blocks_allocates_two_slots()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cond = arith.constant true
-  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>

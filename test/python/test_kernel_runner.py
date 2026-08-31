@@ -22,10 +22,15 @@ import pytest
 
 from ttl import (
     CoreRuntimeArgs,
+    DeviceRef,
+    FabricConnectionBinding,
+    FabricConnectionRequirement,
+    FabricManagerClaim,
     KernelDefine,
     Kernel,
     KernelKind,
     KernelRuntimeResources,
+    PIPE_SOURCE_KERNEL,
     ProgramRuntimeResources,
     kernel_runner,
 )
@@ -35,6 +40,7 @@ from ttl.dataflow_buffer import (
     DFBStorageSegment,
     PhysicalDFBConfig,
 )
+from ttl.domains import DeviceDomain
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
 
 
@@ -166,6 +172,13 @@ class _FakeCoreRanges:
     def ranges(self):
         return self._ranges
 
+    def contains(self, coordinate):
+        return any(
+            core_range.start.x <= coordinate.x <= core_range.end.x
+            and core_range.start.y <= coordinate.y <= core_range.end.y
+            for core_range in self._ranges
+        )
+
 
 class _CopyingRuntimeArgumentRow(defaultdict):
     def __init__(self):
@@ -230,6 +243,33 @@ class _FakeTTNN:
         self.generic_op_calls = []
         self.synchronize_calls = []
         self.next_address = 0x1000
+        self.fabric_setup_calls = []
+        self.fabric_direction_calls = []
+        self.fabric_link_calls = []
+        self.fabric_config = "mesh"
+        self.fabric_config_calls = 0
+        self.fabric_directions = {}
+        self.fabric_forwarding_links = {}
+
+    class CoreCoord:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
+    class FabricConfig:
+        FABRIC_1D = "linear"
+        FABRIC_1D_RING = "ring"
+        FABRIC_1D_NEIGHBOR_EXCHANGE = "neighbor"
+        FABRIC_2D = "mesh"
+        FABRIC_2D_TORUS_X = "torus-x"
+        FABRIC_2D_TORUS_Y = "torus-y"
+        FABRIC_2D_TORUS_XY = "torus-xy"
 
     class DataType:
         BFLOAT16 = "BFLOAT16"
@@ -255,6 +295,40 @@ class _FakeTTNN:
             self.cbs = cbs
             self.semaphores = semaphores
             self.custom_program_hash = None
+
+    class MeshCoordinate:
+        def __init__(self, *coords):
+            if len(coords) == 1 and isinstance(coords[0], (tuple, list)):
+                coords = tuple(coords[0])
+            self.coords = tuple(coords)
+
+        def __eq__(self, other):
+            return (
+                isinstance(other, _FakeTTNN.MeshCoordinate)
+                and self.coords == other.coords
+            )
+
+    class MeshCoordinateRange:
+        def __init__(self, start, end):
+            self.start = start
+            self.end = end
+
+        def __eq__(self, other):
+            return (
+                isinstance(other, _FakeTTNN.MeshCoordinateRange)
+                and self.start == other.start
+                and self.end == other.end
+            )
+
+        def __hash__(self):
+            return hash((self.start.coords, self.end.coords))
+
+    class MeshProgramDescriptor:
+        def __init__(self):
+            self.mesh_programs = []
+
+        def __setitem__(self, key, value):
+            self.mesh_programs.append((key, value))
 
     class SemaphoreDescriptor:
         def __init__(
@@ -357,6 +431,13 @@ class _FakeTTNN:
         def ranges(self):
             return self._ranges
 
+        def contains(self, coordinate):
+            return any(
+                core_range.start.x <= coordinate.x <= core_range.end.x
+                and core_range.start.y <= coordinate.y <= core_range.end.y
+                for core_range in self._ranges
+            )
+
         def num_cores(self):
             return sum(core_range.num_cores() for core_range in self._ranges)
 
@@ -380,12 +461,6 @@ class _FakeTTNN:
             if max_cores is not None and len(cores) >= max_cores:
                 return cores[:max_cores]
         return cores
-
-        def num_cores(self):
-            return sum(
-                (item.end.x - item.start.x + 1) * (item.end.y - item.start.y + 1)
-                for item in self.ranges
-            )
 
     @staticmethod
     def cb_descriptor_from_sharded_tensor(
@@ -429,8 +504,127 @@ class _FakeTTNN:
     def get_global_semaphore_address(semaphore):
         return semaphore["address"]
 
+    def setup_routing_plane_connection(
+        self,
+        source_node_id,
+        destination_node_ids,
+        link_indices,
+        program_descriptor,
+        kernel_index,
+        worker_node,
+    ):
+        self.fabric_setup_calls.append(
+            (
+                source_node_id,
+                destination_node_ids,
+                link_indices,
+                kernel_index,
+                (worker_node.x, worker_node.y),
+            )
+        )
+        return [0xA0, 0xB0]
+
+    def get_eth_forwarding_direction(self, source_node_id, destination_node_id):
+        self.fabric_direction_calls.append((source_node_id, destination_node_id))
+        return self.fabric_directions.get(destination_node_id, 1)
+
+    def get_forwarding_link_indices(self, source_node_id, destination_node_id):
+        self.fabric_link_calls.append((source_node_id, destination_node_id))
+        return self.fabric_forwarding_links.get(destination_node_id, [0, 1])
+
+    def get_fabric_config(self):
+        self.fabric_config_calls += 1
+        return self.fabric_config
+
     def synchronize_device(self, device):
         self.synchronize_calls.append(device)
+
+
+class _FakeFabricNodeId(NamedTuple):
+    mesh_id: int
+    chip_id: int
+
+
+class _FakeMeshDevice:
+    shape = (1, 2)
+
+    @staticmethod
+    def get_fabric_node_id(coordinate):
+        return _FakeFabricNodeId(0, coordinate.coords[-1])
+
+
+def _make_fake_core_ranges(end=(0, 0)):
+    return _FakeTTNN.CoreRangeSet(
+        [_FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(*end))]
+    )
+
+
+def _make_fake_fabric_program(kernel_count):
+    core_ranges = _make_fake_core_ranges()
+    kernels = [
+        _FakeTTNN.KernelDescriptor(
+            kernel_source=f"/tmp/kernel_{kernel_index}.cpp",
+            core_ranges=core_ranges,
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        for kernel_index in range(kernel_count)
+    ]
+    return _FakeTTNN.ProgramDescriptor(kernels=kernels, cbs=[], semaphores=[])
+
+
+def _make_fake_fabric_program_at_node(kernel_count, node=(1, 0)):
+    core_ranges = _FakeTTNN.CoreRangeSet(
+        [
+            _FakeTTNN.CoreRange(
+                _FakeTTNN.CoreCoord(*node),
+                _FakeTTNN.CoreCoord(*node),
+            )
+        ]
+    )
+    kernels = [
+        _FakeTTNN.KernelDescriptor(
+            kernel_source=f"/tmp/kernel_{kernel_index}.cpp",
+            core_ranges=core_ranges,
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        for kernel_index in range(kernel_count)
+    ]
+    return _FakeTTNN.ProgramDescriptor(kernels=kernels, cbs=[], semaphores=[])
+
+
+def _fabric_manager_interval(
+    identity,
+    *,
+    kind=kernel_runner.FabricManagerIntervalKind.GENERATED_SENDER,
+    claim=None,
+    route_indices=(0,),
+    interfering_intervals=(),
+    launch_nodes=None,
+):
+    return kernel_runner.FabricManagerIntervalSpec(
+        identity=identity,
+        kind=kind,
+        claim=claim,
+        route_indices=route_indices,
+        interfering_intervals=interfering_intervals,
+        launch_nodes=launch_nodes,
+    )
+
+
+def _bound_fabric_claim(name="external"):
+    operation_identity = "test.operation"
+    kernel = Kernel._from_metadata(
+        KernelKind.DATA_MOVEMENT,
+        "external_kernel",
+        operation_identity,
+    )
+    claim = FabricManagerClaim(name, kernel)
+    claim._bind(operation_identity)
+    return claim
 
 
 class _LifetimeTrackedSemaphore:
@@ -737,6 +931,7 @@ def _plan_runtime_resources(
     kernel_specs,
     core_ranges=None,
     first_free_id=0,
+    device_domain=None,
 ):
     return kernel_runner.plan_program_runtime_resources(
         operation_name="planned_operation",
@@ -744,6 +939,7 @@ def _plan_runtime_resources(
         kernel_specs=kernel_specs,
         operation_core_ranges=core_ranges or _FakeCoreRanges((((0, 0), (1, 1)),)),
         first_free_semaphore_id=first_free_id,
+        device_domain=device_domain,
     )
 
 
@@ -808,6 +1004,24 @@ def test_plan_runtime_resources_resolves_explicit_kernel_identity():
         "named_kernel",
         "test.operation",
         None,
+    )
+
+
+def test_plan_runtime_resources_resolves_pipe_source_kernel():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=PIPE_SOURCE_KERNEL),)
+    )
+
+    plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(PIPE_SOURCE_KERNEL)],
+    )
+
+    assert plan.kernel_descriptors[0].logical_kernel == kernel_runner.LogicalKernelId(
+        KernelKind.DATA_MOVEMENT,
+        "<pipe_source>",
+        None,
+        "pipe_source",
     )
 
 
@@ -1611,6 +1825,139 @@ def test_runtime_resource_fingerprint_orders_semaphores_by_id():
         fingerprints.append(plan.structural_fingerprint)
 
     assert fingerprints[0] == fingerprints[1]
+
+
+def _fabric_resource_plan(
+    *,
+    abi_identity="external-v1",
+    fixed_link_index=1,
+    worker_nodes=((1, 0),),
+):
+    claim = _bound_fabric_claim()
+    external_interval = _fabric_manager_interval(
+        "external.external",
+        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+        claim=claim.identity,
+        route_indices=(),
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/external.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        logical_kernel=claim.kernel,
+        fabric_manager_intervals=(external_interval,),
+    )
+    binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=worker_nodes,
+                fixed_link_index=fixed_link_index,
+            ),
+        ),
+        abi_identity=abi_identity,
+    )
+    return _plan_runtime_resources(
+        ProgramRuntimeResources(fabric_connections=(binding,)),
+        [kernel_spec],
+        core_ranges=_FakeCoreRanges((((1, 0), (2, 0)),)),
+        device_domain=DeviceDomain((1, 2)),
+    )
+
+
+def test_runtime_resource_fingerprint_includes_fabric_binding_structure():
+    baseline = _fabric_resource_plan().structural_fingerprint
+
+    assert (
+        _fabric_resource_plan(abi_identity="external-v2").structural_fingerprint
+        != baseline
+    )
+    assert _fabric_resource_plan(fixed_link_index=0).structural_fingerprint != baseline
+
+
+def test_fabric_resource_plan_canonicalizes_worker_node_order():
+    forward_plan = _fabric_resource_plan(worker_nodes=((1, 0), (2, 0)))
+    reverse_plan = _fabric_resource_plan(worker_nodes=((2, 0), (1, 0)))
+
+    assert forward_plan.fabric_connections[0].connections[0].worker_nodes == (
+        (1, 0),
+        (2, 0),
+    )
+    assert forward_plan.structural_fingerprint == reverse_plan.structural_fingerprint
+
+
+def test_fabric_resource_plan_accepts_pipe_source_claim():
+    claim = FabricManagerClaim("external", PIPE_SOURCE_KERNEL)
+    claim._bind("test.operation")
+    interval = _fabric_manager_interval(
+        "external.external",
+        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+        claim=claim.identity,
+        route_indices=(),
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/external.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        logical_kernel=claim.kernel,
+        fabric_manager_intervals=(interval,),
+    )
+    binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(fabric_connections=(binding,)),
+        [kernel_spec],
+        core_ranges=_FakeCoreRanges((((1, 0), (1, 0)),)),
+        device_domain=DeviceDomain((1, 2)),
+    )
+
+    assert plan.fabric_connections == (binding,)
+
+
+def test_fabric_resource_plan_rejects_duplicate_worker_nodes():
+    with pytest.raises(ValueError, match="worker_nodes must not contain duplicates"):
+        _fabric_resource_plan(worker_nodes=((1, 0), (1, 0)))
+
+
+def test_plan_runtime_resources_requires_each_external_fabric_claim():
+    claim = _bound_fabric_claim()
+    external_interval = _fabric_manager_interval(
+        "external.external",
+        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+        claim=claim.identity,
+        route_indices=(),
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/external.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        logical_kernel=claim.kernel,
+        fabric_manager_intervals=(external_interval,),
+    )
+
+    with pytest.raises(ValueError, match="missing fabric connection bindings"):
+        _plan_runtime_resources(
+            ProgramRuntimeResources(),
+            [kernel_spec],
+            core_ranges=_FakeCoreRanges((((1, 0), (1, 0)),)),
+            device_domain=DeviceDomain((1, 2)),
+        )
 
 
 def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
@@ -2500,13 +2847,91 @@ def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
         pipe_computed_address_base_addresses={1: 0x8000, 3: 0x9000},
         extra_common_runtime_args=[0xA000],
         expected_extra_common_runtime_args=1,
+        device_coordinates=[2, 3],
     )
 
     dfb_indices = [0, 1]
     pipe_dfb_bases = [0x8000, 0x9000]
     tensor_accessor_args = [0x44, 0x55]
     assert descriptors[0].compile_time_args == dfb_indices + tensor_accessor_args
-    assert descriptors[0].common_runtime_args == [0x2000] + pipe_dfb_bases + [0xA000]
+    pipe_resources = [0xA000]
+    device_coordinates = [2, 3]
+    assert descriptors[0].common_runtime_args == (
+        [0x2000] + pipe_dfb_bases + pipe_resources + device_coordinates
+    )
+
+
+def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x2000)
+    specs = [
+        kernel_runner.KernelSpec(
+            path="/tmp/reader.cpp",
+            thread_type="noc",
+            tensor_indices=[0],
+            config=object(),
+            extra_common_runtime_args=[0x4000, 0x4004],
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/compute.cpp",
+            thread_type="compute",
+            tensor_indices=[0],
+            config=object(),
+        ),
+    ]
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=specs,
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        extra_common_runtime_args=[0x3000],
+        expected_extra_common_runtime_args=1,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x4000, 0x4004]
+    assert descriptors[1].common_runtime_args == [0x2000, 0x3000]
+
+
+def test_build_kernel_descriptors_reserves_fabric_runtime_arg_base(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/reader.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        pipe_computed_address_dfb_indices=[2],
+        fabric_runtime_arg_base_common_index=3,
+        extra_common_runtime_args=[0x5000],
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        pipe_computed_address_base_addresses={2: 0x8000},
+        extra_common_runtime_args=[0x3000],
+        expected_extra_common_runtime_args=1,
+        device_coordinates=[4, 5],
+    )
+
+    assert descriptors[0].common_runtime_args == [
+        0x2000,
+        0x8000,
+        0x3000,
+        0,
+        4,
+        5,
+        0x5000,
+    ]
 
 
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
@@ -2524,6 +2949,1351 @@ def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     assert result["program"].kernels == []
     assert result["program"].cbs == []
     assert result["program"].semaphores == []
+
+
+def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        device_domain=DeviceDomain((1, 2)),
+    )
+
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == 2
+    assert mesh_programs[0][1] is not mesh_programs[1][1]
+    assert mesh_programs[0][1].kernels[0].common_runtime_args == [0x2000, 0, 0]
+    assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 0, 1]
+
+
+def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((1, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    routes = [
+        kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0),
+        kernel_runner.FabricRouteSpec((0, 1), (0, 0), ((1, 0),), 0),
+    ]
+
+    mesh_device = _FakeMeshDevice()
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=mesh_device,
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert kernel.runtime_args[0][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0]
+    assert kernel.runtime_args[1][0] == [0] * 5
+    assert fake_ttnn.fabric_setup_calls == [
+        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (0, 0)),
+    ]
+    assert fake_ttnn.fabric_config_calls == 1
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+    ]
+
+
+def test_routing_plane_accepts_route_cache_as_eighth_positional_argument(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route_cache = kernel_runner._FabricRouteCache()
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program,
+        [[route]],
+        [0],
+        _FakeMeshDevice(),
+        (0, 0),
+        1,
+        1,
+        route_cache,
+    )
+
+    assert route_cache._directions
+    assert fake_ttnn.fabric_setup_calls == [
+        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (0, 0)),
+    ]
+
+
+def test_routing_plane_respects_kernel_execution_range(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_FakeTTNN.CoreRangeSet(
+            [_FakeTTNN.CoreRange(_FakeTTNN.CoreCoord(1, 0), _FakeTTNN.CoreCoord(1, 0))]
+        ),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0)), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert kernel.runtime_args[0][0] == []
+    assert kernel.runtime_args[1][0] == [1, 0, 1, 0, 0, 0xA0, 0xB0]
+    assert fake_ttnn.fabric_setup_calls == [
+        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (1, 0)),
+    ]
+
+
+def test_routing_plane_reuses_connection_for_one_direction(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_directions = {
+        _FakeFabricNodeId(0, 1): 1,
+        _FakeFabricNodeId(0, 2): 1,
+    }
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges(),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    routes = [
+        kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0),
+        kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((0, 0),), 1),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert kernel.runtime_args[0][0] == [
+        1,
+        0,
+        0,
+        1,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0xA0,
+        0xB0,
+    ]
+    assert fake_ttnn.fabric_setup_calls == [
+        (_FakeFabricNodeId(0, 0), [_FakeFabricNodeId(0, 1)], [0], 0, (0, 0)),
+    ]
+
+
+def test_routing_plane_uses_separate_connections_for_directions(monkeypatch):
+    first_destination = _FakeFabricNodeId(0, 1)
+    second_destination = _FakeFabricNodeId(0, 2)
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_directions = {
+        first_destination: 1,
+        second_destination: 2,
+    }
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    routes = [
+        kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0),
+        kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((0, 0),), 1),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 0),
+            [first_destination, second_destination],
+            [0, 0],
+            0,
+            (0, 0),
+        )
+    ]
+    assert program.kernels[0].runtime_args[0][0][:9] == [
+        2,
+        0,
+        1,
+        1,
+        2,
+        0,
+        0,
+        0,
+        0,
+    ]
+
+
+def test_routing_plane_connects_one_dimensional_route_to_neighbor(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_config = _FakeTTNN.FabricConfig.FABRIC_1D
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 3), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+        (_FakeFabricNodeId(0, 1), _FakeFabricNodeId(0, 2)),
+        (_FakeFabricNodeId(0, 2), _FakeFabricNodeId(0, 3)),
+    ]
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 0),
+            [_FakeFabricNodeId(0, 1)],
+            [0],
+            0,
+            (0, 0),
+        )
+    ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
+
+
+def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_config = _FakeTTNN.FabricConfig.FABRIC_1D_RING
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 3), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+        (_FakeFabricNodeId(0, 1), _FakeFabricNodeId(0, 2)),
+        (_FakeFabricNodeId(0, 2), _FakeFabricNodeId(0, 3)),
+    ]
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 0),
+            [_FakeFabricNodeId(0, 1)],
+            [0],
+            0,
+            (0, 0),
+        )
+    ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
+
+
+def test_routing_plane_rejects_nonadjacent_neighbor_exchange(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_config = _FakeTTNN.FabricConfig.FABRIC_1D_NEIGHBOR_EXCHANGE
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((0, 0),), 0)
+
+    with pytest.raises(
+        ValueError,
+        match="FABRIC_1D_NEIGHBOR_EXCHANGE only supports adjacent device routes",
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_rejects_one_dimensional_route_across_axes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_config = _FakeTTNN.FabricConfig.FABRIC_1D
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (1, 1), ((0, 0),), 0)
+
+    with pytest.raises(
+        ValueError,
+        match="FABRIC_1D routes must connect devices on one logical mesh axis",
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_rejects_unsupported_fabric_configuration(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_config = "unsupported"
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    with pytest.raises(ValueError, match="unsupported fabric configuration"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_assigns_distinct_links_to_concurrent_managers(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    selected_links = [call[2][0] for call in fake_ttnn.fabric_setup_calls]
+    assert selected_links == [0, 1]
+
+
+def test_routing_plane_assigns_distinct_links_to_brisc_and_ncrisc(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    core_ranges = _make_fake_core_ranges()
+    program = _FakeTTNN.ProgramDescriptor(
+        kernels=[
+            _FakeTTNN.KernelDescriptor(
+                kernel_source="/tmp/brisc.cpp",
+                core_ranges=core_ranges,
+                compile_time_args=[],
+                common_runtime_args=[0],
+                config=_FakeTTNN.ReaderConfigDescriptor(),
+            ),
+            _FakeTTNN.KernelDescriptor(
+                kernel_source="/tmp/ncrisc.cpp",
+                core_ranges=core_ranges,
+                compile_time_args=[],
+                common_runtime_args=[0],
+                config=_FakeTTNN.WriterConfigDescriptor(),
+            ),
+        ],
+        cbs=[],
+        semaphores=[],
+    )
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert [
+        (call[3], call[4], call[2][0]) for call in fake_ttnn.fabric_setup_calls
+    ] == [
+        (0, (0, 0), 0),
+        (1, (0, 0), 1),
+    ]
+
+
+def test_routing_plane_uses_control_plane_default_for_one_manager(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.delattr(_FakeTTNN, "get_forwarding_link_indices")
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls[0][2] == []
+    assert fake_ttnn.fabric_link_calls == []
+
+
+def test_routing_plane_requires_link_query_for_concurrent_managers(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.delattr(_FakeTTNN, "get_forwarding_link_indices")
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    with pytest.raises(
+        RuntimeError,
+        match="TTNN must expose get_forwarding_link_indices",
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route], [route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_preserves_noncontiguous_link_indices(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [1, 3]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    selected_links = [call[2][0] for call in fake_ttnn.fabric_setup_calls]
+    assert selected_links == [1, 3]
+
+
+def test_routing_plane_link_matching_backtracks(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    flexible_destination = _FakeFabricNodeId(0, 1)
+    constrained_destination = _FakeFabricNodeId(0, 2)
+    fake_ttnn.fabric_forwarding_links[flexible_destination] = [0, 1]
+    fake_ttnn.fabric_forwarding_links[constrained_destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    flexible_route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+    constrained_route = kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[flexible_route], [constrained_route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[1], [0]]
+
+
+def test_routing_plane_intersects_reused_connection_links(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    first_destination = _FakeFabricNodeId(0, 1)
+    second_destination = _FakeFabricNodeId(0, 2)
+    fake_ttnn.fabric_forwarding_links[first_destination] = [0, 1]
+    fake_ttnn.fabric_forwarding_links[second_destination] = [1, 2]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    routes = [
+        kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0),
+        kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((0, 0),), 1),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls[0][1] == [first_destination]
+    assert fake_ttnn.fabric_setup_calls[0][2] == [1]
+
+
+def test_routing_plane_rejects_link_overcommit_before_mutation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    with pytest.raises(ValueError, match="cannot assign distinct forwarding links"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route], [route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+    assert all(not kernel.runtime_args for kernel in program.kernels)
+
+
+def test_routing_plane_preserves_existing_runtime_args(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    program.kernels[1].runtime_args[0][0] = [0x44]
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].common_runtime_args[0] == 0
+    assert program.kernels[1].common_runtime_args[0] == 1
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 1, 0, 0]
+    assert program.kernels[1].runtime_args[0][0][:6] == [0x44, 1, 0, 1, 0, 0]
+
+
+def test_routing_plane_rejects_missing_base_slot_before_setup(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].common_runtime_args.clear()
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    with pytest.raises(ValueError, match="outside its common argument table"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_pads_heterogeneous_caller_runtime_args(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((1, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    kernel.runtime_args[0][0] = [0x10]
+    kernel.runtime_args[1][0] = [0x20, 0x21, 0x22]
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert kernel.common_runtime_args[0] == 3
+    assert kernel.runtime_args[0][0][:8] == [0x10, 0, 0, 1, 0, 1, 0, 0]
+    assert kernel.runtime_args[1][0] == [0x20, 0x21, 0x22, 0, 0, 0, 0, 0]
+
+
+def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    route_cache = kernel_runner._FabricRouteCache()
+    routes = [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)]
+
+    def configure(mesh_device):
+        kernel = _FakeTTNN.KernelDescriptor(
+            kernel_source="/tmp/kernel.cpp",
+            core_ranges=_make_fake_core_ranges(),
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[routes],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            mesh_device=mesh_device,
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+            fabric_route_cache=route_cache,
+        )
+
+    first_mesh = _FakeMeshDevice()
+    configure(first_mesh)
+    configure(first_mesh)
+    assert len(fake_ttnn.fabric_direction_calls) == 1
+    assert len(fake_ttnn.fabric_setup_calls) == 2
+
+    fake_ttnn.fabric_config = _FakeTTNN.FabricConfig.FABRIC_2D_TORUS_XY
+    configure(first_mesh)
+    assert len(fake_ttnn.fabric_direction_calls) == 2
+
+    configure(_FakeMeshDevice())
+    assert len(fake_ttnn.fabric_direction_calls) == 3
+    assert len(fake_ttnn.fabric_setup_calls) == 4
+
+
+def test_routing_plane_reuses_link_for_noninterfering_manager_intervals(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("receiver"),),
+            (_fabric_manager_interval("sender"),),
+        ],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [0]]
+
+
+def test_routing_plane_separates_interfering_manager_intervals(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("first", interfering_intervals=("second",)),),
+            (_fabric_manager_interval("second", interfering_intervals=("first",)),),
+        ],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    selected_links = [call[2][0] for call in fake_ttnn.fabric_setup_calls]
+    assert sorted(selected_links) == [0, 1]
+
+
+def test_routing_plane_colors_nontransitive_interference(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(3)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0, 0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("first", interfering_intervals=("middle",)),),
+            (
+                _fabric_manager_interval(
+                    "middle", interfering_intervals=("first", "last")
+                ),
+            ),
+            (_fabric_manager_interval("last", interfering_intervals=("middle",)),),
+        ],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    selected_links = [call[2][0] for call in fake_ttnn.fabric_setup_calls]
+    assert selected_links[0] == selected_links[2]
+    assert selected_links[0] != selected_links[1]
+
+
+def test_routing_plane_colors_function_wide_manager_intervals(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    first_destination = _FakeFabricNodeId(0, 1)
+    second_destination = _FakeFabricNodeId(0, 2)
+    fake_ttnn.fabric_directions = {
+        first_destination: 1,
+        second_destination: 2,
+    }
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(2)
+    routes = [
+        kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0),
+        kernel_runner.FabricRouteSpec((0, 0), (0, 2), ((1, 0),), 1),
+    ]
+    manager_intervals = [
+        (
+            _fabric_manager_interval(
+                "receiver.0",
+                route_indices=(0,),
+                interfering_intervals=("receiver.1", "sender.1"),
+            ),
+            _fabric_manager_interval(
+                "receiver.1",
+                route_indices=(1,),
+                interfering_intervals=("receiver.0", "sender.0"),
+            ),
+        ),
+        (
+            _fabric_manager_interval(
+                "sender.0",
+                route_indices=(0,),
+                interfering_intervals=("receiver.1", "sender.1"),
+            ),
+            _fabric_manager_interval(
+                "sender.1",
+                route_indices=(1,),
+                interfering_intervals=("receiver.0", "sender.0"),
+            ),
+        ),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes, routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        kernel_fabric_manager_intervals=manager_intervals,
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    selected_links = [call[2] for call in fake_ttnn.fabric_setup_calls]
+    assert selected_links[0][0] == selected_links[0][1]
+    assert selected_links[1][0] == selected_links[1][1]
+    assert selected_links[0][0] != selected_links[1][0]
+
+
+@pytest.mark.parametrize(
+    ("used_semaphore_count", "fails"),
+    [(8, False), (9, True)],
+    ids=["exact-capacity", "over-capacity"],
+)
+def test_routing_plane_preflights_worker_semaphore_capacity(
+    monkeypatch, used_semaphore_count, fails
+):
+    fake_ttnn = _FakeTTNN()
+    destinations = [_FakeFabricNodeId(0, index) for index in range(1, 5)]
+    fake_ttnn.fabric_directions = {
+        destination: direction
+        for direction, destination in enumerate(destinations, start=1)
+    }
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    worker_ranges = program.kernels[0].core_ranges
+    program.semaphores = [
+        _FakeTTNN.SemaphoreDescriptor(
+            semaphore_id,
+            worker_ranges,
+            0,
+            core_type="WORKER",
+        )
+        for semaphore_id in range(used_semaphore_count)
+    ]
+    routes = [
+        kernel_runner.FabricRouteSpec(
+            (0, 0), (0, destination_index), ((1, 0),), destination_index - 1
+        )
+        for destination_index in range(1, 5)
+    ]
+
+    configure = lambda: kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[routes],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("manager", route_indices=(0, 1, 2, 3)),)
+        ],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    if fails:
+        with pytest.raises(
+            ValueError,
+            match="require 8 worker semaphore IDs, but only 7 of 16 remain",
+        ):
+            configure()
+        assert fake_ttnn.fabric_setup_calls == []
+    else:
+        configure()
+        assert len(fake_ttnn.fabric_setup_calls) == 1
+
+
+def test_routing_plane_reserves_fixed_external_link(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(3)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route], []],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0, None],
+        kernel_fabric_manager_intervals=[
+            (
+                _fabric_manager_interval(
+                    "receiver", interfering_intervals=("external.external",)
+                ),
+            ),
+            (
+                _fabric_manager_interval(
+                    "sender", interfering_intervals=("external.external",)
+                ),
+            ),
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    route_indices=(),
+                    interfering_intervals=("receiver", "sender"),
+                ),
+            ),
+        ],
+        external_fabric_connections=(external_binding,),
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [0]]
+
+
+def test_routing_plane_rejects_generated_external_link_conflict(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=0,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    with pytest.raises(
+        ValueError, match="cannot assign distinct forwarding links"
+    ) as error:
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route], []],
+            kernel_fabric_runtime_arg_base_common_indices=[0, None],
+            kernel_fabric_manager_intervals=[
+                (
+                    _fabric_manager_interval(
+                        "generated",
+                        interfering_intervals=("external.external",),
+                    ),
+                ),
+                (
+                    _fabric_manager_interval(
+                        "external.external",
+                        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                        claim="external",
+                        route_indices=(),
+                        interfering_intervals=("generated",),
+                    ),
+                ),
+            ],
+            external_fabric_connections=(external_binding,),
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=2,
+            grid_rows=1,
+        )
+
+    message = str(error.value)
+    assert "generated" in message
+    assert "external.external" in message
+    assert "kernel 0, node (1, 0)" in message
+    assert "fixed link 0, eligible links (0,)" in message
+    assert "interference:" in message
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+    assert all(not kernel.runtime_args for kernel in program.kernels)
+
+
+def test_routing_plane_rejects_unavailable_external_fixed_link(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=2,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    with pytest.raises(ValueError, match="fixed link 2 is not eligible"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[]],
+            kernel_fabric_runtime_arg_base_common_indices=[None],
+            kernel_fabric_manager_intervals=[
+                (
+                    _fabric_manager_interval(
+                        "external.external",
+                        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                        claim="external",
+                        route_indices=(),
+                    ),
+                )
+            ],
+            external_fabric_connections=(external_binding,),
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=2,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_rejects_incomplete_external_node_coverage(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    program.kernels[0].core_ranges = _FakeTTNN.CoreRangeSet(
+        [
+            _FakeTTNN.CoreRange(
+                _FakeTTNN.CoreCoord(1, 0),
+                _FakeTTNN.CoreCoord(2, 0),
+            )
+        ]
+    )
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    with pytest.raises(ValueError, match=r"missing nodes \(\(2, 0\),\)"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[]],
+            kernel_fabric_runtime_arg_base_common_indices=[None],
+            kernel_fabric_manager_intervals=[
+                (
+                    _fabric_manager_interval(
+                        "external.external",
+                        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                        claim="external",
+                        route_indices=(),
+                    ),
+                )
+            ],
+            external_fabric_connections=(external_binding,),
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=3,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+
+
+def test_routing_plane_uses_external_interval_launch_nodes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    program.kernels[0].core_ranges = _FakeTTNN.CoreRangeSet(
+        [
+            _FakeTTNN.CoreRange(
+                _FakeTTNN.CoreCoord(1, 0),
+                _FakeTTNN.CoreCoord(2, 0),
+            )
+        ]
+    )
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[]],
+        kernel_fabric_runtime_arg_base_common_indices=[None],
+        kernel_fabric_manager_intervals=[
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    route_indices=(),
+                    launch_nodes=((1, 0),),
+                ),
+            )
+        ],
+        external_fabric_connections=(external_binding,),
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=3,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_unions_per_descriptor_external_launch_nodes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(2)
+    program.kernels[0].core_ranges = _FakeTTNN.CoreRangeSet(
+        [
+            _FakeTTNN.CoreRange(
+                _FakeTTNN.CoreCoord(0, 0),
+                _FakeTTNN.CoreCoord(0, 0),
+            )
+        ]
+    )
+    program.kernels[1].core_ranges = _FakeTTNN.CoreRangeSet(
+        [
+            _FakeTTNN.CoreRange(
+                _FakeTTNN.CoreCoord(1, 0),
+                _FakeTTNN.CoreCoord(2, 0),
+            )
+        ]
+    )
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((2, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[], []],
+        kernel_fabric_runtime_arg_base_common_indices=[None, None],
+        kernel_fabric_manager_intervals=[
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    route_indices=(),
+                    launch_nodes=(),
+                ),
+            ),
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    route_indices=(),
+                    launch_nodes=((2, 0),),
+                ),
+            ),
+        ],
+        external_fabric_connections=(external_binding,),
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=3,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_rejects_launch_nodes_outside_kernel_descriptor(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"outside kernel descriptor 0.*\(\(2, 0\),\)",
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[]],
+            kernel_fabric_runtime_arg_base_common_indices=[None],
+            kernel_fabric_manager_intervals=[
+                (
+                    _fabric_manager_interval(
+                        "external.external",
+                        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                        claim="external",
+                        route_indices=(),
+                        launch_nodes=((2, 0),),
+                    ),
+                )
+            ],
+            external_fabric_connections=(external_binding,),
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=3,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+
+
+def test_routing_plane_distinguishes_empty_launch_domain_from_absent(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(1)
+    claim = _bound_fabric_claim()
+    external_binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(),
+        abi_identity="external-v1",
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[]],
+        kernel_fabric_runtime_arg_base_common_indices=[None],
+        kernel_fabric_manager_intervals=[
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    route_indices=(),
+                    launch_nodes=(),
+                ),
+            )
+        ],
+        external_fabric_connections=(external_binding,),
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=3,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_device_domain_plans_all_fabric_bindings_before_setup(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    claim = _bound_fabric_claim()
+    interval = _fabric_manager_interval(
+        "external.external",
+        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+        claim="external",
+        route_indices=(),
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        logical_kernel=claim.kernel,
+        fabric_manager_intervals=(interval,),
+    )
+
+    with pytest.raises(ValueError, match="missing nodes"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[kernel_spec],
+            tensors=[_FakeTensor(_FakeMeshDevice())],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges((((1, 0), (1, 0)),)),
+            device_domain=DeviceDomain((1, 2)),
+            kernel_fabric_routes=[[]],
+            device=_FakeMeshDevice(),
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+                fabric_connections=(
+                    FabricConnectionBinding(
+                        claim=claim,
+                        connections=(
+                            FabricConnectionRequirement(
+                                local_device=DeviceRef(0, 0),
+                                remote_device=DeviceRef(0, 1),
+                                worker_nodes=((1, 0),),
+                                fixed_link_index=1,
+                            ),
+                        ),
+                        abi_identity="external-v1",
+                    ),
+                )
+            ),
+            operation_name="external_coverage",
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
 
 
 def test_run_kernel_invokes_empty_runtime_resource_factory(monkeypatch):
@@ -2646,6 +4416,50 @@ def test_run_kernel_passes_through_in_range_program_hash(monkeypatch):
     assert result["program"].custom_program_hash == 5
 
 
+def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensorWithoutDevice()
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        program_hash=5,
+        mesh_program_placements=[
+            (0, 0),
+            kernel_runner.MeshProgramPlacement((0, 1), (0, 3)),
+        ],
+    )
+
+    mesh_program = result["program"]
+    assert isinstance(mesh_program, _FakeTTNN.MeshProgramDescriptor)
+    assert len(mesh_program.mesh_programs) == 2
+    first_range, first_program = mesh_program.mesh_programs[0]
+    second_range, second_program = mesh_program.mesh_programs[1]
+    assert first_range == _FakeTTNN.MeshCoordinateRange(
+        _FakeTTNN.MeshCoordinate(0, 0),
+        _FakeTTNN.MeshCoordinate(0, 0),
+    )
+    assert second_range == _FakeTTNN.MeshCoordinateRange(
+        _FakeTTNN.MeshCoordinate(0, 1),
+        _FakeTTNN.MeshCoordinate(0, 3),
+    )
+    assert first_program is second_program
+    assert first_program.kernels == []
+    assert first_program.custom_program_hash == 5
+
+
+def test_build_mesh_program_descriptor_rejects_empty_placements(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match="mesh_program_placements must not be empty"):
+        kernel_runner.build_mesh_program_descriptor(
+            program_descriptor=object(),
+            mesh_program_placements=[],
+        )
+
+
 def test_run_kernel_combines_program_hash_with_empty_resource_contract(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     core_ranges = _FakeCoreRanges()
@@ -2672,6 +4486,49 @@ def test_run_kernel_combines_program_hash_with_empty_resource_contract(monkeypat
         )
     )
     assert result["program"].custom_program_hash != 5
+
+
+def test_device_domain_program_hash_includes_runtime_resource_structure(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object())
+    kernel_spec = _kernel_spec(KernelKind.COMPUTE)
+
+    def run_with_define(define_value):
+        return kernel_runner.run_kernel_on_device(
+            kernel_specs=[kernel_spec],
+            tensors=[tensor],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            program_hash=5,
+            device_domain=DeviceDomain((1, 2)),
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+                kernel_resources=(
+                    KernelRuntimeResources(
+                        kernel=KernelKind.COMPUTE,
+                        defines=(KernelDefine("MODE", define_value),),
+                    ),
+                )
+            ),
+            operation_name="device_domain_resources",
+        )["program"]
+
+    first_program = run_with_define("first")
+    second_program = run_with_define("second")
+    first_hashes = {
+        program.custom_program_hash
+        for _device_range, program in first_program.mesh_programs
+    }
+    second_hashes = {
+        program.custom_program_hash
+        for _device_range, program in second_program.mesh_programs
+    }
+
+    assert len(first_hashes) == 1
+    assert len(second_hashes) == 1
+    assert first_hashes != second_hashes
 
 
 def test_run_kernel_leaves_resource_custom_hash_unset_without_compiler_hash(
@@ -5154,9 +7011,19 @@ def test_emit_runner_source_preserves_dfb_reconfiguration_resources(monkeypatch)
     assert "runtime_resource_cache=_RUNTIME_RESOURCE_CACHE" in source
 
 
-def test_emit_runner_source_uses_shared_pipe_resource_helpers():
+def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
     source = kernel_runner.emit_runner_source(
-        kernel_specs=[],
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/reader.cpp",
+                thread_type="noc",
+                tensor_indices=[],
+                config=_FakeTTNN.ReaderConfigDescriptor(),
+                extra_common_runtime_args=[7, 9],
+            )
+        ],
         cb_configs=[],
         grid_cols=1,
         grid_rows=1,
@@ -5169,7 +7036,17 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
     assert "NUM_DFB_RESETS = 2" in source
     assert "PROGRAM_HASH = 18446744073709551614" in source
+    assert "MESH_PROGRAM_PLACEMENTS = None" in source
     assert "return run_kernel_on_device(" in source
+    assert "build_pipe_runtime_resources(" not in source
+    assert "build_kernel_descriptors(" not in source
+    assert "KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [" in source
+    assert "    [7, 9],  # noc" in source
+    assert "    0,  # noc" in source
+    assert (
+        "extra_common_runtime_args=KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx]"
+        in source
+    )
     assert "program_hash=PROGRAM_HASH" in source
     assert "num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES" in source
     assert "num_dfb_resets=NUM_DFB_RESETS" in source
@@ -5625,3 +7502,66 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+
+
+def test_emit_runner_source_with_mesh_program_placements():
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        mesh_program_placements=[
+            (0, 0),
+            kernel_runner.MeshProgramPlacement((0, 1), (0, 3)),
+        ],
+    )
+
+    assert "MeshProgramPlacement" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "    MeshProgramPlacement((0, 1), (0, 3))," in source
+    assert "mesh_program_placements=MESH_PROGRAM_PLACEMENTS" in source
+
+
+def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    device_domain = DeviceDomain.product(batch=(1,), mesh=(1, 2))
+    routes = [
+        [
+            kernel_runner.FabricRouteSpec(
+                local_device=(0, 0, 0),
+                remote_device=(0, 0, 1),
+                source_nodes=((0, 0), (1, 0)),
+                route_index=2,
+            )
+        ]
+    ]
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[
+            kernel_runner.KernelSpec(
+                path="/tmp/reader.cpp",
+                thread_type="noc",
+                tensor_indices=[],
+                config=_FakeTTNN.ReaderConfigDescriptor(),
+                fabric_runtime_arg_base_common_index=0,
+            )
+        ],
+        cb_configs=[],
+        grid_cols=2,
+        grid_rows=1,
+        num_tensors=1,
+        device_domain=device_domain,
+        kernel_fabric_routes=routes,
+    )
+
+    assert (
+        "DEVICE_DOMAIN = DeviceDomain.product(**{'batch': (1,), "
+        "'mesh': (1, 2)})" in source
+    )
+    assert "FabricRouteSpec((0, 0, 0), (0, 0, 1), ((0, 0), (1, 0)), 2)" in source
+    assert "device_domain=DEVICE_DOMAIN" in source
+    assert "kernel_fabric_routes=KERNEL_FABRIC_ROUTES" in source
+    assert "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = [0]" in source
+    compile(source, "<generated-runner>", "exec")

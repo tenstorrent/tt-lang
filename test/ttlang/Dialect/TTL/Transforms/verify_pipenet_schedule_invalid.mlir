@@ -496,37 +496,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// A coordinate-dependent condition with an unevaluable operand makes the
-// receiver-post domain unknown. The schedule pass must not omit that event.
-
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @unknown_receiver_domain(%offset: index)
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %core_x = ttl.core_x : index
-    %sum = arith.addi %core_x, %offset : index
-    %c1 = arith.constant 1 : index
-    // expected-note @below {{this coordinate-dependent condition cannot be evaluated statically}}
-    %is_receiver = arith.cmpi eq, %sum, %c1 : index
-    scf.if %is_receiver {
-      %reserve = ttl.cb_reserve %recv_cb
-          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-error @below {{cannot verify PipeNet synchronization because this receiver post has an unknown launch-node domain}}
-      %receive = ttl.copy %pipe, %reserve
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.receive_request
-    }
-    func.return
-  }
-}
-
-// -----
-
 // A helper argument can preserve a coordinate-dependent loop bound across a
 // call. The source executes once, while the destination executes twice.
 
@@ -1122,6 +1091,125 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
             -> !ttl.receive_request
         ttl.wait %recv : !ttl.receive_request
       }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Structurally identical conditions must still compare a shared operand at
+// each endpoint. The shared value differs because it includes the launch node.
+
+module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
+  func.func @distinct_conditions_with_shared_node_dependent_value(
+      %runtime: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(2, 1) dst(1, 1) to(1, 1) net 0
+        : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
+    %core_sum = arith.addi %core_x, %core_y : index
+    %node_dependent = arith.addi %core_sum, %runtime : index
+    %c0 = arith.constant 0 : index
+    %source_selected = arith.cmpi eq, %node_dependent, %c0 : index
+    %destination_selected = arith.cmpi eq, %node_dependent, %c0 : index
+    ttl.if_src %pipe : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0> {
+      scf.if %source_selected {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=1; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    ttl.if_dst %pipe : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0> {
+      scf.if %destination_selected {
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %post = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Selected source and destination callbacks controlled by distinct runtime
+// values do not prove matching execution conditions.
+
+#mismatched_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#mismatched_records = #ttl.pipenet_records<
+    net 0 name "mismatched_selected" pipes [
+  #ttl.pipe_record<
+      srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 1,
+      dstEndX = 0, dstEndY = 1,
+      deviceTransfer = <
+        domain = #mismatched_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>
+]>
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  func.func @selected_mismatched_runtime_conditions(
+      %source_runtime_y: index, %destination_runtime_y: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.pipenet_foreach_dst attributes {
+        records = #mismatched_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %source_x, %source_y = ttl.selected_pipe_source_coordinates %pipe
+          : !ttl.selected_pipe_dst
+      %source_sum = arith.addi %source_x, %source_y : index
+      %destination_selected =
+          arith.cmpi eq, %source_sum, %destination_runtime_y : index
+      scf.if %destination_selected {
+        %reserved = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %post = ttl.copy %pipe, %reserved
+            : (!ttl.selected_pipe_dst,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
+      }
+      ttl.yield
+    }
+    ttl.pipenet_foreach_src attributes {
+        records = #mismatched_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %destination_x, %destination_y, %destination_end_x, %destination_end_y =
+          ttl.selected_pipe_destination_coordinates %pipe
+              : !ttl.selected_pipe_src
+      %destination_sum = arith.addi %destination_x, %destination_y : index
+      %source_selected =
+          arith.cmpi eq, %destination_sum, %source_runtime_y : index
+      scf.if %source_selected {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet mismatched_selected for receiver core_x=0, core_y=1; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.selected_pipe_src)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.yield
     }
     func.return
   }

@@ -52,6 +52,7 @@ def call_extern_func(
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
+    fabric_manager_effects=(),
     result_type: Optional[ScalarType] = None,
     condition_result: Optional[DispatchCondition] = None,
 ) -> Optional[int]:
@@ -85,7 +86,8 @@ def call_extern_func(
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
-    removes the selector before AST lowering.
+    removes the selector before AST lowering. ``fabric_manager_effects``
+    declares external fabric-manager ownership at call entry and completion.
 
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external

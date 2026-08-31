@@ -59,15 +59,14 @@
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @select_capacity_counter_storage()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %transfer = ttl.pipe_transfer.create %pipe
-        {expectedReceivers = 1 : i64,
-         kind = #ttl.pipe_transfer_kind<point_to_point>}
+    %transfer = ttl.pipe_transfer.create %pipe {
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer
     ttl.if_dst %pipe

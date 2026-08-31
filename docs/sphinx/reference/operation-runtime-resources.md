@@ -43,10 +43,13 @@ All resource records are frozen, and all collection fields are tuples.
 
 | Record | Purpose |
 | --- | --- |
-| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, and retained owners. |
+| `ProgramRuntimeResources` | Contains caller semaphore descriptors, logical-kernel resources, external fabric bindings, and retained owners. |
 | `KernelRuntimeResources` | Selects one logical kernel and supplies per-core runtime arguments and JIT definitions. |
 | `CoreRuntimeArgs` | Associates one ordered integer vector with one worker coordinate. |
 | `KernelDefine` | Associates one definition name with its string value. |
+| `FabricManagerClaim` | Identifies one external fabric manager and its logical kernel. |
+| `FabricConnectionBinding` | Associates a manager claim with its connection requirements and ABI identity. |
+| `FabricConnectionRequirement` | Reserves one fixed forwarding link for specified logical devices and worker nodes. |
 
 `KernelDefine` is compile-affecting program structure even though the factory
 returns it for each execution. `CoreRuntimeArgs.values` contains the dispatch
@@ -104,6 +107,27 @@ multiple kernels of one kind. The operation and its resource factory must
 capture the same `Kernel` object. The [external functions
 reference](external-functions.md) describes logical-kernel selection.
 
+## External Fabric Managers
+
+An external kernel may own routing-plane connections that must not overlap
+compiler-generated managers. A captured `FabricManagerClaim` records this
+ownership without exposing the external kernel's runtime-argument ABI.
+`acquire()`, `use()`, and `release()` describe a manager lifetime across opaque
+calls; `scoped()` describes one call that acquires, uses, and releases it.
+Ownership begins when the acquire call starts and ends after the release call
+returns.
+
+The runtime resource factory supplies one `FabricConnectionBinding` for each
+captured claim. Its requirements must cover every active logical-device and
+worker-node instance of the selected kernel. `fixed_link_index` is an ABI
+constraint: target binding rejects a link that the active control plane does
+not expose for the destination. The compiler validates external and generated
+manager intervals together before modifying program descriptors.
+
+Claim identity, `abi_identity`, logical endpoints, worker nodes, and fixed links
+participate in program-cache identity. Objects in a binding's `lifetimes` tuple
+remain referenced through execution.
+
 ## Validation and Specialization
 
 Runtime resource planning validates the complete factory result before the
@@ -134,9 +158,10 @@ descriptor.
 
 Resource structure participates in program-cache identity. The identity
 includes logical destinations, descriptor coordinates, definitions,
-runtime-argument coordinates and vector lengths, and caller semaphore
-properties. Runtime-argument words, tensor addresses, and lifetime object
-identities are excluded, so cached programs accept new dispatch values.
+runtime-argument coordinates and vector lengths, caller semaphore properties,
+and external fabric binding structure. Runtime-argument words, tensor
+addresses, and lifetime object identities are excluded, so cached programs
+accept new dispatch values.
 
 Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
 execution. A successful invocation replaces the retained owner tuple. A failed
