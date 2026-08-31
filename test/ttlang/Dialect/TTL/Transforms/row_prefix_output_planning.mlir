@@ -116,3 +116,61 @@ func.func @mixed_store_kinds(
         tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }
+
+// -----
+
+// CHECK-LABEL: ComputeOp creation plan @row_normalization_output
+// CHECK:       rejected-source {{.*}} ttl.mul
+// CHECK-SAME:  reason=row-prefix output is unsupported for row-normalization block creation
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @row_normalization_output()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 2>
+    %input_wait = ttl.cb_wait %input_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %input = ttl.attach_cb %input_wait, %input_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %square = ttl.mul %input, %input
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scaler = ttl.fill 1.000000e+00
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %reduced = ttl.reduce %square, %scaler 0 : i32 [0, 1]
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %mean_square = ttl.mul_unary_const %reduced, 9.765625e-04
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %epsilon = ttl.fill 1.000000e-05
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %biased = ttl.add %epsilon, %mean_square
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %inverse_rms = ttl.rsqrt %biased
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scalar = ttl.block.broadcast %inverse_rms dims = [0, 1], shape = [1, 1]
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %result = ttl.mul %scalar, %input
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %output = ttl.cb_reserve %output_dfb
+        : <[1, 14], !ttcore.tile<1x32, bf16>, 2>
+          -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+    ttl.store %result, %output {row_prefix}
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x14x!ttcore.tile<1x32, bf16>>
+    return
+  }
+}

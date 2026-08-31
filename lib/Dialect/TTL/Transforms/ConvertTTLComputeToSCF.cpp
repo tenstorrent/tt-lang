@@ -48,10 +48,9 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
 
 /// Generate side-effect-only loop body. Extracts tiles from inputs, clones
 /// compute body ops, and returns nothing (stores are explicit side effects).
-static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
-                                            ComputeOp op,
-                                            ArrayRef<AffineMap> indexingMaps,
-                                            ValueRange ivs) {
+static void generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
+                                   ArrayRef<AffineMap> indexingMaps,
+                                   ValueRange ivs) {
   size_t numInputs = op.getInputs().size();
   auto extractedInputs =
       extractTilesAtIndices(b, loc, op.getInputs(), indexingMaps, ivs);
@@ -82,8 +81,6 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 
     b.clone(bodyOp, mapping);
   }
-
-  return success();
 }
 
 static bool requiresDstAccumulation(ComputeOp op) {
@@ -403,11 +400,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       Block &sectionBody = dstSection.getBody().front();
       OpBuilder bodyBuilder(&sectionBody,
                             Block::iterator(sectionBody.getTerminator()));
-      if (failed(generateTileProcessing(bodyBuilder, loc, op, indexingMaps,
-                                        ValueRange{}))) {
-        return rewriter.notifyMatchFailure(
-            op, "zero-rank tile index computation failed");
-      }
+      generateTileProcessing(bodyBuilder, loc, op, indexingMaps, ValueRange{});
       rewriter.replaceOp(op, op.getOutputs());
       return success();
     }
@@ -448,7 +441,6 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
-    bool processingFailed = false;
     bool usedDstAccumulation = false;
     scf::LoopNest loopNest = [&]() {
       if (isSubblocked) {
@@ -462,10 +454,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
             sectionBuilder, loc, lowerBounds, upperBounds, steps, ValueRange{},
             [&](OpBuilder &nested, Location nestedLoc, ValueRange ivs,
                 ValueRange) -> scf::ValueVector {
-              if (failed(generateTileProcessing(nested, nestedLoc, op,
-                                                indexingMaps, ivs))) {
-                processingFailed = true;
-              }
+              generateTileProcessing(nested, nestedLoc, op, indexingMaps, ivs);
               return {};
             });
       }
@@ -497,10 +486,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
             Block &sectionBody = dstSection.getBody().front();
             OpBuilder bodyBuilder(&sectionBody,
                                   Block::iterator(sectionBody.getTerminator()));
-            if (failed(generateTileProcessing(bodyBuilder, nestedLoc, op,
-                                              indexingMaps, ivs))) {
-              processingFailed = true;
-            }
+            generateTileProcessing(bodyBuilder, nestedLoc, op, indexingMaps,
+                                   ivs);
             return {};
           });
     }();
@@ -543,11 +530,6 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // keep their tile loops for per-tile sync.
     if (fullStridesAttr && !loopNest.loops.empty()) {
       loopsToUnroll.push_back(loopNest.loops.front());
-    }
-
-    if (processingFailed) {
-      return rewriter.notifyMatchFailure(
-          op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
     rewriter.replaceOp(op, op.getOutputs());
