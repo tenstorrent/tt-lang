@@ -86,7 +86,9 @@ def TTL_PipeNetPredicateOpInterface
     : OpInterface<"PipeNetPredicateOpInterface"> {
   let description = [{
     Predicate ops (`ttl.is_src`, `ttl.is_dst`, `ttl.is_active`) whose `i1`
-    result evaluates to `true` on a per-PipeNet role-defined node set.
+    result evaluates to `true` on a per-PipeNet role-defined execution set.
+    Predicates with graph records match both the launch node and logical-device
+    endpoint; predicates without graph records match the launch node alone.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
@@ -102,6 +104,16 @@ def TTL_PipeNetPredicateOpInterface
       /*retTy=*/"::mlir::tt::ttl::PipeRole",
       /*methodName=*/"getReferencedRole",
       /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the graph record table, when the predicate is device-aware.",
+      /*retTy=*/"::mlir::tt::ttl::PipeNetRecordsAttr",
+      /*methodName=*/"getReferencedRecords",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return $_op->template getAttrOfType<
+            ::mlir::tt::ttl::PipeNetRecordsAttr>("records");
+      }]>,
   ];
 }
 

@@ -20,6 +20,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
@@ -139,9 +140,16 @@ public:
         emitLlk(experimental_coord_translation_generated,
                 experimental_coord_translation_generated_len);
       }
-      if (callee == "experimental::constant_table_lookup") {
+      if (callee == "experimental::constant_table_lookup" ||
+          callee == "experimental::constant_table_lookup_word") {
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
+      }
+      if (callee == "experimental::routing_plane_atomic_inc" ||
+          callee == "experimental::routing_plane_fused_write_atomic_inc") {
+        emitLlk(experimental_routing_plane_generated,
+                experimental_routing_plane_generated_len);
+        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::reset_dfb_interfaces") {
         emitLlk(experimental_dfb_reset_generated,
@@ -205,6 +213,10 @@ public:
         headers.insert("api/core_local_mem.h");
         headers.insert("api/dataflow/endpoints.h");
         headers.insert("api/dataflow/noc.h");
+      }
+
+      if (value.starts_with("tt::tt_fabric::RoutingPlaneConnectionManager")) {
+        headers.insert("tt_metal/fabric/hw/inc/linear/api.h");
       }
 
       // Some callees are embedded in VerbatimOps.

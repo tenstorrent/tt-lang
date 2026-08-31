@@ -53,19 +53,19 @@ def explicit_selected_add(inp, out):
 
 
 # CHECK-LABEL: func.func @compute_thread
-# CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add">
+# CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add[captures={{[0-9a-f]+}}]">
 # CHECK-LABEL: func.func @reader_thread
-# CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader_kernel", operation = "__main__.explicit_selected_add">
+# CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader_kernel", operation = "__main__.explicit_selected_add[captures={{[0-9a-f]+}}]">
 # CHECK-LABEL: func.func @writer_thread
 # CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>
 
 # SPECIALIZED-LABEL: func.func @compute_thread_c0_0
 # SPECIALIZED-SAME: ttl.core_coord = {{\[\[}}0, 0]]
-# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add">
+# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add[captures={{[0-9a-f]+}}]">
 # SPECIALIZED-LABEL: func.func @compute_thread_c1_0
 # SPECIALIZED-SAME: ttl.core_coord = {{\[\[}}1, 0]]
-# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add">
-# SPECIALIZED: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader_kernel", operation = "__main__.explicit_selected_add">
+# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add[captures={{[0-9a-f]+}}]">
+# SPECIALIZED: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader_kernel", operation = "__main__.explicit_selected_add[captures={{[0-9a-f]+}}]">
 # SPECIALIZED: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>
 
 

@@ -201,6 +201,31 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// An unresolved coordinate-dependent predicate reports the expression that
+// prevents proving a PipeNet scope's source-role containment.
+
+module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
+  func.func @unanalyzable_scope(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(2, 1) dst(1, 1) to(1, 1) net 0
+        : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>
+    %core_x = ttl.core_x : index
+    %sum = arith.addi %core_x, %runtime : index
+    %c2 = arith.constant 2 : index
+    // expected-note @below {{this expression is not statically analyzable}}
+    %condition = arith.cmpi eq, %sum, %c2 : index
+    scf.if %condition {
+      // expected-error @below {{could not statically analyze the PipeNet guard around this op}}
+      ttl.pipenet_scope attributes {ttl.pipe_net_ids = [0 : i64], ttl.pipe_net_roles = [0 : i64]} {
+        ttl.if_src %pipe : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0> {
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Soundness: a uniform-unknown predicate (a runtime flag, not coord-dependent)
 // must not let the else-branch's domain collapse to empty. Without conservative
 // branch handling the verifier would silently accept the pipe op below.
@@ -246,45 +271,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
           -> !ttl.transfer_handle<write>
-    }
-    func.return
-  }
-}
-
-// -----
-
-// Pipe receive waits are schedule-relevant. A receive wait under an
-// unanalyzable coordinate-dependent predicate is rejected instead of being
-// omitted from the wait-for graph.
-
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @pipe_receive_wait_unanalyzable_guard(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %reserve = ttl.cb_reserve %cb
-          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      %view = ttl.attach_cb %reserve, %cb
-          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
-             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      %recv = ttl.copy %pipe, %view
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.receive_request
-      %core_x = ttl.core_x : index
-      %scaled = arith.muli %core_x, %runtime : index
-      %zero = arith.constant 0 : index
-      // expected-note @below {{this expression is not statically analyzable}}
-      %cond = arith.cmpi eq, %scaled, %zero : index
-      scf.if %cond {
-        // expected-error @below {{could not statically analyze the PipeNet guard}}
-        ttl.wait %recv : !ttl.receive_request
-      }
-      ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
     func.return
   }

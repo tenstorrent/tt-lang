@@ -19,8 +19,8 @@
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @reset_masks()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %low_dfb = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %high_dfb = ttl.bind_cb {cb_index = 33, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %low_dfb = ttl.bind_cb {cb_index = 2, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %high_dfb = ttl.bind_cb {cb_index = 33, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%high_dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     ttl.reset_all_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>
     return
@@ -45,7 +45,7 @@ module attributes {
 } {
   func.func @pipe_receive()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_dst attributes {
         records = #ttl.pipenet_records<net 0 name "reset_pipe" pipes [
@@ -69,7 +69,7 @@ module attributes {
 
   func.func @pipe_and_reset()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     ttl.pipenet_foreach_src attributes {
         records = #ttl.pipenet_records<net 0 name "reset_pipe" pipes [
@@ -99,7 +99,7 @@ module attributes {
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @three_reset_records()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)

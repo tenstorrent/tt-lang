@@ -10,10 +10,6 @@ The graph is the single source of truth for which PipeNets an operation
 uses. It is built from the operation's closure (captured PipeNets) plus
 its body (PipeNets constructed in-line). The compiler and the simulator
 both compute the PipeNet work extent and run validation against this graph.
-
-Multi-device readiness: NodeCoord is intra-chip. Inter-chip pipes would
-be a separate type wrapping NodeCoord plus a mesh coordinate, and
-OperationPipeNets would hold both lists.
 """
 
 from __future__ import annotations
@@ -21,6 +17,8 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Set, Tuple, Union
+
+from ttl.domains import DeviceRange
 
 
 @dataclass(frozen=True)
@@ -73,16 +71,50 @@ class PipeNetUse:
     pipes: Tuple[PipeUse, ...]
 
 
+@dataclass(frozen=True)
+class GraphPipeNetUse:
+    """One graph-based PipeNet consumed by one operation invocation."""
+
+    pipe_net_id: int
+    edges: Tuple[Any, ...]
+    transfer_graph: Any
+
+
 @dataclass
 class OperationPipeNets:
     """All PipeNets used by one operation invocation."""
 
     pipe_nets: List[PipeNetUse] = field(default_factory=list)
+    graph_pipe_nets: List[GraphPipeNetUse] = field(default_factory=list)
+    _next_id: int = 0
+
+    def _next_pipe_net_id(self) -> int:
+        pipe_net_id = self._next_id
+        self._next_id += 1
+        return pipe_net_id
 
     def add_pipe_net(self, pipes: Iterable[PipeUse]) -> PipeNetUse:
         """Append a new PipeNetUse with the next operation-local id."""
-        use = PipeNetUse(id=len(self.pipe_nets), pipes=tuple(pipes))
+        use = PipeNetUse(id=self._next_pipe_net_id(), pipes=tuple(pipes))
         self.pipe_nets.append(use)
+        return use
+
+    def add_graph_pipe_net(self, transfer_graph: Any) -> GraphPipeNetUse:
+        """Append a graph PipeNet with one ordered device-edge record set."""
+        edges = tuple(transfer_graph.iter_edges())
+        if not edges:
+            raise ValueError("graph-based PipeNet requires at least one transfer edge")
+        if any(isinstance(edge.destination, DeviceRange) for edge in edges):
+            raise ValueError(
+                "graph-based PipeNet DeviceRange destinations require multicast "
+                "transport lowering"
+            )
+        use = GraphPipeNetUse(
+            pipe_net_id=self._next_pipe_net_id(),
+            edges=edges,
+            transfer_graph=transfer_graph,
+        )
+        self.graph_pipe_nets.append(use)
         return use
 
     def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
@@ -91,7 +123,7 @@ class OperationPipeNets:
         Returns None when the graph is empty, signaling that no active-set
         filtering should be applied (every node participates).
         """
-        if not self.pipe_nets:
+        if self.graph_pipe_nets or not self.pipe_nets:
             return None
         active: Set[int] = set()
         for net in self.pipe_nets:
@@ -109,6 +141,28 @@ class OperationPipeNets:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
+
+    def resolve_device_domain(self, operation_domain: Any) -> Any:
+        """Reconcile graph transfer domains with the operation domain."""
+        if not self.graph_pipe_nets:
+            return operation_domain
+
+        graph_domain = self.graph_pipe_nets[0].transfer_graph.domain
+        for graph_pipe_net in self.graph_pipe_nets[1:]:
+            if graph_pipe_net.transfer_graph.domain != graph_domain:
+                raise ValueError(
+                    "graph-based PipeNets in one operation must use the same "
+                    "DeviceDomain"
+                )
+
+        if operation_domain is None:
+            return graph_domain
+        if operation_domain != graph_domain:
+            raise ValueError(
+                "operation device_domain must match the DeviceDomain used by "
+                "its graph-based PipeNets"
+            )
+        return operation_domain
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
@@ -176,5 +230,6 @@ __all__ = [
     "NodeRange",
     "PipeUse",
     "PipeNetUse",
+    "GraphPipeNetUse",
     "OperationPipeNets",
 ]

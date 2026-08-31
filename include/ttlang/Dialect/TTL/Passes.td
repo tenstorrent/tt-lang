@@ -343,8 +343,9 @@ def TTLConvertTTLToTTKernel
     Converts TTL DFB, copy, wait, PipeNet, synchronized-reset, and DFB
     reconfiguration operations to TTKernel DFB, NoC, semaphore, and external
     interface operations. PipeNet lowering selects receiver-published or
-    computed destination addresses and receiver-post or capacity-counter
-    synchronization according to the pass options and transfer eligibility.
+    computed destination addresses and receiver-post, capacity-counter, or
+    fabric synchronization according to the pass options, transfer eligibility,
+    and logical-device transfer.
     PipeNet counters use local semaphore ids before GlobalSemaphore storage by
     default; the global-only option preserves all local semaphore ids for
     application use.
@@ -935,11 +936,14 @@ def TTLVerifyPipeNetSchedule
     pipe events must be kernel-thread entry points or be reachable from one
     through direct calls. Definitions of one event kind for a pipe endpoint
     must belong to one kernel-thread function because independent kernel
-    threads have no program order. Each event must have an exact launch-node
-    domain. Multi-block regions that contribute pipe events, unknown event
-    domains, recursive calls containing pipe events, and schedules with more
-    than 4096 expanded event occurrences at one launch node are rejected
-    because the verifier cannot construct a correct bounded event graph.
+    threads have no program order. Events with statically analyzable predicates
+    use their exact launch-node domain. Otherwise, the static PipeNet endpoint
+    role provides a conservative domain that includes every possible event;
+    execution-count analysis still removes coordinates proven not to execute.
+    Multi-block regions that contribute pipe events, recursive calls containing
+    pipe events, and schedules with more than 4096 expanded event occurrences
+    at one launch node are rejected because the verifier cannot construct a
+    correct bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges

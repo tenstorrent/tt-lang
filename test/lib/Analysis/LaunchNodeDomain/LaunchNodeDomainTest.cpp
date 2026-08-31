@@ -2,13 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// This test driver prints launch-node lattices and conditional-execution
-// equivalence results requested by test attributes.
+// This test driver validates domain algebra and prints launch-node lattices and
+// conditional-execution equivalence results requested by test attributes.
 
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetExecutionUtils.h"
 
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -25,11 +26,90 @@ constexpr llvm::StringLiteral kLabelAttrName = "test.label";
 constexpr llvm::StringLiteral kConditionalPairAttrName =
     "test.conditional_pair";
 
+bool verifyLaunchNodeDomainAlgebra() {
+  using mlir::tt::ttl::getFullLaunchNodeDomain;
+  using mlir::tt::ttl::getSingleLaunchNodeDomain;
+  using mlir::tt::ttl::LaunchNodeDomain;
+  using mlir::tt::ttl::launchNodeDomainsOverlap;
+
+  LaunchNodeDomain leftColumn = getSingleLaunchNodeDomain({0, 0}).unionWith(
+      getSingleLaunchNodeDomain({0, 1}));
+  LaunchNodeDomain rightColumn = getSingleLaunchNodeDomain({1, 0}).unionWith(
+      getSingleLaunchNodeDomain({1, 1}));
+  LaunchNodeDomain fullDomain = getFullLaunchNodeDomain(2, 2);
+  LaunchNodeDomain boundedLeft = LaunchNodeDomain::unknownWithin(leftColumn);
+  LaunchNodeDomain boundedRight = LaunchNodeDomain::unknownWithin(rightColumn);
+  LaunchNodeDomain unbounded = LaunchNodeDomain::unknown();
+
+  bool valid = !boundedLeft.known &&
+               boundedLeft.isUpperBoundSubsetOf(fullDomain) &&
+               !boundedLeft.isUpperBoundSubsetOf(rightColumn) &&
+               boundedLeft.unionWith(boundedRight) ==
+                   LaunchNodeDomain::unknownWithin(fullDomain) &&
+               leftColumn.unionWith(boundedLeft) == leftColumn &&
+               boundedLeft.unionWith(leftColumn) == leftColumn &&
+               fullDomain.unionWith(boundedLeft) == fullDomain &&
+               boundedLeft.unionWith(fullDomain) == fullDomain &&
+               boundedLeft.intersectWith(rightColumn) == LaunchNodeDomain{} &&
+               boundedLeft.unionWith(boundedRight).subtract(rightColumn) ==
+                   LaunchNodeDomain::unknownWithin(leftColumn) &&
+               unbounded.intersectWith(leftColumn) == boundedLeft &&
+               unbounded.unionWith(leftColumn) == unbounded &&
+               unbounded.subtract(leftColumn) == unbounded &&
+               leftColumn.subtract(unbounded) == boundedLeft &&
+               launchNodeDomainsOverlap(boundedLeft, leftColumn) &&
+               !launchNodeDomainsOverlap(boundedLeft, rightColumn) &&
+               launchNodeDomainsOverlap(unbounded, rightColumn);
+  if (!valid) {
+    llvm::errs() << "launch-node domain algebra validation failed\n";
+  }
+  return valid;
+}
+
+bool verifyPipeNetRecordInductionValues() {
+  using mlir::tt::ttl::getPipeNetRecordLoopInductionValue;
+  using mlir::tt::ttl::LaunchExecutionLocation;
+  using mlir::tt::ttl::PipeNetRecordLoop;
+  using mlir::tt::ttl::PipeNetRecordSelection;
+
+  PipeNetRecordLoop directLoop{
+      mlir::tt::ttl::PipeNetRecordsAttr(), PipeNetRecordSelection::Source, {}};
+  LaunchExecutionLocation leftNode({0, 0});
+  LaunchExecutionLocation rightNode({1, 0});
+  std::optional<std::uint64_t> directInduction =
+      getPipeNetRecordLoopInductionValue(directLoop, leftNode, 4);
+
+  PipeNetRecordLoop indirectLoop{mlir::tt::ttl::PipeNetRecordsAttr(),
+                                 PipeNetRecordSelection::Destination,
+                                 {}};
+  indirectLoop.indirectInductionValues.try_emplace({leftNode, 4}, 1);
+  indirectLoop.indirectInductionValues.try_emplace({rightNode, 4}, 3);
+  std::optional<std::uint64_t> leftInduction =
+      getPipeNetRecordLoopInductionValue(indirectLoop, leftNode, 4);
+  std::optional<std::uint64_t> rightInduction =
+      getPipeNetRecordLoopInductionValue(indirectLoop, rightNode, 4);
+  std::optional<std::uint64_t> absentInduction =
+      getPipeNetRecordLoopInductionValue(indirectLoop, leftNode, 2);
+
+  bool valid = directInduction == 4 && leftInduction == 1 &&
+               rightInduction == 3 && !absentInduction;
+  if (!valid) {
+    llvm::errs() << "PipeNet record induction validation failed\n";
+  }
+  return valid;
+}
+
 } // namespace
 
 int main(int argumentCount, char **argumentValues) {
   if (argumentCount != 2) {
     llvm::errs() << "usage: ttlang-launch-node-domain-test <input.mlir>\n";
+    return 1;
+  }
+  if (!verifyLaunchNodeDomainAlgebra()) {
+    return 1;
+  }
+  if (!verifyPipeNetRecordInductionValues()) {
     return 1;
   }
 

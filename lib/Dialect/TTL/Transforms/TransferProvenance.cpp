@@ -11,6 +11,8 @@
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::tt::ttl {
@@ -22,6 +24,85 @@ FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
                                   Value transfer) {
   return analysis.getOrigins(transfer).uniqueDefiningOp<PipeTransferCreateOp>();
+}
+
+static FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransferImpl(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<FailureOr<SmallVector<Value>>(BlockArgument)>
+        resolveFunctionArguments,
+    llvm::DenseSet<Value> &activeValues) {
+  if (!activeValues.insert(pipe).second) {
+    return failure();
+  }
+  llvm::scope_exit restoreActiveValues([&] { activeValues.erase(pipe); });
+  return analysis.getOrigins(pipe)
+      .uniqueMapped<std::optional<DeviceTransferAttr>>(
+          [&](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
+            if (origin.getDefiningOp<SelectPipeSrcOp>() ||
+                origin.getDefiningOp<SelectPipeDstOp>()) {
+              return std::optional<DeviceTransferAttr>();
+            }
+            if (isa<BlockArgument>(origin) &&
+                isa<SelectedPipeSrcType, SelectedPipeDstType>(
+                    origin.getType())) {
+              return std::optional<DeviceTransferAttr>();
+            }
+            auto createPipe = origin.getDefiningOp<CreatePipeOp>();
+            if (createPipe) {
+              DeviceTransferAttr deviceTransfer =
+                  createPipe.getDeviceTransferAttr();
+              return deviceTransfer
+                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
+                         : std::optional<DeviceTransferAttr>();
+            }
+            auto argument = mlir::dyn_cast<BlockArgument>(origin);
+            if (!argument) {
+              return failure();
+            }
+            FailureOr<SmallVector<Value>> operands =
+                resolveFunctionArguments(argument);
+            if (failed(operands)) {
+              return failure();
+            }
+            std::optional<std::optional<DeviceTransferAttr>> uniqueTransfer;
+            for (Value operand : *operands) {
+              FailureOr<std::optional<DeviceTransferAttr>> transfer =
+                  findUniquePipeDeviceTransferImpl(analysis, operand,
+                                                   resolveFunctionArguments,
+                                                   activeValues);
+              if (failed(transfer)) {
+                return failure();
+              }
+              if (!uniqueTransfer) {
+                uniqueTransfer = *transfer;
+                continue;
+              }
+              if (*uniqueTransfer != *transfer) {
+                return failure();
+              }
+            }
+            return uniqueTransfer.value_or(std::optional<DeviceTransferAttr>());
+          });
+}
+
+FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe) {
+  auto resolveNoFunctionArguments =
+      [](BlockArgument) -> FailureOr<SmallVector<Value>> {
+    return SmallVector<Value>();
+  };
+  return findUniquePipeDeviceTransfer(analysis, pipe,
+                                      resolveNoFunctionArguments);
+}
+
+FailureOr<std::optional<DeviceTransferAttr>> findUniquePipeDeviceTransfer(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<FailureOr<SmallVector<Value>>(BlockArgument)>
+        resolveFunctionArguments) {
+  llvm::DenseSet<Value> activeValues;
+  return findUniquePipeDeviceTransferImpl(
+      analysis, pipe, resolveFunctionArguments, activeValues);
 }
 
 FailureOr<std::optional<CopyOp>>

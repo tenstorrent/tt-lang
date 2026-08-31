@@ -124,6 +124,7 @@ def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> N
         "build",
         "install-dependencies",
         "reset",
+        "fabric-pytests",
         "smoketest",
         "simple-add",
         "simulator",

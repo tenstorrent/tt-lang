@@ -17,17 +17,17 @@
 // LOCAL-DAG: %[[LOCAL_READY_INDEX:.*]] = arith.constant 1 : index
 // LOCAL: %[[LOCAL_POST_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
 // LOCAL: %[[LOCAL_POST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_POST_COUNTER]], {{.*}})
-// LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_POST_NOC]]
-// LOCAL: %[[LOCAL_READY_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
-// LOCAL-NEXT: %[[LOCAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_READY_COUNTER]])
-// LOCAL-NEXT: ttkernel.experimental.semaphore_wait(%[[LOCAL_READY_PTR]]
-// LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[LOCAL_READY_PTR]]
-// LOCAL: %[[LOCAL_COMPLETION_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
-// LOCAL: %[[LOCAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}})
-// LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
 // LOCAL: %[[LOCAL_WAIT_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_WAIT_COUNTER]])
+// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_POST_NOC]]
 // LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_WAIT_PTR]]
+// LOCAL: %[[LOCAL_READY_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
+// LOCAL-NEXT: %[[LOCAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_READY_COUNTER]])
+// LOCAL: %[[LOCAL_COMPLETION_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
+// LOCAL: %[[LOCAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}})
+// LOCAL: ttkernel.experimental.semaphore_wait(%[[LOCAL_READY_PTR]]
+// LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[LOCAL_READY_PTR]]
+// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
 
 // GLOBAL-LABEL: module attributes
 // GLOBAL-SAME: ttl.pipe_global_semaphore_count = 2 : i64
@@ -37,17 +37,17 @@
 // GLOBAL-DAG: %[[GLOBAL_READY_INDEX:.*]] = arith.constant 2 : index
 // GLOBAL: %[[GLOBAL_POST_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
 // GLOBAL: %[[GLOBAL_POST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_POST_COUNTER]], {{.*}})
-// GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_POST_NOC]]
-// GLOBAL: %[[GLOBAL_READY_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
-// GLOBAL-NEXT: %[[GLOBAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_READY_COUNTER]])
-// GLOBAL-NEXT: ttkernel.experimental.semaphore_wait(%[[GLOBAL_READY_PTR]]
-// GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_READY_PTR]]
-// GLOBAL: %[[GLOBAL_COMPLETION_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
-// GLOBAL: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}})
-// GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 // GLOBAL: %[[GLOBAL_WAIT_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_WAIT_COUNTER]])
+// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_POST_NOC]]
 // GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_WAIT_PTR]]
+// GLOBAL: %[[GLOBAL_READY_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
+// GLOBAL-NEXT: %[[GLOBAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_READY_COUNTER]])
+// GLOBAL: %[[GLOBAL_COMPLETION_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
+// GLOBAL: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}})
+// GLOBAL: ttkernel.experimental.semaphore_wait(%[[GLOBAL_READY_PTR]]
+// GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_READY_PTR]]
+// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,
@@ -55,26 +55,30 @@ module attributes {
 } {
   func.func @select_pipe_counter_storage()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %reserved = ttl.cb_reserve %dst
-        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %receive = ttl.copy %pipe, %reserved
-        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-           tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.receive_request
-    %send = ttl.copy %src, %pipe
-        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-        -> !ttl.transfer_handle<write>
-    ttl.wait %send : !ttl.transfer_handle<write>
-    ttl.wait %receive : !ttl.receive_request
-    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %reserved = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
     func.return
   }
 }
