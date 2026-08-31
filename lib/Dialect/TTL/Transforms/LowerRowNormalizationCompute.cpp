@@ -200,7 +200,9 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
         constantIndex(sectionBuilder, loc, 0),
         constantIndex(sectionBuilder, loc, tileIndex)};
     TileStoreOp::create(sectionBuilder, loc, outputTile,
-                        analysis->store.getView(), indices, outputDstIndex);
+                        analysis->store.getView(), indices, outputDstIndex,
+                        DFBTileStoreKind::Producer,
+                        /*row_prefix=*/nullptr);
   }
 
   rewriter.replaceOp(op, op.getOutputs());

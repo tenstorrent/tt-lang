@@ -2961,7 +2961,7 @@ public:
 
   LogicalResult
   matchAndRewrite(ttkernel::PackRowsInitOp op,
-                  ttkernel::PackRowsInitOp::Adaptor adaptor,
+                  ttkernel::PackRowsInitOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     Location location = op.getLoc();
     Value rowCount = emitc::LiteralOp::create(

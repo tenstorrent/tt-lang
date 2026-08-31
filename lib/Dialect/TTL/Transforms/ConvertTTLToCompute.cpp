@@ -1177,9 +1177,9 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
         applyIndexingMap(rewriter, loc, plan.iteration.outputMap, iterIndices);
-    createTileStoreWithPlaceholderDstIndex(
-        rewriter, loc, body->getArgument(0), plan.outputView, storeIndices,
-        op.getRowPrefixAttr());
+    createTileStoreWithPlaceholderDstIndex(rewriter, loc, body->getArgument(0),
+                                           plan.outputView, storeIndices,
+                                           op.getRowPrefixAttr());
     YieldOp::create(rewriter, loc);
 
     for (AttachCBOp association : plan.outputAssociations) {

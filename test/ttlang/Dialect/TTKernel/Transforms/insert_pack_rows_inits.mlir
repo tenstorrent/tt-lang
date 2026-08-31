@@ -1,5 +1,5 @@
 // Verify row-packer configuration is reused across a compatible loop and
-// remains operation-local when another packer operation is present.
+// remains operation-local when another operation may reconfigure the packer.
 
 // RUN: ttlang-opt %s --ttkernel-insert-inits --split-input-file | FileCheck %s
 
@@ -46,3 +46,52 @@ func.func @operation_scoped() {
   }
   func.return
 }
+
+// -----
+
+// CHECK-LABEL: func.func @opaque_call_prevents_hoisting
+// CHECK: scf.for
+// CHECK: ttkernel.opaque_call
+// CHECK-NEXT: ttkernel.pack_rows_init {row_count = 28 : i64}
+// CHECK-NEXT: ttkernel.pack_rows({{.*}}) {row_count = 28 : i64} : {{.*}} -> (){{$}}
+// CHECK-NEXT: ttkernel.pack_rows_uninit
+// CHECK: }
+func.func @opaque_call_prevents_hoisting() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c6 = arith.constant 6 : index
+  %cb = ttkernel.get_compile_time_arg_val(0)
+      : () -> !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>
+  scf.for %iteration = %c0 to %c6 step %c1 {
+    ttkernel.opaque_call "configure_external_packer"()
+        {header = "configure_external_packer.hpp"} : () -> ()
+    ttkernel.pack_rows(%c0, %cb, %c0) {row_count = 28 : i64}
+        : (index, !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>, index) -> ()
+  }
+  func.return
+}
+
+// -----
+
+// CHECK-LABEL: func.func @function_call_prevents_hoisting
+// CHECK: scf.for
+// CHECK: func.call @configure_packer()
+// CHECK-NEXT: ttkernel.pack_rows_init {row_count = 28 : i64}
+// CHECK-NEXT: ttkernel.pack_rows({{.*}}) {row_count = 28 : i64} : {{.*}} -> (){{$}}
+// CHECK-NEXT: ttkernel.pack_rows_uninit
+// CHECK: }
+func.func @function_call_prevents_hoisting() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c6 = arith.constant 6 : index
+  %cb = ttkernel.get_compile_time_arg_val(0)
+      : () -> !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>
+  scf.for %iteration = %c0 to %c6 step %c1 {
+    func.call @configure_packer() : () -> ()
+    ttkernel.pack_rows(%c0, %cb, %c0) {row_count = 28 : i64}
+        : (index, !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>, index) -> ()
+  }
+  func.return
+}
+
+func.func private @configure_packer()

@@ -2349,6 +2349,21 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
              << outputIndex << " type " << yieldedValue.getType()
              << " must match state type " << stateType;
     }
+    mlir::Value output = getOutputs()[outputIndex];
+    if (stateType != output.getType()) {
+      bool publishesState =
+          llvm::any_of(bodyBlock.getOps<mlir::tt::ttl::StoreOp>(),
+                       [&](mlir::tt::ttl::StoreOp store) {
+                         return store.getTensor() == yieldedValue &&
+                                store.getView() == output;
+                       });
+      if (!publishesState) {
+        return emitOpError("state ")
+               << outputIndex << " type " << stateType
+               << " differs from output type " << output.getType()
+               << "; the body must store the yielded state to that output";
+      }
+    }
   }
 
   bool hasNestedAccumulationScope = false;
@@ -2459,16 +2474,16 @@ static mlir::LogicalResult
 verifyRowPrefixStore(mlir::Operation *operation,
                      mlir::RankedTensorType sourceType,
                      mlir::RankedTensorType destinationType) {
-  auto sourceTile = mlir::dyn_cast<mlir::tt::ttcore::TileType>(
-      sourceType.getElementType());
-  auto destinationTile =
-      mlir::dyn_cast<mlir::tt::ttcore::TileType>(
-          destinationType.getElementType());
+  auto sourceTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(sourceType.getElementType());
+  auto destinationTile = mlir::dyn_cast<mlir::tt::ttcore::TileType>(
+      destinationType.getElementType());
   if (!sourceTile || !destinationTile) {
     return operation->emitOpError(
         "row_prefix requires tiled source and destination tensors");
   }
-  if (sourceTile.getHeight() != 32 || sourceTile.getWidth() != 32) {
+  if (sourceTile.getHeight() != mlir::tt::ttl::kDefaultTileHeight ||
+      sourceTile.getWidth() != mlir::tt::ttl::kDefaultTileWidth) {
     return operation->emitOpError()
            << "row_prefix source must use 32x32 tiles, got "
            << sourceTile.getHeight() << "x" << sourceTile.getWidth();
@@ -2502,18 +2517,6 @@ verifyRowPrefixStore(mlir::Operation *operation,
            << "row_prefix destination must contain between 1 and "
            << sourceScalars << " scalar elements, got " << destinationScalars;
   }
-  if (destinationScalars % sourceTile.getWidth() != 0) {
-    return operation->emitOpError()
-           << "row_prefix destination must contain complete "
-           << sourceTile.getWidth() << "-datum logical rows";
-  }
-  constexpr int64_t hardwareRowWidth = 16;
-  int64_t hardwareRows = destinationScalars / hardwareRowWidth;
-  if (hardwareRows < 1 || hardwareRows > 64) {
-    return operation->emitOpError()
-           << "row_prefix requires between 1 and 64 hardware rows, got "
-           << hardwareRows;
-  }
   return mlir::success();
 }
 
@@ -2534,10 +2537,10 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
 
     if (tensorTy.getElementType() != viewTy.getElementType()) {
-      return emitOpError()
-             << "tensor element type (" << tensorTy.getElementType()
-             << ") must match view element type (" << viewTy.getElementType()
-             << ")";
+      return emitOpError() << "tensor element type ("
+                           << tensorTy.getElementType()
+                           << ") must match view element type ("
+                           << viewTy.getElementType() << ")";
     }
 
     if (tensorTy.getRank() != viewTy.getRank()) {
@@ -2548,11 +2551,10 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
 
     for (int64_t dimension = 0; dimension < tensorTy.getRank(); ++dimension) {
       if (tensorTy.getDimSize(dimension) != viewTy.getDimSize(dimension)) {
-        return emitOpError()
-               << "tensor shape dimension " << dimension << " ("
-               << tensorTy.getDimSize(dimension)
-               << ") must match view shape dimension ("
-               << viewTy.getDimSize(dimension) << ")";
+        return emitOpError() << "tensor shape dimension " << dimension << " ("
+                             << tensorTy.getDimSize(dimension)
+                             << ") must match view shape dimension ("
+                             << viewTy.getDimSize(dimension) << ")";
       }
     }
   }
@@ -2583,7 +2585,8 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   auto viewElemTy = viewTy.getElementType();
   if (getRowPrefix()) {
     auto sourceTensorType = RankedTensorType::get({1, 1}, tileType);
-    if (failed(verifyRowPrefixStore(getOperation(), sourceTensorType, viewTy))) {
+    if (failed(
+            verifyRowPrefixStore(getOperation(), sourceTensorType, viewTy))) {
       return failure();
     }
   } else if (viewElemTy != tileType) {

@@ -2185,11 +2185,11 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
   if (store.getRowPrefix()) {
-    SmallVector<AffineExpr> zeroResults(outputTensorType.getRank(),
-                                        getAffineConstantExpr(0,
-                                                              store.getContext()));
-    plan.iteration.outputMap = AffineMap::get(
-        tensorType.getRank(), 0, zeroResults, store.getContext());
+    SmallVector<AffineExpr> zeroResults(
+        outputTensorType.getRank(),
+        getAffineConstantExpr(0, store.getContext()));
+    plan.iteration.outputMap = AffineMap::get(tensorType.getRank(), 0,
+                                              zeroResults, store.getContext());
   } else {
     plan.iteration.outputMap = identity;
   }

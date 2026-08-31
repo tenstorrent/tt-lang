@@ -2,24 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//
-// Implementation of the TTKernelInsertInits pass, which inserts both common
-// inits (init_sfpu, binary_op_init_common) that configure UNPACK + PACK data
-// format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
-// configure the MATH pipeline.
-//
-// The pass performs:
-//   - Common inits: one per sync region, hoisted above enclosing loops.
-//      Scans each tile_regs_acquire -> tile_regs_release region to determine
-//      the compute category (FPU binary vs SFPU/copy/bcast) and derives
-//      input/output CBs from compute and pack ops.
-//   - Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
-//   - Row-pack inits: one configuration around a loop when its only packer
-//      operation is a single pack_rows, otherwise around each pack_rows.
-//
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
 //===----------------------------------------------------------------------===//
@@ -544,8 +526,15 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
   return hadError ? failure() : success();
 }
 
+static bool mayInterfereWithRowPackConfiguration(Operation *operation) {
+  return operation->hasTrait<ttk::TTKernelInitOpTrait>() ||
+         operation->hasTrait<ttk::TTKernelLayoutOpTrait>() ||
+         isa<ttk::OpaqueCallOp, func::CallOp>(operation) ||
+         operation->getName().getStringRef().starts_with("ttkernel.pack_");
+}
+
 /// A single pack_rows in a loop can reuse its static row configuration across
-/// iterations when no operation in the loop can reconfigure the packer.
+/// iterations when every other operation preserves that configuration.
 static ttk::PackRowsOp getHoistablePackRows(scf::ForOp loop) {
   ttk::PackRowsOp candidate;
   bool hasInterference = false;
@@ -562,9 +551,7 @@ static ttk::PackRowsOp getHoistablePackRows(scf::ForOp loop) {
       return WalkResult::advance();
     }
 
-    StringRef operationName = operation->getName().getStringRef();
-    if (operation->hasTrait<ttk::TTKernelInitOpTrait>() ||
-        operationName.starts_with("ttkernel.pack_")) {
+    if (mayInterfereWithRowPackConfiguration(operation)) {
       hasInterference = true;
       return WalkResult::interrupt();
     }

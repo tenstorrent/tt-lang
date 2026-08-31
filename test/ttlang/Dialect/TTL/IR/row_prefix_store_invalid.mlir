@@ -72,3 +72,49 @@ func.func @view_must_be_reserved(
       : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x14x!ttcore.tile<1x32, bf16>>
   func.return
 }
+
+// -----
+
+func.func @destination_width_must_match(
+    %source: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 14], !ttcore.tile<1x16, bf16>, 1>
+  %view = ttl.cb_reserve %cb
+      : <[1, 14], !ttcore.tile<1x16, bf16>, 1>
+      -> tensor<1x14x!ttcore.tile<1x16, bf16>>
+  // expected-error @below {{'ttl.store' op row_prefix destination tile width must equal source width 32, got 16}}
+  ttl.store %source, %view {row_prefix}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x14x!ttcore.tile<1x16, bf16>>
+  func.return
+}
+
+// -----
+
+func.func @destination_must_fit_source(
+    %source: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 33], !ttcore.tile<1x32, bf16>, 1>
+  %view = ttl.cb_reserve %cb
+      : <[1, 33], !ttcore.tile<1x32, bf16>, 1>
+      -> tensor<1x33x!ttcore.tile<1x32, bf16>>
+  // expected-error @below {{'ttl.store' op row_prefix destination must contain between 1 and 1024 scalar elements, got 1056}}
+  ttl.store %source, %view {row_prefix}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x33x!ttcore.tile<1x32, bf16>>
+  func.return
+}
+
+// -----
+
+func.func @tile_store_view_must_be_reserved(
+    %tile: !ttcore.tile<32x32, bf16>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+  %view = ttl.cb_wait %cb
+      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
+      -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_store' op row_prefix requires a producer-reserved view}}
+  ttl.tile_store %tile, %view[%c0, %c0] from dst[%c0] {row_prefix}
+      : !ttcore.tile<32x32, bf16>, tensor<1x14x!ttcore.tile<1x32, bf16>>
+  func.return
+}

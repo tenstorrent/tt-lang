@@ -190,20 +190,31 @@ static bool insideKernelFunction(mlir::Operation *op) {
       tileType.getDataType() != ttcore::DataType::Float32) {
     return emitOpError("supports only bf16 and f32 output data types");
   }
-  if (getRowCount() > 64) {
-    return emitOpError() << "row_count must be at most 64, got "
-                         << getRowCount();
-  }
   uint64_t scalarCount = static_cast<uint64_t>(tileType.getHeight()) *
                          static_cast<uint64_t>(tileType.getWidth());
   uint64_t scalarBytes = tileType.getSizeBytes() / scalarCount;
-  uint64_t packedBytes = static_cast<uint64_t>(getRowCount()) * 16 * scalarBytes;
-  uint64_t capacityBytes = static_cast<uint64_t>(dfbType.getNumElements()) *
-                           tileType.getSizeBytes();
-  if (packedBytes > capacityBytes) {
+  uint64_t packedBytes =
+      static_cast<uint64_t>(getRowCount()) * kPackRowElementCount * scalarBytes;
+  uint64_t capacityBytes =
+      static_cast<uint64_t>(dfbType.getNumElements()) * tileType.getSizeBytes();
+  uint64_t availableBytes = capacityBytes;
+  if (std::optional<int64_t> outIndex = getConstantIntValue(getOutIndex())) {
+    if (*outIndex < 0) {
+      return emitOpError("out_index must be nonnegative");
+    }
+    uint64_t pageIndex = static_cast<uint64_t>(*outIndex);
+    uint64_t pageCount = static_cast<uint64_t>(dfbType.getNumElements());
+    if (pageIndex >= pageCount) {
+      return emitOpError() << "out_index " << pageIndex
+                           << " exceeds output dataflow buffer capacity of "
+                           << pageCount << " pages";
+    }
+    availableBytes -= pageIndex * tileType.getSizeBytes();
+  }
+  if (packedBytes > availableBytes) {
     return emitOpError() << "packed prefix requires " << packedBytes
-                         << " bytes, but output dataflow buffer capacity is "
-                         << capacityBytes << " bytes";
+                         << " bytes, but only " << availableBytes
+                         << " bytes remain in the output dataflow buffer";
   }
   return success();
 }

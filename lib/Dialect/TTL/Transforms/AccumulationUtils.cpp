@@ -714,8 +714,7 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
 }
 
 void lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
-                                     int64_t scopeId,
-                                     RewriterBase &rewriter) {
+                                     int64_t scopeId, RewriterBase &rewriter) {
   scf::ForOp loop = match.loop;
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&
