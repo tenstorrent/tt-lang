@@ -125,6 +125,13 @@ static AffineMap buildZeroMap(MLIRContext *context, int64_t domainRank,
   return AffineMap::get(domainRank, 0, expressions, context);
 }
 
+static RankedTensorType
+buildSingleElementTensorType(RankedTensorType tensorType) {
+  SmallVector<int64_t> shape(tensorType.getRank(), 1);
+  return RankedTensorType::get(shape, tensorType.getElementType(),
+                               tensorType.getEncoding());
+}
+
 static AffineMap
 buildBroadcastAwareInputMap(MLIRContext *context, RankedTensorType inputType,
                             RankedTensorType outputType, int64_t iterationRank,
@@ -1899,6 +1906,104 @@ static FailureOr<WaitedDFBMutationPlan> buildWaitedDFBMutationPlan(
   return plan;
 }
 
+static FailureOr<SmallVector<ComputeOutputPlan>>
+buildComputeOutputPlans(ComputeOpCreationPlan &creation,
+                        std::string &failureReason) {
+  SmallVector<ComputeOutputPlan> plans;
+  plans.reserve(creation.outputs.dfbs.size());
+  bool changesResultRepresentation = false;
+  bool onlyRowPrefixOutputs = true;
+
+  for (Value outputDFB : creation.outputs.dfbs) {
+    SmallVector<StoreOp> stores;
+    for (const OutputDFBTransaction &transaction :
+         creation.outputs.transactions) {
+      if (transaction.dfb == outputDFB) {
+        llvm::append_range(stores, transaction.stores);
+      }
+    }
+    assert(!stores.empty() && "every output DFB must have a store");
+
+    bool usesRowPrefix = static_cast<bool>(stores.front().getRowPrefix());
+    if (llvm::any_of(stores, [&](StoreOp store) {
+          return static_cast<bool>(store.getRowPrefix()) != usesRowPrefix;
+        })) {
+      failureReason =
+          "one dataflow buffer cannot mix row-prefix and regular stores";
+      return failure();
+    }
+
+    ComputeOutputPlan plan;
+    plan.dfb = outputDFB;
+    if (!usesRowPrefix) {
+      onlyRowPrefixOutputs = false;
+      plan.attachmentType = creation.resultType;
+      plan.formalType = creation.resultType;
+      plan.indexingMap = creation.iteration.outputMap;
+    } else {
+      if (creation.rowNormalization) {
+        failureReason =
+            "row-prefix output is unsupported for row-normalization block "
+            "creation";
+        return failure();
+      }
+
+      auto destinationType =
+          cast<RankedTensorType>(stores.front().getView().getType());
+      if (llvm::any_of(stores, [&](StoreOp store) {
+            return store.getView().getType() != destinationType;
+          })) {
+        failureReason = "row-prefix stores to one dataflow buffer require one "
+                        "destination tensor type";
+        return failure();
+      }
+      plan.attachmentType = destinationType;
+      plan.formalType = buildSingleElementTensorType(destinationType);
+      plan.indexingMap = buildZeroMap(
+          stores.front().getContext(), creation.iteration.iteratorTypes.size(),
+          destinationType.getRank());
+      changesResultRepresentation |= plan.formalType != creation.resultType;
+    }
+
+    if (!plans.empty() && plans.front().formalType.getElementType() !=
+                              plan.formalType.getElementType()) {
+      failureReason = "one compute cannot publish output dataflow buffers with "
+                      "different tile types";
+      return failure();
+    }
+    plans.push_back(std::move(plan));
+  }
+
+  if (creation.inputs.empty() && onlyRowPrefixOutputs) {
+    assert(creation.resultType.getNumElements() == 1 &&
+           "row-prefix source must contain one tile");
+    // No operand carries a nonconstant indexing map from which the tiling
+    // interface could recover loop bounds. Model the one-tile source as one
+    // zero-rank execution instead of retaining unused unit iterators.
+    creation.iteration.iteratorTypes.clear();
+    creation.iteration.outputMap = buildZeroMap(
+        creation.source->getContext(), 0, creation.resultType.getRank());
+    for (ComputeOutputPlan &plan : plans) {
+      plan.indexingMap = buildZeroMap(creation.source->getContext(), 0,
+                                      plan.formalType.getRank());
+    }
+  }
+
+  if (changesResultRepresentation &&
+      llvm::any_of(creation.source->getResult(0).getUses(),
+                   [&](OpOperand &use) {
+                     auto store = dyn_cast<StoreOp>(use.getOwner());
+                     return !store || &store.getTensorMutable() != &use ||
+                            !llvm::is_contained(creation.outputs.stores, store);
+                   })) {
+    failureReason =
+        "row-prefix output cannot preserve a non-store use of the full-tile "
+        "result";
+    return failure();
+  }
+  return plans;
+}
+
 static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
 buildComputeOpCreationPlan(Operation *source,
                            const DFBValueLifetimeAnalysis &lifetimes,
@@ -2016,6 +2121,15 @@ buildComputeOpCreationPlan(Operation *source,
         outputs.getRejection().message);
   }
   plan.outputs = std::move(outputs).takePlan();
+
+  FailureOr<SmallVector<ComputeOutputPlan>> outputPlans =
+      buildComputeOutputPlans(plan, failureReason);
+  if (failed(outputPlans)) {
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnsupportedOutputPublication,
+        std::move(failureReason));
+  }
+  plan.outputPlans = std::move(*outputPlans);
 
   for (const OutputDFBTransaction &transaction : plan.outputs.transactions) {
     if (!transaction.isWaitedMutation()) {
@@ -2173,9 +2287,8 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
       dyn_cast<ttcore::TileType>(outputTensorType.getElementType());
   assert(outputTileType && "verified store output must contain tiles");
   if (store.getRowPrefix()) {
-    SmallVector<int64_t> singlePackShape(outputTensorType.getRank(), 1);
-    plan.computeOutputTensorType = RankedTensorType::get(
-        singlePackShape, outputTileType, outputTensorType.getEncoding());
+    plan.computeOutputTensorType =
+        buildSingleElementTensorType(outputTensorType);
   } else {
     plan.computeOutputTensorType = outputTensorType;
   }
@@ -2185,11 +2298,9 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
   if (store.getRowPrefix()) {
-    SmallVector<AffineExpr> zeroResults(
-        outputTensorType.getRank(),
-        getAffineConstantExpr(0, store.getContext()));
-    plan.iteration.outputMap = AffineMap::get(tensorType.getRank(), 0,
-                                              zeroResults, store.getContext());
+    plan.iteration.outputMap =
+        buildZeroMap(store.getContext(), tensorType.getRank(),
+                     outputTensorType.getRank());
   } else {
     plan.iteration.outputMap = identity;
   }

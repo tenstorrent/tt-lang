@@ -1588,6 +1588,13 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   // can compute the correct global DFB offset from the extract_slice.
   mlir::IRMapping mapping;
   mlir::WalkResult storeWalk = getBody().walk([&](TileStoreOp store) {
+    if (store.getRowPrefix()) {
+      // Row-prefix packing derives its byte count from the complete reserved
+      // view. Its zero output map already fixes the one bulk store at the
+      // reservation origin, so replacing that view with a unit slice would
+      // truncate the packed prefix.
+      return mlir::WalkResult::advance();
+    }
     mlir::Value view = store.getView();
     if (view.getParentRegion() == &getBody()) {
       return mlir::WalkResult::advance();
