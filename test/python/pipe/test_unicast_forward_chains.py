@@ -163,6 +163,7 @@ def test_row_column_unicast_forward_chains(device, monkeypatch, tmp_path):
     kernel_source = data_movement_kernel.read_text()
     assert len(kernel_source.encode()) < 24 * 1024
     assert kernel_source.count("noc0.async_write(") == 2
+    assert "inline_dw_write" not in kernel_source
     assert "experimental::constant_table_lookup_word<" in kernel_source
     assert re.search(r"^\s+size_t v\d+\[", kernel_source, re.MULTILINE) is None
 
