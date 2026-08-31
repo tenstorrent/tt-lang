@@ -135,6 +135,7 @@ from .kernel_runner import (
     KernelRuntimeResourceCache,
     KernelSpec,
     MeshProgramPlacement,
+    _mesh_program_placement_bounds,
     emit_runner_file,
     run_kernel_on_device,
 )
@@ -607,6 +608,8 @@ def _resolve_mesh_program_placements(args: tuple, device_domain, requested_place
         raise TypeError("mesh_program_placements must be a tuple or list")
     if not requested_placements:
         raise ValueError("mesh_program_placements must not be empty")
+    for placement in requested_placements:
+        _mesh_program_placement_bounds(placement)
     return list(requested_placements)
 
 
