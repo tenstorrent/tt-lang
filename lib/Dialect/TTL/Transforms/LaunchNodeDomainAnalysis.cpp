@@ -343,6 +343,25 @@ LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
   return result;
 }
 
+/// Device-qualified records require device identity because one launch node
+/// can participate on one logical device and not another.
+static bool hasDeviceQualifiedPipeNetRecords(PipeNetRecordsAttr records) {
+  return records && records.getPipes().front().getDeviceTransfer();
+}
+
+/// Record predicates own their endpoint set; a module-wide PipeNet domain can
+/// include other declarations sharing the same id.
+static LaunchNodeDomain
+getPipeNetPredicateRoleLaunchNodeDomain(PipeNetPredicateOpInterface predicate,
+                                        const LaunchNodeDomainState &state) {
+  if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
+    return getPipeRecordsRoleLaunchNodeDomain(records,
+                                              predicate.getReferencedRole());
+  }
+  return state.getRoleDomain(predicate.getReferencedPipeNetId(),
+                             predicate.getReferencedRole());
+}
+
 /// Normalize integer-array attributes before verifier-specific interpretation.
 static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
                              SmallVectorImpl<int64_t> &values) {
@@ -522,13 +541,12 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
   }
   if (state) {
     if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
-      if (predicate.getReferencedRecords()) {
+      PipeNetRecordsAttr records = predicate.getReferencedRecords();
+      if (hasDeviceQualifiedPipeNetRecords(records)) {
         return std::nullopt;
       }
       bool selected = knownLaunchNodeDomainContains(
-          state->getRoleDomain(predicate.getReferencedPipeNetId(),
-                               predicate.getReferencedRole()),
-          coord);
+          getPipeNetPredicateRoleLaunchNodeDomain(predicate, *state), coord);
       return llvm::APInt(/*numBits=*/1, selected);
     }
   }
@@ -1518,9 +1536,12 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
                      const LaunchNodeDomainState &state,
                      llvm::DenseMap<Value, bool> &coordCache) {
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
-    LaunchNodeDomain roleDomain = state.getRoleDomain(
-        pred.getReferencedPipeNetId(), pred.getReferencedRole());
-    if (pred.getReferencedRecords()) {
+    LaunchNodeDomain roleDomain =
+        getPipeNetPredicateRoleLaunchNodeDomain(pred, state);
+    PipeNetRecordsAttr records = pred.getReferencedRecords();
+    // Device-qualified records require a logical-device location to exclude
+    // the role's launch nodes from the false branch.
+    if (hasDeviceQualifiedPipeNetRecords(records)) {
       return {current.intersectWith(roleDomain), current};
     }
     return exactBranches(roleDomain, current, state.baseDomain);
