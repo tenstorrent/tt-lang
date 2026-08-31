@@ -407,13 +407,7 @@ class TensorBlock:
         may use smaller tiles, but its complete block must represent a
         contiguous prefix of 32-datum rows. BF16 and FP32 are supported.
         """
-        if not _is_block(ast_self):
-            raise ValueError(
-                "store_rows() must be called on a block acquired from reserve()"
-            )
-        acquired_view = _get_acquired_view_from_block(ast_self)
-        if acquired_view.owner.name != "ttl.cb_reserve":
-            raise ValueError("store_rows() requires a reserve-backed block")
+        acquired_view = _get_reserve_backed_view(ast_self, "store_rows")
         _require_row_prefix_store(rhs, acquired_view)
         ttl.store(rhs, acquired_view, row_prefix=True)
 
@@ -423,13 +417,7 @@ class TensorBlock:
         The reserved block must first be initialized by ``store_rows`` before
         the enclosing loop uses this method for packer L1 accumulation.
         """
-        if not _is_block(ast_self):
-            raise ValueError(
-                "accumulate_rows() must be called on a block acquired from reserve()"
-            )
-        acquired_view = _get_acquired_view_from_block(ast_self)
-        if acquired_view.owner.name != "ttl.cb_reserve":
-            raise ValueError("accumulate_rows() requires a reserve-backed block")
+        acquired_view = _get_reserve_backed_view(ast_self, "accumulate_rows")
         _require_row_prefix_store(rhs, acquired_view)
         ttl.store(rhs, acquired_view, accumulate=True, row_prefix=True)
 
@@ -698,6 +686,17 @@ def _get_acquired_view_from_block(block):
     return acquired_view
 
 
+def _get_reserve_backed_view(block, method_name: str):
+    if not _is_block(block):
+        raise ValueError(
+            f"{method_name}() must be called on a block acquired from reserve()"
+        )
+    acquired_view = _get_acquired_view_from_block(block)
+    if _get_acquire_op_name_from_view(acquired_view) != "ttl.cb_reserve":
+        raise ValueError(f"{method_name}() requires a reserve-backed block")
+    return acquired_view
+
+
 def _get_cb_from_block(block):
     """Extract the CB from a block (result of ttl.attach_cb).
 
@@ -753,9 +752,7 @@ def _require_row_prefix_store(rhs, acquired_view) -> None:
         raise ValueError("row-prefix store requires ranked tensor operands")
 
     source_tile = ttcore.ir.TileType.maybe_downcast(source_type.element_type)
-    destination_tile = ttcore.ir.TileType.maybe_downcast(
-        destination_type.element_type
-    )
+    destination_tile = ttcore.ir.TileType.maybe_downcast(destination_type.element_type)
     if source_tile is None or destination_tile is None:
         raise ValueError("row-prefix store requires tiled operands")
 
@@ -776,9 +773,7 @@ def _require_row_prefix_store(rhs, acquired_view) -> None:
 
     source_dtype = ttcore.DataType(source_tile.data_type_as_int)
     if source_dtype not in (ttcore.DataType.BFloat16, ttcore.DataType.Float32):
-        raise ValueError(
-            "row-prefix store supports only bf16 and f32 tile data types"
-        )
+        raise ValueError("row-prefix store supports only bf16 and f32 tile data types")
     if destination_tile_shape[1] != source_tile_shape[1]:
         raise ValueError(
             "row-prefix store destination tile width must equal source width "
@@ -795,11 +790,6 @@ def _require_row_prefix_store(rhs, acquired_view) -> None:
         raise ValueError(
             "row-prefix store destination must contain between 1 and "
             f"{source_scalar_count} scalar elements, got {destination_scalar_count}"
-        )
-    if destination_scalar_count % source_tile_shape[1] != 0:
-        raise ValueError(
-            "row-prefix store destination must contain complete "
-            f"{source_tile_shape[1]}-datum logical rows"
         )
 
 

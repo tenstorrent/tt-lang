@@ -186,8 +186,7 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
 /// per-iteration accumulating stores. The generated loop is annotated for L1
 /// packer accumulation reconfiguration insertion.
 void lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
-                                     int64_t scopeId,
-                                     RewriterBase &rewriter);
+                                     int64_t scopeId, RewriterBase &rewriter);
 
 /// Return one more than the maximum L1 accumulation scope id under `root`.
 int64_t getNextL1AccScopeId(Operation *root);

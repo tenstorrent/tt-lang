@@ -19,6 +19,14 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include <cstdint>
+
+namespace mlir::tt::ttkernel {
+
+inline constexpr int64_t kPackRowElementCount = 16;
+
+} // namespace mlir::tt::ttkernel
+
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h.inc"
 
