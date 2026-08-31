@@ -5122,10 +5122,10 @@ def TTKernel_DFBResourceUseOp
                   [HasAncestor<"::mlir::func::FuncOp">]> {
     let summary = "Declare required physical DFB descriptors";
     let description = [{
-      Declares that the enclosing kernel function requires the finalized
-      physical DFB descriptors identified by `indices`. The indices are
-      strictly increasing and contain no duplicates. This metadata emits no
-      device code.
+      Declares that the enclosing function requires the nonempty set of
+      finalized physical DFB descriptors identified by `indices`. The indices
+      are strictly increasing and contain no duplicates. This metadata emits
+      no device code.
     }];
     let arguments = (ins DenseI32ArrayAttr:$indices);
     let assemblyFormat = "attr-dict";

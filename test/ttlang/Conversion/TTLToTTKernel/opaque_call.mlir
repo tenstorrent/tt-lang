@@ -37,7 +37,7 @@ func.func @call_with_dfb_template_arg() attributes {ttl.kernel_thread = #ttkerne
 
 // -----
 
-// A DFB index alone is static metadata and does not require a host descriptor.
+// A DFB index does not declare DFB storage access by itself.
 // CHECK-LABEL: func.func @call_with_index_only_dfb_template_arg
 // CHECK-NOT: ttkernel.dfb_resource_use
 // CHECK: ttkernel.opaque_call "select" template_args [4 : ui32]() {header = "select.hpp"} : () -> ()

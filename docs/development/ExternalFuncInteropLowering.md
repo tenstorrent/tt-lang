@@ -479,8 +479,13 @@ operand segments for template, dependency-only, and function-argument DFBs.
 Dependency occurrences, protocol effects, non-transactional accesses, and
 unknown access remain in TTL for analysis and verification. TTL to TTKernel
 conversion resolves DFB indices and materializes descriptor metadata before the
-DFB type loses its block geometry; it discards dependency-only operands and
-access-contract metadata because those facts do not alter the C++ call.
+DFB type loses its block geometry. It also emits non-device
+`ttkernel.dfb_resource_use` markers for external-call dependencies. After core
+specialization, `ttkernel-annotate-dfb-use` includes surviving markers in
+`ttl.used_dfb_indices` and removes them. Without specialization, TTKernel to
+EmitC removes the markers and per-core descriptor pruning remains disabled.
+Dependency-only operands and access-contract metadata do not alter the C++ call
+and are not emitted.
 TTKernel to EmitC resolves constants and descriptor types, and C++ emission
 inserts the required prelude and header during its existing operation scan.
 
