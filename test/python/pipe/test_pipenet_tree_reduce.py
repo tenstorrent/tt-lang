@@ -18,6 +18,7 @@ pytestmark = pytest.mark.requires_device
 
 CORE_COUNT = 8
 TILE_SIZE = 32
+OUTPUT_ROWS = 14
 ROOT = (0, 0)
 
 
@@ -59,7 +60,9 @@ def _make_tree_reduce(fp32):
         accumulator_dfb = ttl.make_dataflow_buffer_like(
             source, shape=(1, 1), block_count=1
         )
-        output_dfb = ttl.make_dataflow_buffer_like(output, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dataflow_buffer_like(
+            output, shape=(1, OUTPUT_ROWS), block_count=1
+        )
 
         @ttl.datamovement()
         def exchange():
@@ -132,14 +135,14 @@ TREE_REDUCE_CASES = [
 def test_tree_reduce(device, operation, dtype, rtol, atol, to_device):
     torch.manual_seed(0)
     source_host = torch.randn(TILE_SIZE, CORE_COUNT * TILE_SIZE, dtype=dtype)
-    output_host = torch.zeros(TILE_SIZE, TILE_SIZE, dtype=dtype)
+    output_host = torch.zeros(OUTPUT_ROWS, TILE_SIZE, dtype=dtype)
     source = to_device(source_host, device)
-    output = to_device(output_host, device)
+    output = to_device(output_host, device, tile=(1, TILE_SIZE))
 
     operation(source, output)
     ttnn.synchronize_device(device)
 
-    actual = ttnn.to_torch(output).reshape(TILE_SIZE, TILE_SIZE).float()
+    actual = ttnn.to_torch(output).reshape(OUTPUT_ROWS, TILE_SIZE).float()
     expected = (
         torch.stack(
             [
@@ -150,7 +153,7 @@ def test_tree_reduce(device, operation, dtype, rtol, atol, to_device):
             ]
         )
         .float()
-        .sum(dim=0)
+        .sum(dim=0)[:OUTPUT_ROWS]
     )
     assert_pcc(expected, actual, threshold=0.999)
     assert_allclose(actual, expected, rtol=rtol, atol=atol)

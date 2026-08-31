@@ -224,18 +224,20 @@ def TTKernel_PackRowsOp : TTKernel_Op<"pack_rows"> {
       storage beginning at `out_index` in the output dataflow buffer. Each
       hardware row contains 16 datums, so two hardware rows represent one
       logical 32-datum tile row. `row_count` must be in the range 1 through 64.
+      `out_index` is a page index relative to the reserved write pointer. The
+      packed bytes may span subsequent pages and must remain within the
+      reserved dataflow buffer capacity.
 
       The destination pages must be reserved before this operation. A
       dominating `pack_rows_init` must configure the same `row_count`, and a
       subsequent `pack_rows_uninit` must restore the packer configuration.
-      The operation is available on Wormhole and Blackhole compute engines.
     }];
 
     let arguments = (ins
       IndexLike:$dst_index,
       TTKernel_CB:$out_cb,
       IndexLike:$out_index,
-      ConfinedAttr<I64Attr, [IntPositive]>:$row_count
+      ConfinedAttr<I64Attr, [IntPositive, IntMaxValue<64>]>:$row_count
     );
 
     let assemblyFormat = [{
@@ -244,6 +246,7 @@ def TTKernel_PackRowsOp : TTKernel_Op<"pack_rows"> {
     }];
     let hasVerifier = 1;
 }
+
 def TTKernel_PackReconfigL1AccOp : TTKernel_Op<"pack_reconfig_l1_acc"> {
     let summary = "Reconfigure packer to L1 accumulation mode.";
     let description = [{

@@ -88,10 +88,11 @@ Deferred features are tracked separately:
 The current design preserves these invariants:
 
 - `ttl.accumulation_scope` declares accumulation outputs and policies. It
-  does not encode DST, L1 packer, or explicit DFB state.
+  does not encode DST, L1 packer, or explicit DFB state. A distinct state type
+  requires the body to store the yielded state to its corresponding output.
 - Conditional rejection belongs in `ttl-insert-accumulation-scopes{kind=dfb}`,
-  not in
-  the `ttl.accumulation_scope` verifier. The verifier remains structural.
+  not in the `ttl.accumulation_scope` verifier. The verifier remains
+  structural.
 - `ttl.l1_acc_loop` plus `ttl.l1_acc_initial` is static first-update
   lowering metadata, not the full accumulation model.
 - TTKernel passes must not infer accumulation semantics from neighboring DFB

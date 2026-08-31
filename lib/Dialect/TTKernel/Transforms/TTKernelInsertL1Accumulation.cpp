@@ -172,8 +172,7 @@ static void addScopeOutputCBs(Operation *operation,
 static bool containsAnyPack(Operation *operation) {
   bool found = false;
   operation->walk([&](Operation *nested) {
-    if (isa<ttk::PackTileOp, ttk::PackTileBlockOp,
-            ttk::PackRowsOp>(nested)) {
+    if (isa<ttk::PackTileOp, ttk::PackTileBlockOp, ttk::PackRowsOp>(nested)) {
       found = true;
       return WalkResult::interrupt();
     }
