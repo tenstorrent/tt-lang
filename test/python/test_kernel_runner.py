@@ -3164,7 +3164,20 @@ def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
     assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 0, 1]
 
 
-def test_device_domain_builds_only_explicit_mesh_program_placements(monkeypatch):
+@pytest.mark.parametrize(
+    ("placements", "expected_coordinates"),
+    [
+        ([(0, 0), (3, 7)], [(0, 0), (3, 7)]),
+        (
+            [kernel_runner.MeshProgramPlacement((1, 2), (2, 3))],
+            [(1, 2), (1, 3), (2, 2), (2, 3)],
+        ),
+    ],
+    ids=("coordinates", "inclusive-range"),
+)
+def test_device_domain_builds_only_explicit_mesh_program_placements(
+    monkeypatch, placements, expected_coordinates
+):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
@@ -3183,13 +3196,15 @@ def test_device_domain_builds_only_explicit_mesh_program_placements(monkeypatch)
         cb_configs=[],
         core_ranges=_FakeCoreRanges(),
         device_domain=DeviceDomain((4, 8)),
-        mesh_program_placements=[(0, 0), (3, 7)],
+        mesh_program_placements=placements,
     )
 
     mesh_programs = result["program"].mesh_programs
-    assert len(mesh_programs) == 2
-    assert mesh_programs[0][1].kernels[0].common_runtime_args == [0x2000, 0, 0]
-    assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 3, 7]
+    assert len(mesh_programs) == len(expected_coordinates)
+    assert [
+        tuple(program.kernels[0].common_runtime_args[1:])
+        for _, program in mesh_programs
+    ] == expected_coordinates
 
 
 @pytest.mark.parametrize(

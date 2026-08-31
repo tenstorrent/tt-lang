@@ -201,6 +201,28 @@ class TestMeshProgramPlacement:
                 (), ttl.DeviceDomain((1, 2)), placements
             )
 
+    @pytest.mark.parametrize(
+        ("placements", "error_type", "message"),
+        [
+            ("0,0", TypeError, "must be a tuple or list"),
+            ([object()], TypeError, "must be coordinate tuples"),
+            ([()], ValueError, "start must not be empty"),
+            ([(0, "1")], TypeError, "coordinates must be integers"),
+            (
+                [ttl_api.MeshProgramPlacement(0)],
+                TypeError,
+                "start must be a coordinate tuple",
+            ),
+        ],
+    )
+    def test_explicit_mesh_program_placements_reject_invalid_values(
+        self, placements, error_type, message
+    ):
+        with pytest.raises(error_type, match=message):
+            ttl_api._resolve_mesh_program_placements(
+                (), ttl.DeviceDomain((1, 2)), placements
+            )
+
     def test_compile_kernel_forwards_device_domain_to_lowering(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
         calls = []

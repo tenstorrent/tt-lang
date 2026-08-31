@@ -3802,10 +3802,27 @@ def _mesh_program_placement_bounds(placement: Any) -> tuple[tuple, tuple]:
         end = placement
     else:
         raise TypeError(
-            "device-domain mesh placements must be coordinate tuples or "
+            "mesh program placements must be coordinate tuples or "
             "MeshProgramPlacement values"
         )
-    return tuple(start), tuple(end)
+
+    def validate_coordinate(coordinate: Any, endpoint: str) -> tuple:
+        if not isinstance(coordinate, (tuple, list)):
+            raise TypeError(
+                f"mesh program placement {endpoint} must be a coordinate tuple"
+            )
+        if not coordinate:
+            raise ValueError(f"mesh program placement {endpoint} must not be empty")
+        if any(
+            isinstance(coordinate_value, bool) or not isinstance(coordinate_value, int)
+            for coordinate_value in coordinate
+        ):
+            raise TypeError(
+                f"mesh program placement {endpoint} coordinates must be integers"
+            )
+        return tuple(coordinate)
+
+    return validate_coordinate(start, "start"), validate_coordinate(end, "end")
 
 
 def _iter_device_domain_coordinates(device_domain, mesh_program_placements=None):
