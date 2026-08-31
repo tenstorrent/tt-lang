@@ -7,8 +7,7 @@
 // CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
 // CHECK-DAG: %[[SEM_A:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[SEM_B:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[CTR_A:.*]] = memref.alloca() : memref<1xi32>
-// CHECK-DAG: %[[CTR_B:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<2xi32>
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
 // CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
@@ -16,9 +15,9 @@
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[V1:.*]] = memref.load %[[CTR_A]]
+// CHECK: %[[V1:.*]] = memref.load %[[COUNTERS]][%[[SEM_A]]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
-// CHECK: memref.store %[[N1]], %[[CTR_A]]
+// CHECK: memref.store %[[N1]], %[[COUNTERS]][%[[SEM_A]]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 // CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
@@ -27,15 +26,15 @@
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[V2:.*]] = memref.load %[[CTR_B]]
+// CHECK: %[[V2:.*]] = memref.load %[[COUNTERS]][%[[SEM_B]]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
-// CHECK: memref.store %[[N2]], %[[CTR_B]]
+// CHECK: memref.store %[[N2]], %[[COUNTERS]][%[[SEM_B]]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
   func.func @overlap_two_receives_use_distinct_completion()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 0, block_count = 4}
+    %dst = ttl.bind_cb {cb_index = 0, block_count = 4} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
     %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -68,7 +67,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 
   func.func @overlap_two_receives_use_distinct_completion_senders()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -109,7 +108,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
   func.func @disjoint_receivers_reuse_completion()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -142,7 +141,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 
   func.func @disjoint_receivers_reuse_completion_senders()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %src = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
@@ -191,7 +190,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 module attributes {ttl.launch_grid = array<i64: 1, 4>} {
   func.func @loopback_self_inc()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 3) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>
@@ -207,7 +206,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 4>} {
 
   func.func @loopback_self_inc_receiver()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 3) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>

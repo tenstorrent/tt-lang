@@ -40,6 +40,22 @@ class SrcPipeIdentity:
             return self._pipe.dst_start
         return (self._pipe.dst_start, self._pipe.dst_end)
 
+    @property
+    def destination_device_index(self) -> int:
+        """Return the destination's row-major order in the device domain."""
+        from .domains import DeviceRange
+
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError(
+                "destination_device_index is available only for graph-based PipeNets"
+            )
+        destination = self._pipe._device_edge.destination
+        if isinstance(destination, DeviceRange):
+            raise ValueError(
+                "destination_device_index is unavailable for device ranges"
+            )
+        return self._pipe._device_domain.index_order(destination)
+
 
 class DstPipeIdentity:
     """
@@ -56,6 +72,15 @@ class DstPipeIdentity:
     def src(self) -> CoreCoord:
         """Get source core coordinate."""
         return self._pipe.src
+
+    @property
+    def source_device_index(self) -> int:
+        """Return the source's row-major order in the device domain."""
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError(
+                "source_device_index is available only for graph-based PipeNets"
+            )
+        return self._pipe._device_domain.index_order(self._pipe._device_edge.source)
 
 
 class Pipe:
@@ -234,22 +259,37 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
-    def __init__(self, pipes: List[Pipe]):
+    def __init__(self, pipes: Optional[List[Pipe]] = None, *, graph=None):
         # Validate at construction time by building a one-net graph and
         # delegating to OperationPipeNets.validate(). Single source of
         # truth for empty/overlap/mixed-kind rules; the same graph is
         # rebuilt and re-validated at operation build time.
         from ._pipenets import OperationPipeNets
+        from .domains import TransferGraph
 
-        if not pipes:
-            raise ValueError("PipeNet requires at least one pipe")
-        graph = OperationPipeNets()
-        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
-        graph.validate()
+        if (pipes is None) == (graph is None):
+            raise ValueError("PipeNet requires exactly one of pipes or graph")
         # Operation-local id assigned by the OperationPipeNets builder
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
-        self.pipes = pipes
+        self.pipes: List[Pipe] = []
+        self.graph: Optional[TransferGraph] = None
+        self._graph_edges = ()
+        if graph is not None:
+            if not isinstance(graph, TransferGraph):
+                raise TypeError(
+                    f"PipeNet graph must be a TransferGraph, "
+                    f"got {type(graph).__name__}"
+                )
+            self.graph = graph
+        else:
+            assert pipes is not None
+            if not pipes:
+                raise ValueError("PipeNet requires at least one pipe")
+            validation_graph = OperationPipeNets()
+            validation_graph.add_pipe_net(_pipe_to_pipe_use(pipe) for pipe in pipes)
+            validation_graph.validate()
+            self.pipes = pipes
         # Preserve the user's call site so diagnostics identify the PipeNet
         # declaration instead of frontend implementation code.
         self._source_file: Optional[str] = None
@@ -261,10 +301,41 @@ class PipeNet:
         except (IndexError, AttributeError):
             pass
 
+    @property
+    def is_graph(self) -> bool:
+        return self.graph is not None
+
     def _operation_identity_capture(self) -> tuple:
+        if self.graph is None:
+            return (
+                "pipenet",
+                tuple(pipe._operation_identity_capture() for pipe in self.pipes),
+            )
+
+        from .domains import DeviceRange
+
+        def device_identity(device) -> tuple:
+            return tuple(tuple(coordinates) for coordinates in device.coordinates)
+
+        def destination_identity(destination) -> tuple:
+            if isinstance(destination, DeviceRange):
+                return (
+                    "range",
+                    device_identity(destination.lo),
+                    device_identity(destination.hi),
+                )
+            return ("device", device_identity(destination))
+
         return (
-            "pipenet",
-            tuple(pipe._operation_identity_capture() for pipe in self.pipes),
+            "graph-pipenet",
+            self.graph.domain._operation_identity_capture(),
+            tuple(
+                (
+                    device_identity(edge.source),
+                    destination_identity(edge.destination),
+                )
+                for edge in self.graph.iter_edges()
+            ),
         )
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:

@@ -111,7 +111,7 @@ func.func @selected_pipe_transfer_block_span() {
   %c1 = arith.constant 1 : index
   %false = arith.constant false
   %selected = ttl.select_pipe_src record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
-      num_dests (%c1) src_in_dst (%false)
+      num_dests (%c1) src_in_dst (%false) devices (%c0, %c0)
       {records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_src
@@ -130,7 +130,7 @@ func.func @selected_pipe_transfer_destination_group_depth() {
   %c1 = arith.constant 1 : index
   %false = arith.constant false
   %selected = ttl.select_pipe_dst record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
-      num_dests (%c1) src_in_dst (%false)
+      num_dests (%c1) src_in_dst (%false) devices (%c0, %c0)
       {records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_dst
@@ -147,6 +147,30 @@ func.func @pipe_transfer_point_to_point_multi_receiver() {
   // expected-error @+1 {{'ttl.pipe_transfer.create' op point_to_point transfer requires one receiver}}
   %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
+
+// Test: a transfer reference must preserve its defining pipe's device transfer.
+#pipe_device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+#other_device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 1]>,
+            destination = <coordinates = [0, 0]>>>
+func.func @pipe_transfer_device_transfer_mismatch() {
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+      deviceTransfer = #pipe_device_transfer}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  // expected-error @below {{'ttl.pipe_transfer.create' op deviceTransfer must match the defining ttl.create_pipe}}
+  %transfer = ttl.pipe_transfer.create %pipe {
+      deviceTransfer = #other_device_transfer,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+      -> !ttl.pipe_transfer
   func.return
 }
 

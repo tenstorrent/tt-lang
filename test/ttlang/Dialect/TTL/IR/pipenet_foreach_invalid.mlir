@@ -83,7 +83,7 @@ func.func @selected_transfer_kind_mismatch() {
   %c1 = arith.constant 1 : index
   %false = arith.constant false
   %src = ttl.select_pipe_src record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
-      num_dests (%c1) src_in_dst (%false)
+      num_dests (%c1) src_in_dst (%false) devices (%c0, %c0)
       {records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0, isCollective = true>
       ]>} : !ttl.selected_pipe_src

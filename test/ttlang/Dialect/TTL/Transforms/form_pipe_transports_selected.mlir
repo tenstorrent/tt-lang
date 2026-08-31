@@ -171,9 +171,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
       %selected_static = arith.cmpi eq, %selected, %zero : index
       scf.if %selected_static {
+        ttl.wait %static_request : !ttl.receive_request
         ttl.cb_push %static_receive_dfb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
       } else {
+        ttl.wait %selected_request : !ttl.receive_request
         ttl.cb_push %selected_receive_dfb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
       }

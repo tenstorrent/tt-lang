@@ -1,23 +1,26 @@
 // RUN: ttlang-launch-node-domain-test %s | FileCheck %s
 
-// Summary: Prints launch-node lattice values and conditional-execution
-// equivalence results.
+// Summary: Prints launch-node lattice values for exact, empty, and bounded
+// unknown execution domains and conditional-execution equivalence results.
 
 // CHECK:      entry = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: x_zero = {(0,0), (0,1)}
 // CHECK-NEXT: x_nonzero = {(1,0), (1,1)}
 // CHECK-NEXT: joined = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: empty = {}
-// CHECK-NEXT: unknown = <unknown>
-// CHECK-NEXT: undeclared_pipe = <unknown>
+// CHECK-NEXT: bounded_unknown = <unknown> within {(0,0), (0,1)}
+// CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: kernel_argument_condition = equivalent
 // CHECK-NEXT: helper_argument_condition = not-equivalent
 // CHECK-NOT:  =
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
-  func.func @domains() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @domains(%runtime: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     "test.observe"() {test.label = "entry"} : () -> ()
     %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
     %c0 = arith.constant 0 : index
     %is_x_zero = arith.cmpi eq, %core_x, %c0 : index
     scf.if %is_x_zero {
@@ -33,9 +36,17 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       "test.observe"() {test.label = "empty"} : () -> ()
     }
 
+    %runtime_coordinate = arith.addi %core_y, %runtime : index
+    %runtime_selected = arith.cmpi eq, %runtime_coordinate, %c0 : index
+    scf.if %is_x_zero {
+      scf.if %runtime_selected {
+        "test.observe"() {test.label = "bounded_unknown"} : () -> ()
+      }
+    }
+
     %unresolved = "test.coordinate_predicate"(%core_x) : (index) -> i1
     scf.if %unresolved {
-      "test.observe"() {test.label = "unknown"} : () -> ()
+      "test.observe"() {test.label = "full_bound_unknown"} : () -> ()
     }
 
     // An undeclared PipeNet predicate has no role domain. The standalone

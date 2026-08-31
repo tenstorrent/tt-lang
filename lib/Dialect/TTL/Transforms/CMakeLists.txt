@@ -1,6 +1,7 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationAnalysis.cpp
   AccumulationUtils.cpp
+  CommonRuntimeArgLayout.cpp
   ComputeOpCreationPlanning.cpp
   ComputeTarget.cpp
   ComputeKernelConfigAnalysis.cpp
@@ -12,12 +13,15 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  FabricManagerLifetimeAnalysis.cpp
   PipeCapacityAnalysis.cpp
   PipeCounter.cpp
   DFBConcurrentKernelLivenessAnalysis.cpp
   DFBPhysicalAllocationPlan.cpp
   InterferenceGraphColoring.cpp
   PipeNetExecutionUtils.cpp
+  PipeNetForeachLowering.cpp
+  PipeNetParticipantPlan.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   PipePlanning.cpp

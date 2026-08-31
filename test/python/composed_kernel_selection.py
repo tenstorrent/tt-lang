@@ -34,7 +34,7 @@ def selected_caller(inp):
 
 
 # CHECK-LABEL: func.func @selected_caller__ncrisc
-# CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.selected_helper">
+# CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.selected_helper[captures={{[0-9a-f]+}}]">
 # CHECK-COUNT-3: ttl.opaque_call "reader_entry"
 # CHECK-NOT: ttl.logical_kernel = #ttl.logical_kernel<{{.*}}_inl_
 

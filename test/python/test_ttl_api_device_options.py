@@ -8,7 +8,9 @@ from unittest import mock
 
 import pytest
 
-import ttl.dialects.ttl as ttl
+import ttl
+import ttl.atom as ttl_atom
+import ttl.dialects.ttl as ttl_dialect
 import ttl.ttl_api as ttl_api
 from ttl import ProgramRuntimeResources
 from ttl.constants import SUPPORTED_MATH_FIDELITIES
@@ -21,6 +23,37 @@ class _TensorWithDevice:
 
     def device(self):
         return self._device
+
+
+class _GridSize:
+    x = 1
+    y = 1
+
+
+class _BoundingBox:
+    @staticmethod
+    def grid_size():
+        return _GridSize()
+
+
+class _CoreRanges:
+    @staticmethod
+    def bounding_box():
+        return _BoundingBox()
+
+
+class _DeviceGrid:
+    x = 8
+    y = 8
+
+
+class _DeviceWithMeshShape:
+    def __init__(self, shape):
+        self.shape = shape
+
+    @staticmethod
+    def compute_with_storage_grid_size():
+        return _DeviceGrid()
 
 
 class _DeviceWithArchMethod:
@@ -98,6 +131,188 @@ class TestDeviceTargetArch:
             ttl_api._device_target_arch(args)
 
 
+class TestMeshProgramPlacement:
+    @pytest.fixture(autouse=True)
+    def _patch_tensor_detection(self):
+        with mock.patch.object(
+            ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _TensorWithDevice)
+        ):
+            yield
+
+    def test_default_mesh_program_placement_covers_mesh(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((2, 4)))
+
+        placements = ttl_api._default_mesh_program_placements((tensor,))
+
+        assert len(placements) == 1
+        assert placements[0].start == (0, 0)
+        assert placements[0].end == (1, 3)
+
+    def test_default_mesh_program_placement_skips_single_device(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 1)))
+
+        assert ttl_api._default_mesh_program_placements((tensor,)) is None
+
+    def test_device_domain_mesh_program_placement_covers_domain(self):
+        domain = ttl.DeviceDomain((1, 4))
+
+        placements = ttl_api._default_mesh_program_placements_with_domain((), domain)
+
+        assert len(placements) == 1
+        assert placements[0].start == (0, 0)
+        assert placements[0].end == (0, 3)
+
+    def test_device_domain_mesh_program_placement_matches_mesh_tensor(self):
+        domain = ttl.DeviceDomain((1, 4))
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 4)))
+
+        placements = ttl_api._default_mesh_program_placements_with_domain(
+            (tensor,), domain
+        )
+
+        assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
+
+    def test_device_domain_mesh_program_placement_rejects_mismatch(self):
+        domain = ttl.DeviceDomain((1, 2))
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 4)))
+
+        with pytest.raises(ValueError, match="does not match"):
+            ttl_api._default_mesh_program_placements_with_domain((tensor,), domain)
+
+    def test_device_domain_mesh_program_placement_supports_product(self):
+        domain = ttl.DeviceDomain.product(board=(1,), device=(4,))
+
+        placements = ttl_api._default_mesh_program_placements_with_domain((), domain)
+
+        assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
+
+    def test_compile_kernel_forwards_device_domain_to_lowering(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 2))
+        calls = []
+
+        def compute_thread():
+            pass
+
+        compute_thread._logical_kernel = ttl.KernelKind.COMPUTE
+        monkeypatch.setattr(
+            ttl_api, "_get_registered_threads", lambda: [compute_thread]
+        )
+        monkeypatch.setattr(
+            ttl_api,
+            "_build_operation_pipenets",
+            lambda *_: ttl_api._build_pipenet_graph([]),
+        )
+
+        def fake_lower_program_to_kernel(**kwargs):
+            calls.append(kwargs)
+            return "compiled"
+
+        monkeypatch.setattr(
+            ttl_api, "_lower_program_to_kernel", fake_lower_program_to_kernel
+        )
+
+        def kernel():
+            pass
+
+        result = ttl_api._compile_kernel(
+            kernel,
+            (),
+            {},
+            (1, 1),
+            [],
+            [],
+            0,
+            "L1",
+            True,
+            0,
+            device_domain=domain,
+        )
+
+        assert result == "compiled"
+        assert calls[0]["device_domain"] is domain
+        assert calls[0]["mesh_program_placements"] == [
+            ttl_api.MeshProgramPlacement((0, 0), (0, 1))
+        ]
+        assert calls[0]["logical_kernels"] == [ttl.KernelKind.COMPUTE]
+
+    def test_operation_forwards_device_domain_to_explicit_compiler(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 2))
+        decorator_options = []
+
+        def fake_pykernel_gen(**kwargs):
+            decorator_options.append(kwargs)
+            return lambda fn: fn
+
+        monkeypatch.setattr(ttl_atom, "pykernel_gen", fake_pykernel_gen)
+        monkeypatch.setattr(ttl_atom, "_has_explicit_kernels", lambda _: True)
+
+        @ttl_atom.operation(grid=(1, 1), device_domain=domain)
+        def operation():
+            pass
+
+        assert decorator_options[0]["device_domain"] is domain
+
+    def test_unified_compiler_forwards_device_domain(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 2))
+        calls = []
+
+        def fake_compile_atom(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "compiled"
+
+        monkeypatch.setattr(ttl_atom, "_compile_atom", fake_compile_atom)
+        decorator_options = {
+            "num_outs": 1,
+            "memory_space": "L1",
+            "tiled": True,
+            "fp32_dest_acc_en": None,
+            "dst_full_sync_en": None,
+            "math_fidelity": None,
+            "device_domain": domain,
+            "runtime_resource_factory": None,
+        }
+
+        result = ttl_atom._compile_unified_operation(
+            object(),
+            decorator_options,
+            (),
+            {},
+            (1, 1),
+            0,
+            None,
+            ttl.CompilerOptions(),
+            0,
+        )
+
+        assert result == "compiled"
+        assert calls[0][1]["device_domain"] is domain
+
+    def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
+        placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
+        calls = []
+
+        def fake_run_kernel_on_device(**kwargs):
+            calls.append(kwargs)
+            return "result"
+
+        monkeypatch.setattr(ttl_api, "run_kernel_on_device", fake_run_kernel_on_device)
+        compiled_kernel = ttl_api.CompiledTTNNKernel(
+            kernel_paths=[],
+            kernel_configs=[],
+            kernel_arg_specs=[],
+            num_tensors=1,
+            core_ranges=_CoreRanges(),
+            kernel_tensor_indices=[],
+            mesh_program_placements=[placement],
+        )
+
+        result = compiled_kernel(_TensorWithDevice(_DeviceWithMeshShape((1, 4))))
+
+        assert result == "result"
+        assert calls[0]["mesh_program_placements"] == [placement]
+        assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache
+
+
 @pytest.mark.parametrize("logical_selectors", [None, [], [None]])
 def test_resource_factory_requires_complete_logical_selectors(logical_selectors):
     with pytest.raises(
@@ -120,7 +335,7 @@ def test_resource_factory_requires_complete_logical_selectors(logical_selectors)
 class TestKernelI32ArrayAttr:
     def test_optional_attribute_may_be_absent(self):
         context = Context()
-        ttl.ensure_dialects_registered(context)
+        ttl_dialect.ensure_dialects_registered(context)
 
         with context:
             module = Module.parse("module { func.func @reader() { return } }")
@@ -133,7 +348,7 @@ class TestKernelI32ArrayAttr:
 
     def test_optional_attribute_empty_array_is_not_missing(self):
         context = Context()
-        ttl.ensure_dialects_registered(context)
+        ttl_dialect.ensure_dialects_registered(context)
 
         with context:
             module = Module.parse(
@@ -156,7 +371,7 @@ class TestKernelI32ArrayAttr:
 
     def test_optional_attribute_is_read_when_present(self):
         context = Context()
-        ttl.ensure_dialects_registered(context)
+        ttl_dialect.ensure_dialects_registered(context)
 
         with context:
             module = Module.parse(
@@ -176,7 +391,7 @@ class TestKernelI32ArrayAttr:
 
     def test_optional_attribute_is_validated_when_present(self):
         context = Context()
-        ttl.ensure_dialects_registered(context)
+        ttl_dialect.ensure_dialects_registered(context)
 
         with context:
             module = Module.parse(
@@ -197,7 +412,7 @@ class TestKernelI32ArrayAttr:
 
     def test_required_attribute_must_be_present(self):
         context = Context()
-        ttl.ensure_dialects_registered(context)
+        ttl_dialect.ensure_dialects_registered(context)
 
         with context:
             module = Module.parse(

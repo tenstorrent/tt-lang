@@ -526,6 +526,12 @@ public:
               ctx, "experimental::FabricConnectionManager");
         });
     addConversion(
+        [ctx](mlir::tt::ttkernel::RoutingPlaneConnectionManagerType type)
+            -> Type {
+          return emitc::OpaqueType::get(
+              ctx, "tt::tt_fabric::RoutingPlaneConnectionManager");
+        });
+    addConversion(
         [ctx](IndexType type) -> Type { return emitc::SizeTType::get(ctx); });
     addConversion([ctx](Float16Type type) -> Type {
       return IntegerType::get(ctx, 16, IntegerType::Unsigned);
@@ -1305,15 +1311,30 @@ public:
     SmallVector<uint64_t> packedWords =
         packConstantTable(op.getValues(), bitsPerValue);
 
+    SmallVector<Attribute> templateArgs;
+    templateArgs.push_back(
+        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
+    if (packedWords.size() == 1 && op.getValues().size() * bitsPerValue <= 32) {
+      IntegerType wordType =
+          IntegerType::get(rewriter.getContext(), 32,
+                           IntegerType::SignednessSemantics::Unsigned);
+      auto packedWord = emitc::LiteralOp::create(
+          rewriter, op.getLoc(), wordType,
+          "0x" + llvm::utohexstr(packedWords.front()) + "U");
+      auto call = emitc::CallOpaqueOp::create(
+          rewriter, op.getLoc(), resultType,
+          "experimental::constant_table_lookup_word", ArrayAttr(),
+          rewriter.getArrayAttr(templateArgs),
+          ValueRange{adaptor.getIndex(), packedWord});
+      rewriter.replaceOp(op, call.getResult(0));
+      return success();
+    }
+
     emitc::GlobalOp table =
         getOrCreateConstantTableGlobal(rewriter, op, packedWords);
     auto tableRef = emitc::GetGlobalOp::create(
         rewriter, op.getLoc(), table.getType(), table.getSymName());
 
-    SmallVector<Attribute> templateArgs;
-    templateArgs.reserve(1);
-    templateArgs.push_back(
-        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
     auto call = emitc::CallOpaqueOp::create(
         rewriter, op.getLoc(), resultType,
         "experimental::constant_table_lookup", ArrayAttr(),
@@ -2517,6 +2538,139 @@ private:
 } // namespace
 
 namespace {
+class TTKernelCreateRoutingPlaneConnectionManagerOpRewriter
+    : public OpConversionPattern<
+          ttkernel::CreateRoutingPlaneConnectionManagerOp> {
+  using Op = ttkernel::CreateRoutingPlaneConnectionManagerOp;
+
+public:
+  TTKernelCreateRoutingPlaneConnectionManagerOpRewriter(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type managerType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    auto opaqueType = mlir::dyn_cast_if_present<emitc::OpaqueType>(managerType);
+    if (!opaqueType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert manager type");
+    }
+
+    std::string variableName = getResultVariableName(
+        op.getResult(), state, "routing_plane_connection_manager_");
+    emitc::VerbatimOp::create(
+        rewriter, op.getLoc(),
+        (opaqueType.getValue() + " " + variableName + ";").str());
+    rewriter.replaceOp(op, emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                                    managerType, variableName));
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
+class TTKernelOpenRoutingPlaneConnectionsOpRewriter
+    : public OpConversionPattern<ttkernel::OpenRoutingPlaneConnectionsOp> {
+  using Op = ttkernel::OpenRoutingPlaneConnectionsOp;
+
+public:
+  TTKernelOpenRoutingPlaneConnectionsOpRewriter(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    std::string routeIdName =
+        getResultVariableName(op.getRouteId(), state, "fabric_route_id_");
+    std::string runtimeArgIndexName = routeIdName + "_runtime_arg_index";
+    std::string code = "size_t " + runtimeArgIndexName + " = {};\n" +
+                       "uint32_t " + routeIdName + " = 0;\n" +
+                       "if ({} != 0) {{\n"
+                       "  open_connections({}, {}, " +
+                       runtimeArgIndexName +
+                       ");\n"
+                       "  PacketHeaderPool::reset();\n"
+                       "  " +
+                       routeIdName +
+                       " = PacketHeaderPool::allocate_header_n({});\n" + "}";
+    emitc::VerbatimOp::create(
+        rewriter, op.getLoc(), rewriter.getStringAttr(code),
+        ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
+                   adaptor.getManager(), adaptor.getConnectionCount(),
+                   adaptor.getConnectionCount()});
+    rewriter.replaceOp(
+        op, emitc::LiteralOp::create(
+                rewriter, op.getLoc(),
+                getTypeConverter()->convertType(op.getRouteId().getType()),
+                routeIdName));
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
+class TTKernelRoutingPlaneAtomicIncOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneAtomicIncOp> {
+  using Op = ttkernel::RoutingPlaneAtomicIncOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_atomic_inc", nullptr,
+        nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
+  using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_fused_write_atomic_inc",
+        nullptr, nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelCloseRoutingPlaneConnectionsOpRewriter
+    : public OpConversionPattern<ttkernel::CloseRoutingPlaneConnectionsOp> {
+  using Op = ttkernel::CloseRoutingPlaneConnectionsOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    emitc::VerbatimOp::create(
+        rewriter, op.getLoc(),
+        rewriter.getStringAttr("if ({} != 0) {{\n  close_connections({});\n}"),
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor>
 class TTKernelClassMethodRewriter : public OpConversionPattern<SourceOp> {
 public:
@@ -3329,6 +3483,13 @@ public:
 
     patterns.add<TTKernelCreateFabricConnectionManagerOpRewriter>(
         typeConverter, context, state);
+    patterns.add<TTKernelCreateRoutingPlaneConnectionManagerOpRewriter,
+                 TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
+                                                                context, state);
+    patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
+                 TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
+                                                                 context);
 
     patterns.add<
         TTKernelClassMethodRewriter<ttkernel::TensorAccessorGetNocAddrOp>,
