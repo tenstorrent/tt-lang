@@ -533,8 +533,8 @@ static bool mayInterfereWithRowPackConfiguration(Operation *operation) {
          operation->getName().getStringRef().starts_with("ttkernel.pack_");
 }
 
-/// A single pack_rows in a loop can reuse its static row configuration across
-/// iterations when every other operation preserves that configuration.
+// A single pack_rows in a loop can reuse its static row configuration across
+// iterations when every other operation preserves that configuration.
 static ttk::PackRowsOp getHoistablePackRows(scf::ForOp loop) {
   ttk::PackRowsOp candidate;
   bool hasInterference = false;

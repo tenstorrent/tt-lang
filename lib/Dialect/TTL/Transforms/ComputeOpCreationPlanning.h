@@ -683,7 +683,7 @@ struct PassthroughStorePlan {
   /// Tile type used by the output dataflow buffer.
   ttcore::TileType outputTileType;
 
-  /// Identity iteration used by the passthrough compute.
+  /// Input-driven iteration and destination indexing for the passthrough compute.
   ComputeIterationPlan iteration;
 
   /// Associations whose results must be replaced by the compute result.
