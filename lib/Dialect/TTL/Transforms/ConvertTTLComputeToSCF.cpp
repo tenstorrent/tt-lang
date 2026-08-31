@@ -399,7 +399,17 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
     SmallVector<Range> iterDomain = getIterationDomain(rewriter, op);
     if (iterDomain.empty()) {
-      return failure();
+      auto dstSection = DstSectionOp::create(rewriter, loc);
+      Block &sectionBody = dstSection.getBody().front();
+      OpBuilder bodyBuilder(&sectionBody,
+                            Block::iterator(sectionBody.getTerminator()));
+      if (failed(generateTileProcessing(bodyBuilder, loc, op, indexingMaps,
+                                        ValueRange{}))) {
+        return rewriter.notifyMatchFailure(
+            op, "zero-rank tile index computation failed");
+      }
+      rewriter.replaceOp(op, op.getOutputs());
+      return success();
     }
 
     SmallVector<Value> lowerBounds, upperBounds, steps;
