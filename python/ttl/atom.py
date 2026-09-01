@@ -34,7 +34,18 @@ import inspect
 import os
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -928,6 +939,9 @@ class Atom:
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
+            factory_cache=decorator_options["factory_cache"],
+            factory_cache_key=decorator_options["factory_cache_key"],
+            runtime_resource_factory=decorator_options["runtime_resource_factory"],
         )
         functools.update_wrapper(self, spec.fn)
 
@@ -959,6 +973,8 @@ def _unified_operation(
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -987,6 +1003,8 @@ def _unified_operation(
                 "device_domain": device_domain,
                 "mesh_program_placements": mesh_program_placements,
                 "runtime_resource_factory": runtime_resource_factory,
+                "factory_cache": factory_cache,
+                "factory_cache_key": factory_cache_key,
             },
         )
 
@@ -1007,6 +1025,8 @@ def operation(
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation.
 
@@ -1050,6 +1070,8 @@ def operation(
                 math_fidelity=math_fidelity,
                 options=options,
                 runtime_resource_factory=runtime_resource_factory,
+                factory_cache=factory_cache,
+                factory_cache_key=factory_cache_key,
                 _prepare_call=prepare_call,
                 device_domain=device_domain,
                 mesh_program_placements=mesh_program_placements,
@@ -1069,6 +1091,8 @@ def operation(
             device_domain=device_domain,
             mesh_program_placements=mesh_program_placements,
             runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
         )(fn)
 
     return _decorator
