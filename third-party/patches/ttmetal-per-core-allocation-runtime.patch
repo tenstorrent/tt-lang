@@ -1,0 +1,184 @@
+diff --git a/tt_metal/api/tt-metalium/experimental/per_core_allocation/buffer.hpp b/tt_metal/api/tt-metalium/experimental/per_core_allocation/buffer.hpp
+index 1d807a4296c..8fd7a4a8682 100644
+--- a/tt_metal/api/tt-metalium/experimental/per_core_allocation/buffer.hpp
++++ b/tt_metal/api/tt-metalium/experimental/per_core_allocation/buffer.hpp
+@@ -18,6 +18,9 @@ DeviceAddr get_per_core_address(const Buffer& buffer, CoreCoord core);
+ const std::unordered_map<CoreCoord, DeviceAddr>& get_per_core_addresses(const Buffer& buffer);
+ void copy_per_core_addresses(Buffer& dst, const Buffer& src);
+ 
++// Return the shard base for either a per-core or ordinary lockstep buffer.
++DeviceAddr get_shard_base_address(const Buffer& buffer, CoreCoord core);
++
+ // BufferShardingArgs free functions.
+ 
+ BufferShardingArgs& set_per_core_allocation(BufferShardingArgs& args, bool enable);
+diff --git a/tt_metal/impl/buffers/dispatch.cpp b/tt_metal/impl/buffers/dispatch.cpp
+index 00d38362865..88c4d0a03a2 100644
+--- a/tt_metal/impl/buffers/dispatch.cpp
++++ b/tt_metal/impl/buffers/dispatch.cpp
+@@ -35,11 +35,14 @@
+ #include "tt_metal/tools/profiler/tracy_debug_zones.hpp"
+ #include <tt_stl/overloaded.hpp>
+ #include "tt_metal/api/tt-metalium/experimental/pinned_memory.hpp"
++#include <tt-metalium/experimental/per_core_allocation/buffer.hpp>
+ #include <umd/device/types/core_coordinates.hpp>
+ #include <impl/dispatch/dispatch_mem_map.hpp>
+ 
+ namespace tt::tt_metal::buffer_dispatch {
+ 
++using experimental::per_core_allocation::get_shard_base_address;
++
+ // ====== Utility Functions for Writes ======
+ 
+ // Dispatch constants required for writing buffer data
+@@ -345,7 +348,8 @@ public:
+         this->core = core;
+         this->core_page_mapping_it = core_page_mapping.begin();
+         this->address =
+-            this->buffer->address() + core_page_mapping.device_start_page * this->buffer->aligned_page_size();
++            get_shard_base_address(*this->buffer, core) +
++            core_page_mapping.device_start_page * this->buffer->aligned_page_size();
+         if (this->buffer->is_dram()) {
+             this->address += this->buffer->device()->allocator()->get_bank_offset(
+                 BufferType::DRAM, this->buffer->device()->dram_channel_from_logical_core(core));
+@@ -705,7 +709,8 @@ void issue_sharded_buffer_pinned_dispatch_command_sequence(
+     const uint32_t noc_xy_addr = buffer.device()->get_noc_unicast_encoding(k_dispatch_downstream_noc, virtual_core);
+ 
+     // Calculate base destination address for this core
+-    uint32_t dst_base_address = buffer.address() + (core_page_mapping.device_start_page * buffer.aligned_page_size());
++    uint32_t dst_base_address = get_shard_base_address(buffer, core) +
++                                (core_page_mapping.device_start_page * buffer.aligned_page_size());
+     if (buffer.is_dram()) {
+         dst_base_address += buffer.device()->allocator()->get_bank_offset(
+             BufferType::DRAM, buffer.device()->dram_channel_from_logical_core(core));
+@@ -1240,8 +1245,8 @@ bool write_to_device_buffer(
+                         for (const BufferCorePageMapping& core_page_mapping :
+                              buffer_page_mapping->core_page_mappings[core_id]) {
+                             // Check destination L1 address alignment
+-                            uint32_t dst_address =
+-                                buffer.address() + (core_page_mapping.device_start_page * buffer.aligned_page_size());
++                            uint32_t dst_address = get_shard_base_address(buffer, cores[core_id]) +
++                                                   (core_page_mapping.device_start_page * buffer.aligned_page_size());
+                             if (buffer.is_dram()) {
+                                 dst_address += buffer.device()->allocator()->get_bank_offset(
+                                     BufferType::DRAM, buffer.device()->dram_channel_from_logical_core(cores[core_id]));
+@@ -1539,7 +1544,7 @@ void copy_sharded_buffer_from_core_to_completion_queue(
+     ttsl::Span<const SubDeviceId> sub_device_ids,
+     const CoreCoord core,
+     CoreType dispatch_core_type) {
+-    auto address = buffer.address();
++    auto address = get_shard_base_address(buffer, core);
+ 
+     if (buffer.is_dram()) {
+         address += buffer.device()->allocator()->get_bank_offset(
+diff --git a/tt_metal/impl/host_api/tt_metal.cpp b/tt_metal/impl/host_api/tt_metal.cpp
+index 71de589efeb..b587aeb6d38 100644
+--- a/tt_metal/impl/host_api/tt_metal.cpp
++++ b/tt_metal/impl/host_api/tt_metal.cpp
+@@ -49,6 +49,7 @@
+ #include <tt-metalium/experimental/lightmetal/lightmetal_binary.hpp>
+ #include <tt-metalium/experimental/lightmetal/lightmetal_api.hpp>
+ #include <tt-metalium/experimental/offline_kernel_compile.hpp>
++#include <tt-metalium/experimental/per_core_allocation/buffer.hpp>
+ #include <fmt/format.h>
+ #include "llrt.hpp"
+ #include <tt-logger/tt-logger.hpp>
+@@ -544,6 +545,8 @@ void print_page(
+     std::cout << std::dec << std::endl;
+ }
+ 
++using experimental::per_core_allocation::get_shard_base_address;
++
+ void WriteToDeviceSharded(
+     Buffer& buffer, ttsl::Span<const uint8_t> host_buffer, const CoreRangeSet* logical_core_filter) {
+     TT_FATAL(
+@@ -584,7 +587,8 @@ void WriteToDeviceSharded(
+             std::span<const std::uint8_t> page(host_buffer.data() + data_index + offset, size_in_bytes);
+             if (buffer.is_l1()) {
+                 auto absolute_address =
+-                    buffer.address() + bank_offset + (write_device_page * buffer.aligned_page_size()) + offset;
++                    get_shard_base_address(buffer, core) + bank_offset +
++                    (write_device_page * buffer.aligned_page_size()) + offset;
+                 auto core_coordinates =
+                     device->worker_core_from_logical_core(buffer.allocator()->get_logical_core_from_bank_id(bank_id));
+                 MetalContext::instance().get_cluster().write_core(
+@@ -772,10 +776,11 @@ void read_pages_to_host_helper(
+     size_t aligned_page_size = tt::align(page_size, cluster.get_alignment_requirements(device->id(), page_size));
+ 
+     if (dev_buffer.is_l1()) {
+-        auto core_coordinates =
+-            device->worker_core_from_logical_core(dev_buffer.allocator()->get_logical_core_from_bank_id(bank_id));
++        auto logical_core = dev_buffer.allocator()->get_logical_core_from_bank_id(bank_id);
++        auto core_coordinates = device->worker_core_from_logical_core(logical_core);
+         auto bank_offset = device->allocator()->get_bank_offset(dev_buffer.buffer_type(), bank_id);
+-        auto absolute_address = dev_buffer.address() + bank_offset + (core_page_id * dev_buffer.aligned_page_size());
++        auto absolute_address = get_shard_base_address(dev_buffer, logical_core) + bank_offset +
++                                (core_page_id * dev_buffer.aligned_page_size());
+         if (aligned_page_size > page_size) {
+             std::vector<uint8_t> page(aligned_page_size);
+             MetalContext::instance().get_cluster().read_core(
+diff --git a/tt_metal/impl/per_core_allocation/buffer.cpp b/tt_metal/impl/per_core_allocation/buffer.cpp
+index 6660563c32e..9d6117f6c48 100644
+--- a/tt_metal/impl/per_core_allocation/buffer.cpp
++++ b/tt_metal/impl/per_core_allocation/buffer.cpp
+@@ -21,6 +21,13 @@ const std::unordered_map<CoreCoord, DeviceAddr>& get_per_core_addresses(const Bu
+     return buffer.per_core_addresses_;
+ }
+ 
++DeviceAddr get_shard_base_address(const Buffer& buffer, CoreCoord core) {
++    if (is_per_core_allocation(buffer)) {
++        return get_per_core_address(buffer, core);
++    }
++    return buffer.address();
++}
++
+ void copy_per_core_addresses(Buffer& dst, const Buffer& src) {
+     TT_FATAL(
+         dst.per_core_allocation_ && src.per_core_allocation_,
+diff --git a/ttnn/core/distributed/distributed_nanobind.cpp b/ttnn/core/distributed/distributed_nanobind.cpp
+index 89c677cfd5a..e0c8359c414 100644
+--- a/ttnn/core/distributed/distributed_nanobind.cpp
++++ b/ttnn/core/distributed/distributed_nanobind.cpp
+@@ -517,6 +517,19 @@ void py_module(nb::module_& mod) {
+                     >>> worker_core = device.worker_core_from_logical_core(logical_core)
+                     >>> print(f"Worker core: x={worker_core.x}, y={worker_core.y}")
+             )doc")
++        .def(
++            "worker_core_from_logical_core_at",
++            [](MeshDevice& self, const MeshCoordinate& mesh_coordinate, const CoreCoord& logical_core) {
++                auto* device = self.get_device(mesh_coordinate);
++                TT_FATAL(device, "Worker coordinate requested for MeshCoord {} not found.", mesh_coordinate);
++                return device->worker_core_from_logical_core(logical_core);
++            },
++            nb::arg("mesh_coordinate"),
++            nb::arg("logical_core"),
++            R"doc(
++                Convert a logical worker coordinate using one mesh coordinate's
++                harvested-core mapping.
++            )doc")
+         .def(
+             "get_optimal_dram_bank_to_logical_worker_assignment",
+             &MeshDevice::get_optimal_dram_bank_to_logical_worker_assignment,
+diff --git a/ttnn/core/reports.cpp b/ttnn/core/reports.cpp
+index d1dbcdd0d42..5312b5e42b5 100644
+--- a/ttnn/core/reports.cpp
++++ b/ttnn/core/reports.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <tt-metalium/allocator.hpp>
+ #include <tt-metalium/buffer.hpp>
++#include <tt-metalium/experimental/per_core_allocation/buffer.hpp>
+ #include <tt-metalium/mesh_device.hpp>
+ 
+ namespace ttnn::reports {
+@@ -119,7 +120,9 @@ std::vector<BufferPageInfo> get_buffer_pages(const std::vector<tt::tt_metal::dis
+                 for (auto mapped_page : buffer_page_mapping) {
+                     auto core = buffer_page_mapping.all_cores[mapped_page.core_id];
+                     auto bank_id = device->allocator()->get_bank_ids_from_logical_core(buffer_type, core)[0];
+-                    auto page_address = buffer->address() + (mapped_page.device_page * buffer->aligned_page_size());
++                    auto page_address =
++                        tt::tt_metal::experimental::per_core_allocation::get_shard_base_address(*buffer, core) +
++                        (mapped_page.device_page * buffer->aligned_page_size());
+                     buffer_page_infos.push_back(BufferPageInfo{
+                         .device_id = device_id,
+                         .address = address,
