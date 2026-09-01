@@ -3211,7 +3211,7 @@ def test_device_domain_builds_only_explicit_mesh_program_placements(
     "placement, message",
     [
         ((0,), "rank must match"),
-        ((-1, 0), "coordinates must be non-negative"),
+        ((-1, 0), "axis 0 must be non-negative"),
         ((4, 0), "inside the device domain"),
     ],
 )
@@ -4711,7 +4711,7 @@ def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
 @pytest.mark.parametrize(
     ("placements", "message"),
     [
-        ([(-1, 0)], "coordinates must be non-negative"),
+        ([(-1, 0)], "axis 0 must be non-negative"),
         ([(0, 0), (0, 0, 0)], "placement 1 has rank 3, expected rank 2"),
         ([(0, 0), (0, 0)], "indices 0 and 1 must not overlap"),
     ],

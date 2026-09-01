@@ -57,7 +57,11 @@ from .constants import (
     SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS,
 )
 from . import dtype_utils
-from .domains import DeviceDomain, DeviceRef
+from .domains import (
+    DeviceDomain,
+    DeviceRef,
+    _normalize_coordinate as _normalize_domain_coordinate,
+)
 from .fabric import FabricManagerClaim
 from ._src.fabric_target import (
     FabricManagerIntervalKind,
@@ -592,16 +596,9 @@ def _normalize_mesh_program_coordinate(
 ) -> Tuple[int, ...]:
     if not isinstance(coordinate, (tuple, list)):
         raise TypeError(f"mesh program placement {endpoint} must be a coordinate tuple")
-    if not coordinate:
-        raise ValueError(f"mesh program placement {endpoint} must not be empty")
-    if any(
-        isinstance(coordinate_value, bool) or not isinstance(coordinate_value, int)
-        for coordinate_value in coordinate
-    ):
-        raise TypeError(
-            f"mesh program placement {endpoint} coordinates must be integers"
-        )
-    return tuple(coordinate)
+    return _normalize_domain_coordinate(
+        coordinate, f"mesh program placement {endpoint}"
+    )
 
 
 @dataclass(frozen=True)
@@ -622,10 +619,6 @@ class MeshProgramPlacement:
             raise ValueError(
                 "mesh program placement start and end must have the same rank"
             )
-        if any(coordinate_value < 0 for coordinate_value in start) or (
-            end is not None and any(coordinate_value < 0 for coordinate_value in end)
-        ):
-            raise ValueError("mesh program placement coordinates must be non-negative")
         if end is not None and any(
             start_coordinate > end_coordinate
             for start_coordinate, end_coordinate in zip(start, end)
@@ -663,7 +656,7 @@ def normalize_mesh_program_placements(
     extent: Optional[Sequence[int]] = None,
     extent_name: str = "mesh",
 ) -> Optional[Tuple[MeshProgramPlacement, ...]]:
-    """Return immutable placements validated against an optional extent."""
+    """Return immutable, equal-rank, disjoint placements within an optional extent."""
     if mesh_program_placements is None:
         return None
     if not isinstance(mesh_program_placements, (tuple, list)):
