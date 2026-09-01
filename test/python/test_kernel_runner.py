@@ -4708,18 +4708,27 @@ def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
     assert first_program.custom_program_hash == 5
 
 
-def test_run_kernel_rejects_negative_mesh_placement_before_resource_planning(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("placements", "message"),
+    [
+        ([(-1, 0)], "coordinates must be non-negative"),
+        ([(0, 0), (0, 0, 0)], "placement 1 has rank 3, expected rank 2"),
+        ([(0, 0), (0, 0)], "indices 0 and 1 must not overlap"),
+    ],
+    ids=("negative", "mixed-rank", "overlap"),
+)
+def test_run_kernel_rejects_invalid_mesh_placements_before_resource_planning(
+    monkeypatch, placements, message
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
 
-    with pytest.raises(ValueError, match="coordinates must be non-negative"):
+    with pytest.raises(ValueError, match=message):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[],
             tensors=[_FakeTensorWithoutDevice()],
             cb_configs=[],
             core_ranges=_FakeCoreRanges(),
-            mesh_program_placements=[(-1, 0)],
+            mesh_program_placements=placements,
             runtime_resource_factory=lambda **_kwargs: pytest.fail(
                 "invalid placement reached runtime resource planning"
             ),

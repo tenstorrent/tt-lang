@@ -644,6 +644,19 @@ class MeshProgramPlacement:
         )
 
 
+def _mesh_program_placements_intersect(
+    first: MeshProgramPlacement, second: MeshProgramPlacement
+) -> bool:
+    first_end = first.start if first.end is None else first.end
+    second_end = second.start if second.end is None else second.end
+    return all(
+        first_start <= second_end_value and second_start <= first_end_value
+        for first_start, first_end_value, second_start, second_end_value in zip(
+            first.start, first_end, second.start, second_end
+        )
+    )
+
+
 def normalize_mesh_program_placements(
     mesh_program_placements: Optional[Sequence[Any]],
     *,
@@ -685,6 +698,23 @@ def normalize_mesh_program_placements(
             ):
                 raise ValueError(
                     f"mesh program placement must be inside the {extent_name}"
+                )
+
+    expected_rank = len(normalized[0].start)
+    for placement_index, placement in enumerate(normalized[1:], start=1):
+        placement_rank = len(placement.start)
+        if placement_rank != expected_rank:
+            raise ValueError(
+                f"mesh program placement {placement_index} has rank "
+                f"{placement_rank}, expected rank {expected_rank} from placement 0"
+            )
+        for previous_index, previous_placement in enumerate(
+            normalized[:placement_index]
+        ):
+            if _mesh_program_placements_intersect(previous_placement, placement):
+                raise ValueError(
+                    "mesh program placements at indices "
+                    f"{previous_index} and {placement_index} must not overlap"
                 )
 
     return tuple(normalized)

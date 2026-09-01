@@ -305,6 +305,35 @@ class TestMeshProgramPlacement:
             )
 
     @pytest.mark.parametrize(
+        "placements",
+        [
+            [(0, 0), (0, 0)],
+            [
+                ttl.MeshProgramPlacement((0, 0), (1, 2)),
+                ttl.MeshProgramPlacement((1, 1), (2, 3)),
+            ],
+        ],
+        ids=("duplicate-coordinate", "partial-multidimensional-intersection"),
+    )
+    def test_mesh_program_placements_reject_intersections(self, placements):
+        with pytest.raises(ValueError, match="indices 0 and 1 must not overlap"):
+            ttl_api.normalize_mesh_program_placements(placements)
+
+    def test_mesh_program_placements_accept_disjoint_inclusive_ranges(self):
+        placements = [
+            ttl.MeshProgramPlacement((0, 0), (0, 1)),
+            ttl.MeshProgramPlacement((0, 2), (0, 3)),
+        ]
+
+        assert ttl_api.normalize_mesh_program_placements(placements) == tuple(
+            placements
+        )
+
+    def test_mesh_program_placements_reject_mixed_ranks_without_extent(self):
+        with pytest.raises(ValueError, match="placement 1 has rank 3, expected rank 2"):
+            ttl_api.normalize_mesh_program_placements([(0, 0), (0, 0, 0)])
+
+    @pytest.mark.parametrize(
         ("start", "end", "error_type", "message"),
         [
             (0, None, TypeError, "start must be a coordinate tuple"),
