@@ -2223,6 +2223,23 @@ def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
         kernel_runner._validate_local_tensor_access(spec, [tensor], full_grid)
 
 
+def test_local_tensor_access_rejects_out_of_range_tensor_index(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[1],
+        local_tensor_indices=[1],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match="local tensor index 1 is outside"):
+        kernel_runner._validate_local_tensor_access(spec, [tensor], full_grid)
+
+
 @pytest.mark.parametrize(
     ("buffer_type", "memory_layout", "shard_grid", "message"),
     [
