@@ -136,9 +136,8 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
 # CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
 
-# Linearized index calculation: i * 2 + j
-# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
-# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
+# The square tile grid's loop bound is also its row stride: i * 2 + j.
+# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[BOUND]];
 # CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
 
 # Copy tiles using linearized index (at first use: CB0 then CB1)
