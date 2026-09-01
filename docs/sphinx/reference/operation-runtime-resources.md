@@ -167,6 +167,44 @@ Objects in `ProgramRuntimeResources.lifetimes` remain referenced through
 execution. A successful invocation replaces the retained owner tuple. A failed
 invocation preserves the previous valid owners.
 
+### Compilation reuse between operation instances
+
+Each decorated operation normally owns its compilation cache. A factory that
+creates an equivalent operation repeatedly can provide `factory_cache` and
+`factory_cache_key` together:
+
+```python
+operation_cache = {}
+
+
+def make_scaled_operation(scale, make_resources):
+    @ttl.operation(
+        grid=(2, 1),
+        runtime_resource_factory=make_resources,
+        factory_cache=operation_cache,
+        factory_cache_key=("scaled", scale),
+    )
+    def scaled_operation(input_tensor, output_tensor):
+        ...
+
+    return scaled_operation
+```
+
+`factory_cache` must be a mutable mapping. `factory_cache_key` must be hashable
+and must identify every factory capture that can change generated code. The
+compiler combines it with the operation definition and the normal compilation
+identity, including tensor configuration, grid, target, compiler options, L1
+budget, and whether runtime resources are required. Equal factory keys therefore
+share code only when the complete compilation identity also matches.
+
+The shared mapping contains compiled artifacts, not runtime resources. Every
+decorated operation retains its own `KernelRuntimeResourceCache` and its own
+`runtime_resource_factory`. A cache hit creates an operation-local executable
+that refers to the shared artifacts and the receiving operation's runtime
+resources. Resource synchronization and destruction therefore remain
+independent for each operation instance. A per-entry lock ensures that
+concurrent requests for one compilation identity compile it once.
+
 ## Emitted Runners and Simulator
 
 An emitted runner for a resource-aware operation requires the factory on every
