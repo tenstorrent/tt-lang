@@ -265,8 +265,13 @@ static bool isMetadataOnlyResetUse(Operation *user) {
 struct EpochRemapPlan {
   int64_t localSlotCount = 0;
   SmallVector<SmallVector<int64_t>> oldSlotByPhysical;
+  std::map<int64_t, int64_t> pinnedPhysicalByOld;
 
   int64_t physicalIndex(int64_t epoch, int64_t oldPhysicalIndex) const {
+    auto pinned = pinnedPhysicalByOld.find(oldPhysicalIndex);
+    if (pinned != pinnedPhysicalByOld.end()) {
+      return pinned->second;
+    }
     if (oldPhysicalIndex >= localSlotCount || epoch < 0 ||
         epoch >= static_cast<int64_t>(oldSlotByPhysical.size())) {
       return oldPhysicalIndex;
@@ -284,7 +289,9 @@ struct EpochRemapPlan {
 static EpochRemapPlan buildEpochRemapPlan(
     const llvm::MapVector<int64_t, LogicalConfig> &logicalConfigs,
     ArrayRef<llvm::SmallDenseSet<int64_t, 8>> logicalsByCore,
-    const llvm::SmallDenseSet<int64_t, 8> &pinnedPhysicalIndices) {
+    const llvm::SmallDenseSet<int64_t, 8> &pinnedPhysicalIndices,
+    const std::map<int64_t, llvm::SmallDenseSet<int64_t, 8>>
+        &pinnedLiveEpochs) {
   EpochRemapPlan plan;
   int64_t maxEpoch = -1;
   int64_t maxPhysicalIndex = -1;
@@ -297,7 +304,14 @@ static EpochRemapPlan buildEpochRemapPlan(
           std::max(plan.localSlotCount, logical.physicalIndex + 1);
     }
   }
-  if (maxEpoch <= 0 || plan.localSlotCount <= 1) {
+  for (const auto &[physicalIndex, epochs] : pinnedLiveEpochs) {
+    (void)physicalIndex;
+    for (int64_t epoch : epochs) {
+      maxEpoch = std::max(maxEpoch, epoch);
+    }
+  }
+  if (maxEpoch <= 0 ||
+      (plan.localSlotCount <= 1 && pinnedPhysicalIndices.empty())) {
     return plan;
   }
   for (int64_t pinned : pinnedPhysicalIndices) {
@@ -306,14 +320,27 @@ static EpochRemapPlan buildEpochRemapPlan(
     }
   }
 
+  const int64_t physicalSlotCount = maxPhysicalIndex + 1;
+  SmallVector<int64_t> sortedPinnedIndices(pinnedPhysicalIndices.begin(),
+                                           pinnedPhysicalIndices.end());
+  llvm::sort(sortedPinnedIndices);
+  for (auto [newPhysicalIndex, oldPhysicalIndex] :
+       llvm::enumerate(sortedPinnedIndices)) {
+    plan.pinnedPhysicalByOld[oldPhysicalIndex] =
+        static_cast<int64_t>(newPhysicalIndex);
+  }
+
   const size_t coreCount = logicalsByCore.size();
   SmallVector<SmallVector<EpochSlotUse>> epochUses;
   epochUses.resize(static_cast<size_t>(maxEpoch + 1));
   for (auto &uses : epochUses) {
     uses.resize(static_cast<size_t>(plan.localSlotCount));
   }
-  SmallVector<PhysicalSlotUse> pinnedUses;
-  pinnedUses.resize(static_cast<size_t>(maxPhysicalIndex + 1));
+  SmallVector<SmallVector<PhysicalSlotUse>> pinnedUsesByEpoch;
+  pinnedUsesByEpoch.resize(static_cast<size_t>(maxEpoch + 1));
+  for (auto &uses : pinnedUsesByEpoch) {
+    uses.resize(static_cast<size_t>(physicalSlotCount));
+  }
 
   auto recordUse = [&](auto &use, const LogicalConfig &logical) {
     if (!use.present) {
@@ -352,7 +379,12 @@ static EpochRemapPlan buildEpochRemapPlan(
   for (const auto &[logicalIndex, logical] : logicalConfigs) {
     (void)logicalIndex;
     if (pinnedPhysicalIndices.contains(logical.physicalIndex)) {
-      recordUse(pinnedUses[logical.physicalIndex], logical);
+      auto liveEpochs = pinnedLiveEpochs.find(logical.physicalIndex);
+      assert(liveEpochs != pinnedLiveEpochs.end() &&
+             "preserved DFB must have a live epoch set");
+      for (int64_t epoch : liveEpochs->second) {
+        recordUse(pinnedUsesByEpoch[epoch][logical.physicalIndex], logical);
+      }
       continue;
     }
     recordUse(epochUses[logical.epoch][logical.physicalIndex], logical);
@@ -361,7 +393,10 @@ static EpochRemapPlan buildEpochRemapPlan(
   plan.oldSlotByPhysical.resize(epochUses.size());
   for (size_t epoch = 0; epoch < epochUses.size(); ++epoch) {
     auto &assignment = plan.oldSlotByPhysical[epoch];
-    assignment.assign(static_cast<size_t>(plan.localSlotCount), -1);
+    const int64_t assignmentSize = pinnedPhysicalIndices.empty()
+                                       ? plan.localSlotCount
+                                       : physicalSlotCount;
+    assignment.assign(static_cast<size_t>(assignmentSize), -1);
     for (int64_t oldIndex = 0; oldIndex < plan.localSlotCount; ++oldIndex) {
       if (epochUses[epoch][oldIndex].present) {
         assignment[oldIndex] = oldIndex;
@@ -371,7 +406,7 @@ static EpochRemapPlan buildEpochRemapPlan(
 
   auto evaluate = [&](const auto &assignments) {
     SmallVector<PhysicalSlotUse> physicalUses;
-    physicalUses.resize(static_cast<size_t>(maxPhysicalIndex + 1));
+    physicalUses.resize(static_cast<size_t>(physicalSlotCount));
     auto mergeUse = [&](PhysicalSlotUse &physical,
                         const auto &logicalUse) {
       if (!logicalUse.present) {
@@ -402,9 +437,11 @@ static EpochRemapPlan buildEpochRemapPlan(
           mergeUse(physicalUses[physical], epochUses[epoch][oldIndex]);
         }
       }
-    }
-    for (size_t physical = 0; physical < pinnedUses.size(); ++physical) {
-      mergeUse(physicalUses[physical], pinnedUses[physical]);
+      for (int64_t oldPinned : sortedPinnedIndices) {
+        const int64_t physical = plan.pinnedPhysicalByOld.at(oldPinned);
+        mergeUse(physicalUses[physical],
+                 pinnedUsesByEpoch[epoch][oldPinned]);
+      }
     }
 
     SmallVector<uint64_t> totals(coreCount, 0);
@@ -440,12 +477,14 @@ static EpochRemapPlan buildEpochRemapPlan(
   const auto identityAssignments = plan.oldSlotByPhysical;
   auto identityObjective = evaluate(identityAssignments);
   auto greedyAssignments = identityAssignments;
-  for (size_t epoch = 1; epoch < greedyAssignments.size(); ++epoch) {
+  const size_t firstGreedyEpoch = pinnedPhysicalIndices.empty() ? 1 : 0;
+  for (size_t epoch = firstGreedyEpoch;
+       epoch < greedyAssignments.size(); ++epoch) {
     greedyAssignments[epoch].assign(
-        static_cast<size_t>(plan.localSlotCount), -1);
+        greedyAssignments[epoch].size(), -1);
   }
   SmallVector<size_t> epochOrder;
-  for (size_t epoch = 1; epoch < epochUses.size(); ++epoch) {
+  for (size_t epoch = firstGreedyEpoch; epoch < epochUses.size(); ++epoch) {
     epochOrder.push_back(epoch);
   }
   llvm::sort(epochOrder, [&](size_t lhs, size_t rhs) {
@@ -490,8 +529,23 @@ static EpochRemapPlan buildEpochRemapPlan(
     for (int64_t oldIndex : oldIndices) {
       int64_t bestPhysical = -1;
       SmallVector<uint64_t> bestObjective;
-      for (int64_t physical = 0; physical < plan.localSlotCount; ++physical) {
+      for (int64_t physical = 0;
+           physical < static_cast<int64_t>(greedyAssignments[epoch].size());
+           ++physical) {
         if (greedyAssignments[epoch][physical] >= 0) {
+          continue;
+        }
+        bool occupiedByPinned = false;
+        for (int64_t oldPinned : sortedPinnedIndices) {
+          auto liveEpochs = pinnedLiveEpochs.find(oldPinned);
+          if (plan.pinnedPhysicalByOld.at(oldPinned) == physical &&
+              liveEpochs != pinnedLiveEpochs.end() &&
+              liveEpochs->second.contains(static_cast<int64_t>(epoch))) {
+            occupiedByPinned = true;
+            break;
+          }
+        }
+        if (occupiedByPinned) {
           continue;
         }
         greedyAssignments[epoch][physical] = oldIndex;
@@ -508,7 +562,8 @@ static EpochRemapPlan buildEpochRemapPlan(
   }
 
   auto greedyObjective = evaluate(greedyAssignments);
-  if (isBetter(greedyObjective, identityObjective)) {
+  if (!pinnedPhysicalIndices.empty() ||
+      isBetter(greedyObjective, identityObjective)) {
     plan.oldSlotByPhysical = std::move(greedyAssignments);
   }
   auto currentObjective = evaluate(plan.oldSlotByPhysical);
@@ -519,9 +574,24 @@ static EpochRemapPlan buildEpochRemapPlan(
     SmallVector<uint64_t> bestObjective = currentObjective;
     for (size_t epoch = 1; epoch < plan.oldSlotByPhysical.size(); ++epoch) {
       auto &assignment = plan.oldSlotByPhysical[epoch];
-      for (int64_t lhs = 0; lhs < plan.localSlotCount; ++lhs) {
-        for (int64_t rhs = lhs + 1; rhs < plan.localSlotCount; ++rhs) {
+      for (int64_t lhs = 0; lhs < static_cast<int64_t>(assignment.size());
+           ++lhs) {
+        for (int64_t rhs = lhs + 1;
+             rhs < static_cast<int64_t>(assignment.size()); ++rhs) {
           if (assignment[lhs] < 0 && assignment[rhs] < 0) {
+            continue;
+          }
+          bool swapsIntoPinned = false;
+          for (int64_t oldPinned : sortedPinnedIndices) {
+            auto liveEpochs = pinnedLiveEpochs.find(oldPinned);
+            if (liveEpochs == pinnedLiveEpochs.end() ||
+                !liveEpochs->second.contains(static_cast<int64_t>(epoch))) {
+              continue;
+            }
+            int64_t pinnedPhysical = plan.pinnedPhysicalByOld.at(oldPinned);
+            swapsIntoPinned |= pinnedPhysical == lhs || pinnedPhysical == rhs;
+          }
+          if (swapsIntoPinned) {
             continue;
           }
           std::swap(assignment[lhs], assignment[rhs]);
@@ -542,6 +612,45 @@ static EpochRemapPlan buildEpochRemapPlan(
     std::swap(plan.oldSlotByPhysical[bestEpoch][bestLhs],
               plan.oldSlotByPhysical[bestEpoch][bestRhs]);
     currentObjective = std::move(bestObjective);
+  }
+
+  if (!pinnedPhysicalIndices.empty()) {
+    llvm::SmallDenseSet<int64_t, 8> usedPhysicalIndices;
+    for (const auto &[oldPhysical, newPhysical] :
+         plan.pinnedPhysicalByOld) {
+      (void)oldPhysical;
+      usedPhysicalIndices.insert(newPhysical);
+    }
+    for (const auto &assignment : plan.oldSlotByPhysical) {
+      for (auto [physicalIndex, oldIndex] : llvm::enumerate(assignment)) {
+        if (oldIndex >= 0) {
+          usedPhysicalIndices.insert(static_cast<int64_t>(physicalIndex));
+        }
+      }
+    }
+    SmallVector<int64_t> sortedUsedPhysicalIndices(
+        usedPhysicalIndices.begin(), usedPhysicalIndices.end());
+    llvm::sort(sortedUsedPhysicalIndices);
+    std::map<int64_t, int64_t> compactPhysicalIndex;
+    for (auto [newIndex, oldIndex] :
+         llvm::enumerate(sortedUsedPhysicalIndices)) {
+      compactPhysicalIndex[oldIndex] = static_cast<int64_t>(newIndex);
+    }
+    for (auto &[oldPhysical, newPhysical] : plan.pinnedPhysicalByOld) {
+      (void)oldPhysical;
+      newPhysical = compactPhysicalIndex.at(newPhysical);
+    }
+    for (auto &assignment : plan.oldSlotByPhysical) {
+      SmallVector<int64_t> compactAssignment(sortedUsedPhysicalIndices.size(),
+                                             -1);
+      for (auto [physicalIndex, oldIndex] : llvm::enumerate(assignment)) {
+        if (oldIndex >= 0) {
+          compactAssignment[compactPhysicalIndex.at(
+              static_cast<int64_t>(physicalIndex))] = oldIndex;
+        }
+      }
+      assignment = std::move(compactAssignment);
+    }
   }
   return plan;
 }
@@ -689,6 +798,7 @@ struct TTKernelAnalyzeDFBResourcesPass
 
     SmallVector<ttk::OpaqueCallOp> resetCalls;
     llvm::SmallDenseSet<int64_t, 8> pinnedPhysicalIndices;
+    std::map<int64_t, llvm::SmallDenseSet<int64_t, 8>> pinnedLiveEpochs;
     module.walk([&](ttk::OpaqueCallOp call) {
       if (call.getCallee() != kResetCallee) {
         return;
@@ -702,18 +812,56 @@ struct TTKernelAnalyzeDFBResourcesPass
         walkFailed = true;
         return;
       }
+      auto epoch = call->getAttrOfType<IntegerAttr>(kResetEpochAttrName);
+      if (!epoch || epoch.getInt() < 0) {
+        call.emitOpError() << "is missing a valid `" << kResetEpochAttrName
+                           << "`";
+        walkFailed = true;
+        return;
+      }
       pinnedPhysicalIndices.insert(preserved->begin(), preserved->end());
+      for (int64_t physicalIndex : *preserved) {
+        pinnedLiveEpochs[physicalIndex].insert(epoch.getInt());
+      }
     });
     if (walkFailed) {
       signalPassFailure();
       return;
     }
 
+    std::map<int64_t, int64_t> pinnedLogicalByPhysical;
+    for (int64_t physicalIndex : pinnedPhysicalIndices) {
+      for (const auto &[logicalIndex, logical] : logicalConfigs) {
+        if (logical.physicalIndex != physicalIndex) {
+          continue;
+        }
+        if (!pinnedLogicalByPhysical
+                 .try_emplace(physicalIndex, logicalIndex)
+                 .second) {
+          module.emitOpError()
+              << "preserved physical DFB " << physicalIndex
+              << " is shared by more than one logical DFB before epoch "
+                 "packing";
+          signalPassFailure();
+          return;
+        }
+        pinnedLiveEpochs[physicalIndex].insert(logical.epoch);
+      }
+      if (pinnedLogicalByPhysical.find(physicalIndex) ==
+          pinnedLogicalByPhysical.end()) {
+        module.emitOpError() << "preserves unknown physical DFB "
+                             << physicalIndex;
+        signalPassFailure();
+        return;
+      }
+    }
+
     EpochRemapPlan remapPlan;
     if (!resetCalls.empty() &&
         module->hasAttr(kEpochPhysicalConfigsAttrName)) {
       remapPlan = buildEpochRemapPlan(logicalConfigs, logicalsByCore,
-                                      pinnedPhysicalIndices);
+                                      pinnedPhysicalIndices,
+                                      pinnedLiveEpochs);
     }
     if (!remapPlan.oldSlotByPhysical.empty()) {
       for (ttk::OpaqueCallOp call : resetCalls) {
@@ -731,8 +879,9 @@ struct TTKernelAnalyzeDFBResourcesPass
           signalPassFailure();
           return;
         }
-        SmallVector<Attribute> remappedArgs(oldArgs.begin(), oldArgs.end());
         OpBuilder builder(call);
+        SmallVector<Attribute> remappedRecords;
+        int64_t remappedCount = 0;
         for (int64_t record = 0; record < oldCount.getInt(); ++record) {
           size_t base = 1 + static_cast<size_t>(record) * kResetConfigWords;
           auto oldPhysical = dyn_cast<IntegerAttr>(oldArgs[base]);
@@ -741,10 +890,33 @@ struct TTKernelAnalyzeDFBResourcesPass
             signalPassFailure();
             return;
           }
-          remappedArgs[base] = builder.getI64IntegerAttr(
-              remapPlan.physicalIndex(epoch.getInt(), oldPhysical.getInt()));
+          if (pinnedPhysicalIndices.contains(oldPhysical.getInt()) &&
+              !pinnedLiveEpochs.at(oldPhysical.getInt())
+                   .contains(epoch.getInt())) {
+            continue;
+          }
+          remappedRecords.append(oldArgs.begin() + base,
+                                 oldArgs.begin() + base + kResetConfigWords);
+          remappedRecords[remappedRecords.size() - kResetConfigWords] =
+              builder.getI64IntegerAttr(remapPlan.physicalIndex(
+                  epoch.getInt(), oldPhysical.getInt()));
+          ++remappedCount;
         }
+        SmallVector<Attribute> remappedArgs{
+            builder.getI64IntegerAttr(remappedCount)};
+        remappedArgs.append(remappedRecords);
         call.setTemplateArgsAttr(builder.getArrayAttr(remappedArgs));
+
+        FailureOr<llvm::SmallDenseSet<int64_t, 8>> preserved =
+            getPreservedPhysicalIndices(call);
+        assert(succeeded(preserved) && "preserved indices were validated");
+        SmallVector<Attribute> remappedPreserved;
+        for (int64_t physicalIndex : *preserved) {
+          remappedPreserved.push_back(builder.getI64IntegerAttr(
+              remapPlan.physicalIndex(epoch.getInt(), physicalIndex)));
+        }
+        call->setAttr(kResetPreservedIndicesAttrName,
+                      builder.getArrayAttr(remappedPreserved));
       }
 
       for (auto &[logicalIndex, logical] : logicalConfigs) {
@@ -881,6 +1053,24 @@ struct TTKernelAnalyzeDFBResourcesPass
         module->setAttr(kCompilerAllocatedDFBsAttrName,
                         builder.getArrayAttr(compilerEntries));
       }
+
+      llvm::SmallDenseSet<int64_t, 8> remappedPinnedPhysicalIndices;
+      std::map<int64_t, llvm::SmallDenseSet<int64_t, 8>>
+          remappedPinnedLiveEpochs;
+      std::map<int64_t, int64_t> remappedPinnedLogicalByPhysical;
+      for (int64_t oldPhysicalIndex : pinnedPhysicalIndices) {
+        int64_t newPhysicalIndex =
+            remapPlan.physicalIndex(0, oldPhysicalIndex);
+        remappedPinnedPhysicalIndices.insert(newPhysicalIndex);
+        remappedPinnedLiveEpochs[newPhysicalIndex] =
+            pinnedLiveEpochs.at(oldPhysicalIndex);
+        remappedPinnedLogicalByPhysical[newPhysicalIndex] =
+            pinnedLogicalByPhysical.at(oldPhysicalIndex);
+      }
+      pinnedPhysicalIndices = std::move(remappedPinnedPhysicalIndices);
+      pinnedLiveEpochs = std::move(remappedPinnedLiveEpochs);
+      pinnedLogicalByPhysical =
+          std::move(remappedPinnedLogicalByPhysical);
     }
 
     llvm::MapVector<int64_t, PhysicalInfo> physicalInfos;
@@ -1021,29 +1211,14 @@ struct TTKernelAnalyzeDFBResourcesPass
     }
 
     llvm::MapVector<int64_t, LogicalConfig> pinnedConfigs;
-    for (int64_t physicalIndex : pinnedPhysicalIndices) {
-      const LogicalConfig *pinned = nullptr;
-      for (const auto &[logicalIndex, logical] : logicalConfigs) {
-        (void)logicalIndex;
-        if (logical.physicalIndex != physicalIndex) {
-          continue;
-        }
-        if (pinned) {
-          module.emitOpError()
-              << "preserved physical DFB " << physicalIndex
-              << " is shared by more than one logical DFB";
-          signalPassFailure();
-          return;
-        }
-        pinned = &logical;
-      }
-      if (!pinned) {
-        module.emitOpError() << "preserves unknown physical DFB "
-                             << physicalIndex;
-        signalPassFailure();
-        return;
-      }
-      pinnedConfigs.insert({physicalIndex, *pinned});
+    for (const auto &[physicalIndex, logicalIndex] :
+         pinnedLogicalByPhysical) {
+      auto pinned = logicalConfigs.find(logicalIndex);
+      assert(pinned != logicalConfigs.end() &&
+             "preserved logical DFB was validated before packing");
+      assert(pinned->second.physicalIndex == physicalIndex &&
+             "preserved DFB must retain one physical slot");
+      pinnedConfigs.insert({physicalIndex, pinned->second});
     }
 
     auto getEpochConfigs =
@@ -1081,8 +1256,11 @@ struct TTKernelAnalyzeDFBResourcesPass
         }
       }
       for (const auto &[physicalIndex, logical] : pinnedConfigs) {
-        (void)physicalIndex;
-        if (logical.epoch != epoch && failed(addConfig(logical))) {
+        auto liveEpochs = pinnedLiveEpochs.find(physicalIndex);
+        assert(liveEpochs != pinnedLiveEpochs.end() &&
+               "preserved DFB must have a live epoch set");
+        if (logical.epoch != epoch && liveEpochs->second.contains(epoch) &&
+            failed(addConfig(logical))) {
           return failure();
         }
       }

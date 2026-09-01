@@ -122,6 +122,58 @@ module attributes {
 
 // -----
 
+// The preserved DFB stays on physical slot 0 in epochs 0 and 1. Once it is
+// absent in epoch 2, the larger epoch-local DFB reuses that backing. Slot 1
+// therefore remains one page instead of growing to seven pages.
+
+// CHECK: ttl.dfb_epoch_physical_configs = [
+// CHECK-SAME: dfb_index = 0 : i32, {{[^}]*}}total_size = 14336 : i64
+// CHECK-SAME: dfb_index = 1 : i32, {{[^}]*}}total_size = 2048 : i64
+// CHECK: ttl.logical_dfb_configs = [
+// CHECK-SAME: epoch = 0 : i32, logical_index = 0 : i32, num_pages = 1 : i32, physical_index = 1 : i64
+// CHECK-SAME: epoch = 1 : i32, logical_index = 1 : i32, num_pages = 1 : i32, physical_index = 1 : i64
+// CHECK-SAME: epoch = 0 : i32, logical_index = 2 : i32, num_pages = 7 : i32, physical_index = 0 : i64
+// CHECK-SAME: epoch = 2 : i32, logical_index = 3 : i32, num_pages = 7 : i32, physical_index = 0 : i64
+// CHECK: ttl.per_core_dfb_configs =
+// CHECK-SAME: dfb_index = 0 : i32, num_pages = 7 : i32
+// CHECK-SAME: dfb_index = 1 : i32, num_pages = 1 : i32
+// CHECK-LABEL: func.func @reuse_preserved_backing
+// Epoch 0 configures the local slot and the preserved slot.
+// CHECK: ttkernel.opaque_call "ttlang::reset_dataflow_buffers"() {{.*}}template_args = [2, 1, 2048, 1, 2048, 5, 32, 32, 16, 4, 5, 5, 0, 14336, 7, 2048, 5, 32, 32, 16, 4, 5, 5]
+// Epoch 1 keeps physical slot 0 intact and reconfigures only slot 1.
+// CHECK: ttkernel.opaque_call "ttlang::reset_dataflow_buffers"({{.*}}) {{.*}}template_args = [1, 1, 2048, 1, 2048, 5, 32, 32, 16, 4, 5, 5]
+// Epoch 2 configures the large local DFB on the now-available slot 0 once.
+// CHECK: ttkernel.opaque_call "ttlang::reset_dataflow_buffers"() {{.*}}template_args = [1, 0, 14336, 7, 2048, 5, 32, 32, 16, 4, 5, 5]
+
+module attributes {
+  ttl.launch_grid = [1 : i64, 1 : i64],
+  ttl.logical_dfb_configs = [
+    {address_scope = "local", element_type = !ttcore.tile<32x32, bf16>, epoch = 0 : i32, logical_index = 0 : i32, num_pages = 1 : i32, physical_index = 0 : i32, unpack_to_dest_fp32 = false},
+    {address_scope = "local", element_type = !ttcore.tile<32x32, bf16>, epoch = 1 : i32, logical_index = 1 : i32, num_pages = 1 : i32, physical_index = 0 : i32, unpack_to_dest_fp32 = false},
+    {address_scope = "local", element_type = !ttcore.tile<32x32, bf16>, epoch = 0 : i32, logical_index = 2 : i32, num_pages = 7 : i32, physical_index = 1 : i32, unpack_to_dest_fp32 = false},
+    {address_scope = "local", element_type = !ttcore.tile<32x32, bf16>, epoch = 2 : i32, logical_index = 3 : i32, num_pages = 7 : i32, physical_index = 0 : i32, unpack_to_dest_fp32 = false}
+  ],
+  ttl.dfb_epoch_physical_configs = [
+    {dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, tile_height = 32 : i32, tile_width = 32 : i32, total_size = 14336 : i64},
+    {dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, tile_height = 32 : i32, tile_width = 32 : i32, total_size = 14336 : i64}
+  ]
+} {
+  func.func @reuse_preserved_backing() {
+    %local0 = ttkernel.get_compile_time_arg_val(0) {ttl.dfb_logical_index = 0 : i64} : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    %local1 = ttkernel.get_compile_time_arg_val(0) {ttl.dfb_logical_index = 1 : i64} : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    %held = ttkernel.get_compile_time_arg_val(1) {ttl.dfb_logical_index = 2 : i64} : () -> !ttkernel.cb<7, !ttcore.tile<32x32, bf16>>
+    %local2 = ttkernel.get_compile_time_arg_val(0) {ttl.dfb_logical_index = 3 : i64} : () -> !ttkernel.cb<7, !ttcore.tile<32x32, bf16>>
+    ttkernel.opaque_call "use"(%local0, %local1, %held, %local2) {header = "use.hpp"} : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<7, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<7, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [2, 0, 2048, 1, 2048, 5, 32, 32, 16, 4, 5, 5, 1, 14336, 7, 2048, 5, 32, 32, 16, 4, 5, 5], ttl.dfb_reset_epoch = 0 : i32, ttl.dfb_reset_preserved_indices = []} : () -> ()
+    %metadata = ttkernel.get_compile_time_arg_val(1) {ttl.dfb_logical_index = 2 : i64} : () -> i32
+    ttkernel.opaque_call "ttlang::reset_dataflow_buffers"(%metadata) {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [1, 0, 2048, 1, 2048, 5, 32, 32, 16, 4, 5, 5], ttl.dfb_reset_epoch = 1 : i32, ttl.dfb_reset_preserved_indices = [1 : i64]} : (i32) -> ()
+    ttkernel.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h", template_args = [2, 0, 14336, 7, 2048, 5, 32, 32, 16, 4, 5, 5, 1, 14336, 7, 2048, 5, 32, 32, 16, 4, 5, 5], ttl.dfb_reset_epoch = 2 : i32, ttl.dfb_reset_preserved_indices = []} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // Capacity is measured in bytes across reset epochs, then rounded up to pages
 // of the physical descriptor's initial format. A legacy logical DFB contributes
 // its own capacity everywhere without defeating a remote-uniform logical DFB
