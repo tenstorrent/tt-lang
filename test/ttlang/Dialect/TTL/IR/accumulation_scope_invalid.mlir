@@ -63,7 +63,7 @@ func.func @init_state_type_mismatch() {
 func.func @distinct_state_requires_output_publication() {
   %out = tensor.empty() : tensor<1x14x!ttcore.tile<1x32, bf16>>
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{'ttl.accumulation_scope' op state 0 type tensor<1x1x!ttcore.tile<32x32, bf16>> differs from output type tensor<1x14x!ttcore.tile<1x32, bf16>>; the body must store the yielded state to that output}}
+  // expected-error @below {{'ttl.accumulation_scope' op state 0 type 'tensor<1x1x!ttcore.tile<32x32, bf16>>' differs from output type 'tensor<1x14x!ttcore.tile<1x32, bf16>>'; the body must store the yielded state to that output}}
   ttl.accumulation_scope outs(%out : tensor<1x14x!ttcore.tile<1x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%acc: tensor<1x1x!ttcore.tile<32x32, bf16>>):
