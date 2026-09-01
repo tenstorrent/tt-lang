@@ -2,6 +2,10 @@
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' \
 // RUN:   -o /dev/null 2>&1 | FileCheck %s
 
+// Summary: Verifies row-prefix output planning rejects publication contracts
+// that cannot preserve one valid compute output representation.
+
+// A compact formal result cannot replace an observable full-tile result.
 // CHECK-LABEL: ComputeOp creation plan @non_store_result_use
 // CHECK:       rejected-source {{.*}} ttl.add
 // CHECK-SAME:  reason=row-prefix output cannot preserve a non-store use of the full-tile result
@@ -39,6 +43,7 @@ func.func @non_store_result_use(
 
 // -----
 
+// One compute cannot publish formal outputs with different tile types.
 // CHECK-LABEL: ComputeOp creation plan @different_output_tile_types
 // CHECK:       rejected-source {{.*}} ttl.add
 // CHECK-SAME:  reason=one compute cannot publish output dataflow buffers with different tile types
@@ -82,6 +87,7 @@ func.func @different_output_tile_types(
 
 // -----
 
+// Stores sharing one DFB must use one publication strategy.
 // CHECK-LABEL: ComputeOp creation plan @mixed_store_kinds
 // CHECK:       rejected-source {{.*}} ttl.add reason=one dataflow buffer cannot mix row-prefix and regular stores
 func.func @mixed_store_kinds(
@@ -119,6 +125,7 @@ func.func @mixed_store_kinds(
 
 // -----
 
+// Row-prefix stores sharing one DFB must agree on its complete view type.
 // CHECK-LABEL: ComputeOp creation plan @different_destination_types
 // CHECK:       rejected-source {{.*}} ttl.add
 // CHECK-SAME:  reason=row-prefix stores to one dataflow buffer require one destination tensor type
@@ -160,6 +167,7 @@ func.func @different_destination_types(
 
 // -----
 
+// Row-normalization creation does not support compact output publication.
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_output
 // CHECK:       rejected-source {{.*}} ttl.mul
 // CHECK-SAME:  reason=row-prefix output is unsupported for row-normalization block creation

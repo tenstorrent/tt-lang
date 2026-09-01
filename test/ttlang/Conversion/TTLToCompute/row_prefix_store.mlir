@@ -5,9 +5,13 @@
 // RUN:   --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse)' \
 // RUN:   | FileCheck %s --check-prefix=TTKERNEL
 
+// Summary: Verifies row-prefix outputs retain complete DFB attachments while
+// compute uses compact formal output views.
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #map1 = affine_map<(d0, d1) -> (0, 0)>
 
+// A direct elementwise compute publishes a compact bf16 output.
 // CHECK-LABEL: func.func @direct_bf16
 // CHECK:       %[[EMPTY:.*]] = tensor.empty() : tensor<1x14x!ttcore.tile<1x32, bf16>>
 // CHECK:       %[[ATTACHED:.*]] = ttl.attach_cb %[[EMPTY]], %{{.*}}
@@ -54,6 +58,7 @@ func.func @direct_bf16(
 
 // -----
 
+// A fused expression publishes a compact f32 output.
 // CHECK-LABEL: func.func @fused_f32
 // CHECK:       %[[EMPTY:.*]] = tensor.empty() : tensor<1x7x!ttcore.tile<2x32, f32>>
 // CHECK:       %[[ATTACHED:.*]] = ttl.attach_cb %[[EMPTY]], %{{.*}}
@@ -103,6 +108,7 @@ func.func @fused_f32(
 
 // -----
 
+// A DFB-backed input can publish directly through a compact output.
 // CHECK-LABEL: func.func @passthrough_bf16
 // CHECK:       %[[EMPTY:.*]] = tensor.empty() : tensor<1x4x!ttcore.tile<4x32, bf16>>
 // CHECK:       %[[ATTACHED:.*]] = ttl.attach_cb %[[EMPTY]], %{{.*}}
@@ -137,6 +143,7 @@ func.func @passthrough_bf16(
 
 // -----
 
+// A zero-input compute publishes the same tile to multiple compact outputs.
 // CHECK-LABEL: func.func @multiple_compact_outputs
 // CHECK-DAG:   tensor.empty() : tensor<1x8x!ttcore.tile<2x32, bf16>>
 // CHECK-DAG:   tensor.empty() : tensor<1x8x!ttcore.tile<2x32, bf16>>
