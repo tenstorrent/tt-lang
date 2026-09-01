@@ -2418,6 +2418,30 @@ static ProgramOrderGraphState buildProgramOrderTopologyState(
   return state;
 }
 
+// Protocol and boundary edges are launch-node-specific, so callers receive a
+// copy of the reusable source-order topology before adding those edges.
+class ProgramOrderTopologyCache {
+public:
+  ProgramOrderGraphState
+  getOrBuild(ModuleOp module, const ProgramOrderTopologyInputs &inputs,
+             const StructuralOperationOrder &structuralOrder) {
+    if (!entry || !(entry->inputs == inputs)) {
+      ProgramOrderGraphState graphState =
+          buildProgramOrderTopologyState(module, inputs, structuralOrder);
+      entry = Entry{inputs, std::move(graphState)};
+    }
+    return entry->state;
+  }
+
+private:
+  struct Entry {
+    ProgramOrderTopologyInputs inputs;
+    ProgramOrderGraphState state;
+  };
+
+  std::optional<Entry> entry;
+};
+
 // Conditional runs match only under equivalent structured conditions.
 static bool
 proveEquivalentConditionalRuns(const AccessRun &lhs, const AccessRun &rhs,
@@ -5155,6 +5179,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           std::make_unique<DFBLogicalLifecycleDiagnostics>();
     }
   }
+  ProgramOrderTopologyCache graphTopologyCache;
+  ProgramOrderTopologyCache possibleGraphTopologyCache;
   for (LaunchNodeCoord node : launchNodes) {
     SmallVector<ValidatedSynchronizedReset> validatedResets;
     if (failed(validateSynchronizedResetsAtNode(resetOccurrences, node,
@@ -5182,7 +5208,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
             logicalDFBs, validatedResets, validatedReconfigurations, node,
             executionCounts, accessRuns, structuralOrder,
             /*includeUnknownDomains=*/false);
-    ProgramOrderGraphState graphState = buildProgramOrderTopologyState(
+    ProgramOrderGraphState initialGraphState = graphTopologyCache.getOrBuild(
         module, graphTopologyInputs, structuralOrder);
     std::optional<AccessRuns> possibleAccessRuns;
     std::optional<ProgramOrderGraphState> possibleGraphState;
@@ -5197,15 +5223,17 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
               /*includeUnknownDomains=*/true);
       bool graphTopologiesMatch =
           graphTopologyInputs == possibleGraphTopologyInputs;
-      possibleGraphState.emplace(
-          graphTopologiesMatch
-              ? graphState
-              : buildProgramOrderTopologyState(
-                    module, possibleGraphTopologyInputs, structuralOrder));
+      if (graphTopologiesMatch) {
+        possibleGraphState.emplace(initialGraphState);
+      } else {
+        possibleGraphState.emplace(possibleGraphTopologyCache.getOrBuild(
+            module, possibleGraphTopologyInputs, structuralOrder));
+      }
 #ifndef NDEBUG
       // Small graphs retain an independent reconstruction oracle without
       // repeating model-scale graph construction in assertion-enabled builds.
-      if (graphTopologiesMatch && graphState.graph.getEventCount() <= 128) {
+      if (graphTopologiesMatch &&
+          initialGraphState.graph.getEventCount() <= 128) {
         ProgramOrderGraphState reconstructedPossibleGraphState =
             buildProgramOrderTopologyState(module, possibleGraphTopologyInputs,
                                            structuralOrder);
@@ -5214,6 +5242,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       }
 #endif
     }
+    ProgramOrderGraphState graphState = std::move(initialGraphState);
     HappensBeforeGraph &graph = graphState.graph;
     DenseMap<Operation *, EventPair> &operationEvents =
         graphState.operationEvents;
