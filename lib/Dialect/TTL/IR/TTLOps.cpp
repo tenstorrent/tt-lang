@@ -2596,6 +2596,9 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 
   Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
+  if (getRowPrefix() && isWaitBacked) {
+    return emitOpError("row_prefix requires a producer-reserved view");
+  }
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
       !isWaitBacked) {
     return emitOpError(
@@ -2604,9 +2607,6 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   if (getStoreKind() == DFBTileStoreKind::Producer && isWaitBacked) {
     return emitOpError(
         "ttl.cb_wait-backed view requires consumer_replacement store kind");
-  }
-  if (getRowPrefix() && isWaitBacked) {
-    return emitOpError("row_prefix requires a producer-reserved view");
   }
 
   // Inside a compute body, indices must match the view rank (populated by
