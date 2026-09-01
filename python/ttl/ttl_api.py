@@ -3266,7 +3266,8 @@ def pykernel_gen(
         mesh_program_placements: Optional logical device coordinate tuples or
             inclusive ``ttl.MeshProgramPlacement`` ranges that receive program
             descriptors. The full device domain is used when omitted. Explicit
-            placements must include every graph-based PipeNet endpoint.
+            placements must include every graph-based PipeNet endpoint, use one
+            coordinate rank, and not overlap.
         runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
