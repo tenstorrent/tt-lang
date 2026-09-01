@@ -1,4 +1,5 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' | FileCheck %s
+// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' -o /dev/null
 
 // Producer in one thread, consumer in another: classic SPSC, accepted.
 // CHECK-LABEL: func.func @producer
@@ -18,6 +19,55 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %v = ttl.cb_wait %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// An opaque external dependency may contain the producer protocol, so producer
+// absence cannot be proven without an access contract.
+// CHECK-LABEL: func.func @opaque_possible_producer
+// CHECK-LABEL: func.func @opaque_consumer
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @opaque_possible_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 34 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "possible_producer" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "opaque.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @opaque_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 34 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// Unknown external DFB access prevents producer-absence proof for user DFBs.
+// CHECK-LABEL: func.func @unknown_possible_producer
+// CHECK-LABEL: func.func @unknown_consumer
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @unknown_possible_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    ttl.opaque_call "possible_producer" () {header = "opaque.hpp", unknown_dfb_access} : () -> ()
+    func.return
+  }
+
+  func.func @unknown_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 35 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     func.return

@@ -899,9 +899,9 @@ def TTLVerifyPipeNetGuards
     When `TTL_RELAX_DFB_SPSC` is set, this pass skips the check that each DFB
     wait has a producer on the same dynamically active launch nodes. The
     program must enforce that correspondence. The later SPSC verifier still
-    rejects a waited DFB with no push action in any kernel thread. PipeNet
-    endpoint guards, transfer correspondence, and synchronization schedules
-    remain mandatory.
+    rejects a waited DFB with neither a compiler-visible push nor uncontracted
+    external access that may contain one. PipeNet endpoint guards, transfer
+    correspondence, and synchronization schedules remain mandatory.
   }];
 }
 
@@ -985,18 +985,19 @@ def TTLVerifyDFBSPSC
     them by module-wide logical `dfb_id` and enclosing
     `ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
     each producer or consumer participant. The pass requires every waited DFB
-    to have a push in some kernel thread and, for each launched node, at most one
-    producer kernel and at most one consumer kernel. Disjoint domains across
-    different kernel functions are accepted. Distinct logical DFBs remain
-    separate when physical allocation assigns them the same `cb_index`.
+    to have a compiler-visible push or uncontracted external access that may
+    contain one and, for each launched node, at most one producer kernel and at
+    most one consumer kernel. Disjoint domains across different kernel
+    functions are accepted. Distinct logical DFBs remain separate when physical
+    allocation assigns them the same `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
     per-launched-node single-producer single-consumer property is required for
     correctness; see `docs/development/DFBManagement.md` for the runtime
-    contract. The pass emits an error for waits without any push, overlapping
-    producer or consumer domains, and unknown domains when multiple threads
-    participate and SPSC cannot be proven statically.
+    contract. The pass emits an error for waits without any possible producer,
+    overlapping producer or consumer domains, and unknown domains when
+    multiple threads participate and SPSC cannot be proven statically.
 
     The module must contain the `ttl.dfb_allocations` metadata emitted by
     `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
@@ -1006,9 +1007,10 @@ def TTLVerifyDFBSPSC
     Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node producer and consumer
     ownership verification. The program must enforce that ownership contract
     through synchronization not represented in the IR. The verifier still
-    rejects every waited DFB without a push action in any kernel thread.
-    Finalized DFB identity, physical-index, and launch-grid preconditions remain
-    mandatory. Strict verification is the default.
+    rejects every waited DFB without a compiler-visible push or uncontracted
+    external access that may contain one. Finalized DFB identity,
+    physical-index, and launch-grid preconditions remain mandatory. Strict
+    verification is the default.
   }];
 
   let dependentDialects = [];

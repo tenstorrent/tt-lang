@@ -104,7 +104,9 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
 
 struct DFBProtocolPresence {
   bool hasAcquisitionAction = false;
+  bool hasUnknownUserDFBAccess = false;
   llvm::DenseSet<int64_t> pushedDFBs;
+  llvm::DenseSet<int64_t> dfbsWithOpaqueAccess;
   llvm::SmallMapVector<int64_t, Operation *, 4> firstWaitByDFB;
 };
 
@@ -114,6 +116,16 @@ DFBProtocolPresence collectDFBProtocolPresence(ModuleOp module) {
     auto access = dyn_cast<DFBAccessOpInterface>(op);
     if (!access || !getEnclosingKernelThread(op)) {
       return;
+    }
+    if (auto opaqueCall = dyn_cast<OpaqueCallOp>(op)) {
+      SmallVector<Value> dependencies = opaqueCall.getDFBDependencyOperands();
+      for (unsigned dependencyIndex :
+           getOpaqueDFBDependencyIndices(opaqueCall)) {
+        FailureOr<int64_t> dfbId = getDFBId(dependencies[dependencyIndex]);
+        assert(succeeded(dfbId) && "DFB identities were verified");
+        presence.dfbsWithOpaqueAccess.insert(*dfbId);
+      }
+      presence.hasUnknownUserDFBAccess |= opaqueCall.hasUnknownDFBAccess();
     }
     for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
       FailureOr<int64_t> dfbId = getDFBId(effect.dfb);
@@ -142,7 +154,13 @@ LogicalResult verifyDFBWaitsHavePushes(
     const llvm::DenseMap<int64_t, Operation *> &bindSites) {
   bool sawError = false;
   for (auto [dfbId, waitOp] : presence.firstWaitByDFB) {
-    if (presence.pushedDFBs.contains(dfbId)) {
+    Operation *bindSite = bindSites.lookup(dfbId);
+    auto bindOp = dyn_cast_or_null<BindCBOp>(bindSite);
+    bool hasPossibleExternalProducer =
+        presence.dfbsWithOpaqueAccess.contains(dfbId) ||
+        (presence.hasUnknownUserDFBAccess && bindOp &&
+         isUserManagedDFB(bindOp.getResult()));
+    if (presence.pushedDFBs.contains(dfbId) || hasPossibleExternalProducer) {
       continue;
     }
     InFlightDiagnostic diag = waitOp->emitError()
@@ -151,7 +169,7 @@ LogicalResult verifyDFBWaitsHavePushes(
                                  "it";
     diag.attachNote()
         << "a DFB wait blocks until a matching push publishes data";
-    if (Operation *bindSite = bindSites.lookup(dfbId)) {
+    if (bindSite) {
       diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
     }
     sawError = true;

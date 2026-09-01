@@ -1391,6 +1391,20 @@ static LogicalResult collectLogicalDFBs(
            nullptr});
       describedDependencies.set(nonTransactionalAccess.dependencyIndex);
     }
+    if (auto opaqueCall = dyn_cast<OpaqueCallOp>(operation)) {
+      for (unsigned dependencyIndex :
+           getOpaqueDFBDependencyIndices(opaqueCall)) {
+        std::optional<unsigned> logicalIndex =
+            dependencyLogicalIndices[dependencyIndex];
+        assert(logicalIndex && "DFB dependencies were validated above");
+        DFBLogicalLifecycle &logicalDFB = logicalDFBs[*logicalIndex];
+        logicalDFB.accesses.push_back({operation, std::monostate{}, 0, 0,
+                                       LaunchNodeDomain::unknown(), nullptr,
+                                       true});
+        logicalDFB.hasOpaqueExternalAccess = true;
+      }
+      return WalkResult::advance();
+    }
     for (auto [dependencyIndex, operand] : llvm::enumerate(dfbOperands)) {
       if (!isa<CircularBufferType>(operand.getType()) ||
           describedDependencies.test(dependencyIndex)) {
@@ -1400,11 +1414,8 @@ static LogicalResult collectLogicalDFBs(
           dependencyLogicalIndices[dependencyIndex];
       assert(logicalIndex && "DFB dependencies were validated above");
       DFBLogicalLifecycle &logicalDFB = logicalDFBs[*logicalIndex];
-      bool opaqueExternalAccess = isa<OpaqueCallOp>(operation);
       logicalDFB.accesses.push_back({operation, std::monostate{}, 0, 0,
-                                     LaunchNodeDomain::unknown(), nullptr,
-                                     opaqueExternalAccess});
-      logicalDFB.hasOpaqueExternalAccess |= opaqueExternalAccess;
+                                     LaunchNodeDomain::unknown(), nullptr});
     }
     return WalkResult::advance();
   });
