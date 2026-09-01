@@ -43,13 +43,13 @@ def _make_external_descriptor_reset_kernel(data_format):
         @ttl.compute(kernel=compute_kernel)
         def compute():
             core_x, _core_y = ttl.node(dims=2)
-            if core_x == 0:
+            if core_x == 1:
                 ttl.reset_dfbs(reset, dfbs=[external_stream])
 
         @ttl.datamovement(kernel=reader_kernel)
         def read():
             core_x, _core_y = ttl.node(dims=2)
-            if core_x == 0:
+            if core_x == 1:
                 ttl.call_extern_func(
                     REPEATED_DFB_TRANSACTIONS_HEADER,
                     "read_high_water_dfb_logical_dm",
@@ -71,7 +71,7 @@ def _make_external_descriptor_reset_kernel(data_format):
         @ttl.datamovement(kernel=writer_kernel)
         def write():
             core_x, _core_y = ttl.node(dims=2)
-            if core_x == 0:
+            if core_x == 1:
                 ttl.call_extern_func(
                     REPEATED_DFB_TRANSACTIONS_HEADER,
                     "write_high_water_dfb_logical_dm",
