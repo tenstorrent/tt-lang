@@ -746,14 +746,20 @@ def test_run_kernel_hashes_per_core_tensor_address_signature(monkeypatch):
 
     first = kernel_runner.run_kernel_on_device(
         kernel_specs=[],
-        tensors=[_FakePerCoreTensor(grid, [first_addresses, first_addresses])],
+        tensors=[
+            _FakePerCoreTensor(grid, [first_addresses, first_addresses]),
+            _FakeTensorWithoutDevice(),
+        ],
         cb_configs=[],
         core_ranges=grid,
         program_hash=5,
     )
     second = kernel_runner.run_kernel_on_device(
         kernel_specs=[],
-        tensors=[_FakePerCoreTensor(grid, [second_addresses, second_addresses])],
+        tensors=[
+            _FakePerCoreTensor(grid, [second_addresses, second_addresses]),
+            _FakeTensorWithoutDevice(),
+        ],
         cb_configs=[],
         core_ranges=grid,
         program_hash=5,
@@ -773,6 +779,15 @@ def test_build_generic_op_io_tensors_duplicates_single_output():
         tensor,
         tensor,
     ]
+
+
+def test_build_generic_op_io_tensors_excludes_per_core_tensors():
+    per_core_tensor = SimpleNamespace(is_per_core_allocated=lambda: True)
+    dispatch_tensor = _FakeTensorWithoutDevice()
+
+    assert kernel_runner.build_generic_op_io_tensors(
+        [per_core_tensor, dispatch_tensor], []
+    ) == [dispatch_tensor, dispatch_tensor]
 
 
 def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):

@@ -1380,10 +1380,18 @@ def build_generic_op_io_tensors(
     tensors: List[Any],
     pipe_sram_scratch_tensors: List[Any],
 ) -> List[Any]:
-    """Return io_tensors for ttnn.generic_op, including pipe SRAM scratch."""
-    io_tensors = list(tensors) + list(pipe_sram_scratch_tensors)
+    """Return the lockstep tensors that define ``generic_op`` dispatch."""
+    # TTNN intersects IO tensor coordinate sets to select mesh devices. Per-core
+    # tensors are direct-address operands and must not narrow that dispatch set.
+    io_tensors = [
+        tensor
+        for tensor in (*tensors, *pipe_sram_scratch_tensors)
+        if not _is_per_core_allocated(tensor)
+    ]
     if not io_tensors:
-        raise ValueError("kernel must have at least one output tensor")
+        raise ValueError(
+            "kernel must have at least one non-per-core tensor for dispatch"
+        )
     if len(io_tensors) < 2:
         io_tensors = [io_tensors[-1]] + io_tensors
     return io_tensors
