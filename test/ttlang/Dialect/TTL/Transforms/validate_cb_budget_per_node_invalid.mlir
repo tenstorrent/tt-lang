@@ -1,5 +1,5 @@
 // Verifies that allocations resident on the same launch node are summed.
-// RUN: ttlang-opt %s --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=10000})'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=10000})'
 
 module attributes {
   ttl.dfb_allocations = [

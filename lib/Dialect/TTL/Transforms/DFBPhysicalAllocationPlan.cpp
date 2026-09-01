@@ -1930,23 +1930,12 @@ static FailureOr<uint64_t> computeAllocationBytes(
   }
   uint64_t peakBytes = 0;
   for (const DFBStorageFootprint &footprint : footprints) {
-    uint64_t nodeBytes = 0;
-    for (int64_t storageIndex : footprint.getSortedStorageIndices()) {
-      FailureOr<uint64_t> allocationBytes =
-          getL1AllocationSizeBytes(moduleOp, footprint.getBytes(storageIndex));
-      if (failed(allocationBytes)) {
-        failureReason = "DFB storage allocation size is not representable";
-        return failure();
-      }
-      std::optional<uint64_t> updatedBytes =
-          llvm::checkedAddUnsigned(nodeBytes, *allocationBytes);
-      if (!updatedBytes) {
-        failureReason = "DFB storage allocation size is not representable";
-        return failure();
-      }
-      nodeBytes = *updatedBytes;
+    FailureOr<uint64_t> nodeBytes = footprint.getL1AllocationBytes(moduleOp);
+    if (failed(nodeBytes)) {
+      failureReason = "DFB storage allocation size is not representable";
+      return failure();
     }
-    peakBytes = std::max(peakBytes, nodeBytes);
+    peakBytes = std::max(peakBytes, *nodeBytes);
   }
   return peakBytes;
 }

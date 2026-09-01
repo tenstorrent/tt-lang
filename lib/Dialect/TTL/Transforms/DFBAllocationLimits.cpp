@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -492,6 +493,35 @@ FailureOr<uint64_t> FinalizedDFBStorageFootprint::getPeakL1AllocationBytes(
   return peakBytes;
 }
 
+static FailureOr<LaunchNodeDomain>
+parseDFBNodeDomain(ModuleOp module, ArrayAttr nodeEntries,
+                   size_t allocationIndex, llvm::StringRef fieldName) {
+  LaunchNodeDomain domain;
+  for (auto indexedNode : llvm::enumerate(nodeEntries)) {
+    auto coordinates = dyn_cast<ArrayAttr>(indexedNode.value());
+    if (!coordinates || coordinates.size() != 2 ||
+        !isa<IntegerAttr>(coordinates[0]) ||
+        !isa<IntegerAttr>(coordinates[1])) {
+      module.emitOpError() << kDFBAllocationsAttrName << " entry "
+                           << allocationIndex << " " << fieldName << " entry "
+                           << indexedNode.index()
+                           << " must contain two integer coordinates";
+      return failure();
+    }
+    int64_t coreX = cast<IntegerAttr>(coordinates[0]).getInt();
+    int64_t coreY = cast<IntegerAttr>(coordinates[1]).getInt();
+    if (coreX < 0 || coreY < 0) {
+      module.emitOpError() << kDFBAllocationsAttrName << " entry "
+                           << allocationIndex << " " << fieldName << " entry "
+                           << indexedNode.index()
+                           << " requires nonnegative coordinates";
+      return failure();
+    }
+    domain.nodes.insert({coreX, coreY});
+  }
+  return domain;
+}
+
 FailureOr<FinalizedDFBStorageFootprint>
 getFinalizedDFBStorageFootprint(ModuleOp module) {
   FinalizedDFBStorageFootprint result;
@@ -513,7 +543,15 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
         return failure();
       }
       int64_t physicalIndex = physicalIndexAttr.getInt();
-      IntegerAttr storageIndexAttr = entry.getAs<IntegerAttr>("storage_index");
+      Attribute storageIndexValue = entry.get("storage_index");
+      IntegerAttr storageIndexAttr =
+          dyn_cast_or_null<IntegerAttr>(storageIndexValue);
+      if (storageIndexValue && !storageIndexAttr) {
+        module.emitOpError()
+            << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+            << " requires an integer storage_index";
+        return failure();
+      }
       int64_t storageIndex =
           storageIndexAttr ? storageIndexAttr.getInt() : physicalIndex;
       if (storageIndex < 0) {
@@ -531,33 +569,72 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
         return failure();
       }
       LaunchNodeDomain allocationDomain = LaunchNodeDomain::unknown();
-      if (auto allocationNodes = entry.getAs<ArrayAttr>("allocation_nodes")) {
-        allocationDomain = LaunchNodeDomain{};
-        for (auto indexedNode : llvm::enumerate(allocationNodes)) {
-          auto coordinates = dyn_cast<ArrayAttr>(indexedNode.value());
-          if (!coordinates || coordinates.size() != 2 ||
-              !isa<IntegerAttr>(coordinates[0]) ||
-              !isa<IntegerAttr>(coordinates[1])) {
+      if (Attribute allocationNodesValue = entry.get("allocation_nodes")) {
+        auto allocationNodes = dyn_cast<ArrayAttr>(allocationNodesValue);
+        if (!allocationNodes) {
+          module.emitOpError()
+              << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+              << " requires allocation_nodes to be an array";
+          return failure();
+        }
+        FailureOr<LaunchNodeDomain> parsedDomain = parseDFBNodeDomain(
+            module, allocationNodes, indexedEntry.index(), "allocation_nodes");
+        if (failed(parsedDomain)) {
+          return failure();
+        }
+        allocationDomain = std::move(*parsedDomain);
+      }
+      LaunchNodeDomain staticStorageDomain = allocationDomain;
+      if (Attribute storageSegmentsValue = entry.get("storage_segments")) {
+        auto storageSegments = dyn_cast<ArrayAttr>(storageSegmentsValue);
+        if (!storageSegments) {
+          module.emitOpError()
+              << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+              << " requires storage_segments to be an array";
+          return failure();
+        }
+        staticStorageDomain = LaunchNodeDomain{};
+        for (auto indexedSegment : llvm::enumerate(storageSegments)) {
+          auto segment = dyn_cast<DictionaryAttr>(indexedSegment.value());
+          if (!segment) {
             module.emitOpError()
                 << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
-                << " allocation_nodes entry " << indexedNode.index()
-                << " must contain two integer coordinates";
+                << " storage_segments entry " << indexedSegment.index()
+                << " must be a dictionary";
             return failure();
           }
-          int64_t coreX = cast<IntegerAttr>(coordinates[0]).getInt();
-          int64_t coreY = cast<IntegerAttr>(coordinates[1]).getInt();
-          if (coreX < 0 || coreY < 0) {
+          auto segmentNodes = segment.getAs<ArrayAttr>("nodes");
+          if (!segmentNodes) {
             module.emitOpError()
                 << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
-                << " allocation_nodes entry " << indexedNode.index()
-                << " requires nonnegative coordinates";
+                << " storage_segments entry " << indexedSegment.index()
+                << " requires a nodes array";
             return failure();
           }
-          allocationDomain.nodes.insert({coreX, coreY});
+          std::string segmentNodeField =
+              (llvm::Twine("storage_segments entry ") +
+               llvm::Twine(indexedSegment.index()) + " nodes")
+                  .str();
+          FailureOr<LaunchNodeDomain> segmentDomain = parseDFBNodeDomain(
+              module, segmentNodes, indexedEntry.index(), segmentNodeField);
+          if (failed(segmentDomain)) {
+            return failure();
+          }
+          Attribute tensorBacking = segment.get("tensor_backing");
+          if (tensorBacking && !isa<TensorBackingAttr>(tensorBacking)) {
+            module.emitOpError()
+                << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+                << " storage_segments entry " << indexedSegment.index()
+                << " has an invalid tensor_backing attribute";
+            return failure();
+          }
+          if (!tensorBacking) {
+            staticStorageDomain = staticStorageDomain.unionWith(*segmentDomain);
+          }
         }
       }
       domainByPhysicalIndex.try_emplace(physicalIndex,
-                                        std::move(allocationDomain));
+                                        std::move(staticStorageDomain));
     }
   }
 
