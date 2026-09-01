@@ -622,6 +622,10 @@ class MeshProgramPlacement:
             raise ValueError(
                 "mesh program placement start and end must have the same rank"
             )
+        if any(coordinate_value < 0 for coordinate_value in start) or (
+            end is not None and any(coordinate_value < 0 for coordinate_value in end)
+        ):
+            raise ValueError("mesh program placement coordinates must be non-negative")
         if end is not None and any(
             start_coordinate > end_coordinate
             for start_coordinate, end_coordinate in zip(start, end)
@@ -676,10 +680,8 @@ def normalize_mesh_program_placements(
                     f"mesh program placement rank must match {extent_name} rank"
                 )
             if any(
-                start_value < 0 or end_value >= dimension
-                for start_value, end_value, dimension in zip(
-                    placement.start, end, normalized_extent
-                )
+                end_value >= dimension
+                for end_value, dimension in zip(end, normalized_extent)
             ):
                 raise ValueError(
                     f"mesh program placement must be inside the {extent_name}"
