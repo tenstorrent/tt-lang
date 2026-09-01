@@ -2596,7 +2596,7 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 
   Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
-  if (getRowPrefix() && isWaitBacked) {
+  if (getRowPrefix() && !isa_and_nonnull<CBReserveOp>(acquire)) {
     return emitOpError("row_prefix requires a producer-reserved view");
   }
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
