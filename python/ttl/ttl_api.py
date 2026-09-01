@@ -90,6 +90,7 @@ from .dataflow_buffer import (
     PhysicalDFBConfig,
     get_cb_count,
 )
+from .domains import DeviceDomain
 from .pipe import Pipe, PipeNet
 from .scalar import ScalarType
 from .condition import (
@@ -135,7 +136,7 @@ from .kernel_runner import (
     KernelRuntimeResourceCache,
     KernelSpec,
     MeshProgramPlacement,
-    _mesh_program_placement_bounds,
+    normalize_mesh_program_placements,
     emit_runner_file,
     run_kernel_on_device,
 )
@@ -545,16 +546,23 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
-def _default_mesh_program_placements(args: tuple):
-    """Return a full-mesh placement for mesh tensor execution."""
+def _mesh_tensor_extent(args: tuple):
+    """Return the first distributed tensor's runtime mesh extent."""
     for arg in args:
         if not _is_mesh_tensor(arg):
             continue
-        mesh_shape = tuple(int(dim) for dim in arg.device().shape)
-        start = tuple(0 for _ in mesh_shape)
-        end = tuple(dim - 1 for dim in mesh_shape)
-        return [MeshProgramPlacement(start, end)]
+        return tuple(int(dimension) for dimension in arg.device().shape)
     return None
+
+
+def _default_mesh_program_placements(args: tuple):
+    """Return a full-mesh placement for mesh tensor execution."""
+    mesh_extent = _mesh_tensor_extent(args)
+    if mesh_extent is None:
+        return None
+    start = tuple(0 for _ in mesh_extent)
+    end = tuple(dimension - 1 for dimension in mesh_extent)
+    return [MeshProgramPlacement(start, end)]
 
 
 def _mesh_program_placements_from_device_domain(device_domain):
@@ -563,18 +571,13 @@ def _mesh_program_placements_from_device_domain(device_domain):
         return None
 
     from math import prod
-    from .domains import DeviceDomain
 
     if not isinstance(device_domain, DeviceDomain):
         raise TypeError(
             f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
         )
 
-    extent = tuple(
-        int(dimension)
-        for component in device_domain.components
-        for dimension in component.extent
-    )
+    extent = device_domain.flattened_extent
     if prod(extent) <= 1:
         return None
     start = tuple(0 for _ in extent)
@@ -597,20 +600,59 @@ def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
     return tensor_placements
 
 
-def _resolve_mesh_program_placements(args: tuple, device_domain, requested_placements):
+def _resolve_mesh_program_placements(
+    args: tuple,
+    device_domain,
+    requested_placements,
+    *,
+    required_devices=(),
+):
     """Resolve explicit mesh placements or the full logical device domain."""
-    default_placements = _default_mesh_program_placements_with_domain(
-        args, device_domain
-    )
     if requested_placements is None:
-        return default_placements
-    if not isinstance(requested_placements, (tuple, list)):
-        raise TypeError("mesh_program_placements must be a tuple or list")
-    if not requested_placements:
-        raise ValueError("mesh_program_placements must not be empty")
-    for placement in requested_placements:
-        _mesh_program_placement_bounds(placement)
-    return list(requested_placements)
+        default_placements = _default_mesh_program_placements_with_domain(
+            args, device_domain
+        )
+        return normalize_mesh_program_placements(
+            default_placements,
+            extent=(None if device_domain is None else device_domain.flattened_extent),
+            extent_name="device domain",
+        )
+
+    if device_domain is not None and not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got "
+            f"{type(device_domain).__name__}"
+        )
+    placements = normalize_mesh_program_placements(
+        requested_placements,
+        extent=(None if device_domain is None else device_domain.flattened_extent),
+        extent_name="device domain",
+    )
+    mesh_tensor_extent = _mesh_tensor_extent(args)
+    if mesh_tensor_extent is not None:
+        placements = normalize_mesh_program_placements(
+            placements,
+            extent=mesh_tensor_extent,
+            extent_name="mesh tensor",
+        )
+
+    if required_devices:
+        if device_domain is None:
+            raise ValueError(
+                "PipeNet endpoint coverage requires an operation device_domain"
+            )
+        missing_coordinates = []
+        for device_ref in required_devices:
+            coordinate = device_domain.flattened_coordinates(device_ref)
+            if not any(placement.contains(coordinate) for placement in placements):
+                missing_coordinates.append(coordinate)
+        missing_coordinates.sort()
+        if missing_coordinates:
+            raise ValueError(
+                "mesh_program_placements must cover every PipeNet endpoint; "
+                f"missing {missing_coordinates}"
+            )
+    return placements
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -1798,8 +1840,6 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
-        from .domains import DeviceDomain
-
         if val is None:
             return val
         if isinstance(val, (int, float)):
@@ -2553,7 +2593,10 @@ def _compile_kernel(
     pipenets = _build_operation_pipenets(f, threads)
     device_domain = pipenets.resolve_device_domain(device_domain)
     resolved_mesh_program_placements = _resolve_mesh_program_placements(
-        args, device_domain, mesh_program_placements
+        args,
+        device_domain,
+        mesh_program_placements,
+        required_devices=pipenets.device_endpoints(),
     )
 
     launch_grid = grid
@@ -3222,7 +3265,8 @@ def pykernel_gen(
         device_domain: Optional logical device domain for mesh execution.
         mesh_program_placements: Optional logical device coordinate tuples or
             inclusive ``ttl.MeshProgramPlacement`` ranges that receive program
-            descriptors. The full device domain is used when omitted.
+            descriptors. The full device domain is used when omitted. Explicit
+            placements must include every graph-based PipeNet endpoint.
         runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:

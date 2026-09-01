@@ -3211,7 +3211,7 @@ def test_device_domain_builds_only_explicit_mesh_program_placements(
     "placement, message",
     [
         ((0,), "rank must match"),
-        (kernel_runner.MeshProgramPlacement((0, 1), (0, 0)), "must not exceed"),
+        ((-1, 0), "inside the device domain"),
         ((4, 0), "inside the device domain"),
     ],
 )
@@ -3231,6 +3231,9 @@ def test_device_domain_rejects_invalid_mesh_program_placement(
             core_ranges=_FakeCoreRanges(),
             device_domain=DeviceDomain((4, 8)),
             mesh_program_placements=[placement],
+            runtime_resource_factory=lambda **_kwargs: pytest.fail(
+                "invalid placement reached runtime resource planning"
+            ),
         )
 
 
