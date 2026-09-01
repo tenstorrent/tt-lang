@@ -1959,9 +1959,9 @@ buildComputeOutputPlans(ComputeOpCreationPlan &creation,
       }
       plan.attachmentType = destinationType;
       plan.formalType = buildSingleElementTensorType(destinationType);
-      plan.indexingMap = buildZeroMap(
-          stores.front().getContext(), creation.iteration.iteratorTypes.size(),
-          destinationType.getRank());
+      plan.indexingMap = buildZeroMap(stores.front().getContext(),
+                                      creation.iteration.iteratorTypes.size(),
+                                      destinationType.getRank());
       changesResultRepresentation |= plan.formalType != creation.resultType;
     }
 
@@ -2298,9 +2298,8 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
   if (store.getRowPrefix()) {
-    plan.iteration.outputMap =
-        buildZeroMap(store.getContext(), tensorType.getRank(),
-                     outputTensorType.getRank());
+    plan.iteration.outputMap = buildZeroMap(
+        store.getContext(), tensorType.getRank(), outputTensorType.getRank());
   } else {
     plan.iteration.outputMap = identity;
   }

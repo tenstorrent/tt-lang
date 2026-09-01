@@ -182,9 +182,8 @@ static void verifyOutputPlans(const ComputeOpCreationPlan &creation,
   }
 }
 
-static void appendOutputIndexingMaps(
-    const ComputeOpCreationPlan &creation,
-    SmallVectorImpl<Attribute> &indexingMaps) {
+static void appendOutputIndexingMaps(const ComputeOpCreationPlan &creation,
+                                     SmallVectorImpl<Attribute> &indexingMaps) {
   for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
     indexingMaps.push_back(AffineMapAttr::get(outputPlan.indexingMap));
   }
@@ -192,17 +191,16 @@ static void appendOutputIndexingMaps(
 
 static Value buildFormalOutput(PatternRewriter &rewriter, Location loc,
                                RankedTensorType attachmentType,
-                               RankedTensorType formalType,
-                               Value outputDFB,
+                               RankedTensorType formalType, Value outputDFB,
                                std::optional<Value> dynamicDimensionExemplar) {
-  Value init = dynamicDimensionExemplar
-                   ? buildInitTensor(rewriter, loc, attachmentType,
-                                     *dynamicDimensionExemplar)
-                   : tensor::EmptyOp::create(rewriter, loc,
-                                             attachmentType.getShape(),
-                                             attachmentType.getElementType());
-  Value attached = AttachCBOp::create(rewriter, loc, attachmentType, init,
-                                      outputDFB);
+  Value init =
+      dynamicDimensionExemplar
+          ? buildInitTensor(rewriter, loc, attachmentType,
+                            *dynamicDimensionExemplar)
+          : tensor::EmptyOp::create(rewriter, loc, attachmentType.getShape(),
+                                    attachmentType.getElementType());
+  Value attached =
+      AttachCBOp::create(rewriter, loc, attachmentType, init, outputDFB);
   if (formalType == attachmentType) {
     return attached;
   }
@@ -216,17 +214,16 @@ static Value buildFormalOutput(PatternRewriter &rewriter, Location loc,
   }
   SmallVector<OpFoldResult> strides(formalType.getRank(),
                                     rewriter.getIndexAttr(1));
-  return tensor::ExtractSliceOp::create(rewriter, loc, formalType,
-                                        attached, offsets, sizes, strides);
+  return tensor::ExtractSliceOp::create(rewriter, loc, formalType, attached,
+                                        offsets, sizes, strides);
 }
 
-static void buildFormalOutputs(
-    PatternRewriter &rewriter, Location loc,
-    const ComputeOpCreationPlan &creation,
-    const OutputPublicationPlan &outputs,
-    std::optional<Value> dynamicDimensionExemplar,
-    SmallVectorImpl<Value> &attachedOutputs,
-    SmallVectorImpl<Type> &resultTypes) {
+static void buildFormalOutputs(PatternRewriter &rewriter, Location loc,
+                               const ComputeOpCreationPlan &creation,
+                               const OutputPublicationPlan &outputs,
+                               std::optional<Value> dynamicDimensionExemplar,
+                               SmallVectorImpl<Value> &attachedOutputs,
+                               SmallVectorImpl<Type> &resultTypes) {
   verifyOutputPlans(creation, outputs);
   for (auto [outputPlan, outputDFB] :
        llvm::zip_equal(creation.outputPlans, outputs.dfbs)) {
@@ -237,8 +234,9 @@ static void buildFormalOutputs(
   }
 }
 
-static void addFormalOutputBlockArguments(
-    Block *body, Location loc, const ComputeOpCreationPlan &creation) {
+static void
+addFormalOutputBlockArguments(Block *body, Location loc,
+                              const ComputeOpCreationPlan &creation) {
   for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
     body->addArgument(outputPlan.formalType.getElementType(), loc);
   }
@@ -1210,11 +1208,10 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Attribute> iteratorTypes =
         buildIteratorTypeAttributes(rewriter, plan.iteration.iteratorTypes);
 
-    auto attachmentType =
-        cast<RankedTensorType>(plan.outputView.getType());
-    Value initAttached = buildFormalOutput(
-        rewriter, loc, attachmentType, outputType, plan.outputDFB,
-        plan.outputView);
+    auto attachmentType = cast<RankedTensorType>(plan.outputView.getType());
+    Value initAttached =
+        buildFormalOutput(rewriter, loc, attachmentType, outputType,
+                          plan.outputDFB, plan.outputView);
 
     auto computeOp = ComputeOp::create(
         rewriter, loc, TypeRange{outputType}, ValueRange{input},
