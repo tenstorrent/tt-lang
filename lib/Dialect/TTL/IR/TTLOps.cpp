@@ -1865,9 +1865,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // require the corresponding tensor dimension to be 1.
   // Examples of invalid maps: (d0, d1)->(d0 + d1), (d0, d1)->(1),
   // (d0, d1, d2)->(d0, d0), (d0)[s0]->(d0 + s0).
-  auto validateMapStructure =
-      [&](AffineMap map, RankedTensorType tensorTy, StringRef kind,
-          size_t idx) -> mlir::LogicalResult {
+  auto validateMapStructure = [&](AffineMap map, RankedTensorType tensorTy,
+                                  StringRef kind,
+                                  size_t idx) -> mlir::LogicalResult {
     if (map.getNumSymbols() != 0) {
       return emitOpError() << kind << " " << idx
                            << " indexing map must not contain symbols";
@@ -1884,9 +1884,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       } else if (auto constantExpr =
                      mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
         if (constantExpr.getValue() != 0) {
-          return emitOpError()
-                 << kind << " " << idx
-                 << " indexing map constants must be zero";
+          return emitOpError() << kind << " " << idx
+                               << " indexing map constants must be zero";
         }
         if (tensorTy.getDimSize(resIdx) != 1) {
           return emitOpError() << kind << " " << idx << " broadcast dim "
