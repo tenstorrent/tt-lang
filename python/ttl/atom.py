@@ -841,7 +841,10 @@ def _compile_atom(
     }
     program = Program(*threads, args=args, kwargs=injected_program_kwargs)
     resolved_mesh_program_placements = _resolve_mesh_program_placements(
-        args, device_domain, mesh_program_placements
+        args,
+        device_domain,
+        mesh_program_placements,
+        required_devices=pipe_graph.device_endpoints(),
     )
 
     return _lower_program_to_kernel(
@@ -1014,6 +1017,7 @@ def operation(
     ``mesh_program_placements`` optionally limits execution to logical device
     coordinate tuples or inclusive ``ttl.MeshProgramPlacement`` ranges. When
     omitted, an operation with a device domain executes on the full domain.
+    Explicit placements must include every graph-based PipeNet endpoint.
     """
 
     def _decorator(fn):

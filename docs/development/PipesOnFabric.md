@@ -564,7 +564,8 @@ An operation executes on its complete `device_domain` by default. The
 device coordinates or inclusive `ttl.MeshProgramPlacement` ranges. The host
 then materializes descriptors only for those devices. Placement is explicit:
 the compiler does not infer it from PipeNet endpoints because non-PipeNet code
-can have effects on every logical device.
+can have effects on every logical device. Every graph-based PipeNet source and
+destination must be included in the explicit placement.
 
 The compiler-managed runtime prefix is:
 
