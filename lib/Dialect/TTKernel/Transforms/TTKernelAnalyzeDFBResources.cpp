@@ -41,6 +41,9 @@ namespace {
 
 constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
 constexpr llvm::StringLiteral kCoreCoordAttrName = "ttl.core_coord";
+constexpr llvm::StringLiteral kBaseCTAIndexAttrName = "ttl.base_cta_index";
+constexpr llvm::StringLiteral kTensorAccessorGlobalIndexAttrName =
+    "ttl.tensor_accessor_global_index";
 constexpr llvm::StringLiteral kLogicalConfigsAttrName =
     "ttl.logical_dfb_configs";
 constexpr llvm::StringLiteral kLogicalIndexAttrName =
@@ -936,6 +939,33 @@ struct TTKernelAnalyzeDFBResourcesPass
               static_cast<uint32_t>(config->second.physicalIndex));
         }
       });
+
+      int64_t finalSlotCount = 0;
+      for (const auto &[logicalIndex, logical] : logicalConfigs) {
+        (void)logicalIndex;
+        finalSlotCount =
+            std::max(finalSlotCount, logical.physicalIndex + 1);
+      }
+      OpBuilder builder(module.getContext());
+      for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+        if (func->hasAttr(kBaseCTAIndexAttrName)) {
+          func->setAttr(kBaseCTAIndexAttrName,
+                        builder.getI32IntegerAttr(finalSlotCount));
+        }
+      }
+      module.walk([&](ttk::TensorAccessorArgsOp accessor) {
+        auto globalIndex = accessor->getAttrOfType<IntegerAttr>(
+            kTensorAccessorGlobalIndexAttrName);
+        if (!globalIndex) {
+          return;
+        }
+        std::string ctaExpr =
+            "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
+            std::to_string(globalIndex.getInt()) + ", " +
+            std::to_string(finalSlotCount) + ">()";
+        accessor.setCtaExprAttr(builder.getStringAttr(ctaExpr));
+      });
+
       for (func::FuncOp func : module.getOps<func::FuncOp>()) {
         auto thread = func->getAttrOfType<ttk::ThreadTypeAttr>(
             ttk::ThreadTypeAttr::name);
@@ -979,7 +1009,6 @@ struct TTKernelAnalyzeDFBResourcesPass
                                              sortedUnpackIndices));
       }
 
-      OpBuilder builder(module.getContext());
       SmallVector<Attribute> remappedConfigs;
       remappedConfigs.reserve(configsAttr.size());
       for (Attribute attr : configsAttr) {

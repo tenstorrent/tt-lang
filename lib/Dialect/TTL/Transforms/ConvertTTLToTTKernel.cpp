@@ -57,6 +57,8 @@ namespace ttk = mlir::tt::ttkernel;
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+constexpr llvm::StringLiteral kTensorAccessorGlobalIndexAttr =
+    "ttl.tensor_accessor_global_index";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 constexpr llvm::StringLiteral kDFBResetPreservedIndicesAttrName =
@@ -176,6 +178,8 @@ static Value buildTensorAccessor(Location loc,
       rewriter, loc, dummyCTA.getResult(), crtaConst.getResult(),
       /*prev_args=*/Value(), rewriter.getStringAttr(ctaExpr),
       /*crta_expr=*/nullptr);
+  args->setAttr(kTensorAccessorGlobalIndexAttr,
+                rewriter.getI32IntegerAttr(globalTensorIdx));
   auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
                                                 bankBase, pageSize);
   return accessor.getResult();
