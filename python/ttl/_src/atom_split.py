@@ -20,12 +20,17 @@ from enum import Enum, auto
 from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 from ttl.dfb_reset import DFBReset, _BoundDFBReset
+from ttl.dfb_reconfiguration import (
+    DFBReconfiguration,
+    _BoundDFBReconfiguration,
+)
+from ttl.fabric import FabricManagerClaim
 from ttl.kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    PIPE_SOURCE_KERNEL,
     _DFB_RELEASE_METHODS,
-    _PIPE_SOURCE_KERNEL_ROLE,
     _format_kernel_capacity_error,
     _format_selector,
     _selector_kind,
@@ -35,10 +40,7 @@ from ttl.kernel import (
 _EXTERNAL_CALL_NAME = "call_extern_func"
 _KERNEL_KEYWORD = "kernel"
 _DFB_RESET_CALLS = frozenset({"reset_dfbs", "reset_all_dfbs"})
-_PIPE_SOURCE_KERNEL = Kernel._implicit(
-    KernelKind.DATA_MOVEMENT,
-    _PIPE_SOURCE_KERNEL_ROLE,
-)
+_DFB_RECONFIGURATION_CALL_NAME = "reconfigure_dfbs"
 
 
 class _Placement(Enum):
@@ -106,7 +108,7 @@ _TTL_NAMESPACES: Dict[str, Union[KernelKind, _Placement]] = {
 
 # Pipe source and destination callbacks have distinct logical affinities.
 _PIPENET_METHODS: Dict[str, KernelSelector] = {
-    "if_src": _PIPE_SOURCE_KERNEL,
+    "if_src": PIPE_SOURCE_KERNEL,
     "if_dst": KernelKind.DATA_MOVEMENT,
 }
 
@@ -148,6 +150,18 @@ def _is_external_call(call: ast.Call) -> bool:
     )
 
 
+def _is_dfb_reconfiguration_call(call: ast.Call) -> bool:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id == _DFB_RECONFIGURATION_CALL_NAME
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == _DFB_RECONFIGURATION_CALL_NAME
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "ttl"
+    )
+
+
 def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
     for keyword in call.keywords:
         if keyword.arg == _KERNEL_KEYWORD:
@@ -177,6 +191,7 @@ def _flatten_kernel_kind_union(node: ast.expr) -> List[ast.expr]:
 
 class _DefaultTTLSelectorNamespace:
     KernelKind = KernelKind
+    PIPE_SOURCE_KERNEL = PIPE_SOURCE_KERNEL
 
 
 _DEFAULT_TTL_SELECTOR_NAMESPACE = _DefaultTTLSelectorNamespace()
@@ -207,6 +222,7 @@ class _KernelSelectorResolver:
         selector = _kernel_keyword(call)
         if selector is None:
             if len(inferred_kernels) == 1:
+                self._validate_fabric_manager_effects(call, inferred_kernels)
                 return inferred_kernels
             raise _split_error(
                 call,
@@ -222,7 +238,40 @@ class _KernelSelectorResolver:
                 f"({_format_kernels(selected)}) conflicts with inferred "
                 f"selection ({_format_kernels(inferred_kernels)})",
             )
+        self._validate_fabric_manager_effects(call, selected)
         return selected
+
+    def _validate_fabric_manager_effects(
+        self, call: ast.Call, selected: FrozenSet[KernelSelector]
+    ) -> None:
+        effects = next(
+            (
+                keyword.value
+                for keyword in call.keywords
+                if keyword.arg == "fabric_manager_effects"
+            ),
+            None,
+        )
+        if not isinstance(effects, (ast.Tuple, ast.List)):
+            return
+        for effect in effects.elts:
+            if (
+                not isinstance(effect, ast.Call)
+                or not isinstance(effect.func, ast.Attribute)
+                or not isinstance(effect.func.value, ast.Name)
+            ):
+                continue
+            claim = self.selector_scope.get(effect.func.value.id)
+            if not isinstance(claim, FabricManagerClaim):
+                continue
+            claim_selection = frozenset({claim.kernel})
+            if selected != claim_selection:
+                raise _split_error(
+                    effect,
+                    f"fabric manager claim {claim.identity!r} selects "
+                    f"{_format_kernels(claim_selection)}, but the external "
+                    f"call selects {_format_kernels(selected)}",
+                )
 
     def resolve_reset(self, call: ast.Call) -> FrozenSet[KernelSelector]:
         if len(call.args) != 1:
@@ -252,6 +301,43 @@ class _KernelSelectorResolver:
                     reset_node,
                     "DFBReset participant Kernel must be declared by the "
                     "enclosing operation",
+                )
+        return frozenset(participants)
+
+    def resolve_dfb_reconfiguration(self, call: ast.Call) -> FrozenSet[KernelSelector]:
+        if len(call.args) != 1 or call.keywords:
+            raise _split_error(
+                call,
+                "reconfigure_dfbs requires exactly one positional "
+                "DFBReconfiguration argument",
+            )
+        boundary_node = call.args[0]
+        boundary = self._resolve_reference(boundary_node)
+        if isinstance(boundary, _BoundDFBReconfiguration):
+            participants = boundary.participants
+        elif isinstance(boundary, DFBReconfiguration):
+            participants = boundary.participants
+        else:
+            type_detail = ""
+            if boundary is not _MISSING_SELECTOR_VALUE:
+                type_detail = f", got {type(boundary).__name__}"
+            raise _split_error(
+                boundary_node,
+                "reconfigure_dfbs argument must be a DFBReconfiguration "
+                f"captured by the enclosing operation{type_detail}",
+            )
+        for participant in participants:
+            if (
+                isinstance(participant, Kernel)
+                and participant._implicit_role is None
+                and not any(
+                    participant is kernel for kernel in self.logical_kernels.values()
+                )
+            ):
+                raise _split_error(
+                    boundary_node,
+                    "DFBReconfiguration participant Kernel must be declared "
+                    "by the enclosing operation",
                 )
         return frozenset(participants)
 
@@ -318,8 +404,9 @@ class _KernelSelectorResolver:
         value = self._resolve_reference(node)
         if isinstance(value, KernelKind):
             return value
-        if isinstance(value, Kernel) and any(
-            value is kernel for kernel in self.logical_kernels.values()
+        if isinstance(value, Kernel) and (
+            value is PIPE_SOURCE_KERNEL
+            or any(value is kernel for kernel in self.logical_kernels.values())
         ):
             return value
         if isinstance(node, ast.Attribute):
@@ -367,6 +454,8 @@ def _classify_ttl_call(
     """Return a registry-driven call's logical-kernel selection."""
     if _is_external_call(call):
         return selector_resolver.resolve_external(call, inferred_external_kernels)
+    if _is_dfb_reconfiguration_call(call):
+        return selector_resolver.resolve_dfb_reconfiguration(call)
 
     func = call.func
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):

@@ -15,6 +15,8 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from ttl.condition import DispatchCondition
 from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
+from ttl.dfb_reconfiguration import DFBReconfiguration
+from ttl.fabric import FabricManagerClaim
 from ttl.kernel import Kernel
 from ttl.scalar import ScalarType
 
@@ -148,16 +150,24 @@ def inline_atom_calls(
 ) -> Tuple[
     Dict[str, object],
     Dict[str, Kernel],
+    Dict[str, FabricManagerClaim],
     Dict[str, DispatchCondition],
     Dict[str, DFBAllocationGroup],
     Dict[str, DFBReset],
+    Dict[str, DFBReconfiguration],
 ]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
     logical_kernels = {}
+    fabric_manager_claims = {
+        name: fn_globals[name]
+        for name in sorted(_loaded_names(fn_def.body))
+        if name in fn_globals and isinstance(fn_globals[name], FabricManagerClaim)
+    }
     dispatch_conditions = {}
     allocation_groups = {}
     dfb_resets = {}
+    dfb_reconfigurations = {}
     inline_discriminators = {}
     fn_def.body = _inline_statements(
         fn_def.body,
@@ -166,17 +176,21 @@ def inline_atom_calls(
         reserved_names,
         external_pipenets,
         logical_kernels,
+        fabric_manager_claims,
         dispatch_conditions,
         allocation_groups,
         dfb_resets,
+        dfb_reconfigurations,
         inline_discriminators,
     )
     return (
         external_pipenets,
         logical_kernels,
+        fabric_manager_claims,
         dispatch_conditions,
         allocation_groups,
         dfb_resets,
+        dfb_reconfigurations,
     )
 
 
@@ -187,9 +201,11 @@ def _inline_statements(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     dispatch_conditions: Dict[str, DispatchCondition],
     allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
+    dfb_reconfigurations: Dict[str, DFBReconfiguration],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
@@ -201,9 +217,11 @@ def _inline_statements(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            fabric_manager_claims,
             dispatch_conditions,
             allocation_groups,
             dfb_resets,
+            dfb_reconfigurations,
             inline_discriminators,
         )
         match = _standalone_operation_call(statement, scope)
@@ -221,9 +239,11 @@ def _inline_statements(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                fabric_manager_claims,
                 dispatch_conditions,
                 allocation_groups,
                 dfb_resets,
+                dfb_reconfigurations,
                 inline_discriminators,
             )
         )
@@ -237,9 +257,11 @@ def _inline_compound_bodies(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     dispatch_conditions: Dict[str, DispatchCondition],
     allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
+    dfb_reconfigurations: Dict[str, DFBReconfiguration],
     inline_discriminators: Dict[str, int],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
@@ -255,9 +277,11 @@ def _inline_compound_bodies(
             reserved_names,
             external_pipenets,
             logical_kernels,
+            fabric_manager_claims,
             dispatch_conditions,
             allocation_groups,
             dfb_resets,
+            dfb_reconfigurations,
             inline_discriminators,
         )
         setattr(statement, attribute, inlined)
@@ -274,9 +298,11 @@ def _inline_compound_bodies(
                 reserved_names,
                 external_pipenets,
                 logical_kernels,
+                fabric_manager_claims,
                 dispatch_conditions,
                 allocation_groups,
                 dfb_resets,
+                dfb_reconfigurations,
                 inline_discriminators,
             )
 
@@ -352,9 +378,11 @@ def _expand_call(
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
     logical_kernels: Dict[str, Kernel],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
     dispatch_conditions: Dict[str, DispatchCondition],
     allocation_groups: Dict[str, DFBAllocationGroup],
     dfb_resets: Dict[str, DFBReset],
+    dfb_reconfigurations: Dict[str, DFBReconfiguration],
     inline_discriminators: Dict[str, int],
 ) -> List[ast.stmt]:
     spec = callee._spec
@@ -382,6 +410,13 @@ def _expand_call(
         reserved_names,
         logical_kernels,
     )
+    _add_fabric_manager_claim_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        fabric_manager_claims,
+    )
     _add_dispatch_condition_bindings(
         spec,
         bindings,
@@ -402,6 +437,15 @@ def _expand_call(
         scope,
         reserved_names,
         dfb_resets,
+        selected_kernels,
+        suffix,
+    )
+    _add_dfb_reconfiguration_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        dfb_reconfigurations,
         selected_kernels,
         suffix,
     )
@@ -492,16 +536,26 @@ def _add_logical_kernel_bindings(
 ) -> Dict[int, Kernel]:
     loaded_names = _loaded_names(spec.fn_ast.body)
     selected_kernels: Dict[int, Kernel] = {}
-    reset_participant_ids = {
+    synchronization_participant_ids = {
         id(participant)
         for reset_name, reset in spec.dfb_resets.items()
         if reset_name in loaded_names
         for participant in reset.participants
     }
+    synchronization_participant_ids.update(
+        id(participant)
+        for boundary_name, boundary in spec.dfb_reconfigurations.items()
+        if boundary_name in loaded_names
+        for participant in boundary.participants
+        if isinstance(participant, Kernel)
+    )
     for name, kernel in spec.logical_kernels.items():
         if name in bindings:
             continue
-        if name not in loaded_names and id(kernel) not in reset_participant_ids:
+        if (
+            name not in loaded_names
+            and id(kernel) not in synchronization_participant_ids
+        ):
             continue
         existing_name = next(
             (
@@ -543,6 +597,32 @@ def _add_dispatch_condition_bindings(
             existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
             scope[existing_name] = condition
             dispatch_conditions[existing_name] = condition
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
+
+
+def _add_fabric_manager_claim_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    fabric_manager_claims: Dict[str, FabricManagerClaim],
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, claim in spec.fabric_manager_claims.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in fabric_manager_claims.items()
+                if candidate is claim
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = claim
+            fabric_manager_claims[existing_name] = claim
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
@@ -600,6 +680,41 @@ def _add_dfb_reset_bindings(
         fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
         scope[fresh_name] = reset_instance
         dfb_resets[fresh_name] = reset_instance
+        bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
+
+
+def _add_dfb_reconfiguration_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    dfb_reconfigurations: Dict[str, DFBReconfiguration],
+    selected_kernels: Dict[int, Kernel],
+    suffix: str,
+) -> None:
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    boundary_instances: Dict[int, DFBReconfiguration] = {}
+    for name, boundary in spec.dfb_reconfigurations.items():
+        if name not in loaded_names or name in bindings:
+            continue
+        boundary_instance = boundary_instances.get(id(boundary))
+        if boundary_instance is None:
+            # Each composed call declares a distinct boundary site. Aliases
+            # within that call retain one identity across all participants.
+            boundary_instance = DFBReconfiguration(
+                participants=tuple(
+                    (
+                        selected_kernels[id(participant)]
+                        if isinstance(participant, Kernel)
+                        else participant
+                    )
+                    for participant in boundary.participants
+                ),
+            )
+            boundary_instances[id(boundary)] = boundary_instance
+        fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
+        scope[fresh_name] = boundary_instance
+        dfb_reconfigurations[fresh_name] = boundary_instance
         bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
 
 

@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# TTLANG_HARDWARE_CI: skip-compiler
 # type: ignore
 
+import torch
 import ttl
 import ttnn
-from utils.correctness import assert_with_ulp
+from utils.correctness import assert_pcc
 
 
 @ttl.operation(grid=(1, 1))
@@ -69,22 +69,45 @@ def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
 
 
 def main() -> None:
-    # Test with reasonably sized matrices that are multiples of tile size
-    M, K, N = 128, 256, 64
-    a = ttnn.rand((M, K), dtype=ttnn.float32)
-    b = ttnn.rand((K, N), dtype=ttnn.float32)
-    out = ttnn.empty((M, N), dtype=ttnn.float32)
+    device = ttnn.open_device(device_id=0)
+    try:
+        # Test with reasonably sized matrices that are multiples of tile size.
+        M, K, N = 128, 256, 64
+        a_torch = torch.rand((M, K), dtype=torch.bfloat16)
+        b_torch = torch.rand((K, N), dtype=torch.bfloat16)
+        out_torch = torch.zeros((M, N), dtype=torch.bfloat16)
 
-    print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
-    print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
+        a = ttnn.from_torch(
+            a_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        b = ttnn.from_torch(
+            b_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
-    tt_lang_singlenode_matmul(a, b, out)
+        print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
+        print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
 
-    # Compute golden result
-    golden = a @ b
+        tt_lang_singlenode_matmul(a, b, out)
 
-    # Verify correctness with relaxed tolerance for matmul
-    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out), ulp_threshold=1000)
+        golden = a_torch @ b_torch
+        assert_pcc(golden.float(), ttnn.to_torch(out).float(), threshold=0.99)
+    finally:
+        ttnn.close_device(device)
 
 
 if __name__ == "__main__":

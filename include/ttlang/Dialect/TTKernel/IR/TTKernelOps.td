@@ -633,6 +633,36 @@ def TTKernel_BinaryDestReuseTilesOp : TTKernel_FPUOp<"binary_dest_reuse_tiles"> 
     }];
 }
 
+def TTKernel_ExperimentalRowNormalizationBlockOp :
+    TTKernel_FPUOp<"experimental_row_normalization_block"> {
+  let summary = "Normalize one row in a single DST acquisition";
+  let description = [{
+    Computes a full-row sum of squares, applies scale, epsilon, and reciprocal
+    square root, then reuses the retained scalar across a contiguous block of
+    input tiles. Optional gamma multiplication occurs in place before packing.
+
+    The operation does not acquire, commit, wait, release, reserve, push, pop,
+    or pack. Those transactions remain explicit surrounding TTKernel
+    operations.
+  }];
+  let arguments = (ins TTKernel_CB:$input_cb,
+                       TTKernel_CB:$gamma_cb,
+                       TTKernel_CB:$output_cb,
+                       I64Attr:$num_tiles,
+                       F32Attr:$scale,
+                       F32Attr:$epsilon,
+                       BoolAttr:$has_gamma,
+                       TTCore_DataTypeAttr:$dtype);
+  let assemblyFormat = [{
+    `(` $input_cb `,` $gamma_cb `,` $output_cb `)`
+    `num_tiles` `=` $num_tiles `scale` `=` $scale
+    `epsilon` `=` $epsilon `has_gamma` `=` $has_gamma
+    `dtype` `=` $dtype
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTKernel_UnaryBcastInitOp : TTKernel_InitOp<"unary_bcast_init"> {
     let summary = "Init function";
     let description = [{
@@ -4019,6 +4049,24 @@ def TTKernel_SemaphoreWaitMinOp : TTKernel_Op<"experimental.semaphore_wait_min">
     }];
 }
 
+def TTKernel_SemaphoreReachedOp
+    : TTKernel_Op<"experimental.semaphore_reached",
+                  [MemoryEffects<[MemRead]>]> {
+    let summary = "Test a semaphore completion threshold";
+    let description = [{
+      Invalidates the L1 cache, reads a local L1 semaphore address, and returns
+      whether its value is equal to or greater than the target value. The
+      operation does not block or modify the semaphore.
+    }];
+
+    let arguments = (ins TTKernel_L1AddrPtr:$sem_addr, I32:$val);
+    let results = (outs I1:$reached);
+
+    let assemblyFormat = [{
+      `(` $sem_addr `,` $val `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
 def TTKernel_NocSemaphoreSetMulticastOp
     : TTKernel_NocWriteCommandOp<"noc_semaphore_set_multicast"> {
     let summary = "NocSemaphoreSetMulticast";
@@ -4475,6 +4523,108 @@ def TTKernel_CloseFabricConnectionsOp : TTKernel_Op<"experimental.close_fabric_c
 
   let assemblyFormat = [{
     `(` $fabric_connection_manager `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_CreateRoutingPlaneConnectionManagerOp :
+    TTKernel_Op<"routing_plane.create_connection_manager"> {
+  let summary = "Create a routing-plane connection manager";
+  let description = [{
+    Creates the connection manager used by routing-plane fabric operations in
+    one kernel invocation.
+  }];
+  let results = (outs TTKernel_RoutingPlaneConnectionManager:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+def TTKernel_OpenRoutingPlaneConnectionsOp :
+    TTKernel_Op<"routing_plane.open_connections"> {
+  let summary = "Open routing-plane connections from runtime arguments";
+  let description = [{
+    Opens `connectionCount` routing-plane connections by reading their setup
+    data from runtime arguments beginning at `runtimeArgBase`. The result owns
+    one packet header for each opened connection.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$connectionCount,
+    Index:$runtimeArgBase
+  );
+  let results = (outs I32:$routeId);
+  let assemblyFormat = [{
+    $manager `,` $connectionCount `runtime_arg_base` `=` $runtimeArgBase
+      attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneAtomicIncOp :
+    TTKernel_Op<"routing_plane.atomic_inc"> {
+  let summary = "Increment a remote semaphore through one fabric connection";
+  let description = [{
+    Sends a non-posted atomic increment to `semaphoreAddress` through the
+    connection selected by `connectionIndex`. `destinationDeviceId` identifies
+    the final destination; `destinationMeshId` also selects the mesh when mesh
+    routing is enabled. `destinationHopCount` selects the route when
+    one-dimensional fabric routing is enabled.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
+    TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
+  let summary = "Write a payload and increment a remote semaphore";
+  let description = [{
+    Sends `sizeBytes` from local L1 memory to `destinationAddress` through the
+    connection selected by `connectionIndex`. Payloads larger than the active
+    fabric packet limit are split into consecutive packets. The final packet
+    atomically increments `semaphoreAddress`, so the increment observes the
+    complete transfer. `destinationDeviceId` identifies the final destination;
+    `destinationMeshId` also selects the mesh when mesh routing is enabled.
+    `destinationHopCount` selects the route when one-dimensional fabric routing
+    is enabled.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    I32:$sourceAddress,
+    I32:$sizeBytes,
+    TTKernel_NocAddr:$destinationAddress,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_CloseRoutingPlaneConnectionsOp :
+    TTKernel_Op<"routing_plane.close_connections"> {
+  let summary = "Close routing-plane connections";
+  let description = [{
+    Closes every active connection owned by `manager`.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$connectionCount
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
   }];
 }
 

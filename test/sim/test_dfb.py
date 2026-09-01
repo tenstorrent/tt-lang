@@ -1651,9 +1651,9 @@ def test_a_tile_grid_the_likeness_tensor_cannot_supply_is_rejected():
     """
     square = Tensor(torch.ones((32, 32), dtype=torch.float32), TILE_LAYOUT)
 
-    # A rank the likeness does not have: the tile grid is read against the
-    # tensor's dimensions one for one, so there is no dimension to compare to.
-    with pytest.raises(ValueError, match="dimensionality 2 does not match"):
+    # A rank the likeness does not have: a block may cover a trailing sub-slab
+    # of the likeness, but it cannot have more dimensions than the likeness has.
+    with pytest.raises(ValueError, match="dimensionality 3 exceeds"):
         DataflowBuffer(likeness_tensor=square, shape=(1, 1, 1), block_count=2)
 
     # More tiles than the likeness holds: 64x64 is two tiles by two.
@@ -2048,3 +2048,132 @@ class TestRowMajorBlockGuards:
         rm_tensor = Tensor(torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT)
         with pytest.raises(ValueError, match="Layout mismatch in copy_as_dest"):
             blk.copy_as_dest(rm_tensor)
+
+
+class TestToListBufferRankMismatch:
+    """to_list() when the backing buffer carries more axes than the tile grid.
+
+    A buffer allocated at a higher rank than its block leaves redundant leading
+    axes.  The tile grid must stay bound to the last two axes, which are the
+    ones the tile extents are measured from.
+    """
+
+    @staticmethod
+    def _block(buf: torch.Tensor, shape) -> Block:
+        return Block(
+            tensor=Tensor(buf),
+            shape=shape,
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.COMPUTE,
+            is_temporary=True,
+        )
+
+    def test_extra_leading_axis_yields_correctly_sliced_tiles(self) -> None:
+        """A (4, 1) grid over a (1, 128, 32) buffer slices the last two axes."""
+        buf = torch.arange(128 * 32, dtype=torch.float32).reshape(1, 128, 32)
+        tiles = self._block(buf, (4, 1)).to_list()
+
+        assert len(tiles) == 4
+        for r, tile in enumerate(tiles):
+            raw = tile.to_torch()
+            assert raw.shape == (32, 32)
+            assert torch.equal(raw, buf[0, r * 32 : (r + 1) * 32, :])
+
+    def test_extra_leading_axis_survives_transpose_round_trip(self) -> None:
+        """transpose() of such a block reassembles without a stack size mismatch."""
+        from sim.block import transpose
+
+        buf = torch.arange(128 * 32, dtype=torch.float32).reshape(1, 128, 32)
+        result = transpose(self._block(buf, (4, 1)))
+
+        assert result.shape == (1, 4)
+        tiles = result.to_list()
+        assert len(tiles) == 4
+        for c, tile in enumerate(tiles):
+            assert torch.equal(tile.to_torch(), buf[0, c * 32 : (c + 1) * 32, :].T)
+
+    def test_non_singleton_leading_axis_raises(self) -> None:
+        """A leading axis carrying data cannot be addressed by a smaller grid."""
+        buf = torch.zeros(2, 128, 32, dtype=torch.float32)
+        with pytest.raises(ValueError, match="cannot address a buffer of shape"):
+            self._block(buf, (4, 1)).to_list()
+
+    def test_one_dimensional_grid_ignores_leading_axis_guard(self) -> None:
+        """A 1-D grid indexes axis 0 directly, so a rank-2 buffer is not a mismatch."""
+        buf = torch.zeros(2, 1, dtype=torch.float32)
+        assert len(self._block(buf, (2,)).to_list()) == 2
+
+
+class TestBlockListStorageMetadata:
+    """Splitting and reassembling a block preserves its declared storage."""
+
+    @pytest.mark.parametrize(
+        "layout, shape",
+        [(TILE_LAYOUT, (32, 32)), (ROW_MAJOR_LAYOUT, (4, 8))],
+    )
+    def test_round_trip_preserves_dtype_layout_and_memory_config(
+        self, layout, shape
+    ) -> None:
+        source = Tensor(
+            torch.ones(shape, dtype=torch.float32),
+            layout,
+            ttnn.L1_MEMORY_CONFIG,
+            dtype=ttnn.bfloat16,
+        )
+        block = Block.from_tensor(source)
+
+        units = block.to_list()
+        rebuilt = Block.from_list(units, block.shape).to_tensor()
+
+        for tensor in [*units, rebuilt]:
+            assert tensor.dtype == ttnn.bfloat16
+            assert tensor.layout == layout
+            assert tensor.memory_config == ttnn.L1_MEMORY_CONFIG
+
+
+class TestScalarOperandDiagnostic:
+    """Binary block operators reject a scalar operand by name.
+
+    The compiler accepts ``blk * scalar`` via ttl.mul_unary_const, but the
+    simulator does not implement it (issue #869).  Until it does, the refusal
+    must name the operand rather than leak an attribute error from the layout
+    check.
+    """
+
+    @staticmethod
+    def _block() -> Block:
+        return Block(
+            tensor=Tensor(torch.full((1, 1, 32, 32), 2.0, dtype=torch.float32)),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.COMPUTE,
+            is_temporary=True,
+        )
+
+    @pytest.mark.parametrize(
+        "apply, name",
+        [
+            (lambda b: b * 0.5, "mul"),
+            (lambda b: b + 1.0, "add"),
+            (lambda b: b - 1.0, "sub"),
+            (lambda b: b / 2.0, "truediv"),
+        ],
+    )
+    def test_a_scalar_operand_is_refused_by_name(self, apply, name: str) -> None:
+        with pytest.raises(
+            TypeError, match=rf"unsupported operand for block {name}: float"
+        ):
+            apply(self._block())
+
+    def test_the_refusal_points_at_the_supported_alternative(self) -> None:
+        with pytest.raises(TypeError, match=r"ttl\.block\.fill"):
+            self._block() * 0.5
+
+    def test_an_integer_exponent_is_still_accepted(self) -> None:
+        """__pow__ handles int before reaching the binary path, so the guard misses it."""
+        squared = (self._block() ** 2).to_list()[0].to_torch()
+        assert squared[0, 0].item() == pytest.approx(4.0)
+
+    def test_a_block_operand_is_unaffected(self) -> None:
+        product = (self._block() * self._block()).to_list()[0].to_torch()
+        assert product[0, 0].item() == pytest.approx(4.0)

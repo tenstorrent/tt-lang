@@ -1,5 +1,7 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationAnalysis.cpp
   AccumulationUtils.cpp
+  CommonRuntimeArgLayout.cpp
   ComputeOpCreationPlanning.cpp
   ComputeTarget.cpp
   ComputeKernelConfigAnalysis.cpp
@@ -11,12 +13,15 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  FabricManagerLifetimeAnalysis.cpp
   PipeCapacityAnalysis.cpp
   PipeCounter.cpp
   DFBConcurrentKernelLivenessAnalysis.cpp
   DFBPhysicalAllocationPlan.cpp
   InterferenceGraphColoring.cpp
   PipeNetExecutionUtils.cpp
+  PipeNetForeachLowering.cpp
+  PipeNetParticipantPlan.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   PipePlanning.cpp
@@ -31,18 +36,19 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LaunchNodeDomainAnalysis.cpp
 
   LowerMatmulCompute.cpp
+  LowerRowNormalizationCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
-  TTLAnnotateL1AccLoops.cpp
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
+  TTLFormAccumulationScopes.cpp
   TTLFormPipeTransports.cpp
   TTLValidateCBBudget.cpp
+  TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
-  TTLFormAccumulationScopes.cpp
   TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
   TTLPrintDFBValueLifetimes.cpp

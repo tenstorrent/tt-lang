@@ -19,8 +19,10 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/FunctionExtras.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
@@ -52,6 +54,60 @@ struct SelectedPipeRecords {
 /// `ttl.select_pipe_dst`, and the pipe block argument of
 /// `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst`.
 FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
+
+/// Return the row-major index of `device` in `domain`.
+inline int64_t getLogicalDeviceIndex(DeviceDomainAttr domain,
+                                     DeviceRefAttr device) {
+  int64_t index = 0;
+  for (auto [component, coordinates] :
+       llvm::zip_equal(domain.getComponents(), device.getCoordinates())) {
+    for (auto [coordinate, extent] : llvm::zip_equal(
+             coordinates.asArrayRef(), component.getExtent().asArrayRef())) {
+      index = index * extent + coordinate;
+    }
+  }
+  return index;
+}
+
+/// One coordinate range and optional logical-device endpoint selected by a
+/// PipeNet record role.
+struct PipeRecordRoleFacts {
+  int64_t minX = 0;
+  int64_t minY = 0;
+  int64_t maxX = 0;
+  int64_t maxY = 0;
+  DeviceDomainAttr deviceDomain;
+  DeviceRefAttr device;
+};
+
+inline SmallVector<PipeRecordRoleFacts, 2>
+getPipeRecordRoleFacts(PipeRecordAttr record, PipeRole role) {
+  SmallVector<PipeRecordRoleFacts, 2> facts;
+  DeviceTransferAttr transfer = record.getDeviceTransfer();
+  DeviceDomainAttr deviceDomain =
+      transfer ? transfer.getDomain() : DeviceDomainAttr();
+  if (role == PipeRole::Source || role == PipeRole::Active) {
+    facts.push_back(PipeRecordRoleFacts{
+        record.getSrcX(), record.getSrcY(), record.getSrcX(), record.getSrcY(),
+        deviceDomain,
+        transfer ? transfer.getEdge().getSource() : DeviceRefAttr()});
+  }
+  if (role == PipeRole::Destination || role == PipeRole::Active) {
+    facts.push_back(PipeRecordRoleFacts{
+        record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
+        record.getDstEndY(), deviceDomain,
+        transfer ? transfer.getEdge().getDestination() : DeviceRefAttr()});
+  }
+  return facts;
+}
+
+inline PipeType getPipeTypeFromRecord(MLIRContext *context,
+                                      PipeRecordAttr record,
+                                      int64_t pipeNetId) {
+  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
+                       record.getDstStartX(), record.getDstStartY(),
+                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+}
 
 /// Returns a tile type directly or from a ranked tensor element type.
 FailureOr<ttcore::TileType> getTileType(Type type);
@@ -110,6 +166,23 @@ inline bool isNocKernelThread(mlir::Operation *op) {
          mlir::tt::ttkernel::ThreadType::Noc;
 }
 
+/// Return whether `device` is inside the half-open device coordinate range.
+/// The attributes must have matching component counts and ranks.
+inline bool deviceRangeContains(DeviceRangeAttr range, DeviceRefAttr device) {
+  for (auto [loCoordinate, coordinate, hiCoordinate] :
+       llvm::zip_equal(range.getLo().getCoordinates(), device.getCoordinates(),
+                       range.getHi().getCoordinates())) {
+    for (auto [lo, value, hi] :
+         llvm::zip_equal(loCoordinate.asArrayRef(), coordinate.asArrayRef(),
+                         hiCoordinate.asArrayRef())) {
+      if (value < lo || value >= hi) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
@@ -163,9 +236,95 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
 }
 
-/// Return the user reserve that produced a pipe receive destination block.
+/// Returns true when `operation` executes only in a then-region guarded by
+/// `condition`.
+inline bool isOperationInThenRegionGuardedBy(mlir::Operation *operation,
+                                             mlir::Value condition) {
+  for (mlir::Operation *ancestor = operation->getParentOp(), *child = operation;
+       ancestor; child = ancestor, ancestor = ancestor->getParentOp()) {
+    auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(ancestor);
+    if (!ifOp || ifOp.getCondition() != condition) {
+      continue;
+    }
+    return ifOp.getThenRegion().isAncestor(child->getParentRegion());
+  }
+  return false;
+}
+
+/// Returns true when `value` denotes the inactive branch of a conditionally
+/// acquired dataflow buffer.
+inline bool isInactiveGuardedDFBYield(mlir::Value value) {
+  value = traceUnrealizedCasts(value);
+  auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>();
+  return cast && cast.getInputs().empty() &&
+         cast->hasAttr("ttl.inactive_guarded_dfb");
+}
+
+/// Trace a tensor value through view-preserving operations to its DFB acquire
+/// when `use` is executed under the condition that makes a guarded acquire
+/// active.
+inline mlir::Operation *findCBAcquireOp(mlir::Value tensor,
+                                        mlir::Operation *use) {
+  while (true) {
+    tensor = traceUnrealizedCasts(tensor);
+    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+      tensor = attach.getTensor();
+      continue;
+    }
+    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      tensor = slice.getSource();
+      continue;
+    }
+    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+      tensor = extract.getTensor();
+      continue;
+    }
+    mlir::Operation *definition = tensor.getDefiningOp();
+    if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
+      return definition;
+    }
+
+    auto result = mlir::dyn_cast<mlir::OpResult>(tensor);
+    if (!result) {
+      return nullptr;
+    }
+    auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(result.getOwner());
+    if (!ifOp || ifOp.getElseRegion().empty() ||
+        !isOperationInThenRegionGuardedBy(use, ifOp.getCondition())) {
+      return nullptr;
+    }
+
+    unsigned resultIndex = result.getResultNumber();
+    auto thenYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+        ifOp.getThenRegion().front().getTerminator());
+    auto elseYield = mlir::dyn_cast<mlir::scf::YieldOp>(
+        ifOp.getElseRegion().front().getTerminator());
+    if (!thenYield || !elseYield ||
+        resultIndex >= thenYield.getResults().size() ||
+        resultIndex >= elseYield.getResults().size() ||
+        !isInactiveGuardedDFBYield(elseYield.getResults()[resultIndex])) {
+      return nullptr;
+    }
+    tensor = thenYield.getResults()[resultIndex];
+  }
+}
+
+/// Returns the reserve that produced `view` when `use` is executed under the
+/// same condition as a conditionally yielded reserve.
+inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view,
+                                                       mlir::Operation *use) {
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view, use));
+}
+
+/// Return the reserve that produced an unguarded pipe receive destination.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
+}
+
+/// Return the reserve that produced a pipe receive destination used here.
+inline mlir::tt::ttl::CBReserveOp
+findCBReserveForPipeReceive(mlir::Value dst, mlir::Operation *use) {
+  return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst, use));
 }
 
 /// Returns the DFB declaration reached through unrealized conversion casts.
@@ -765,6 +924,22 @@ FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op);
 /// Return concrete DST write indices for an interface-bearing operation.
 FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 
+/// Canonical comparison of a wait-any result index with one candidate.
+struct ReadyReceiveSelection {
+  Operation *waitAny = nullptr;
+  int64_t candidateIndex = 0;
+  bool selectedWhenTrue = true;
+};
+
+/// Return the wait-any selection represented by an integer predicate.
+std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate);
+
+/// Return whether `operation` executes in the selected region for one
+/// wait-any candidate.
+bool isInReadyReceiveSelectionRegion(
+    Operation *operation, Operation *waitAny, int64_t candidateIndex,
+    llvm::function_ref<bool(Operation *, Operation *)> isOrderedBefore);
+
 /// Set the dst_index Value on a tile op with TTLDstResultOpTrait.
 inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
   assert(op->hasTrait<TTLDstResultOpTrait>() &&
@@ -802,23 +977,12 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   return tileOp;
 }
 
-/// Collect the CB values targeted by pack_tile ops inside a loop.
+/// Collect the dataflow buffer values targeted by pack operations inside a
+/// loop.
 llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
 
-/// Returns true if two loops share any pack_tile CB target.
+/// Returns true if two loops share any pack operation dataflow buffer target.
 bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
-
-/// A group of consecutive sibling loops that pack to the same output CB.
-struct LoopGroup {
-  scf::ForOp rootLoop;
-  SmallVector<scf::ForOp> loops;
-  Operation *scopeEnd = nullptr;
-};
-
-/// Collect groups of annotated sibling loops that share a pack CB target.
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

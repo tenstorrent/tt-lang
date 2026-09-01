@@ -42,7 +42,9 @@ def publish_input():
     input_dfb.publish()
 ```
 
-The tensor must use TILE layout, height-sharded L1 storage, and BF16 or FP32.
+The tensor must use TILE layout, height-, width-, or block-sharded L1 storage,
+and BF16, FP32, BFP4_B, or BFP8_B. Interleaved and ND-sharded tensors are
+rejected.
 The optional `byte_offset` must be page-aligned. The bound byte size is
 `product(shape) * block_count * page_size`; allocation padding does not change
 the DFB capacity. The current contract supports one device and one or more
@@ -84,26 +86,38 @@ simulated tensor-backed storage is not implemented.
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
-ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
-ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
-ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
-ttl-create-producer-compute    (FuncOp)   Create producer ttl.compute ops
-ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
-convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
-ttl-insert-cb-sync             (FuncOp)   Insert remaining DFB synchronization
-ttl-verify-pipenet-guards      (Module)   Verify PipeNet launch-node domains
-ttl-verify-pipenet-schedule    (Module)   Verify PipeNet event ordering
-ttl-form-pipe-transports       (Module)   Group eligible repeated transfers
-ttl-coalesce-dfb-acquires      (FuncOp)   Coalesce adjacent DFB acquisitions
-ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
-ttl-set-compute-kernel-config  (ModuleOp) Resolve per-kernel configuration
+ttl-form-accumulation-scopes       (FuncOp) Form tensor accumulation scopes
+ttl-lower-accumulation-scopes      (FuncOp) Select tensor accumulation storage
+ttl-materialize-loop-state         (FuncOp) Remove ranked-tensor scf.for iter_args
+ttl-insert-copy-wait               (FuncOp) Insert missing ttl.wait ops
+ttl-auto-sync                      (FuncOp) Insert/coalesce DFB synchronization
+ttl-insert-accumulation-scopes     (FuncOp) Form DFB accumulation scopes
+ttl-lower-accumulation-scopes      (FuncOp) Lower DFB accumulation metadata
+ttl-create-producer-compute        (FuncOp) Create producer ttl.compute ops
+ttl-insert-intermediate-dfbs       (FuncOp) Materialize compiler-allocated DFBs
+convert-ttl-to-compute             (FuncOp) Lower remaining tensor ops
+ttl-insert-cb-sync                 (FuncOp) Insert remaining DFB synchronization
+ttl-verify-pipenet-guards          (Module) Verify PipeNet launch-node domains
+ttl-verify-pipenet-schedule        (Module) Verify PipeNet event ordering
+ttl-form-pipe-transports           (Module) Form PipeNet transport DFBs
+ttl-coalesce-dfb-acquires          (FuncOp) Coalesce adjacent DFB acquisitions
+ttl-finalize-dfb-indices           (Module) Finalize identities and allocations
+ttl-set-compute-kernel-config      (Module) Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
-ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
-ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
-ttl-validate-cb-budget         (Module)   Validate static DFB and reset storage
-convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
-ttkernel-insert-inits          (Module)   Insert hardware init calls
+ttl-annotate-cb-associations       (FuncOp) Copy DFB indices to tile ops
+ttl-verify-dfb-spsc                (Module) Verify producer/consumer uniqueness
+ttl-erase-pipenet-scopes           (Module) Remove verified PipeNet markers
+ttl-validate-cb-budget             (Module) Validate DFB/reset/reconfig L1 use
+convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
+ttkernel-insert-inits              (Module) Insert hardware init calls
+ttkernel-specialize-cores          (Module) Clone coordinate-dependent kernels
+canonicalize, cse                  (Module) Remove untaken coordinate branches
+ttkernel-annotate-dfb-use          (Module) Record surviving physical DFB uses
 ```
+
+The final three entries run only when per-core specialization is enabled.
+Annotation follows canonicalization so an eliminated branch cannot keep an
+otherwise-unused DFB live on that clone's launch node.
 
 `ttl-finalize-dfb-indices` must precede
 `ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.
@@ -117,6 +131,62 @@ finalization. Guard verification uses the read-only logical identity analysis,
 which assigns temporary IDs to compiler-created DFBs without modifying IR.
 Schedule verification uses exact transfer provenance and does not depend on DFB
 allocation.
+Transport formation records a conservative PipeNet L1 reservation before
+physical index assignment. Finalization may use that reservation to select a
+lower-byte valid coloring. The budget pass validates finalized DFB and
+synchronized-reset and reconfiguration allocations. Conversion validates the
+exact combined allocation after PipeNet resource planning.
+
+### Per-core descriptor allocation
+
+Physical allocation records the exact union of launch nodes that access each
+physical DFB index. The runtime restricts descriptors to this domain without
+requiring kernel specialization. An exact empty domain installs no descriptor;
+an unknown domain retains conservative whole-grid allocation.
+
+Per-core kernel specialization can remove different DFB operations on
+different launch nodes. Each final TTKernel function records the physical
+indices still referenced by its compile-time arguments in
+`ttl.used_dfb_indices`. Direct helper calls contribute their transitive uses.
+An unresolved call or missing annotation is conservative and keeps every DFB
+available on the affected function's launch nodes.
+
+The runtime unions these sets for every kernel dispatched to a logical core,
+then intersects the result with the physical allocation domain and finalized
+storage segments. Static storage, tensor-backed ranges, and PipeNet
+computed-address backing therefore use only cores where a surviving kernel can
+access that physical index. A computed-address DFB with an empty effective
+domain retains one hidden backing shard because the PipeNet ABI still requires
+a receiver address, but no launch core installs its descriptor.
+
+Descriptor construction creates one descriptor for each physical DFB storage
+source and restricts it to the exact launch nodes using that source. Sparse
+domains allocate one tensor shard per selected core rather than the area of
+their bounding rectangle.
+
+TT-Metal allocates static descriptor storage in descriptor order. It maintains
+one allocation frontier per core, and a descriptor shared by several cores
+starts at the greatest frontier among those cores. The runtime simulates these
+frontiers with TT-Metal's address alignment and the remaining L1 on each core.
+It preserves the physical-index order when that order fits. Otherwise, it
+evaluates deterministic node-count orders and improving pairwise exchanges. If
+those orders do not fit, a bounded exact search prunes states whose per-core
+frontiers are dominated or whose remaining minimum allocation exceeds L1. Only
+an order whose simulated allocation fits every selected core is emitted. Search
+exhaustion proves that no order fits; reaching the state limit reports a
+conservative failure and the best candidate's overflow.
+
+The usable interval for each core begins at the configured DFB allocator base
+and ends at the lowest live L1 tensor page. Subtracting only allocated page
+sizes would ignore allocator gaps and could overestimate the available range.
+Tensor-backed and already allocated computed-address storage do not advance the
+static frontiers. For a multi-device mesh, tensor and runtime-resource
+allocations use common L1 addresses, while harvested worker mappings can
+differ. The runtime therefore applies the reference allocator's global minimum
+remaining interval to every logical core.
+The correctness invariant is that every surviving DFB access has one compatible
+descriptor on its launch core; conservative metadata preserves the
+whole-program descriptor behavior when this cannot be proved.
 
 `ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
 `bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The
@@ -209,6 +279,131 @@ or complete NoC commands issued by another core or a non-participating RISC.
 Every producer must issue its required transfers before its local boundary
 occurrence; the participating data movement RISC then completes its own
 outstanding commands. Runtime lowering is currently restricted to Blackhole.
+
+## Synchronized reconfiguration epochs
+
+A `DFBReconfiguration` declares one compute kernel and two data-movement
+kernels that execute one worker-local configuration boundary. Every boundary
+site executes zero or one dynamic instance per dispatch and launch node. All
+sites in one module declare the same participant set, and every active
+participant executes the same boundary instances in the same dynamic order.
+Structured conditional execution is supported only when the participant
+conditions are equivalent. Runtime execution is restricted to Blackhole.
+
+The declaration captures the participating logical kernels. Each participant
+calls `ttl.reconfigure_dfbs` at the corresponding point between two DFB
+lifecycles:
+
+```python
+reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+boundary = ttl.DFBReconfiguration(
+    participants=(ttl.KernelKind.COMPUTE, reader_kernel, writer_kernel)
+)
+
+
+@ttl.operation(grid=(1, 1))
+def two_stage_copy(first_input, first_output, second_input, second_output):
+    first_source = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+    first_result = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+    second_source = ttl.make_dfb("bf16", shape=(1, 2), block_count=2)
+    second_result = ttl.make_dfb("bf16", shape=(1, 2), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with first_source.wait() as source:
+            with first_result.reserve() as result:
+                result.store(source)
+        ttl.reconfigure_dfbs(boundary)
+        with second_source.wait() as source:
+            with second_result.reserve() as result:
+                result.store(source)
+
+    @ttl.datamovement(kernel=reader_kernel)
+    def read():
+        with first_source.reserve() as destination:
+            ttl.copy(first_input[0, 0], destination).wait()
+        ttl.reconfigure_dfbs(boundary)
+        with second_source.reserve() as destination:
+            ttl.copy(second_input[0:1, 0:2], destination).wait()
+
+    @ttl.datamovement(kernel=writer_kernel)
+    def write():
+        with first_result.wait() as source:
+            ttl.copy(source, first_output[0, 0]).wait()
+        ttl.reconfigure_dfbs(boundary)
+        with second_result.wait() as source:
+            ttl.copy(source, second_output[0:1, 0:2]).wait()
+```
+
+The first and second DFBs may receive the same physical indices because their
+lifecycles are ordered by the boundary. The compiler derives and installs the
+second descriptors; the declaration does not supply descriptor values.
+
+Concurrent-kernel liveness builds a happens-before graph for each launch node
+and orders reconfiguration boundaries independently of their numeric ordinals.
+An ordinal identifies a boundary; it does not define execution order. Every
+boundary pair that co-occurs on a launch node must have a strict local order,
+and the union of those local orders must be acyclic. Disjoint boundary domains
+need not contain the same boundary sequence. Unknown execution or ordering
+remains conservative.
+
+A complete reserve/push/wait/pop lifecycle can end before a boundary and a new
+lifecycle can begin afterward. An incomplete transaction, unread payload, or
+other live protocol state may cross only when the logical DFB retains the same
+physical index, storage, and interface configuration. Such a lifecycle remains
+active in every crossed allocation epoch. A lifecycle beginning under a
+conditional boundary must use the same condition so an inactive boundary
+cannot leave a stale descriptor for unconditional following work.
+
+The allocation conflict graph permits two lifecycle epochs to share a physical
+index only when their per-node active epochs are disjoint and their static
+element type and tile descriptor are compatible. Reconfiguration can change
+outer DFB geometry, block count, and storage. Tensor-backed ranges are checked
+against the complete set of descriptors installed initially and after each
+boundary, in proven execution order.
+
+Finalization emits the initial descriptor for every physical index and one
+entry configuration for every lifecycle that begins at a boundary. Live
+continuations have no entry update, so their FIFO pointers, occupancy, and
+payload are preserved. The runtime plan records boundary order explicitly and
+does not infer it by sorting ordinals.
+
+Each boundary owns a per-core configuration tensor containing 64 four-word DFB
+interface records, two update masks, synchronization state, and padding. The
+runtime supplies its address to every participating kernel. DM1 coordinates
+DM0, UNPACK, and PACK through separate shared-L1 state words. UNPACK and PACK
+publish entry only after a hardware completion marker proves their prior engine
+work retired. MATH does not access DFB interfaces and does not wait in shared
+L1; normal compute dependencies order it against UNPACK and PACK. The exit
+handshake prevents any interface owner from beginning following DFB work until
+all masked updates complete. Independent math and SFPU work may overlap the
+boundary.
+
+Caller-defined per-core runtime arguments precede the compiler-owned
+configuration addresses. The compiler reserves one compile-time argument for
+the caller argument count, so generated kernels locate the configuration
+addresses without changing caller-visible indices. When caller argument counts
+differ by core, the runtime emits descriptors for disjoint core sets with one
+count per descriptor.
+
+Configuration tensors, PipeNet scratch, computed-address backing, and
+GlobalSemaphore objects remain owned by the operation's serialized
+runtime-resource cache. Compatible calls reuse one generation. Incompatible
+replacement and owner destruction synchronize the device before releasing it;
+failed synchronization retains ownership.
+
+Per-core L1 accounting uses target allocation quanta rather than logical byte
+counts. It includes one aligned maximum allocation per non-tensor-backed
+physical DFB index, one aligned configuration tensor per boundary, aligned
+PipeNet scratch, and one allocation quantum per GlobalSemaphore. Transport
+formation uses a conservative upper bound that includes scalar, grouped,
+residual, and record-selected callback resources. Finalization minimizes
+weighted physical DFB allocation when authoritative capacity requires it and
+may also do so for the conservative PipeNet reservation. The budget pass checks
+finalized DFB plus configuration state; conversion performs the authoritative
+combined check from the exact PipeNet plan. Every pass uses the same resolved
+target budget or `l1-budget-override`.
 
 ## DFB Lifecycle
 
@@ -933,6 +1128,14 @@ Uses inside descendant regions are projected to their ancestor operation in the
 acquire's block. This conservatively places the release after the enclosing
 structured op when the exact use is nested in an `scf.for` or `scf.if` body.
 
+Conditionally yielded acquires have one additional rule. `scf.yield`
+propagates the acquired tensor value, but it is not a storage access. When all
+owned uses remain inside the acquiring then-region, the inserted release also
+remains in that region after the last local use. When the yielded tensor is
+used after the acquiring `scf.if`, each use must execute under the same
+condition as the acquire, and the inserted release is emitted under that
+condition after the last escaped use.
+
 ### Ownership
 
 A use `U` is *owned by* `acquire` if `U` accesses the slot `acquire` acquired.
@@ -1088,7 +1291,19 @@ planReleases(acquires, releases, releaseOp):
 
     matching = same-block operation with the required release effect
     nested = nested operations with the required release effect
+    reject if matching precedes an owned use
     if matching:
+      continue
+
+    if acquire is conditionally yielded:
+      reject if an owned use is not under the acquire condition
+      if all owned uses are local to the acquiring then-region:
+        keep an existing local release, or insert releaseOp after the local use
+      else:
+        reject if a local release is an external effect summary
+        plan erasure of local concrete releases
+        plan insertion of scf.if acquire.condition { releaseOp(dfb) }
+        after liveEnd
       continue
 
     reject if a nested release is an external effect summary
@@ -1850,18 +2065,24 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       declarations and identity-preserving casts
 
   for each logical DFB pair A, B:
-    add descriptor mismatch if A.type != B.type, except for members of one
-        explicit allocation group without opaque external access
+    add descriptor mismatch unless A.type == B.type, or both types have an
+        identical page format and either:
+          A and B belong to one scratch allocation group without opaque access
+          A and B occupy disjoint synchronized configuration epochs without
+              opaque access
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
-      if A and B share an allocation group and either lifetime has reset epochs:
+      if A and B share an allocation group and either lifetime has explicit
+          lifecycle epochs:
         add access-completion-not-proven conflict unless every epoch completes
         add concurrent-lifetime conflict unless every cross-member epoch pair
             has exactly one proven order
       else:
         add access-completion-not-proven conflict unless both node lifetimes
             are proven
+        if the node lifetimes occupy disjoint configuration epochs:
+          continue
         add transaction conflict unless their transaction tile-count sequences
             match
         add pointer-owner conflict unless read and write owners match
@@ -1907,20 +2128,25 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
 
   aggregate L1 bytes once per unique physical index
   authoritativeDFBBudget = L1 limit - synchronized-reset scratch
-  minimumSearchTrigger = authoritativeDFBBudget
+      - reconfiguration state
+  minimumWeightSearchTrigger = authoritativeDFBBudget
       - provisional conservative PipeNet reservation
-  if assignment exceeds minimumSearchTrigger and is not known minimum:
-    minimumResult = exactMinimumIndexSearch(
-        conflicts, pairwiseConflictLowerBound, searchStateLimit)
+  if allocationBytes exceeds minimumWeightSearchTrigger and
+      is not known minimum:
+    minimumResult = exactMinimumWeightSearch(
+        conflicts, per-DFB allocation bytes, physicalIndexLimit,
+        searchStateLimit)
     if minimumResult is SearchLimitReached and
-        assignment exceeds authoritativeDFBBudget:
+        allocationBytes exceeds authoritativeDFBBudget:
       reject with an inconclusive-search diagnostic
     if minimumResult found an assignment:
       assignment = minimumResult.assignment
+      allocationBytes = minimumResult.minimumBytes
     aggregate L1 bytes once per unique physical index
-  reject if the assignment exceeds authoritativeDFBBudget
-  build one runtime descriptor for every physical index
-  reject conflicting descriptors at one physical index
+  reject if allocationBytes exceeds authoritativeDFBBudget
+  build one initial runtime descriptor and its ordered epoch configurations
+      for every physical index
+  reject conflicting descriptors within one configuration epoch
   reject if the internal assignment is not a dense zero-based range
   record every existing kernel base-index attribute
   return immutable {
@@ -1942,10 +2168,11 @@ assignment would not change compilation. Backtracking can grow exponentially,
 so exact search is reserved for cases where first-fit prevents acceptance or
 exceeds that provisional threshold. A physical-index failure asks one direct
 question at the available index count instead of proving the minimum. A valid
-assignment that exceeds the authoritative DFB-plus-reset budget requires a
-minimum physical-index-count search because a different sharing assignment may
-use less physical storage. Each exact query examines at most
-`exact-coloring-search-limit` deterministic states, which defaults to
+assignment that exceeds the authoritative DFB-plus-fixed-state budget, or the
+provisional threshold after the conservative PipeNet reservation, requires
+weighted search because equal index counts can have different sums of the
+maximum allocation assigned to each physical index. Each exact query examines
+at most `exact-coloring-search-limit` deterministic states, which defaults to
 1,000,000, to bound compile time. Reaching the limit reports that feasibility
 was not proved and identifies the option that increases the limit; it never
 reports a proved capacity failure. The planner completes every
@@ -1954,12 +2181,12 @@ diagnostic-producing validation before `TTLFinalizeDFBIndices` changes any
 materializes the validated plan.
 
 Transport formation may record a conservative PipeNet L1 reservation before
-finalization. That reservation lowers the threshold that triggers minimum-index
-search, so finalization can select a smaller DFB assignment before exact PipeNet
-planning. It is not an authoritative rejection condition: finalization rejects
-only when DFB storage plus synchronized-reset scratch exceeds L1. Conversion
-then validates finalized DFB storage against the exact PipeNet scratch and
-GlobalSemaphore requirements.
+finalization. That reservation lowers the threshold that triggers
+weighted-allocation search, so finalization can select a fitting DFB assignment
+before exact PipeNet planning. It is not an authoritative rejection condition:
+finalization rejects only when DFB storage plus synchronized-reset and
+reconfiguration state exceeds L1. Conversion then validates that allocation
+against the exact PipeNet scratch and GlobalSemaphore requirements.
 
 Finalization is idempotent on unchanged finalized IR. Reanalysis reconstructs
 the same logical identities, typed conflicts, physical indices, descriptors,
@@ -1981,16 +2208,18 @@ the earliest-event antichain and completes no later than the terminal pop.
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
 
-1. A and B either have identical descriptors or belong to one validated
-   scratch allocation group with the same element type and a physical capacity
-   at least as large as both logical capacities.
-2. Ordinary reuse requires the same normalized transaction-run sequence.
-   Allocation groups instead prove that the cumulative member sequence never
-   crosses the shared physical envelope.
-3. On every shared launched node, their write effects have the same hardware
-   pointer owner and their read effects have the same hardware pointer owner.
-4. On every shared launched node, A's terminal pop completes before every
-   earliest use of B. Disjoint launch-node domains need no temporal relation.
+1. A and B have identical descriptors, use one validated scratch capacity
+   envelope, or occupy disjoint synchronized configuration epochs with an
+   identical page format.
+2. Within one configuration epoch, ordinary reuse requires the same normalized
+   transaction-run sequence. Allocation groups instead prove that the
+   cumulative member sequence never crosses the shared physical envelope.
+3. Within one configuration epoch, their write effects have the same hardware
+   pointer owner and their read effects have the same hardware pointer owner on
+   every shared launched node.
+4. A's terminal pop completes before every earliest use of B, or their complete
+   lifecycles occupy different configuration epochs separated by a synchronized
+   boundary. Disjoint launch-node domains need no temporal relation.
 
 Therefore A has zero occupancy and no remaining access before any producer or
 consumer can begin B. An early B wait cannot consume A's data because its entry
@@ -2044,39 +2273,67 @@ B0, Quasar, and absent target metadata.
 
 The allocation planner records the final `ttl.base_cta_index` for every kernel
 that has the attribute. Compile-time arguments to each kernel reserve
-`[0, base_cta_index)` for physical DFB indices; `base_cta_index` is the first
-non-DFB argument index.
+`[0, physical_dfb_count)` for physical DFB indices. Reconfiguration reserves
+the next argument for the caller runtime-argument count. `base_cta_index` is
+the first tensor-accessor argument index after these compiler-defined entries.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
 Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
-and `block_count`. The planner computes `page_size` with
+and `block_count`. When the compiler proves the exact union of launch nodes
+that access the physical index, the descriptor also contains
+`allocation_nodes`. An empty array records an unreachable allocation. Omitting
+the field retains conservative whole-grid allocation when the node domain is
+unknown. This metadata controls storage residency independently from optional
+per-core executable specialization. The planner computes `page_size` with
 `ttcore::getElementSizeBytes()` on the finalized element type, so subtile
 dimensions affect the physical allocation without requiring runtime device
 initialization.
 
 ```text
-buildRuntimeDescriptors(assignments):
-  for assignment in assignments:
-    if assignment.physicalIndex is new:
-      allocationByIndex.insert(assignment.physicalIndex, assignment.type)
-    else if assignment.type differs from the selected type:
-      require both assignments belong to one allocation group
-      require identical element types and scratch storage
-      retain the type with the largest byte capacity
-
-  for (index, type) in allocationByIndex sorted by index:
-    emit {dfb_index = index,
-          num_tiles = type.elementsPerBlock,
-          element_type = type.elementType,
-          page_size = byteSize(type.elementType),
-          block_count = type.blockCount}
+buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
+  for physicalIndex in assignments grouped by index:
+    allocationDomain = exactUnionOrUnknown(physicalIndex.launchDomains)
+    for assignment in physicalIndex.assignments:
+      for active lifecycle epoch, or the initial epoch when none is recorded:
+        configuration = configurations[epoch.entryBoundary]
+        if configuration is new:
+          initialize it from assignment.type
+        else if configuration differs from assignment.type:
+          require both assignments belong to one scratch allocation group
+          require one page format and no opaque external access
+          retain the type with the largest byte capacity
+        merge assignment.storage into configuration.activeDomain
+    sort configurations by the proved boundary order
+    copy the initial configuration into the physical descriptor fields
+    if the initial configuration is tensor-backed:
+      add scratch placeholder segments for cores first active in later epochs
+    emit the physical descriptor with allocation_nodes = allocationDomain
+    emit its ordered epoch configurations
 ```
 
 Every finalized declaration contributes to the table. Exact-type reuse keeps
-one unchanged descriptor. A validated allocation group retains one element
-type and selects a descriptor with the maximum required scratch bytes.
-Deriving the page size from the same element type used by lowering keeps
-compiler and runtime page formats equal.
+one unchanged descriptor. A validated allocation group selects the maximum
+scratch capacity required within one epoch. A synchronized reconfiguration may
+select a different geometry, block count, or storage segment in a later epoch.
+For a tensor-backed initial configuration, static scratch placeholders define
+the physical index on cores that first use it later without installing a future
+tensor address before its lifecycle begins.
+The page format remains identical across all epochs. Deriving every page size
+from the same element type used by lowering keeps compiler and runtime formats
+equal.
+
+Reconfiguration supports BF16, FP32, BFP8_B, BFP4_B, U32, U16, U8, and I32
+DFB formats. Pack and unpack reconfiguration is qualified for every listed
+format except U8, whose compute passthrough is unsupported; U8 is qualified for
+the NoC interfaces. IEEE FP16 is rejected because TTNN does not expose a native
+FP16 tensor representation; its `float16` compatibility name resolves to BF16
+and does not represent IEEE FP16 storage.
+
+The runtime intersects `allocation_nodes` with final per-kernel DFB-use
+metadata when both are available. The allocation domain restricts an
+unspecialized grid-wide kernel, while specialized use metadata may remove
+additional DFBs after coordinate folding. Tensor-backed storage segments must
+cover the exact allocation nodes and retain their existing storage identity.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
@@ -2185,26 +2442,26 @@ with releases before finalization.
   pointer state between NOC0, NOC1, Pack, and Unpack. Reuse across different
   hardware pointer owners requires an explicit state transfer or reset.
 
-- **Storage compatibility.** Automatic reuse still requires exact
-  `CircularBufferType` equality. Typed allocation groups support a
-  scratch-only capacity envelope across different block shapes and block counts
-  with one exact page format. Different element types, tile formats,
-  tensor-backed capacities, or statically incompatible compute configurations
-  remain invalid. General page-format reconfiguration would require a typed
-  synchronized epoch transition and runtime descriptor updates.
+- **Storage compatibility.** Automatic reuse within one configuration epoch
+  requires exact `CircularBufferType` equality. Typed allocation groups support
+  a scratch-only capacity envelope across different block shapes and block
+  counts with one exact page format. Synchronized reconfiguration supports
+  different outer geometry, block counts, and storage in disjoint epochs.
+  Different element types, tile formats, or statically incompatible compute
+  configurations remain invalid.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One
   fixed-limit exhaustive query runs when first-fit exceeds the physical-index
-  limit. Minimum physical-index-count search also runs when a valid assignment
-  exceeds the DFB-plus-reset L1 budget or a provisional threshold that reserves
-  conservative PipeNet resources. Only the DFB-plus-reset budget is
-  authoritative during finalization; exact combined resources are validated
-  during conversion. Each query is limited to 1,000,000 deterministic states by
-  default so difficult graphs cannot make compile time unbounded. Limit
-  exhaustion reports an inconclusive allocation only when acceptance requires
-  the search result; proven infeasibility reports a capacity failure. DRAM
-  spilling is tracked by
+  limit. Weighted-allocation search runs when a valid assignment exceeds the
+  DFB-plus-fixed-state L1 budget or a provisional threshold that reserves
+  conservative PipeNet resources. The authoritative finalizer budget includes
+  synchronized-reset and reconfiguration state; exact combined PipeNet and
+  GlobalSemaphore resources are validated during conversion. Each query is
+  limited to 1,000,000 deterministic states by default so difficult graphs
+  cannot make compile time unbounded. Limit exhaustion reports an inconclusive
+  allocation only when acceptance requires the search result; proven
+  infeasibility reports a capacity failure. DRAM spilling is tracked by
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
 
 - **Reachability cost.** Each launch node runs one graph traversal from every

@@ -510,8 +510,9 @@ getConservativePipeResources(ModuleOp sourceModule) {
   }
   const PipeTransferIndex &transferIndex = **maybeTransferIndex;
   PipeForeachLoweringInfo foreachLoweringInfo;
-  FailureOr<PipeGraph> maybePipeGraph =
-      PipeGraph::build(module, transferIndex, foreachLoweringInfo);
+  FailureOr<PipeGraph> maybePipeGraph = PipeGraph::build(
+      module, transferIndex, foreachLoweringInfo, PipeDFBIndexMode::Provisional,
+      PipeGraphLaunchDomainMode::WhenPipesPresent);
   if (failed(maybePipeGraph)) {
     return failure();
   }
@@ -578,13 +579,12 @@ getResidualGlobalSemaphoreBytes(ModuleOp module,
 }
 
 /// Compute storage and synchronization facts for one `(R, K)` choice.
-static std::optional<PipeTransportGrouping>
-evaluateGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
-                 int64_t groupSize, int64_t destinationDepth,
-                 const DFBAllocationFootprint &allocationFootprint,
-                 const DFBLogicalIdentityAnalysis &identities,
-                 uint64_t existingScratchBytes, uint64_t globalSemaphoreBytes,
-                 uint64_t resetStateBytes, uint64_t budgetBytes) {
+static std::optional<PipeTransportGrouping> evaluateGrouping(
+    ModuleOp module, PipeTransportLoopCandidate &candidate, int64_t groupSize,
+    int64_t destinationDepth, const DFBAllocationFootprint &allocationFootprint,
+    const DFBLogicalIdentityAnalysis &identities, uint64_t existingScratchBytes,
+    uint64_t globalSemaphoreBytes, uint64_t resetStateBytes,
+    uint64_t reconfigurationStateBytes, uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -679,10 +679,15 @@ evaluateGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
           ? llvm::checkedAddUnsigned(globalSemaphoreBytes,
                                      *residualSemaphoreBytes)
           : std::nullopt;
-  std::optional<uint64_t> requiredBytes =
+  std::optional<uint64_t> allocationAndSemaphoreBytes =
       allocationAndScratchBytes && allSemaphoreBytes
           ? llvm::checkedAddUnsigned(*allocationAndScratchBytes,
                                      *allSemaphoreBytes)
+          : std::nullopt;
+  std::optional<uint64_t> requiredBytes =
+      allocationAndSemaphoreBytes
+          ? llvm::checkedAddUnsigned(*allocationAndSemaphoreBytes,
+                                     reconfigurationStateBytes)
           : std::nullopt;
   if (!requiredBytes || *requiredBytes > budgetBytes) {
     return std::nullopt;
@@ -766,7 +771,8 @@ selectGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
                const DFBAllocationFootprint &allocationFootprint,
                const DFBLogicalIdentityAnalysis &identities,
                uint64_t existingScratchBytes, uint64_t globalSemaphoreBytes,
-               uint64_t resetStateBytes, uint64_t budgetBytes) {
+               uint64_t resetStateBytes, uint64_t reconfigurationStateBytes,
+               uint64_t budgetBytes) {
   int64_t upperBound =
       requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
   std::optional<int64_t> maybeUpperBound = getGroupSizeUpperBound(
@@ -781,10 +787,10 @@ selectGrouping(ModuleOp module, PipeTransportLoopCandidate &candidate,
     bool requireOverlap = candidate.transferCount / groupSize >= 2;
     int64_t destinationDepth =
         getMinimumDestinationDepth(candidate, groupSize, requireOverlap);
-    std::optional<PipeTransportGrouping> grouping =
-        evaluateGrouping(module, candidate, groupSize, destinationDepth,
-                         allocationFootprint, identities, existingScratchBytes,
-                         globalSemaphoreBytes, resetStateBytes, budgetBytes);
+    std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
+        module, candidate, groupSize, destinationDepth, allocationFootprint,
+        identities, existingScratchBytes, globalSemaphoreBytes, resetStateBytes,
+        reconfigurationStateBytes, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }
@@ -953,6 +959,15 @@ struct TTLFormPipeTransportsPass
       signalPassFailure();
       return;
     }
+    FailureOr<uint64_t> reconfigurationStateBytes =
+        getDFBReconfigurationStateAllocationBytes(module);
+    if (failed(reconfigurationStateBytes)) {
+      signalPassFailure();
+      return;
+    }
+    std::optional<uint64_t> overrideBytes =
+        l1BudgetOverride == 0 ? std::nullopt
+                              : std::optional<uint64_t>(l1BudgetOverride);
     auto setConservativePipeBytes = [&](uint64_t scratchBytes,
                                         uint64_t semaphoreBytes) {
       FailureOr<uint64_t> scratchAllocationBytes =
@@ -992,8 +1007,13 @@ struct TTLFormPipeTransportsPass
     if (groupSize == 1) {
       FailureOr<std::pair<ConservativePipeResources, uint64_t>> plan =
           planConservativeResources();
-      if (failed(plan) || failed(setConservativePipeBytes(
-                              plan->first.scratchBytes, plan->second))) {
+      if (failed(plan)) {
+        module.emitOpError("conservative PipeNet L1 size is not representable");
+        signalPassFailure();
+        return;
+      }
+      if (failed(setConservativePipeBytes(plan->first.scratchBytes,
+                                          plan->second))) {
         module.emitOpError("conservative PipeNet L1 size is not representable");
         signalPassFailure();
       }
@@ -1024,7 +1044,9 @@ struct TTLFormPipeTransportsPass
     // the graph therefore contains only the static transfers expanded above.
     PipeForeachLoweringInfo foreachLoweringInfo;
     FailureOr<PipeGraph> maybePipeGraph =
-        PipeGraph::build(module, transferIndex, foreachLoweringInfo);
+        PipeGraph::build(module, transferIndex, foreachLoweringInfo,
+                         PipeDFBIndexMode::Provisional,
+                         PipeGraphLaunchDomainMode::WhenPipesPresent);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;
@@ -1043,9 +1065,6 @@ struct TTLFormPipeTransportsPass
     ConservativePipeResources conservativePipeResources =
         conservativePlan->first;
     uint64_t globalSemaphoreBytes = conservativePlan->second;
-    std::optional<uint64_t> overrideBytes =
-        l1BudgetOverride == 0 ? std::nullopt
-                              : std::optional<uint64_t>(l1BudgetOverride);
     uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
     DFBLogicalIdentityAnalysis identities(module);
     if (!identities.succeeded()) {
@@ -1055,7 +1074,6 @@ struct TTLFormPipeTransportsPass
       signalPassFailure();
       return;
     }
-
     llvm::MapVector<Operation *, SmallVector<const PipeTransferNode *>>
         transfersByLoop;
     for (const PipeTransferNode &transfer : pipeGraph.getPipeTransferNodes()) {
@@ -1093,7 +1111,7 @@ struct TTLFormPipeTransportsPass
       std::optional<PipeTransportGrouping> grouping = selectGrouping(
           module, candidate, groupSize, *allocationFootprint, identities,
           selectedScratchBytes, selectedGlobalSemaphoreBytes, *resetStateBytes,
-          budgetBytes);
+          *reconfigurationStateBytes, budgetBytes);
       if (!grouping) {
         debugReject(candidate.loop,
                     "no group with R > 1 fits the combined L1 budget");

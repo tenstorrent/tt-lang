@@ -10,7 +10,17 @@ import hashlib
 import inspect
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
+from typing import (
+    Callable,
+    Collection,
+    Final,
+    Iterable,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+)
 
 from ._src.global_semaphore import (
     get_ttnn_global_semaphore_address,
@@ -204,9 +214,82 @@ class Kernel:
         return f"Kernel({self.kind!r}, identity={self.identity!r})"
 
 
+# PipeNet source callbacks and external transport code must share the target's
+# source-side data-movement processor and its invocation-specific resources.
+PIPE_SOURCE_KERNEL: Final[Kernel] = Kernel._implicit(
+    KernelKind.DATA_MOVEMENT,
+    _PIPE_SOURCE_KERNEL_ROLE,
+)
+
+
 KernelSelector = Union[KernelKind, Kernel]
 ExternalKernelSelection = Union[KernelSelector, Tuple[KernelSelector, ...]]
 ReleaseKernelSelection = KernelSelector
+
+
+class _KernelParticipantDeclaration(Protocol):
+    participants: tuple[KernelSelector, ...]
+
+
+def _transitive_participant_kernels(
+    declarations: Mapping[str, _KernelParticipantDeclaration],
+    logical_kernels: Mapping[str, Kernel],
+    reserved_names: Collection[str] = (),
+    *,
+    resource_name: str,
+) -> dict[str, Kernel]:
+    """Name unbound kernels referenced only through synchronization metadata."""
+    participant_names = {id(kernel): name for name, kernel in logical_kernels.items()}
+    used_names = set(reserved_names) | set(logical_kernels)
+    declaration_ordinals: dict[int, int] = {}
+    participants: dict[int, Kernel] = {}
+    participant_memberships: dict[int, set[int]] = {}
+    for declaration_name in sorted(declarations):
+        declaration = declarations[declaration_name]
+        declaration_ordinal = declaration_ordinals.setdefault(
+            id(declaration), len(declaration_ordinals)
+        )
+        for participant in declaration.participants:
+            if not isinstance(participant, Kernel):
+                continue
+            if (
+                participant._implicit_role is not None
+                or participant._identity is not None
+                or id(participant) in participant_names
+            ):
+                continue
+            participant_identity = id(participant)
+            participants[participant_identity] = participant
+            participant_memberships.setdefault(participant_identity, set()).add(
+                declaration_ordinal
+            )
+
+    participant_groups: dict[tuple[str, tuple[int, ...]], list[Kernel]] = {}
+    for participant_identity, participant in participants.items():
+        signature = (
+            participant.kind.name,
+            tuple(sorted(participant_memberships[participant_identity])),
+        )
+        participant_groups.setdefault(signature, []).append(participant)
+
+    transitive_kernels: dict[str, Kernel] = {}
+    for (kernel_kind, declaration_membership), participant_group in sorted(
+        participant_groups.items()
+    ):
+        membership_name = "_".join(str(ordinal) for ordinal in declaration_membership)
+        for group_index, participant in enumerate(participant_group):
+            name_stem = (
+                f"dfb_{resource_name}_participant_{kernel_kind.lower()}_"
+                f"{membership_name}_{group_index}"
+            )
+            participant_name = name_stem
+            suffix_index = 0
+            while participant_name in used_names:
+                suffix_index += 1
+                participant_name = f"{name_stem}_{suffix_index}"
+            used_names.add(participant_name)
+            transitive_kernels[participant_name] = participant
+    return transitive_kernels
 
 
 def _encode_identity_literal(value) -> Optional[bytes]:
@@ -271,10 +354,34 @@ def _encode_identity_capture(
     )
 
 
+def _referenced_operation_values(function: Callable) -> dict[str, object]:
+    """Return outer-scope values referenced by an operation or nested code."""
+
+    referenced_names = set()
+    code_objects = [function.__code__]
+    while code_objects:
+        code = code_objects.pop()
+        referenced_names.update(code.co_names)
+        referenced_names.update(code.co_freevars)
+        code_objects.extend(
+            constant for constant in code.co_consts if inspect.iscode(constant)
+        )
+
+    scope = dict(function.__globals__)
+    if function.__closure__ is not None:
+        for name, cell in zip(function.__code__.co_freevars, function.__closure__):
+            try:
+                scope[name] = cell.cell_contents
+            except ValueError:
+                continue
+    return {name: scope[name] for name in sorted(referenced_names) if name in scope}
+
+
 def _operation_identity_impl(function: Callable, active_functions: set[int]) -> str:
-    # Local import avoids the dfb_reset -> kernel import cycle during module
-    # initialization while retaining a typed resource check.
-    from .dfb_reset import DFBReset, _transitive_participant_kernels
+    # Local imports avoid resource-declaration import cycles during module
+    # initialization while retaining typed resource checks.
+    from .dfb_reset import DFBReset
+    from .dfb_reconfiguration import DFBReconfiguration
 
     function_id = id(function)
     if function_id in active_functions:
@@ -287,51 +394,78 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
     base_identity = f"{function.__module__}.{function.__qualname__}"
     try:
         nonlocal_captures = inspect.getclosurevars(function).nonlocals
+        referenced_values = _referenced_operation_values(function)
     except (TypeError, ValueError):
         active_functions.remove(function_id)
         return base_identity
 
     try:
         encoded_captures = []
+        identity_captures = dict(nonlocal_captures)
+        identity_captures.update(
+            (name, value)
+            for name, value in referenced_values.items()
+            if isinstance(value, Kernel)
+            or callable(getattr(value, "_operation_identity_capture", None))
+        )
         bound_conditions = _bind_dispatch_conditions(
             {
                 name: value
-                for name, value in sorted(nonlocal_captures.items())
+                for name, value in sorted(identity_captures.items())
                 if isinstance(value, DispatchCondition)
             }
         )
         bound_allocation_groups = _bind_dfb_allocation_groups(
             {
                 name: value
-                for name, value in sorted(nonlocal_captures.items())
+                for name, value in sorted(identity_captures.items())
                 if isinstance(value, DFBAllocationGroup)
             }
         )
         reset_ordinals = {}
+        reconfiguration_ordinals = {}
         kernel_capture_names = {
             id(value): name
-            for name, value in nonlocal_captures.items()
+            for name, value in identity_captures.items()
             if isinstance(value, Kernel)
         }
         reset_captures = {
             name: value
-            for name, value in nonlocal_captures.items()
+            for name, value in identity_captures.items()
             if isinstance(value, DFBReset)
         }
         direct_kernels = {
             name: value
-            for name, value in nonlocal_captures.items()
+            for name, value in identity_captures.items()
             if isinstance(value, Kernel)
         }
-        transitive_kernels = _transitive_participant_kernels(
+        transitive_reset_kernels = _transitive_participant_kernels(
             reset_captures,
             direct_kernels,
-            nonlocal_captures.keys(),
+            identity_captures.keys(),
+            resource_name="reset",
         )
         kernel_capture_names.update(
-            {id(kernel): name for name, kernel in transitive_kernels.items()}
+            {id(kernel): name for name, kernel in transitive_reset_kernels.items()}
         )
-        for name, value in sorted(nonlocal_captures.items()):
+        reconfiguration_captures = {
+            name: value
+            for name, value in identity_captures.items()
+            if isinstance(value, DFBReconfiguration)
+        }
+        transitive_reconfiguration_kernels = _transitive_participant_kernels(
+            reconfiguration_captures,
+            {**direct_kernels, **transitive_reset_kernels},
+            identity_captures.keys(),
+            resource_name="reconfiguration",
+        )
+        kernel_capture_names.update(
+            {
+                id(kernel): name
+                for name, kernel in transitive_reconfiguration_kernels.items()
+            }
+        )
+        for name, value in sorted(identity_captures.items()):
             if isinstance(value, DispatchCondition):
                 binding = bound_conditions[name]
                 encoded = (
@@ -369,6 +503,34 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     )
                 encoded = (
                     f"dfb-reset:{ordinal}:" + ",".join(sorted(participant_tokens))
+                ).encode("utf-8")
+            elif isinstance(value, DFBReconfiguration):
+                boundary_identity = id(value)
+                ordinal = reconfiguration_ordinals.setdefault(
+                    boundary_identity, len(reconfiguration_ordinals)
+                )
+                participant_tokens = []
+                for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
+                    if participant._implicit_role is not None:
+                        participant_tokens.append(
+                            "role:"
+                            f"{participant.kind.name}:"
+                            f"{participant._implicit_role}"
+                        )
+                        continue
+                    participant_name = kernel_capture_names.get(id(participant))
+                    if participant_name is None:
+                        raise TypeError(
+                            "DFBReconfiguration participant Kernel must be "
+                            "captured by the enclosing @ttl.operation"
+                        )
+                    participant_tokens.append(f"kernel:{participant_name}")
+                encoded = (
+                    f"dfb-reconfiguration:{ordinal}:"
+                    + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")
             else:
                 encoded = _encode_identity_capture(name, value, active_functions)

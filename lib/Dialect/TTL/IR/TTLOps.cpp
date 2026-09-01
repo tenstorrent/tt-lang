@@ -22,6 +22,9 @@
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <algorithm>
 #include <cstdint>
@@ -44,6 +47,65 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
 
 namespace mlir::tt::ttl {
+
+namespace {
+
+enum class LogicalKernelIdentityCategory {
+  Canonical,
+  CompilerOwnedRole,
+  Operation,
+};
+
+static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
+  LogicalKernelIdentityCategory identityCategory =
+      LogicalKernelIdentityCategory::Canonical;
+  if (participant.getIdentity()) {
+    identityCategory = participant.getRole()
+                           ? LogicalKernelIdentityCategory::CompilerOwnedRole
+                           : LogicalKernelIdentityCategory::Operation;
+  }
+  auto valueOrEmpty = [](StringAttr value) {
+    return value ? value.getValue() : StringRef();
+  };
+  return std::make_tuple(static_cast<unsigned>(participant.getKind()),
+                         identityCategory,
+                         valueOrEmpty(participant.getIdentity()),
+                         valueOrEmpty(participant.getOperation()),
+                         valueOrEmpty(participant.getRole()));
+}
+
+static bool hasRequiredDFBSynchronizationParticipants(
+    ArrayRef<LogicalKernelAttr> participants) {
+  unsigned computeParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::Compute;
+      });
+  unsigned dataMovementParticipants =
+      llvm::count_if(participants, [](LogicalKernelAttr participant) {
+        return participant.getKind() == LogicalKernelKind::DataMovement;
+      });
+  return participants.size() == 3 && computeParticipants == 1 &&
+         dataMovementParticipants == 2;
+}
+
+static bool hasDistinctDFBSynchronizationParticipants(
+    ArrayRef<LogicalKernelAttr> participants) {
+  llvm::DenseSet<Attribute> uniqueParticipants;
+  return llvm::all_of(participants, [&](LogicalKernelAttr participant) {
+    return uniqueParticipants.insert(participant).second;
+  });
+}
+
+static bool hasCanonicalDFBSynchronizationParticipantOrder(
+    ArrayRef<LogicalKernelAttr> participants) {
+  return std::is_sorted(participants.begin(), participants.end(),
+                        [](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
+                          return getLogicalKernelSortKey(lhs) <
+                                 getLogicalKernelSortKey(rhs);
+                        });
+}
+
+} // namespace
 
 llvm::LogicalResult LogicalKernelAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, LogicalKernelKind,
@@ -105,42 +167,15 @@ llvm::LogicalResult SynchronizedDFBResetAttr::verify(
     return emitError()
            << "synchronized DFB reset requires at least one participant";
   }
-  llvm::DenseSet<Attribute> uniqueParticipants;
-  unsigned computeCount = 0;
-  unsigned dataMovementCount = 0;
-  for (LogicalKernelAttr participant : participants) {
-    if (!uniqueParticipants.insert(participant).second) {
-      return emitError()
-             << "synchronized DFB reset participants must be distinct";
-    }
-    if (participant.getKind() == LogicalKernelKind::Compute) {
-      ++computeCount;
-    } else if (participant.getKind() == LogicalKernelKind::DataMovement) {
-      ++dataMovementCount;
-    }
+  if (!hasDistinctDFBSynchronizationParticipants(participants)) {
+    return emitError()
+           << "synchronized DFB reset participants must be distinct";
   }
-  if (computeCount != 1 || dataMovementCount != 2) {
+  if (!hasRequiredDFBSynchronizationParticipants(participants)) {
     return emitError() << "synchronized DFB reset participants must contain "
                           "one compute kernel and two data movement kernels";
   }
-  auto participantKey = [](LogicalKernelAttr participant) {
-    int identityKind = 0;
-    if (participant.getIdentity()) {
-      identityKind = participant.getRole() ? 1 : 2;
-    }
-    auto valueOrEmpty = [](StringAttr value) {
-      return value ? value.getValue() : StringRef();
-    };
-    return std::make_tuple(static_cast<unsigned>(participant.getKind()),
-                           identityKind,
-                           valueOrEmpty(participant.getIdentity()),
-                           valueOrEmpty(participant.getOperation()),
-                           valueOrEmpty(participant.getRole()));
-  };
-  if (!std::is_sorted(participants.begin(), participants.end(),
-                      [&](LogicalKernelAttr lhs, LogicalKernelAttr rhs) {
-                        return participantKey(lhs) < participantKey(rhs);
-                      })) {
+  if (!hasCanonicalDFBSynchronizationParticipantOrder(participants)) {
     return emitError()
            << "synchronized DFB reset participants must use canonical order";
   }
@@ -151,6 +186,39 @@ SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
     Location location, MLIRContext *context, int64_t ordinal,
     ArrayRef<LogicalKernelAttr> participants) {
   return SynchronizedDFBResetAttr::getChecked(
+      [location]() { return emitError(location); }, context, ordinal,
+      participants);
+}
+
+llvm::LogicalResult DFBReconfigurationAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  if (ordinal < 0) {
+    return emitError() << "DFB reconfiguration ordinal must be nonnegative";
+  }
+  if (participants.empty()) {
+    return emitError()
+           << "DFB reconfiguration requires at least one participant";
+  }
+  if (!hasRequiredDFBSynchronizationParticipants(participants)) {
+    return emitError()
+           << "DFB reconfiguration requires one compute and two data "
+              "movement participants";
+  }
+  if (!hasDistinctDFBSynchronizationParticipants(participants)) {
+    return emitError() << "DFB reconfiguration participants must be distinct";
+  }
+  if (!hasCanonicalDFBSynchronizationParticipantOrder(participants)) {
+    return emitError()
+           << "DFB reconfiguration participants must use canonical order";
+  }
+  return success();
+}
+
+DFBReconfigurationAttr DFBReconfigurationAttr::getCheckedInstance(
+    Location location, MLIRContext *context, int64_t ordinal,
+    ArrayRef<LogicalKernelAttr> participants) {
+  return DFBReconfigurationAttr::getChecked(
       [location]() { return emitError(location); }, context, ordinal,
       participants);
 }
@@ -168,6 +236,97 @@ void TTLDialect::registerTypes() {
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
       >();
 }
+
+namespace {
+
+using EmitErrorFn = llvm::function_ref<mlir::InFlightDiagnostic()>;
+
+static LogicalResult
+verifyComponentCoordinates(DeviceDomainComponentAttr component,
+                           DenseI64ArrayAttr coordinate, EmitErrorFn emitError,
+                           llvm::StringRef context,
+                           bool allowUpperBound = false) {
+  ArrayRef<int64_t> extent = component.getExtent().asArrayRef();
+  ArrayRef<int64_t> values = coordinate.asArrayRef();
+  if (values.size() != extent.size()) {
+    return emitError() << context << " component '"
+                       << component.getName().getValue() << "' has rank "
+                       << values.size() << ", expected " << extent.size();
+  }
+  for (auto [axis, value] : llvm::enumerate(values)) {
+    bool upperBoundValid =
+        allowUpperBound ? value <= extent[axis] : value < extent[axis];
+    if (value < 0 || !upperBoundValid) {
+      return emitError() << context << " component '"
+                         << component.getName().getValue() << "' axis " << axis
+                         << " is out of bounds for extent " << extent[axis]
+                         << ", got " << value;
+    }
+  }
+  return success();
+}
+
+static LogicalResult verifyDeviceRefInDomain(DeviceDomainAttr domain,
+                                             DeviceRefAttr deviceRef,
+                                             EmitErrorFn emitError,
+                                             llvm::StringRef context,
+                                             bool allowUpperBound = false) {
+  llvm::ArrayRef<DeviceDomainComponentAttr> components = domain.getComponents();
+  llvm::ArrayRef<DenseI64ArrayAttr> coordinates = deviceRef.getCoordinates();
+  if (coordinates.size() != components.size()) {
+    return emitError() << context << " has " << coordinates.size()
+                       << " component coordinates, expected "
+                       << components.size();
+  }
+
+  for (auto [component, coordinate] : llvm::zip(components, coordinates)) {
+    if (failed(verifyComponentCoordinates(component, coordinate, emitError,
+                                          context, allowUpperBound))) {
+      return failure();
+    }
+  }
+  return success();
+}
+
+static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
+                                                      TransferEdgeAttr edge,
+                                                      EmitErrorFn emitError,
+                                                      llvm::StringRef context) {
+  if (mlir::failed(
+          verifyDeviceRefInDomain(domain, edge.getSource(), emitError,
+                                  (llvm::Twine(context) + ".source").str()))) {
+    return mlir::failure();
+  }
+  if (DeviceRefAttr destination = edge.getDestination()) {
+    if (failed(verifyDeviceRefInDomain(
+            domain, destination, emitError,
+            (llvm::Twine(context) + ".destination").str()))) {
+      return failure();
+    }
+    if (destination == edge.getSource()) {
+      return emitError() << context << " source must differ from destination";
+    }
+    return success();
+  }
+
+  DeviceRangeAttr destinationRange = edge.getDestinationRange();
+  if (mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getLo(), emitError,
+          (llvm::Twine(context) + ".destination_range.lo").str())) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getHi(), emitError,
+          (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
+    return mlir::failure();
+  }
+  if (deviceRangeContains(destinationRange, edge.getSource())) {
+    return emitError()
+           << context
+           << " source must not be contained in its destination range";
+  }
+  return mlir::success();
+}
+
+} // namespace
 
 llvm::LogicalResult
 SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
@@ -280,6 +439,129 @@ llvm::LogicalResult CircularBufferType::verify(
   return llvm::success();
 }
 
+llvm::LogicalResult DeviceDomainComponentAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, StringAttr name,
+    DenseI64ArrayAttr extent) {
+  if (name.getValue().empty()) {
+    return emitError() << "device domain component name must not be empty";
+  }
+  if (extent.empty()) {
+    return emitError() << "device domain component '" << name.getValue()
+                       << "' extent must not be empty";
+  }
+  for (auto [axis, dimension] : llvm::enumerate(extent.asArrayRef())) {
+    if (dimension <= 0) {
+      return emitError() << "device domain component '" << name.getValue()
+                         << "' extent axis " << axis
+                         << " must be positive, got " << dimension;
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceDomainAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<DeviceDomainComponentAttr> components) {
+  if (components.empty()) {
+    return emitError() << "device domain requires at least one component";
+  }
+
+  llvm::StringSet<> componentNames;
+  for (DeviceDomainComponentAttr component : components) {
+    llvm::StringRef name = component.getName().getValue();
+    if (!componentNames.insert(name).second) {
+      return emitError() << "duplicate device domain component name '" << name
+                         << "'";
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult
+DeviceRefAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                      llvm::ArrayRef<DenseI64ArrayAttr> coordinates) {
+  if (coordinates.empty()) {
+    return emitError() << "device reference requires at least one coordinate";
+  }
+  for (auto [componentIndex, coordinate] : llvm::enumerate(coordinates)) {
+    if (coordinate.empty()) {
+      return emitError() << "device reference component " << componentIndex
+                         << " coordinate must not be empty";
+    }
+    for (auto [axis, value] : llvm::enumerate(coordinate.asArrayRef())) {
+      if (value < 0) {
+        return emitError() << "device reference component " << componentIndex
+                           << " axis " << axis << " must be non-negative, got "
+                           << value;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceRangeAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, DeviceRefAttr lo,
+    DeviceRefAttr hi) {
+  if (lo.getCoordinates().size() != hi.getCoordinates().size()) {
+    return emitError() << "device range endpoints have different component "
+                          "counts";
+  }
+  for (auto [componentIndex, coordinatePair] : llvm::enumerate(
+           llvm::zip_equal(lo.getCoordinates(), hi.getCoordinates()))) {
+    auto [loCoordinate, hiCoordinate] = coordinatePair;
+    if (loCoordinate.size() != hiCoordinate.size()) {
+      return emitError() << "device range component " << componentIndex
+                         << " endpoints have different ranks";
+    }
+    for (auto [axis, valuePair] : llvm::enumerate(llvm::zip_equal(
+             loCoordinate.asArrayRef(), hiCoordinate.asArrayRef()))) {
+      auto [loValue, hiValue] = valuePair;
+      if (loValue >= hiValue) {
+        return emitError() << "device range component " << componentIndex
+                           << " axis " << axis
+                           << " requires lo < hi, got lo=" << loValue
+                           << ", hi=" << hiValue;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult TransferEdgeAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceRefAttr source, DeviceRefAttr destination,
+    DeviceRangeAttr destinationRange) {
+  if (static_cast<bool>(destination) == static_cast<bool>(destinationRange)) {
+    return emitError() << "transfer edge requires exactly one of destination "
+                          "or destination_range";
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, TransferEdgeAttr edge) {
+  return verifyTransferEdgeInDomain(domain, edge, emitError,
+                                    "device transfer edge");
+}
+
+mlir::LogicalResult IsDeviceOp::verify() {
+  return verifyDeviceRefInDomain(
+      getDomain(), getDevice(), [&]() { return emitOpError(); }, "device");
+}
+
+mlir::LogicalResult IsDeviceInRangeOp::verify() {
+  if (mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getLo(), [&]() { return emitOpError(); },
+          "range lower bound")) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getHi(), [&]() { return emitOpError(); },
+          "range upper bound", true))) {
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
 llvm::LogicalResult
 LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                    ArrayRef<int64_t> shape, Type elementType,
@@ -310,7 +592,7 @@ llvm::LogicalResult
 PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        int64_t srcX, int64_t srcY, int64_t dstStartX,
                        int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                       bool isCollective) {
+                       bool isCollective, DeviceTransferAttr deviceTransfer) {
   if (srcX < 0 || srcY < 0) {
     return emitError() << "source coordinates must be non-negative";
   }
@@ -340,6 +622,23 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
       })) {
     return emitError()
            << "all pipe records must be either point-to-point or collective";
+  }
+  DeviceTransferAttr firstTransfer = pipes.front().getDeviceTransfer();
+  DeviceDomainAttr deviceDomain =
+      firstTransfer ? firstTransfer.getDomain() : DeviceDomainAttr();
+  for (PipeRecordAttr record : pipes) {
+    DeviceTransferAttr transfer = record.getDeviceTransfer();
+    if (static_cast<bool>(transfer) != static_cast<bool>(firstTransfer)) {
+      return emitError()
+             << "pipe records must consistently identify device transfers";
+    }
+    if (transfer && transfer.getDomain() != deviceDomain) {
+      return emitError()
+             << "all pipe records must use the same logical device domain";
+    }
+    if (transfer && !transfer.getEdge().getDestination()) {
+      return emitError() << "graph pipe records require one destination device";
+    }
   }
   return llvm::success();
 }
@@ -373,12 +672,13 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
              << "tensor backing requires a TTCore tile element type, got "
              << cbTy.getElementType();
     }
-    // TODO(#812): Extend tensor backing after additional formats are specified.
     if (tileType.getDataType() != ttcore::DataType::BFloat16 &&
-        tileType.getDataType() != ttcore::DataType::Float32) {
+        tileType.getDataType() != ttcore::DataType::Float32 &&
+        tileType.getDataType() != ttcore::DataType::BFP_BFloat4 &&
+        tileType.getDataType() != ttcore::DataType::BFP_BFloat8) {
       return emitOpError()
-             << "tensor backing supports only BF16 and FP32 tile element "
-                "types, got "
+             << "tensor backing supports only BF16, FP32, BFP4_B, and BFP8_B "
+                "tile element types, got "
              << tileType;
     }
     int64_t pageSize = static_cast<int64_t>(tileType.getSizeBytes());
@@ -489,12 +789,27 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
         return emitOpError()
                << "pipe send requires source operand to be !ttl.cb";
       }
+      auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+      if (!handleType || handleType.getKind() != TransferKind::write) {
+        return emitOpError()
+               << "pipe send requires !ttl.transfer_handle<write> result";
+      }
       return success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
     }
+    if (!mlir::isa<ReceiveRequestType>(getXf().getType())) {
+      return emitOpError()
+             << "pipe receive requires !ttl.receive_request result";
+    }
     return success();
+  }
+
+  auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+  if (!handleType || !handleType.getKind()) {
+    return emitOpError()
+           << "non-pipe copy requires a direction-typed transfer handle result";
   }
 
   if (srcIsCb == dstIsCb) {
@@ -615,6 +930,13 @@ verifyPipeNetForeachBody(mlir::Operation *op, mlir::Region &body,
     if (copy && (copy.getSrc() == pipeArg || copy.getDst() == pipeArg)) {
       continue;
     }
+    if (mlir::isa<mlir::tt::ttl::SelectedPipeSourceDeviceIndexOp,
+                  mlir::tt::ttl::SelectedPipeDestinationDeviceIndexOp,
+                  mlir::tt::ttl::SelectedPipeSourceCoordinatesOp,
+                  mlir::tt::ttl::SelectedPipeDestinationCoordinatesOp>(
+            use.getOwner())) {
+      continue;
+    }
     return op->emitOpError() << "selected pipe argument has unsupported use by "
                              << use.getOwner()->getName();
   }
@@ -629,6 +951,58 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
   return verifyPipeNetForeachBody(getOperation(), getBody(),
                                   SelectedPipeDstType::get(getContext()));
+}
+
+static mlir::LogicalResult
+verifySelectedPipeDeviceIndex(mlir::Operation *op, mlir::Value pipe,
+                              bool requirePointDestination) {
+  mlir::FailureOr<mlir::tt::ttl::SelectedPipeRecords> maybeRecords =
+      mlir::tt::ttl::getSelectedPipeRecords(pipe);
+  if (mlir::failed(maybeRecords)) {
+    return op->emitOpError()
+           << "requires a selected pipe with an associated record table";
+  }
+  for (mlir::tt::ttl::PipeRecordAttr record :
+       maybeRecords->records.getPipes()) {
+    mlir::tt::ttl::DeviceTransferAttr transfer = record.getDeviceTransfer();
+    if (!transfer) {
+      return op->emitOpError()
+             << "requires every selected record to identify a device transfer";
+    }
+    if (requirePointDestination && !transfer.getEdge().getDestination()) {
+      return op->emitOpError() << "does not support a device-range destination";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectedPipeSourceDeviceIndexOp::verify() {
+  return verifySelectedPipeDeviceIndex(getOperation(), getPipe(),
+                                       /*requirePointDestination=*/false);
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::SelectedPipeDestinationDeviceIndexOp::verify() {
+  return verifySelectedPipeDeviceIndex(getOperation(), getPipe(),
+                                       /*requirePointDestination=*/true);
+}
+
+static mlir::LogicalResult verifySelectedPipeCoordinates(mlir::Operation *op,
+                                                         mlir::Value pipe) {
+  if (mlir::failed(mlir::tt::ttl::getSelectedPipeRecords(pipe))) {
+    return op->emitOpError()
+           << "requires a selected pipe with an associated record table";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectedPipeSourceCoordinatesOp::verify() {
+  return verifySelectedPipeCoordinates(getOperation(), getPipe());
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::SelectedPipeDestinationCoordinatesOp::verify() {
+  return verifySelectedPipeCoordinates(getOperation(), getPipe());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
@@ -679,6 +1053,17 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   }
 
   Value pipe = traceUnrealizedCasts(getPipe());
+  if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(pipe.getType()) &&
+      getDeviceTransferAttr()) {
+    return emitOpError()
+           << "selected pipe device transfers are stored in the record table";
+  }
+  if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>();
+      createPipe &&
+      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+    return emitOpError()
+           << "deviceTransfer must match the defining ttl.create_pipe";
+  }
   if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
     switch (getKind().getValue()) {
     case PipeTransferKind::PointToPoint:
@@ -722,6 +1107,30 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
     return failure();
   }
   return success();
+}
+
+template <typename WaitAnyOp>
+static mlir::LogicalResult verifyWaitAnyCandidates(WaitAnyOp op,
+                                                   mlir::ValueRange values,
+                                                   llvm::StringRef noun) {
+  if (values.empty()) {
+    return op.emitOpError() << "requires at least one " << noun;
+  }
+  llvm::SmallDenseSet<mlir::Value, 8> distinctValues;
+  for (mlir::Value value : values) {
+    if (!distinctValues.insert(value).second) {
+      return op.emitOpError() << "requires distinct " << noun << " values";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::WaitAnyOp::verify() {
+  return verifyWaitAnyCandidates(*this, getRequests(), "receive request");
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitAnyOp::verify() {
+  return verifyWaitAnyCandidates(*this, getTokens(), "pipe token");
 }
 
 mlir::LogicalResult mlir::tt::ttl::IterIndexOp::verify() {
@@ -940,9 +1349,20 @@ int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
                          std::multiplies<>());
 }
 
+static mlir::Value getDFBForViewAtUse(mlir::Value view, mlir::Operation *use) {
+  if (mlir::Value dfb = mlir::tt::ttl::getAttachedCB(view)) {
+    return dfb;
+  }
+  if (auto reserve = mlir::tt::ttl::findCBReserveForView(view, use)) {
+    return reserve.getCb();
+  }
+  return {};
+}
+
 mlir::FailureOr<unsigned>
-mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
-  mlir::Value viewDFB = getAttachedCB(view);
+mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view,
+                                                mlir::Operation *use) {
+  mlir::Value viewDFB = getDFBForViewAtUse(view, use);
   if (!viewDFB) {
     return mlir::failure();
   }
@@ -963,6 +1383,11 @@ mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
     return mlir::failure();
   }
   return matchingIndex;
+}
+
+mlir::FailureOr<unsigned>
+mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
+  return getOutputIndexForView(view, getOperation());
 }
 
 llvm::FailureOr<mlir::TilingResult>
@@ -1013,7 +1438,8 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     if (view.getParentRegion() == &getBody()) {
       return mlir::WalkResult::advance();
     }
-    mlir::FailureOr<unsigned> outputIndex = getOutputIndexForView(view);
+    mlir::FailureOr<unsigned> outputIndex =
+        getOutputIndexForView(view, store.getOperation());
     if (mlir::failed(outputIndex)) {
       return mlir::WalkResult::interrupt();
     }
@@ -1406,11 +1832,12 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     hasTileStore = true;
-    Value viewCB = getAttachedCB(store.getView());
+    Value viewCB = getDFBForViewAtUse(store.getView(), store.getOperation());
     if (!viewCB) {
       return store.emitOpError() << "view must trace to a dataflow buffer";
     }
-    FailureOr<unsigned> outputIndex = getOutputIndexForView(store.getView());
+    FailureOr<unsigned> outputIndex =
+        getOutputIndexForView(store.getView(), store.getOperation());
     if (failed(outputIndex)) {
       return store.emitOpError()
              << "stores to CB that is not a formal output of the compute";
@@ -1494,7 +1921,7 @@ mlir::tt::ttl::TileAccumulateOp::parse(mlir::OpAsmParser &parser,
       mlir::tt::ttl::symbolizeAccumulationCombiner(combinerKeyword);
   if (!combiner) {
     return parser.emitError(combinerLoc)
-           << "expected accumulation combiner `add`";
+           << "expected accumulation combiner `add` or `max`";
   }
   result.addAttribute("combiner", mlir::tt::ttl::AccumulationCombinerAttr::get(
                                       parser.getContext(), *combiner));
@@ -1912,7 +2339,7 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
-  Operation *acquire = findCBAcquireOp(getView());
+  Operation *acquire = findCBAcquireOp(getView(), getOperation());
   if (!acquire) {
     return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
   }
@@ -1938,7 +2365,7 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
                          << ") must match tile type (" << tileType << ")";
   }
 
-  Operation *acquire = findCBAcquireOp(getView());
+  Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
       !isWaitBacked) {
@@ -2149,17 +2576,17 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
   auto scalerType = mlir::cast<RankedTensorType>(getScaler().getType());
   auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
 
-  if (inputType.getRank() != 2) {
-    return emitOpError() << "input must be rank 2, got rank "
+  if (inputType.getRank() < 2) {
+    return emitOpError() << "input must have rank 2 or greater, got rank "
                          << inputType.getRank();
   }
   if (scalerType.getRank() != 2) {
     return emitOpError() << "scaler must be rank 2, got rank "
                          << scalerType.getRank();
   }
-  if (resultType.getRank() != 2) {
-    return emitOpError() << "result must be rank 2, got rank "
-                         << resultType.getRank();
+  if (resultType.getRank() != inputType.getRank()) {
+    return emitOpError() << "result rank " << resultType.getRank()
+                         << " must match input rank " << inputType.getRank();
   }
 
   if (!inputType.hasStaticShape() || !scalerType.hasStaticShape() ||
@@ -2198,7 +2625,7 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
 
   // Scaler must be a single tile (1, 1): one scaling value applied to every
   // reduction.  The hardware reduce_tile reads one scaler tile from srcB.
-  for (int64_t i = 0; i < rank; ++i) {
+  for (int64_t i = 0; i < scalerType.getRank(); ++i) {
     if (scalerType.getDimSize(i) != 1) {
       return emitOpError() << "scaler dim " << i << " is "
                            << scalerType.getDimSize(i) << " but must be 1";
@@ -2212,6 +2639,94 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
                          << inputType.getElementType();
   }
 
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// TileRowNormalizationBlockOp
+//===----------------------------------------------------------------------===//
+
+static mlir::FailureOr<mlir::tt::ttcore::TileType>
+getRowNormalizationTileType(mlir::Type type) {
+  if (auto tileType = mlir::dyn_cast<mlir::tt::ttcore::TileType>(type)) {
+    return tileType;
+  }
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  if (!tensorType) {
+    return mlir::failure();
+  }
+  auto tileType =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return mlir::failure();
+  }
+  return tileType;
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
+  FailureOr<ttcore::TileType> inputTileType =
+      getRowNormalizationTileType(getInput().getType());
+  FailureOr<ttcore::TileType> gammaTileType =
+      getRowNormalizationTileType(getGamma().getType());
+  FailureOr<ttcore::TileType> outputTileType =
+      getRowNormalizationTileType(getOutput().getType());
+  FailureOr<ttcore::TileType> resultTileType =
+      getRowNormalizationTileType(getResult().getType());
+  if (failed(inputTileType) || failed(gammaTileType) ||
+      failed(outputTileType) || failed(resultTileType)) {
+    return emitOpError("input, gamma, output, and result must contain tiles");
+  }
+  if (*inputTileType != *outputTileType || *resultTileType != *outputTileType) {
+    return emitOpError(
+        "input, output, and result tile types must match exactly");
+  }
+  if (inputTileType->getDataType() != ttcore::DataType::BFloat16) {
+    return emitOpError("supports bf16 tiles only");
+  }
+  if (getHasGamma() && *gammaTileType != *outputTileType) {
+    return emitOpError("gamma tile type must match the output tile type");
+  }
+  if (!getHasGamma() && getGamma() != getInput()) {
+    return emitOpError("gamma must equal input when has_gamma is false");
+  }
+
+  const llvm::APFloat &scale = getScaleAttr().getValue();
+  const llvm::APFloat &epsilon = getEpsilonAttr().getValue();
+  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+    return emitOpError("scale must be finite and positive");
+  }
+  if (!epsilon.isFinite() || epsilon.isZero() || epsilon.isNegative()) {
+    return emitOpError("epsilon must be finite and positive");
+  }
+
+  auto inputTensor = dyn_cast<RankedTensorType>(getInput().getType());
+  auto outputTensor = dyn_cast<RankedTensorType>(getOutput().getType());
+  auto gammaTensor = dyn_cast<RankedTensorType>(getGamma().getType());
+  if (!inputTensor && !outputTensor && !gammaTensor) {
+    return success();
+  }
+  if (!inputTensor || !outputTensor || !gammaTensor) {
+    return emitOpError(
+        "block lowering requires input, gamma, and output to all be tensors");
+  }
+  if (!inputTensor.hasStaticShape() || !outputTensor.hasStaticShape() ||
+      !gammaTensor.hasStaticShape() || inputTensor.getRank() != 2 ||
+      outputTensor.getRank() != 2 || gammaTensor.getRank() != 2) {
+    return emitOpError("tensor operands must be static rank-2 tensors");
+  }
+  if (inputTensor.getShape() != outputTensor.getShape() ||
+      inputTensor.getDimSize(0) != 1) {
+    return emitOpError(
+        "input and output must have the same one-row tensor shape");
+  }
+  if (inputTensor.getNumElements() != static_cast<int64_t>(getNumTiles())) {
+    return emitOpError("num_tiles must match the row tensor width");
+  }
+  if (getHasGamma()) {
+    if (gammaTensor.getShape() != outputTensor.getShape()) {
+      return emitOpError("gamma tensor shape must match the output shape");
+    }
+  }
   return success();
 }
 
@@ -2521,6 +3036,34 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 //===----------------------------------------------------------------------===//
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
+
+template <typename PredicateOp>
+static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+  mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
+  int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
+  if (records && records.getPipeNetId() != pipeNetId) {
+    return op.emitOpError()
+           << "record table identifies PipeNet " << records.getPipeNetId()
+           << ", but pipe_net_id is " << pipeNetId;
+  }
+  if (records && !records.getPipes().front().getDeviceTransfer()) {
+    return op.emitOpError()
+           << "record table must identify logical-device transfers";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
 
 int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {
   return getPipeNetId();

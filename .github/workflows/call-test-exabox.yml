@@ -82,6 +82,9 @@ jobs:
         timeout-minutes: 45
         run: .github/scripts/run-exabox-hardware-phase.sh reset
 
+      - name: Full Galaxy fabric topology pytests
+        run: .github/scripts/run-exabox-hardware-phase.sh fabric-pytests
+
       - name: Smoketest
         run: .github/scripts/run-exabox-hardware-phase.sh smoketest
 

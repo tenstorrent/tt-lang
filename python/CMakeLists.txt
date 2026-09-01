@@ -133,17 +133,21 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     constants.py
     dfb_allocation_group.py
     dfb_reset.py
+    dfb_reconfiguration.py
     diagnostics.py
     kernel.py
     kernel_runner.py
     pipe.py
+    domains.py
     runtime_resources.py
     scalar.py
     ttl.py
     ttl_api.py
+    ttl_block.py
     ttl_math.py
     ttl_utils.py
     dtype_utils.py
+    fabric.py
     layouts.py
     operators.py
     version.py
@@ -167,6 +171,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/atom_split.py
     _src/atom_inline.py
     _src/auto_profile.py
+    _src/fabric_target.py
     _src/global_semaphore.py
     _src/perf_summary.py
     _src/perf_trace_server.py

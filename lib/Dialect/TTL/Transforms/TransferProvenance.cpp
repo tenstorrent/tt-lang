@@ -11,6 +11,8 @@
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::tt::ttl {
@@ -22,6 +24,85 @@ FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
                                   Value transfer) {
   return analysis.getOrigins(transfer).uniqueDefiningOp<PipeTransferCreateOp>();
+}
+
+static FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransferImpl(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<FailureOr<SmallVector<Value>>(BlockArgument)>
+        resolveFunctionArguments,
+    llvm::DenseSet<Value> &activeValues) {
+  if (!activeValues.insert(pipe).second) {
+    return failure();
+  }
+  llvm::scope_exit restoreActiveValues([&] { activeValues.erase(pipe); });
+  return analysis.getOrigins(pipe)
+      .uniqueMapped<std::optional<DeviceTransferAttr>>(
+          [&](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
+            if (origin.getDefiningOp<SelectPipeSrcOp>() ||
+                origin.getDefiningOp<SelectPipeDstOp>()) {
+              return std::optional<DeviceTransferAttr>();
+            }
+            if (isa<BlockArgument>(origin) &&
+                isa<SelectedPipeSrcType, SelectedPipeDstType>(
+                    origin.getType())) {
+              return std::optional<DeviceTransferAttr>();
+            }
+            auto createPipe = origin.getDefiningOp<CreatePipeOp>();
+            if (createPipe) {
+              DeviceTransferAttr deviceTransfer =
+                  createPipe.getDeviceTransferAttr();
+              return deviceTransfer
+                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
+                         : std::optional<DeviceTransferAttr>();
+            }
+            auto argument = mlir::dyn_cast<BlockArgument>(origin);
+            if (!argument) {
+              return failure();
+            }
+            FailureOr<SmallVector<Value>> operands =
+                resolveFunctionArguments(argument);
+            if (failed(operands)) {
+              return failure();
+            }
+            std::optional<std::optional<DeviceTransferAttr>> uniqueTransfer;
+            for (Value operand : *operands) {
+              FailureOr<std::optional<DeviceTransferAttr>> transfer =
+                  findUniquePipeDeviceTransferImpl(analysis, operand,
+                                                   resolveFunctionArguments,
+                                                   activeValues);
+              if (failed(transfer)) {
+                return failure();
+              }
+              if (!uniqueTransfer) {
+                uniqueTransfer = *transfer;
+                continue;
+              }
+              if (*uniqueTransfer != *transfer) {
+                return failure();
+              }
+            }
+            return uniqueTransfer.value_or(std::optional<DeviceTransferAttr>());
+          });
+}
+
+FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe) {
+  auto resolveNoFunctionArguments =
+      [](BlockArgument) -> FailureOr<SmallVector<Value>> {
+    return SmallVector<Value>();
+  };
+  return findUniquePipeDeviceTransfer(analysis, pipe,
+                                      resolveNoFunctionArguments);
+}
+
+FailureOr<std::optional<DeviceTransferAttr>> findUniquePipeDeviceTransfer(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<FailureOr<SmallVector<Value>>(BlockArgument)>
+        resolveFunctionArguments) {
+  llvm::DenseSet<Value> activeValues;
+  return findUniquePipeDeviceTransferImpl(
+      analysis, pipe, resolveFunctionArguments, activeValues);
 }
 
 FailureOr<std::optional<CopyOp>>
@@ -37,6 +118,22 @@ findUniquePipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
         }
         return failure();
       });
+}
+
+FailureOr<SmallVector<CopyOp>>
+findPipeReceiveCopies(ValueOriginAnalysis &analysis, Value value) {
+  SmallVector<CopyOp> copies;
+  for (Value origin : analysis.getOrigins(value)) {
+    auto copyOp = origin.getDefiningOp<CopyOp>();
+    if (!copyOp || !isPipeReceiveCopy(copyOp)) {
+      return failure();
+    }
+    copies.push_back(copyOp);
+  }
+  if (copies.empty()) {
+    return failure();
+  }
+  return copies;
 }
 
 FailureOr<SmallVector<PipeTransferPostOp>>
@@ -169,6 +266,30 @@ LogicalResult verifyPipeWait(PipeTransferWaitOp op,
   return success();
 }
 
+LogicalResult verifyPipeWaitAny(PipeTransferWaitAnyOp op,
+                                ValueOriginAnalysis &analysis) {
+  for (Value token : op.getTokens()) {
+    auto tokenType = cast<PipeTokenType>(token.getType());
+    FailureOr<SmallVector<PipeTransferPostOp>> maybePosts =
+        findPipeTransferPostsForToken(analysis, token);
+    if (failed(maybePosts) ||
+        llvm::any_of(*maybePosts, [&](PipeTransferPostOp post) {
+          return tokenType.getPipeNetId() !=
+                 cast<PipeTokenType>(post.getToken().getType()).getPipeNetId();
+        })) {
+      return op.emitOpError()
+             << "requires every possible token value to derive from a "
+                "ttl.pipe_transfer.post in the token's PipeNet";
+    }
+    if (failed(findPipeTransferCreateForPosts(analysis, *maybePosts))) {
+      return op.emitOpError()
+             << "requires each token's possible receive posts to derive "
+                "from one ttl.pipe_transfer.create";
+    }
+  }
+  return success();
+}
+
 struct TTLVerifyTransferProvenancePass
     : impl::TTLVerifyTransferProvenanceBase<TTLVerifyTransferProvenancePass> {
   using Base::Base;
@@ -207,6 +328,9 @@ LogicalResult verifyTransferProvenance(ModuleOp module,
                 [&](PipeTransferSendOp op) { return verifySend(op, analysis); })
             .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp op) {
               return verifyPipeWait(op, analysis);
+            })
+            .Case<PipeTransferWaitAnyOp>([&](PipeTransferWaitAnyOp op) {
+              return verifyPipeWaitAny(op, analysis);
             })
             .Default([](Operation *) { return success(); });
     return failed(verification) ? WalkResult::interrupt()

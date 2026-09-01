@@ -1,5 +1,6 @@
+// Summary: Verifies distinct resources for every matching PipeNet record.
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,ttl-finalize-dfb-indices,convert-ttl-to-ttkernel)' | FileCheck %s
 // RUN: ttlang-opt %s -ttl-verify-pipenet-guards
 
 // Verifies that one table-driven protocol operation receives distinct
@@ -7,16 +8,19 @@
 // Running static transport planning before conversion must preserve the same
 // selected-record address and synchronization tables.
 
-// CHECK: module attributes {ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64}
+// Local selected records retain one receiver-published address table.
+// CHECK-NOT: ttl.pipe_conservative_l1_bytes
+// CHECK: ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64
 
 module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 
 // CHECK-LABEL: func.func @gather_receiver
 // Six distinct completion counters cover the six matching records.
 // CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<6xi32>
-// CHECK: scf.for %[[INDEX:.*]] =
-// CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
-// CHECK: %[[PROGRESS_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
+// CHECK: scf.for %[[SLICE_INDEX:.*]] =
+// CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[SLICE_INDEX]], [0, 1, 2, 3, 4, 5] : index
+// CHECK: ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [6, 6, 6, 6, 6, 7] : index
+// CHECK: %[[PROGRESS_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: memref.load %[[COUNTERS]][%[[PROGRESS_INDEX]]] : memref<6xi32>
 // CHECK: ttkernel.experimental.semaphore_wait_min
 func.func @gather_receiver()
@@ -39,8 +43,8 @@ func.func @gather_receiver()
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 6>
     ttl.yield
   }
@@ -48,15 +52,16 @@ func.func @gather_receiver()
 }
 
 // CHECK-LABEL: func.func @gather_senders
-// CHECK: scf.for %[[INDEX:.*]] =
-// CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
+// CHECK: scf.for %[[SLICE_INDEX:.*]] =
+// CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[SLICE_INDEX]], [0, 5, 1, 2, 3, 4] : index
+// CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[READY_SEM:.*]] = ttkernel.get_semaphore(%[[READY_INDEX]])
 // CHECK: %[[READY_ADDR:.*]] = ttkernel.reinterpret_cast(%[[READY_SEM]])
-// CHECK: %[[COMPLETION_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
-// CHECK: %[[COMPLETION_SEM:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
-// CHECK: %[[COMPLETION_NOC_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_SEM]], {{.*}})
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
 // CHECK: ttkernel.noc_async_write %
+// CHECK: %[[COMPLETION_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [0, 2, 3, 4, 5, 1] : index
+// CHECK: %[[COMPLETION_SEM:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
+// CHECK: %[[COMPLETION_NOC_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_SEM]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[COMPLETION_NOC_ADDR]], {{.*}})
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

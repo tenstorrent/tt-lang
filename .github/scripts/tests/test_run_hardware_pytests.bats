@@ -19,6 +19,7 @@ setup() {
     unset TT_METAL_CACHE
     unset TTLANG_PIN_XDIST_WORKERS_TO_DEVICES
     unset TTLANG_XDIST_TT_METAL_CACHE_ROOT
+    unset TTLANG_XDIST_VISIBLE_DEVICE_GROUPS
     unset HW_TEST_WORKERS
     unset HW_PYTEST_TIMEOUT
 }
@@ -26,9 +27,14 @@ setup() {
 # Fake python3 recording each invocation's args, exiting with $1 (default 0).
 write_fake_python() {
     local exit_code="${1:-0}"
+    local minimum_group_size="${2:-1}"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
-printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
+if [ "\${1:-}" = "-c" ]; then
+    [ "\${3:-0}" -ge "$minimum_group_size" ]
+    exit
+fi
+printf 'env:%s cache-root:%s groups:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\${TTLANG_XDIST_VISIBLE_DEVICE_GROUPS:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 exit $exit_code
 EOF
     chmod +x "$BIN/python3"
@@ -41,11 +47,14 @@ write_fake_python_sequence() {
     local count_file="$BATS_TEST_TMPDIR/python-call-count"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = "-c" ]; then
+    exit 0
+fi
 call_count=0
 [ -f "$count_file" ] && call_count=\$(cat "$count_file")
 call_count=\$((call_count + 1))
 printf '%s\n' "\$call_count" > "$count_file"
-printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
+printf 'env:%s cache-root:%s groups:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\${TTLANG_XDIST_VISIBLE_DEVICE_GROUPS:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 case "\$call_count" in
     1) exit $first_exit ;;
     2) exit $second_exit ;;
@@ -62,15 +71,15 @@ EOF
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache args:-m pytest"
+    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache groups:0;1;2;3 args:-m pytest"
     assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 4"
     # Crash-restart disabled and flaky-retry enabled on the parallel phase.
     assert_line --partial "-n 4 --max-worker-restart=0"
     assert_line --partial "--reruns 3"
     assert_line --partial "pytest-report-parallel.xml"
-    assert_line --partial "env: cache-root: args:-m pytest test/python -m compile_only"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m compile_only"
     assert_line --partial "pytest-report-compile-only.xml"
-    assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
     [ "${#lines[@]}" -eq 3 ]
 }
@@ -82,9 +91,42 @@ EOF
         test/python build/test/pytest-report
 
     assert_success
-    assert_output --partial "Detected 4 chips: single-device tests in parallel (-n 2)"
+    assert_output --partial "Detected 4 chips as 4 valid device groups: single-device tests in parallel (-n 2)"
     run cat "$CALLS"
     assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 2"
+}
+
+@test "multi-chip: paired-chip topology runs one worker per valid device group" {
+    write_fake_python 0 2
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "Detected 4 chips as 2 valid device groups: single-device tests in parallel (-n 2)"
+    run cat "$CALLS"
+    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache groups:0,1;2,3 args:-m pytest"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 2"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m compile_only"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m multi_device"
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: no valid device grouping runs once with full topology visibility" {
+    write_fake_python 0 5
+
+    TT_VISIBLE_DEVICES=2 HW_PYTEST_CHIPS=4 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "No valid device grouping found"
+    run cat "$CALLS"
+    assert_output --partial "vis:"
+    assert_output --partial "pytest test/python"
+    assert_output --partial "pytest-report.xml"
+    refute_output --partial "vis:2"
+    refute_output --partial " -n "
+    [ "${#lines[@]}" -eq 1 ]
 }
 
 @test "per-test timeout is configurable" {

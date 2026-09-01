@@ -20,6 +20,11 @@ def TTLInsertCBSync
 
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
+
+    A receive request used by `ttl.wait_any` has conditional completion. Its
+    destination reservation is not published automatically because only the
+    selected request is known to be complete. Publication must be explicit and
+    conditioned on the corresponding selection, or follow an exact wait.
   }];
 
   let dependentDialects = [];
@@ -126,13 +131,17 @@ def TTLFormPipeTransports
 
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
-    bytes. Selection counts the widened intermediate DFB types, a conservative
-    receiver-published address table, required transport scratch, and
-    synchronized-reset scratch
-    against the same L1 budget used by `ttl-validate-cb-budget`.
-    `group-size = 1` disables grouping. A larger value is an upper bound; the
-    pass selects a smaller group when required by the loop trip count or L1
-    capacity. Ineligible loops retain scalar transfer IR.
+    bytes. Selection uses a target-aligned logical DFB estimate and a
+    conservative upper bound for PipeNet address storage, scratch,
+    GlobalSemaphore counters, record-selected callback resources,
+    synchronized-reset scratch, and DFB reconfiguration state. This estimate
+    selects a grouping size; it does not reject the finalized physical DFB
+    allocation. `group-size = 1` disables grouping and records the conservative
+    PipeNet reservation for physical DFB allocation. A larger value is an upper
+    bound; the pass selects a smaller group when the loop trip count or L1
+    capacity requires it. Ineligible loops retain scalar transfer IR. After
+    PipeNet lowering chooses exact resources, `convert-ttl-to-ttkernel`
+    validates the authoritative combined per-core allocation.
   }];
 
   let options = [
@@ -140,7 +149,7 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the combined DFB and scratch L1 budget in bytes for "
+           "Override the combined per-core L1 budget in bytes for "
            "transport selection.">
   ];
 
@@ -152,11 +161,15 @@ def TTLFormPipeTransports
 
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
-  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let summary = "Complete ttl.copy operations without a guaranteed wait";
   let description = [{
-    Finds `ttl.copy` ops whose transfer handle result has no `ttl.wait` user
-    and inserts a `ttl.wait` immediately after the copy. Explicit `.wait()`
-    calls are preserved: the pass only fills in what is missing.
+    Proves copy completion across every reachable continuation, including
+    structured regions and block control flow. An uncovered copy receives an
+    implicit `ttl.wait`. When a request participates in a multi-request
+    `ttl.wait_any`, uncovered cleanup occurs at each reachable function exit.
+    The inserted wait therefore cannot alter the selected request or precede
+    work that completes pending candidates. A single-request `ttl.wait_any`
+    completes its sole request.
   }];
 
   let dependentDialects = [];
@@ -201,32 +214,17 @@ def TTLFormAccumulationScopes
     ```
 
     The tensor form requires an init-backed recurrence, one final
-    non-accumulating store to a dataflow buffer reservation, a streamed or
-    resident dataflow-buffer-backed contribution, and an output tile count that
-    fits in one streaming DST section.
+    non-accumulating store to a dataflow buffer reservation, and at least one
+    legal lowering for the requested accumulation strategy.
   }];
 
-  let dependentDialects = [
-    "::mlir::scf::SCFDialect",
-    "::mlir::tt::ttl::TTLDialect"
+  let options = [
+    Option<"strategy", "strategy", "std::string", "\"auto\"",
+           "Tensor recurrence accumulation strategy used to filter scopes: auto, dst, or l1-pack.">
   ];
-}
-
-def TTLLowerAccumulationScopes
-    : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
-  let summary = "Lower semantic accumulation scopes to concrete storage";
-  let description = [{
-    Lowers tensor `ttl.accumulation_scope` operations to streaming
-    DST-resident recurrence sections. The pass first validates every scope
-    before mutating IR, then rewrites each valid scope to one `ttl.dst_section`
-    that copies the init tiles into accumulator slots, preserves the source
-    recurrence loop, and packs the final tiles once after the loop.
-  }];
 
   let dependentDialects = [
-    "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
-    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
 }
@@ -239,7 +237,10 @@ def TTLMaterializeLoopState
     buffer state. The pass removes tensor results from the loop while
     preserving non-tensor iter args.
 
-    Tensor recurrences use compiler-allocated dataflow buffer state:
+    Additive tensor recurrences are handled earlier by
+    `ttl-form-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
+    Any tensor recurrence that reaches this pass uses compiler-allocated
+    dataflow buffer state:
     ```mlir
     %state = scf.for %iv = %lb to %ub step %step
         iter_args(%arg = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
@@ -267,31 +268,99 @@ def TTLMaterializeLoopState
   }];
 
   let dependentDialects = [
+    "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLInsertAccumulationScopes
+    : Pass<"ttl-insert-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Insert semantic accumulation scopes";
+  let description = [{
+    Inserts `ttl.accumulation_scope` regions around user-written DFB
+    accumulation after DFB acquire/release structure is canonical and before
+    concrete storage strategy selection.
+
+    The pass records accumulation policy only. It does not select DST, L1
+    packer accumulation, or explicit dataflow buffer state.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"dfb\"",
+           "Scope insertion kind. Supported value: dfb.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLLowerAccumulationScopes
+    : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Lower semantic accumulation scopes";
+  let description = [{
+    Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
+    Tensor mode supports additive tensor recurrences formed by
+    `ttl-form-accumulation-scopes` and stateful tensor scopes that lower to
+    explicit stores in `strategy=auto`. DFB mode lowers user-written
+    accumulating stores to L1 packer metadata.
+    L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
+    metadata for TTKernel packer reconfiguration placement.
+
+    For additive tensor scopes, `strategy=auto` compares legal DST and L1
+    packer accumulation candidates with the accumulation cost model.
+    `strategy=dst` requires DST and emits an error when the tensor scope is not
+    DST-compatible. `strategy=l1-pack` always uses the L1 packer strategy.
+    Stateful tensor scopes lower only in `strategy=auto`.
+    For f32 recurrences the DST strategy feeds the accumulator back through SRCA
+    each iteration, truncating to tf32; `l1-pack` accumulates in f32 L1 and
+    retains full f32 precision.
+    DFB scopes always lower to L1 packer metadata because their storage target
+    is the reserved output dataflow buffer slot.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Scope lowering kind: tensor or dfb.">,
+    Option<"strategy", "strategy", "std::string", "\"auto\"",
+           "Tensor recurrence accumulation strategy: auto, dst, or l1-pack.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
 }
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
+  let summary = "Lower TTL data movement, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel";
   let description = [{
-    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
-    and semaphore operations. PipeNet lowering selects receiver-published or
-    computed destination addresses and receiver-post or capacity-counter
-    synchronization according to the pass options and transfer eligibility.
+    Converts TTL DFB, copy, wait, PipeNet, synchronized-reset, and DFB
+    reconfiguration operations to TTKernel DFB, NoC, semaphore, and external
+    interface operations. PipeNet lowering selects receiver-published or
+    computed destination addresses and receiver-post, capacity-counter, or
+    fabric synchronization according to the pass options, transfer eligibility,
+    and logical-device transfer.
     PipeNet counters use local semaphore ids before GlobalSemaphore storage by
     default; the global-only option preserves all local semaphore ids for
     application use.
 
     The pass validates finalized DFB backing plus the exact PipeNet and
-    synchronized-reset scratch allocation against the selected per-core L1
-    budget before lowering the operations.
+    synchronized-reset scratch and DFB reconfiguration state against the
+    selected per-core L1 budget before lowering the operations.
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     exact launch-node domains, and single-block event regions required by
-    protocol planning.
+    protocol planning. After planning, this pass validates the authoritative
+    per-core L1 footprint: target-aligned finalized DFB allocations,
+    synchronized-reset state, reconfiguration tensors, PipeNet scratch, and
+    GlobalSemaphore allocations.
   }];
 
   let options = [
@@ -330,25 +399,39 @@ def TTLConvertTTLToTTKernel
 
 def TTKernelInsertL1Accumulation
     : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
-  let summary = "Insert L1 accumulation guards for reduction loops";
+  let summary = "Insert packer L1 accumulation reconfiguration";
   let description = [{
-    Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
-    annotated loops accumulate into L1 instead of overwriting. Max-reduce
-    loops are excluded (max is not additive).
+    Inserts `pack_reconfig_l1_acc` operations so that pack operations inside
+    annotated loops accumulate into L1 instead of overwriting. Max-reduce loops
+    are excluded because max is not additive.
+    Annotated additive loops must pack accumulated outputs to formats supported
+    by packer L1 accumulation: f32, f16, bf16, si32, or u8. Packs inside the
+    loop that target other dataflow buffers are bracketed with temporary
+    disable and restore operations because the packer L1 accumulation state is
+    global.
 
-    Loops are grouped into accumulation scopes: consecutive sibling loops
-    that pack to the same CB share a single disable pair. Nested annotated
-    loops are folded into the outermost ancestor. Each group gets:
-    - `pack_reconfig_l1_acc(0)` before the first loop.
+    Loops are grouped into accumulation scopes by `ttl.l1_acc_scope_id`;
+    the pass does not infer scope identity from neighboring TTKernel
+    operations. Nested annotated loops are folded into the outermost ancestor
+    with the same scope id. Each group gets:
+    - `pack_reconfig_l1_acc(0)` before the first loop when
+      `ttl.l1_acc_initial=overwrite`, or `pack_reconfig_l1_acc(1)` when
+      `ttl.l1_acc_initial=accumulate_existing`.
     - `if (iv == lb) pack_reconfig_l1_acc(1)` after each loop's first
-      iteration (the L1 acc state persists across `tile_regs` boundaries).
+      iteration for overwrite-mode loops (the L1 acc state persists across
+      `tile_regs` boundaries).
     - For the second+ loop in a group, an enable before the loop to re-enable
       L1 acc after init ops that may reset packer state.
-    - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
+    - `pack_reconfig_l1_acc(0)` before non-accumulating packs in the loop and
+      restore operations after those packs when the scope remains active.
+    - `pack_reconfig_l1_acc(0)` after the scope when no later pack can observe
+      the enabled state, or before a later non-group pack.
 
     Loops are identified by the `ttl.l1_acc_loop` (user-written) or
     `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
-    ops, with `ttl.l1_acc_loop` taking precedence.
+    ops, with `ttl.l1_acc_loop` taking precedence. Each loop must carry
+    `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id` so this pass does not infer
+    semantic accumulation state from neighboring TTKernel operations.
 
   }];
 
@@ -356,21 +439,6 @@ def TTKernelInsertL1Accumulation
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
-  ];
-}
-
-def TTLAnnotateL1AccLoops
-    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
-  let summary = "Annotate user-written scf.for loops for L1 accumulation";
-  let description = [{
-    Detects user-written `scf.for` loops containing `ttl.store` ops with
-    the `accumulate` attribute (emitted by the `+=` operator) and annotates
-    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
-    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
-    iterations instead of overwriting.
-  }];
-  let dependentDialects = [
-    "::mlir::scf::SCFDialect"
   ];
 }
 
@@ -420,7 +488,13 @@ def TTLInsertIntermediateDFBs
     blocks, materialize all relevant uses through one shared compiler DFB.
     Application begins only after the complete plan is valid.
 
-    All DFBs created by this pass are marked with `ttl.compiler_allocated`.
+    In the standard pipeline this pass runs after
+    `ttl-create-producer-compute`, so tensor-level materialization is limited
+    to IR forms that have not yet been converted to `ttl.compute`.
+
+    All DFBs created by this pass are marked with `ttl.compiler_allocated`;
+    `ttl-finalize-dfb-indices` assigns physical indices and emits runtime
+    metadata after materialization is complete.
 
     When `enable` is false, the pass verifies that no operations require
     compiler-allocated DFBs for operand attachment, source-lifetime
@@ -862,11 +936,14 @@ def TTLVerifyPipeNetSchedule
     pipe events must be kernel-thread entry points or be reachable from one
     through direct calls. Definitions of one event kind for a pipe endpoint
     must belong to one kernel-thread function because independent kernel
-    threads have no program order. Each event must have an exact launch-node
-    domain. Multi-block regions that contribute pipe events, unknown event
-    domains, recursive calls containing pipe events, and schedules with more
-    than 4096 expanded event occurrences at one launch node are rejected
-    because the verifier cannot construct a correct bounded event graph.
+    threads have no program order. Events with statically analyzable predicates
+    use their exact launch-node domain. Otherwise, the static PipeNet endpoint
+    role provides a conservative domain that includes every possible event;
+    execution-count analysis still removes coordinates proven not to execute.
+    Multi-block regions that contribute pipe events, recursive calls containing
+    pipe events, and schedules with more than 4096 expanded event occurrences
+    at one launch node are rejected because the verifier cannot construct a
+    correct bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
@@ -996,15 +1073,21 @@ def TTLFinalizeDFBIndices
     later analyses can distinguish DFBs that share one hardware slot.
 
     With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
-    including declarations shared across kernels. Reuse requires exact
-    `CircularBufferType` equality, equal transaction tile counts that divide
-    the DFB capacity, and identical read- and write-pointer processors on each
-    launch node. These requirements preserve hardware counter and ring-pointer
-    state. One unresolved structured condition is supported when every active
-    DFB access belongs to one reserve, push, wait, and pop transaction
-    controlled by equivalent `scf.if` or `affine.if` frames. Branch polarity,
-    nesting, and control values must match. Within one kernel function, ordinary
-    SSA equality can establish equivalence. Separately evaluated `scf.if`
+    including declarations shared across kernels. Within one configuration
+    epoch, reuse requires exact `CircularBufferType` equality, equal transaction
+    tile counts that divide the DFB capacity, and identical read- and
+    write-pointer processors on each launch node. These requirements preserve
+    hardware counter and ring-pointer state. Logical DFBs active only in
+    disjoint synchronized configuration epochs may share a physical index with
+    different geometry or storage. A DFB with live protocol state crosses a
+    reconfiguration unchanged and remains active in every epoch it spans, so
+    its physical index cannot be reassigned at those boundaries.
+
+    One unresolved structured condition is supported when every active DFB
+    access belongs to one reserve, push, wait, and pop transaction controlled
+    by equivalent `scf.if` or `affine.if` frames. Branch polarity, nesting, and
+    control values must match. Within one kernel function, ordinary SSA
+    equality can establish equivalence. Separately evaluated `scf.if`
     conditions can match across logical kernels when every unresolved frame is
     a structurally equal expression rooted in the same typed dispatch-condition
     identities at the same launch coordinate. Untyped evaluations, mixed typed
@@ -1060,13 +1143,14 @@ def TTLFinalizeDFBIndices
     Exhaustive assignment search can grow exponentially, so it runs only when
     first-fit prevents acceptance and the pairwise-conflict lower bound does
     not already prove failure. The physical-index check asks directly whether
-    an assignment fits the available indices. Minimum physical-index-count
-    search runs when an otherwise valid assignment plus synchronized-reset
-    scratch exceeds the L1 budget, or when it exceeds the provisional threshold
-    after subtracting a conservative PipeNet reservation recorded by transport
-    formation. The reservation triggers search but cannot make finalization
-    reject an assignment that satisfies the DFB-plus-reset budget. Conversion
-    validates the finalized allocation against exact PipeNet resources.
+    an assignment fits the available indices. When first-fit exceeds the
+    DFB-plus-fixed-state L1 budget, or the provisional threshold after a
+    conservative PipeNet reservation, weighted search asks whether another
+    assignment fits using the sum of the target-aligned maximum allocation
+    assigned to each physical index. The reservation triggers search but cannot
+    make finalization reject an assignment that satisfies the authoritative
+    budget. Conversion validates the finalized allocation against exact PipeNet
+    resources.
     Each search examines at most `exact-coloring-search-limit` deterministic
     states to bound compile time. Reaching that limit reports an inconclusive
     allocation diagnostic only when acceptance requires the search result. A
@@ -1079,9 +1163,10 @@ def TTLFinalizeDFBIndices
     and typed conflicts before allocation succeeds or fails. The report includes
     logical descriptors, access domains, protocol effects, exact execution
     counts, transaction sizes, pointer owners, lifetime frontiers, and conflict
-    evidence. Lifetime frontiers use access-occurrence indices that map to the
-    report's numbered access records. For an unknown launch-node domain, it
-    separately labels a possible-domain per-node analysis that treats unknown
+    evidence. Lifecycle epochs identify every configuration in which live state
+    must be retained. Lifetime frontiers use access-occurrence indices that map
+    to the report's numbered access records. For an unknown launch-node domain,
+    it separately labels a possible-domain per-node analysis that treats unknown
     accesses as possible while preserving exact-zero inactivity. It may
     establish conditional boundedness only for one complete transaction whose
     active accesses share one structured at-most-once condition on every
@@ -1121,7 +1206,11 @@ def TTLFinalizeDFBIndices
     missing compiler-created logical IDs, and builds `ttl.dfb_allocations` for
     the Python runtime. The attribute contains one descriptor per physical
     index, including user-declared and compiler-created DFBs, and records the
-    page size computed from the finalized element type. See
+    page size computed from the finalized element type. A descriptor also
+    records the exact union of launch nodes that access its physical index when
+    that domain is known. An exact empty domain causes the runtime to install no
+    DFB descriptor; omitted domain metadata requires conservative whole-grid
+    allocation. See
     docs/development/DFBManagement.md.
   }];
 
@@ -1138,8 +1227,8 @@ def TTLFinalizeDFBIndices
            "Maximum states examined by exact DFB allocation before reporting "
            "an inconclusive result.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used by DFB allocation. "
-           "0 selects the target budget.">
+           "Override the per-core L1 budget used by DFB allocation and "
+           "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }
 
@@ -1148,29 +1237,33 @@ def TTLValidateCBBudget
   let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every DFB
-    declared in the module and the allocator-rounded synchronized-reset state,
-    then compares the total against a per-core L1 budget.
+    `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
+    static backing-store size per physical DFB index, allocator-rounded
+    synchronized-reset state, and one target-aligned configuration tensor per
+    synchronized reconfiguration boundary. Tensor-backed DFB storage is
+    excluded because the tensor allocator owns that allocation.
 
     For each `BindCBOp`, the pass computes:
-      cb_bytes = total_elements * tile_size_bytes
+      dfb_payload_bytes = total_elements * tile_size_bytes
+      dfb_allocation_bytes = align_to_target_quantum(dfb_payload_bytes)
 
     When the same `cb_index` appears in multiple functions (e.g. compute
-    and data-movement kernels sharing a CB slot), only the largest
-    allocation for that index is counted.
+    and data-movement kernels sharing a DFB slot), only the largest allocation
+    for that index is counted.
 
-    On overflow the pass emits an error with a per-CB breakdown and a
+    On overflow the pass emits an error with a per-DFB breakdown and a
     hint to reduce block shapes or block counts.
 
     L1 budget is taken from the module's TTCore system descriptor and
     default device when present (`ChipDescAttr::getUsableL1Size()` for the
     selected chip). When the module has no system descriptor, the pass uses
-    the same static per-core CB region limit as Wormhole and Blackhole
+    the same static per-core DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    This is a static DFB and reset-state check. Final conversion validates the
-    same DFB backing together with exact PipeNet and reset scratch. Neither
-    check models kernel binaries or stacks.
+    This is a static DFB and fixed-state check. Pipe transport formation and
+    final conversion validate the same backing together with PipeNet, reset,
+    semaphore, and reconfiguration resources. These checks do not model kernel
+    binaries, stacks, or unrelated runtime allocations.
   }];
 
   let options = [

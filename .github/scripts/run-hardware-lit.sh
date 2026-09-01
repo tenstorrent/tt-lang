@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Run hardware Python lit tests in chip-pinned serial shards. Parallel shard
-# count can be capped below the chip count to preserve host CPU capacity.
+# Run hardware Python lit tests in topology-valid device-group shards. Parallel
+# shard count can be capped below the available group count to preserve host CPU capacity.
 # Multi-device lit tests run afterward in a serial process.
 #
 # Env:
@@ -54,14 +54,28 @@ if [ "$chips" -le 1 ]; then
     exit $?
 fi
 
-echo "Detected ${chips} chips: ${workers} Python lit shards in parallel, multi-device serial"
+device_groups_string="$(resolve_tt_device_groups "$chips")" || {
+    echo "No valid device grouping found; running Python lit serially with full topology visibility"
+    unset TT_VISIBLE_DEVICES
+    TTLANG_LIT_TEST_EXEC_ROOT="${lit_exec_root}/serial" \
+        llvm-lit "$TEST_DIR" "${lit_common[@]}" \
+        --xunit-xml-output="${REPORT_PREFIX}.xml"
+    exit $?
+}
+IFS=';' read -r -a device_groups <<< "$device_groups_string"
+device_group_count="${#device_groups[@]}"
+if [ "$workers" -gt "$device_group_count" ]; then
+    workers="$device_group_count"
+fi
+
+echo "Detected ${chips} chips as ${device_group_count} valid device groups: ${workers} Python lit shards in parallel, multi-device serial"
 
 rc=0
 pids=()
-for ((chip_index = 0; chip_index < workers; chip_index++)); do
-    shard_number=$((chip_index + 1))
+for ((worker_index = 0; worker_index < workers; worker_index++)); do
+    shard_number=$((worker_index + 1))
     (
-        export TT_VISIBLE_DEVICES="${chip_index}"
+        export TT_VISIBLE_DEVICES="${device_groups[$worker_index]}"
         export TT_METAL_CACHE="${cache_root}/shard-${shard_number}"
         export TTLANG_LIT_TEST_EXEC_ROOT="${lit_exec_root}/shard-${shard_number}"
         mkdir -p "$TT_METAL_CACHE"

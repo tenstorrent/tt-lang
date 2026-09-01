@@ -23,9 +23,12 @@ Math operations:
 
 from .ttl_api import compute, datamovement
 from .atom import operation, DFB
-from .kernel import Kernel, KernelKind
+from .kernel import Kernel, KernelKind, PIPE_SOURCE_KERNEL
+from .fabric import FabricManagerClaim
 from .runtime_resources import (
     CoreRuntimeArgs,
+    FabricConnectionBinding,
+    FabricConnectionRequirement,
     KernelDefine,
     KernelRuntimeResources,
     ProgramRuntimeResources,
@@ -33,6 +36,7 @@ from .runtime_resources import (
 from .condition import DispatchCondition
 from .dfb_reset import DFBReset
 from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
+from .dfb_reconfiguration import DFBReconfiguration
 from .scalar import ScalarType
 from .dataflow_buffer import (
     make_dataflow_buffer_like,
@@ -52,23 +56,33 @@ from .operators import (
     raw_addr,
     reset_all_dfbs,
     reset_dfbs,
+    reconfigure_dfbs,
+    wait_any,
 )
 
 # Math operations namespace
 from . import ttl_math as math
+
+# Block operations namespace
+from . import ttl_block as block
 
 __all__ = [
     "operation",
     "DFB",
     "Kernel",
     "KernelKind",
+    "PIPE_SOURCE_KERNEL",
+    "FabricManagerClaim",
     "CoreRuntimeArgs",
+    "FabricConnectionBinding",
+    "FabricConnectionRequirement",
     "KernelDefine",
     "KernelRuntimeResources",
     "ProgramRuntimeResources",
     "DispatchCondition",
     "DFBReset",
     "DFBAllocationGroup",
+    "DFBReconfiguration",
     "ScalarType",
     "compute",
     "datamovement",
@@ -88,5 +102,8 @@ __all__ = [
     "raw_addr",
     "reset_dfbs",
     "reset_all_dfbs",
+    "reconfigure_dfbs",
+    "wait_any",
     "math",
+    "block",
 ]

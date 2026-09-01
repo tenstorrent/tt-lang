@@ -29,7 +29,7 @@ def reduce_kernel(inp, out):
     @ttl.compute()
     def reduce_compute():
         with inp_dfb.wait() as inp, out_dfb.reserve() as out:
-            out.store(ttl.math.reduce_sum(inp, dims=[0, 1]))
+            out.store(ttl.math.reduce_sum(inp, dims=[0, 1], shape=(1, 1)))
 
     @ttl.datamovement()
     def dm_read():

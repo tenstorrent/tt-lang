@@ -27,15 +27,26 @@ LogicalKernelAttr = ir.LogicalKernelAttr
 DispatchConditionAttr = ir.DispatchConditionAttr
 DFBAllocationGroupAttr = ir.DFBAllocationGroupAttr
 SynchronizedDFBResetAttr = ir.SynchronizedDFBResetAttr
+DFBReconfigurationAttr = ir.DFBReconfigurationAttr
 DFBProtocolEffectAttr = ir.DFBProtocolEffectAttr
 DFBNonTransactionalAccessAttr = ir.DFBNonTransactionalAccessAttr
 TensorBackingAttr = ir.TensorBackingAttr
 PipeRecordAttr = ir.PipeRecordAttr
 PipeNetRecordsAttr = ir.PipeNetRecordsAttr
+DeviceDomainComponentAttr = ir.DeviceDomainComponentAttr
+DeviceDomainAttr = ir.DeviceDomainAttr
+DeviceRangeAttr = ir.DeviceRangeAttr
+DeviceRefAttr = ir.DeviceRefAttr
+DeviceTransferAttr = ir.DeviceTransferAttr
+TransferEdgeAttr = ir.TransferEdgeAttr
+FabricManagerEffectAttr = ir.FabricManagerEffectAttr
+FabricManagerIntervalAttr = ir.FabricManagerIntervalAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
 SelectedPipeSrcType = ir.SelectedPipeSrcType
 SelectedPipeDstType = ir.SelectedPipeDstType
+ReceiveRequestType = ir.ReceiveRequestType
+ReadyReceiveType = ir.ReadyReceiveType
 
 __all__ = [  # noqa: F405
     *[name for name in globals().keys() if not name.startswith("_")],

@@ -13,6 +13,7 @@ import atexit
 import importlib
 import os
 import tempfile
+import warnings
 from typing import Callable, List, Tuple
 
 import pytest
@@ -23,8 +24,26 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, assert_pcc, to_l1, to_dram
 
 import ttl
+from ttl import operators
 
 TILE = 32
+
+
+@pytest.mark.parametrize("reduce_fn", [operators.reduce_sum, operators.reduce_max])
+def test_omitted_reduce_shape_is_deprecated(monkeypatch, reduce_fn):
+    result = object()
+    monkeypatch.setattr(operators, "_reduce_impl", lambda *args, **kwargs: result)
+
+    with pytest.warns(
+        DeprecationWarning, match="Omitting the reduce shape argument is deprecated"
+    ) as recorded:
+        assert reduce_fn(object(), dims=[0]) is result
+    assert recorded[0].filename == __file__
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        assert reduce_fn(object(), dims=[0], shape=(1, 1)) is result
+
 
 # =============================================================================
 # Kernel generation from templates
@@ -46,7 +65,12 @@ def reduce_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
-            out_blk.store({scaler_expr} * ttl.math.{reduce_fn}(inp_blk, dims={dims}))
+            out_blk.store(
+                {scaler_expr}
+                * ttl.math.{reduce_fn}(
+                    inp_blk, dims={dims}, shape=({out_rows}, {out_cols})
+                )
+            )
 
     @ttl.datamovement()
     def dm_read():
@@ -447,6 +471,14 @@ MULTI_TILE_CONFIGS = [
         1.0,
         "sum_2x2_both",
     ),
+    (
+        "reduce_sum",
+        (2, 2),
+        [-1],
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
+        1.0,
+        "sum_2x2_neg1_random",
+    ),
     # Random multi-tile.
     (
         "reduce_sum",
@@ -479,6 +511,14 @@ MULTI_TILE_CONFIGS = [
         lambda dtype: torch.rand(64, 64, dtype=dtype),
         1.0,
         "max_2x2_both_random",
+    ),
+    (
+        "reduce_max",
+        (2, 2),
+        [-2],
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
+        1.0,
+        "max_2x2_neg2_random",
     ),
     # Large block (4x4).
     (
@@ -725,9 +765,8 @@ def test_reduce_multicore(
 
 
 # =============================================================================
-# L1 accumulation tests: multi-tile reduce_sum with maximize_dst=false.
-# Verifies per-tile L1 accumulation (pack_reconfig_l1_acc) works correctly
-# when DST accumulation is disabled.
+# L1 reduction-mode tests with maximize_dst=false. Additive reductions use
+# packer accumulation; max reductions must not be treated as additive.
 # =============================================================================
 
 # Separate kernel factory to avoid cache collision with DST-accumulation kernels.
@@ -840,13 +879,45 @@ def _make_l1_acc_kernel(
             1.0,
             "l1_sum_4x4_dim0",
         ),
+        (
+            "reduce_max",
+            (2, 2),
+            [0],
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
+            1.0,
+            "l1_max_2x2_dim0",
+        ),
+        (
+            "reduce_max",
+            (2, 2),
+            [1],
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
+            1.0,
+            "l1_max_2x2_dim1",
+        ),
+        (
+            "reduce_max",
+            (2, 2),
+            [0, 1],
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
+            1.0,
+            "l1_max_2x2_both",
+        ),
     ],
-    ids=["l1_sum_2x2_dim0", "l1_sum_2x2_dim1", "l1_sum_2x2_both", "l1_sum_4x4_dim0"],
+    ids=[
+        "l1_sum_2x2_dim0",
+        "l1_sum_2x2_dim1",
+        "l1_sum_2x2_both",
+        "l1_sum_4x4_dim0",
+        "l1_max_2x2_dim0",
+        "l1_max_2x2_dim1",
+        "l1_max_2x2_both",
+    ],
 )
 def test_reduce_l1_accumulation(
     device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id, dtype
 ):
-    """Multi-tile reduce_sum with L1 accumulation (maximize_dst=false)."""
+    """Multi-tile reductions with maximize_dst=false."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
     kernel = _make_l1_acc_kernel(reduce_fn, inp_rows, inp_cols, dims, scaler_val)
@@ -863,6 +934,63 @@ def test_reduce_l1_accumulation(
 
     expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
     actual = _populated_slice(result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
+
+
+@ttl.operation(grid=(1, 1), options="--no-ttl-maximize-dst")
+def reduce_l1_acc_epilogue_kernel(inp, scale, bias, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    scale_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), block_count=2)
+    bias_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with (
+            inp_dfb.wait() as inp_blk,
+            scale_dfb.wait() as scale_blk,
+            bias_dfb.wait() as bias_blk,
+            out_dfb.reserve() as out_blk,
+        ):
+            reduced = ttl.math.reduce_sum(inp_blk, dims=[0, 1])
+            out_blk.store(reduced * scale_blk + bias_blk)
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as inp_blk:
+            ttl.copy(inp[0:2, 0:2], inp_blk).wait()
+        with scale_dfb.reserve() as scale_blk:
+            ttl.copy(scale[0:1, 0:1], scale_blk).wait()
+        with bias_dfb.reserve() as bias_blk:
+            ttl.copy(bias[0:1, 0:1], bias_blk).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as out_blk:
+            ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_reduce_l1_accumulation_with_fused_epilogue(device, dtype):
+    """L1 reduction accumulation preserves fused elementwise consumers."""
+    inp_torch = torch.full((2 * TILE, 2 * TILE), 0.25, dtype=dtype)
+    scale_torch = torch.full((TILE, TILE), 0.5, dtype=dtype)
+    bias_torch = torch.full((TILE, TILE), 3.0, dtype=dtype)
+    out_torch = torch.zeros((TILE, TILE), dtype=dtype)
+
+    out = to_l1(out_torch, device)
+    reduce_l1_acc_epilogue_kernel(
+        to_l1(inp_torch, device),
+        to_l1(scale_torch, device),
+        to_l1(bias_torch, device),
+        out,
+    )
+    result = ttnn.to_torch(out)
+
+    expected = _expected_reduce_tensor(inp_torch, "reduce_sum", [0, 1], 1.0)
+    expected = expected * scale_torch[:1, :1].float() + bias_torch[:1, :1].float()
+    actual = _populated_slice(result, [0, 1])
     tol = _tolerances(dtype)
     assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 

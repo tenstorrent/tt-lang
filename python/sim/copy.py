@@ -11,7 +11,8 @@ DataflowBuffer system.
 
 import math
 import sys
-from typing import Optional, Tuple
+import types
+from typing import Optional, Sequence, Tuple
 
 from .context import get_context
 from .copyhandlers import (
@@ -25,7 +26,7 @@ from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
 from .trace import TRACE, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
-from .pipe import Pipe, SrcPipeIdentity
+from .pipe import DstPipeIdentity, Pipe, SrcPipeIdentity
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
@@ -237,6 +238,71 @@ class CopyTransaction:
         return self._completed
 
 
+class ReceiveRequest(CopyTransaction):
+    """One pending PipeNet receive."""
+
+
+class ReadyReceive:
+    """The request selected by :func:`wait_any`."""
+
+    def __init__(self, selected_index: int) -> None:
+        self._selected_index = selected_index
+
+    def index(self) -> int:
+        """Return the selected request's tuple index."""
+        return self._selected_index
+
+
+class _ReceiveSelection:
+    """Scheduler predicate for a rotating set of receive requests."""
+
+    def __init__(self, requests: Sequence[ReceiveRequest], start: int) -> None:
+        self._requests = requests
+        self._start = start % len(requests)
+        self._trace_name = f"wait_any_{id(self) & 0xFFFF:04x}"
+
+    def find_ready_index(self) -> Optional[int]:
+        for offset in range(len(self._requests)):
+            candidate = (self._start + offset) % len(self._requests)
+            if self._requests[candidate].can_wait():
+                return candidate
+        return None
+
+    def can_wait(self) -> bool:
+        return self.find_ready_index() is not None
+
+
+def wait_any(requests: tuple[ReceiveRequest, ...], start: int = 0) -> ReadyReceive:
+    """Select the first completed receive in cyclic order from start."""
+    if not isinstance(requests, tuple):
+        raise TypeError("ttl.wait_any() requires a tuple of receive requests")
+    if not requests:
+        raise ValueError("ttl.wait_any() requires at least one receive request")
+    if any(not isinstance(request, ReceiveRequest) for request in requests):
+        raise TypeError("ttl.wait_any() accepts only PipeNet receive requests")
+    if len({id(request) for request in requests}) != len(requests):
+        raise ValueError("ttl.wait_any() requires distinct receive requests")
+    if not isinstance(start, int) or isinstance(start, bool):
+        raise TypeError("ttl.wait_any() start must be an integer")
+
+    selection = _ReceiveSelection(requests, start)
+    block_if_needed(selection, "wait")
+    selected_index = selection.find_ready_index()
+    if selected_index is None:
+        raise RuntimeError("scheduler resumed ttl.wait_any() without a ready request")
+    requests[selected_index].wait()
+    return ReadyReceive(selected_index)
+
+
+def _register_deferred_copy_wait(
+    frame: types.FrameType, handle: CopyTransaction
+) -> None:
+    context = get_context()
+    if (id(frame.f_code), frame.f_lineno) not in context.deferred_copy_wait_sites:
+        return
+    context.deferred_copy_wait_requests.setdefault(frame, []).append(handle)
+
+
 class GroupTransfer:
     """Group of transfer handles that can be waited on together.
 
@@ -326,7 +392,13 @@ def copy(
     frame = sys._getframe(1)
     user_location: Tuple[str, int] = (frame.f_code.co_filename, frame.f_lineno)
 
-    handle = CopyTransaction(src, dst, user_location=user_location)
+    transaction_type = (
+        ReceiveRequest
+        if isinstance(src, (Pipe, DstPipeIdentity)) and isinstance(dst, Block)
+        else CopyTransaction
+    )
+    handle = transaction_type(src, dst, user_location=user_location)
+    _register_deferred_copy_wait(frame, handle)
 
     # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
     # The AST analysis in analyze_kernel_function identifies these call sites

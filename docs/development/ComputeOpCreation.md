@@ -176,8 +176,9 @@ validates kernel tile dimensions, primitive data-type support, and matmul LLK
 combinations before compute creation or TTKernel conversion modifies IR. The
 environment is selected from the module's system description or
 `ttl.target_arch`. Modules without either use the intersection of capabilities
-implemented by all supported targets. Wormhole B0 and Blackhole currently
-provide the same compute capability set.
+implemented by all supported targets. Target implementations may expose
+different fixed-block schedules when their dependencies provide different LLK
+capabilities.
 
 Adding an architecture requires a capability implementation and an entry in
 `computeTargetRegistrations`. The registration table is the source for both
@@ -297,6 +298,93 @@ same add remain separate because neither deferred result could initialize the
 accumulator. Instrumentation between a matmul and add also keeps separate tile
 operations and emits a warning because the combined hardware operation cannot
 preserve the observation point.
+
+### Capacity-Fitting Reduction Fusion
+
+The ordinary fusion tracer composes operations that share one iteration
+domain. A full reduction followed by scalar operations and reuse across the
+original row has three domains:
+
+```text
+row tiles [1, N]
+  -> full reduction [1, 1]
+  -> scalar operations [1, 1]
+  -> scalar reuse across row tiles [1, N]
+```
+
+A tile recipe cannot represent this schedule as one pointwise iteration. The
+reduction must consume every row tile before its scalar result is available,
+and the result must then remain live while the row tiles are read again. The
+generic tracer therefore requires an unstored elementwise producer of a
+reduction to be materialized in a DFB. Direct reduction creation also requires
+DFB-backed input and scaler operands.
+
+Row normalization uses a target-supported schedule when the complete operation
+sequence has this semantic form:
+
+```text
+squared = input * input
+sum = reduce_sum(squared, dims=[0, 1])
+mean_square = sum * scale
+inverse_rms = rsqrt(mean_square + epsilon)
+normalized = input * broadcast(inverse_rms)
+result = normalized * gamma  // optional
+```
+
+Recognition occurs during immutable candidate analysis. The resulting
+`RowNormalizationPlan` records every absorbed operation and its operands, the
+input and optional gamma values, scalar attributes, row tile count, and gamma
+mode. Application verifies the recorded operands and emits one
+`ttl.tile_row_normalization_block`; it does not repeat recognition or legality
+analysis. Capacity is checked during planning and revalidated before compute
+lowering.
+
+The schedule is selected only when all of these conditions hold:
+
+- the target exposes the row-normalization capability for the DFB element type;
+- input and result are the same static rank-2 one-row tensor type;
+- the row contains at least one tile, does not exceed the target schedule limit,
+  and fits a DST configuration permitted by explicit kernel attributes;
+- the sum reduces both tensor dimensions and uses a unit reduction scaler;
+- scale and epsilon are finite and positive;
+- each internal value has the uses required by the schedule;
+- optional gamma has the complete row type;
+- publication contains exactly one reserve/store transaction; and
+- no instrumentation would be absorbed into the block schedule.
+
+Failure to satisfy a specialization condition leaves the expression available
+to the remaining compute-creation mechanisms and intermediate DFB
+materialization. A rejected specialization does not modify IR.
+
+`LowerRowNormalizationCompute` verifies the planned compute against its target,
+formal inputs and output, row size, DST capacity, and store before mutation. It
+then creates one DST section for the entire row. Target lowering performs the
+sum of squares, applies scale and epsilon, computes reciprocal square root,
+moves the retained scalar to a compute source register, clears the acquired DST
+section, and multiplies it across all input tiles. Optional gamma multiplication
+occurs before the output block is packed. The generated kernel therefore uses
+one DST acquisition and no intermediate DFB.
+
+`num_tiles` preserves the exact fixed-block residency after tensor operands are
+scalarized to tile values. Kernel-configuration resolution intersects this
+requirement with destination width and synchronization candidates. Automatic
+synchronization prefers double buffering when the row fits and selects full
+synchronization when it is required for capacity. An explicit configuration
+that cannot hold the row produces a capacity diagnostic before DST assignment.
+
+The row-normalization LLK applies its reduction scaler during both reduction
+stages. TTKernel-to-C++ lowering passes the square root of the semantic scale so
+the complete reduction applies the scale once.
+
+This schedule establishes the required representation for general reduction
+fusion but does not make the generic tracer multi-domain. A general planner
+must record ordered stages with independent iteration domains, explicit
+cross-stage values, and target storage capabilities. It must select whether a
+reduction result remains in DST, moves to a source register, or is materialized
+in a DFB from complete liveness, use, capacity, and publication facts. Extra
+consumers require either a recorded publication or materialization; spelling
+changes such as division by square root require semantic recipe equivalence.
+Application must remain mechanical and execute only the selected typed plan.
 
 ### Cross-Region Recomputation
 
@@ -552,6 +640,11 @@ The design preserves these properties:
 9. **Conversion completeness.** Final conversion assigns every `ttl.store` to
    a selected `ComputeOp` creation or passthrough plan before modifying IR.
 
+10. **Capacity-fitting reduction schedule.** Row-normalization fusion checks
+    the complete expression, target support, DST capacity, value uses, and
+    output publication before mutation. Lowering revalidates the planned
+    `ttl.compute` and retains the scalar within one DST transaction.
+
 The proof assumes verified TTL operation types, valid DFB FIFO semantics, and
 recognized view-preserving operations for acquired DFB storage. Conservative
 or unresolved DFB ownership returns "may be released" and may require a
@@ -624,6 +717,9 @@ operations and user DFB publications.
   loop lowering.
 - Fused expressions require explicit TTL tile recipes. Unsupported tensor
   operations stop tracing and remain separate or require materialization.
+- Generic fused expressions currently use one iteration domain. Reduction
+  results reused by another domain require an explicit capacity-fitting block
+  schedule; row normalization is the first such schedule.
 - Cross-block fusion rejects instrumentation that cannot be ordered relative
   to the sink block.
 - `ttl.tile_store` does not encode its formal output index. The compiler traces
@@ -648,6 +744,12 @@ operations and user DFB publications.
   fixed point of storage requirements.
 - `lib/Dialect/TTL/Transforms/ConvertTTLToCompute.cpp` mechanically applies
   direct, fused, elision, and passthrough plans.
+- `lib/Dialect/TTL/Transforms/LowerRowNormalizationCompute.cpp` verifies and
+  lowers the capacity-fitting row-normalization compute to one DST section.
+- `lib/Dialect/TTL/Transforms/ConvertTTLTileOpsToTTKernel.cpp` converts the
+  block schedule after DFB identities are available.
+- `include/ttlang/Target/TTKernel/LLKs/experimental_row_normalization.h`
+  implements scalar-retaining row normalization within one DST acquisition.
 - `lib/Dialect/TTL/Transforms/TTLInsertIntermediateDFBs.cpp` applies grouped
   compiler-DFB materialization plans.
 - `lib/Dialect/TTL/Transforms/TTLPrintComputeOpCreationPlans.cpp` prints

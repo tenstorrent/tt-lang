@@ -3,7 +3,7 @@
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @reset_overflow() {
-    // expected-error @below {{total DFB and synchronized-reset allocation (2112 bytes) exceeds L1 budget (2111 bytes)}}
+    // expected-error @below {{total DFB and fixed-state allocation (2112 bytes) exceeds L1 budget (2111 bytes)}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_budget">, <kind = data_movement, identity = "reader", operation = "reset_budget">, <kind = data_movement, identity = "writer", operation = "reset_budget">]>

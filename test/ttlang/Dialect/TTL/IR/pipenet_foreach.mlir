@@ -51,8 +51,8 @@ func.func @foreach_dst_receive() attributes {ttl.kernel_thread = #ttkernel.threa
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+        -> !ttl.receive_request
+    ttl.wait %xf : !ttl.receive_request
     ttl.yield
   }
   func.return
@@ -84,9 +84,9 @@ func.func @source_selected_loopback_receive()
     %copy = ttl.copy %pipe, %reserve
         : (!ttl.selected_pipe_src,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     // CHECK-NEXT: ttl.wait %[[COPY]]
-    ttl.wait %copy : !ttl.transfer_handle
+    ttl.wait %copy : !ttl.receive_request
     ttl.yield
   }
   func.return
@@ -133,13 +133,13 @@ func.func @select_pipe_ops() {
   %false = arith.constant false
   // CHECK: ttl.select_pipe_src record(%{{.*}})
   %src = ttl.select_pipe_src record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
-      num_dests (%c1) src_in_dst (%false)
+      num_dests (%c1) src_in_dst (%false) devices (%c0, %c0)
       {records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_src
   // CHECK: ttl.select_pipe_dst record(%{{.*}})
   %dst = ttl.select_pipe_dst record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
-      num_dests (%c1) src_in_dst (%false)
+      num_dests (%c1) src_in_dst (%false) devices (%c0, %c0)
       {records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_dst

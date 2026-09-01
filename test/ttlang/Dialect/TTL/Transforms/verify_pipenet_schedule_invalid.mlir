@@ -32,6 +32,58 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Wait-any blocks when every candidate send follows it in the same thread.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @wait_any_all_sends_after()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+    %dst0 = ttl.cb_reserve %landing0
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %dst1 = ttl.cb_reserve %landing1
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %request0 = ttl.copy %pipe0, %dst0
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.receive_request
+    %request1 = ttl.copy %pipe1, %dst1
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.receive_request
+    %start = arith.constant 0 : index
+    // expected-error @below {{receive wait-any can block with every candidate send ordered after the selection at core_x=0, core_y=0}}
+    %ready = ttl.wait_any %request0, %request1 start %start
+        : (!ttl.receive_request, !ttl.receive_request, index)
+        -> !ttl.ready_receive
+    // expected-note @below {{this candidate send cannot complete before the wait-any}}
+    %send0 = ttl.copy %source, %pipe0
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send0 : !ttl.transfer_handle<write>
+    // expected-note @below {{this candidate send cannot complete before the wait-any}}
+    %send1 = ttl.copy %source, %pipe1
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send1 : !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
 // Endpoint validation precedes destination-domain enumeration, so a malformed
 // range cannot make verification time proportional to that range.
 
@@ -143,7 +195,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %receive = ttl.copy %pipe, %reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
+            -> !ttl.receive_request
       } else {
         %reserve = ttl.cb_reserve %recv_cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -153,7 +205,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %receive = ttl.copy %pipe, %reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
+            -> !ttl.receive_request
       }
     }
     func.return
@@ -267,7 +319,7 @@ module attributes {ttl.launch_grid = [5 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe0, %reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     ttl.if_dst %pipe1
         : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1> {
@@ -278,7 +330,7 @@ module attributes {ttl.launch_grid = [5 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe1, %reserve
           : (!ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     ttl.if_dst %pipe2
         : !ttl.pipe<src(2, 0) dst(3, 0) to(3, 0) net 2> {
@@ -289,7 +341,7 @@ module attributes {ttl.launch_grid = [5 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe2, %reserve
           : (!ttl.pipe<src(2, 0) dst(3, 0) to(3, 0) net 2>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     ttl.if_dst %pipe3
         : !ttl.pipe<src(3, 0) dst(4, 0) to(4, 0) net 3> {
@@ -300,7 +352,7 @@ module attributes {ttl.launch_grid = [5 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe3, %reserve
           : (!ttl.pipe<src(3, 0) dst(4, 0) to(4, 0) net 3>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     ttl.if_dst %pipe4
         : !ttl.pipe<src(4, 0) dst(0, 0) to(0, 0) net 4> {
@@ -311,7 +363,7 @@ module attributes {ttl.launch_grid = [5 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe4, %reserve
           : (!ttl.pipe<src(4, 0) dst(0, 0) to(0, 0) net 4>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -347,7 +399,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %receive = ttl.copy %pipe, %reserve
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     cf.br ^send
   ^exit:
     func.return
@@ -385,10 +437,10 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe, %reserve
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       cf.br ^send
     ^exit:
-      ttl.wait %receive : !ttl.transfer_handle
+      ttl.wait %receive : !ttl.receive_request
       scf.yield
     }
     func.return
@@ -426,7 +478,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %receive = ttl.copy %pipe, %reserve
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     // expected-error @below {{cannot verify PipeNet synchronization in a multi-block region of this operation}}
     scf.execute_region {
       cf.br ^invoke
@@ -437,37 +489,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
       cf.br ^exit
-    }
-    func.return
-  }
-}
-
-// -----
-
-// A coordinate-dependent condition with an unevaluable operand makes the
-// receiver-post domain unknown. The schedule pass must not omit that event.
-
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @unknown_receiver_domain(%offset: index)
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %core_x = ttl.core_x : index
-    %sum = arith.addi %core_x, %offset : index
-    %c1 = arith.constant 1 : index
-    // expected-note @below {{this coordinate-dependent condition cannot be evaluated statically}}
-    %is_receiver = arith.cmpi eq, %sum, %c1 : index
-    scf.if %is_receiver {
-      %reserve = ttl.cb_reserve %recv_cb
-          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-error @below {{cannot verify PipeNet synchronization because this receiver post has an unknown launch-node domain}}
-      %receive = ttl.copy %pipe, %reserve
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
     }
     func.return
   }
@@ -505,8 +526,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %receive = ttl.copy %pipe, %reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
-        ttl.wait %receive : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
       }
     }
     func.return
@@ -597,11 +618,11 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       // expected-error @below {{receive wait occurs before the send that completes it on PipeNet net}}
       // expected-note @below {{this wait blocks until the sender transfers into the posted destination dataflow buffer slot}}
       // expected-note @below {{move the receive wait after the send, or place send and receive in separate data-movement threads}}
-      ttl.wait %recv : !ttl.transfer_handle
+      ttl.wait %recv : !ttl.receive_request
       // expected-note @below {{this send is ordered after the wait in the same data-movement thread}}
       %send = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -657,9 +678,40 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       // expected-error @below {{receive wait has no send corresponding to its defining receiver post on PipeNet net_0 at core_x=1, core_y=0}}
-      ttl.wait %recv : !ttl.transfer_handle
+      ttl.wait %recv : !ttl.receive_request
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A wait-any candidate cannot complete without a corresponding send.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @wait_any_missing_send()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %start = arith.constant 0 : index
+      // expected-error @below {{receive wait-any has no candidate send corresponding to a defining receiver post at core_x=1, core_y=0}}
+      // expected-error @below {{receive wait-any can block with every candidate send ordered after the selection at core_x=1, core_y=0}}
+      %ready = ttl.wait_any %recv start %start
+          : (!ttl.receive_request, index) -> !ttl.ready_receive
     }
     func.return
   }
@@ -706,8 +758,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %receive = ttl.copy %pipe, %reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %receive : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
     }
     func.return
   }
@@ -755,8 +807,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     func.return
   }
@@ -802,8 +854,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     func.return
   }
@@ -834,10 +886,10 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.selected_pipe_dst,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       // expected-error @below {{pipe schedule contains a wait-for cycle on PipeNet ordered}}
       // expected-note @below {{receive completion at core_x=1, core_y=0 waits for send at core_x=0, core_y=0 to transfer data}}
-      ttl.wait %recv : !ttl.transfer_handle
+      ttl.wait %recv : !ttl.receive_request
       ttl.cb_push %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
       ttl.yield
@@ -895,8 +947,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send0 = ttl.copy %send_cb, %pipe
@@ -938,8 +990,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index
@@ -993,8 +1045,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %recv = ttl.copy %pipe, %recv_reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv : !ttl.receive_request
       }
     }
     func.return
@@ -1036,9 +1088,128 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %recv = ttl.copy %pipe, %recv_reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv : !ttl.receive_request
       }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Structurally identical conditions must still compare a shared operand at
+// each endpoint. The shared value differs because it includes the launch node.
+
+module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
+  func.func @distinct_conditions_with_shared_node_dependent_value(
+      %runtime: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(2, 1) dst(1, 1) to(1, 1) net 0
+        : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
+    %core_sum = arith.addi %core_x, %core_y : index
+    %node_dependent = arith.addi %core_sum, %runtime : index
+    %c0 = arith.constant 0 : index
+    %source_selected = arith.cmpi eq, %node_dependent, %c0 : index
+    %destination_selected = arith.cmpi eq, %node_dependent, %c0 : index
+    ttl.if_src %pipe : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0> {
+      scf.if %source_selected {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=1; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    ttl.if_dst %pipe : !ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0> {
+      scf.if %destination_selected {
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %post = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(2, 1) dst(1, 1) to(1, 1) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Selected source and destination callbacks controlled by distinct runtime
+// values do not prove matching execution conditions.
+
+#mismatched_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#mismatched_records = #ttl.pipenet_records<
+    net 0 name "mismatched_selected" pipes [
+  #ttl.pipe_record<
+      srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 1,
+      dstEndX = 0, dstEndY = 1,
+      deviceTransfer = <
+        domain = #mismatched_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>
+]>
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  func.func @selected_mismatched_runtime_conditions(
+      %source_runtime_y: index, %destination_runtime_y: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.pipenet_foreach_dst attributes {
+        records = #mismatched_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %source_x, %source_y = ttl.selected_pipe_source_coordinates %pipe
+          : !ttl.selected_pipe_dst
+      %source_sum = arith.addi %source_x, %source_y : index
+      %destination_selected =
+          arith.cmpi eq, %source_sum, %destination_runtime_y : index
+      scf.if %destination_selected {
+        %reserved = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %post = ttl.copy %pipe, %reserved
+            : (!ttl.selected_pipe_dst,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
+      }
+      ttl.yield
+    }
+    ttl.pipenet_foreach_src attributes {
+        records = #mismatched_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %destination_x, %destination_y, %destination_end_x, %destination_end_y =
+          ttl.selected_pipe_destination_coordinates %pipe
+              : !ttl.selected_pipe_src
+      %destination_sum = arith.addi %destination_x, %destination_y : index
+      %source_selected =
+          arith.cmpi eq, %destination_sum, %source_runtime_y : index
+      scf.if %source_selected {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet mismatched_selected for receiver core_x=0, core_y=1; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.selected_pipe_src)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.yield
     }
     func.return
   }
@@ -1081,8 +1252,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %recv = ttl.copy %pipe, %recv_reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
-        ttl.wait %recv : !ttl.transfer_handle
+            -> !ttl.receive_request
+        ttl.wait %recv : !ttl.receive_request
       }
     }
     func.return
@@ -1122,13 +1293,13 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %other_recv = ttl.copy %other_pipe, %other_reserve
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %other_send = ttl.copy %send_cb, %other_pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
           -> !ttl.transfer_handle<write>
       ttl.wait %other_send : !ttl.transfer_handle<write>
-      ttl.wait %other_recv : !ttl.transfer_handle
+      ttl.wait %other_recv : !ttl.receive_request
       %recv_reserve = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -1140,8 +1311,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %loopback_pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     func.return
   }
@@ -1182,8 +1353,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     func.return
   }
@@ -1210,8 +1381,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send0 = ttl.copy %send_cb, %pipe
@@ -1250,11 +1421,11 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_view
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       // expected-error @below {{receive wait occurs before the send that completes it on PipeNet loopback}}
       // expected-note @below {{this wait blocks until the sender transfers into the posted destination dataflow buffer slot}}
       // expected-note @below {{move the receive wait after the send, or place send and receive in separate data-movement threads}}
-      ttl.wait %recv : !ttl.transfer_handle
+      ttl.wait %recv : !ttl.receive_request
       // expected-note @below {{this send is ordered after the wait in the same data-movement thread}}
       %send = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -1391,7 +1562,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %receive0 = ttl.copy %pipe, %reserve0
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     %send0 = ttl.copy %send_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
@@ -1403,11 +1574,11 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %receive1 = ttl.copy %pipe, %reserve1
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     // expected-error @below {{receive wait occurs before the send that completes it on PipeNet net_0}}
     // expected-note @below {{this wait blocks until the sender transfers into the posted destination dataflow buffer slot}}
     // expected-note @below {{move the receive wait after the send, or place send and receive in separate data-movement threads}}
-    ttl.wait %receive1 : !ttl.transfer_handle
+    ttl.wait %receive1 : !ttl.receive_request
     // expected-note @below {{this send is ordered after the wait in the same data-movement thread}}
     %send1 = ttl.copy %send_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -1446,7 +1617,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %receive = ttl.copy %pipe, %reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
-            -> !ttl.transfer_handle
+            -> !ttl.receive_request
       }
     }
     ttl.if_src %pipe
@@ -1484,7 +1655,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %receive0 = ttl.copy %pipe, %reserve0
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
       %reserve1 = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -1492,7 +1663,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %receive1 = ttl.copy %pipe, %reserve1
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }

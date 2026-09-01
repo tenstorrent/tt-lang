@@ -3,11 +3,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
+#include "ttlang/Dialect/TTL/Transforms/LowerRowNormalizationCompute.h"
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -84,9 +87,8 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 }
 
 static bool requiresDstAccumulation(ComputeOp op) {
-  // tile_accumulate has in-place DST semantics. Lowering it through ordinary
-  // per-iteration DstSectionOps would reacquire DST for each reduction
-  // iteration and lose the recurrence state.
+  // In-DST recurrences must share one DST section across reduction iterations.
+  // Ordinary per-iteration sections would reacquire DST and lose the state.
   if (op.containsOp<TileAccumulateOp>()) {
     return true;
   }
@@ -97,6 +99,16 @@ static bool requiresDstAccumulation(ComputeOp op) {
                    : WalkResult::advance();
       })
       .wasInterrupted();
+}
+
+static void annotateReductionLoop(scf::ForOp loop, OpBuilder &builder,
+                                  int64_t scopeId) {
+  MLIRContext *context = builder.getContext();
+  loop->setAttr(kReductionLoopAttrName, builder.getUnitAttr());
+  loop->setAttr(kL1AccInitialAttrName,
+                AccumulationInitialModeAttr::get(
+                    context, AccumulationInitialMode::Overwrite));
+  loop->setAttr(kL1AccScopeIdAttrName, builder.getI64IntegerAttr(scopeId));
 }
 
 /// Generate parallel-outer / reduction-inner loop structure for accumulating
@@ -114,7 +126,8 @@ static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
     ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
-    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps,
+    int64_t reductionScopeId) {
 
   SmallVector<unsigned> parallelDims, reductionDims;
   for (auto [idx, iterType] : llvm::enumerate(iterTypes)) {
@@ -188,7 +201,7 @@ static scf::LoopNest generateAccumulatingLoops(
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
       FailureOr<unsigned> outputIndex =
-          op.getOutputIndexForView(store.getView());
+          op.getOutputIndexForView(store.getView(), store.getOperation());
       assert(succeeded(outputIndex) &&
              "verified store must map to one formal compute output");
       storeInfos.push_back(
@@ -311,7 +324,7 @@ static scf::LoopNest generateAccumulatingLoops(
           unsigned origDim = reductionDims[idx];
           loop->setAttr(kTileLoopStrideAttrName,
                         parBuilder.getIndexAttr(domainStrides[origDim]));
-          loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+          annotateReductionLoop(loop, parBuilder, reductionScopeId);
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
@@ -418,6 +431,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (useBlockMatmul && op.containsOp<TileMatmulBlockOp>()) {
       return generateMatmulCompute(rewriter, loc, op, indexingMaps, iterTypes);
     }
+    if (op.containsOp<TileRowNormalizationBlockOp>()) {
+      return generateRowNormalizationCompute(rewriter, loc, op);
+    }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
@@ -453,9 +469,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       if (isAccumulating) {
         if (dstAccumulation || requiresDstAccumulation(op)) {
           usedDstAccumulation = true;
-          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
-                                           indexingMaps, iterTypes, lowerBounds,
-                                           upperBounds, steps);
+          return generateAccumulatingLoops(
+              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
+              lowerBounds, upperBounds, steps,
+              getNextL1AccScopeId(op->getParentOfType<func::FuncOp>()));
         }
       }
 
@@ -497,13 +514,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       domainStrides = computeStrides(domainSizes);
     }
     if (!usedDstAccumulation) {
+      int64_t reductionScopeId =
+          getNextL1AccScopeId(op->getParentOfType<func::FuncOp>());
       // Loops are in declaration order, matching iterTypes.
       for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
         int64_t stride =
             fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
         loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
         if (iterTypes[idx].getValue() == "reduction") {
-          loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+          annotateReductionLoop(loop, rewriter, reductionScopeId);
         }
       }
     }
@@ -713,6 +732,42 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   return success();
 }
 
+static LogicalResult validateRowNormalizationComputes(func::FuncOp func) {
+  SmallVector<ComputeOp> rowNormalizationComputes;
+  func.walk([&](ComputeOp computeOp) {
+    if (computeOp.containsOp<TileRowNormalizationBlockOp>()) {
+      rowNormalizationComputes.push_back(computeOp);
+    }
+  });
+  if (rowNormalizationComputes.empty()) {
+    return success();
+  }
+
+  std::string targetFailureReason;
+  FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+      ComputeTargetEnvironment::get(func, targetFailureReason);
+  if (failed(target)) {
+    func.emitOpError(targetFailureReason);
+    return failure();
+  }
+
+  bool hasInvalidCompute = false;
+  for (ComputeOp computeOp : rowNormalizationComputes) {
+    TileRowNormalizationBlockOp block =
+        *computeOp.getBody().getOps<TileRowNormalizationBlockOp>().begin();
+    std::string capabilityFailureReason;
+    if (failed((*target)->validateOperation(block, capabilityFailureReason))) {
+      block.emitOpError(capabilityFailureReason);
+      hasInvalidCompute = true;
+      continue;
+    }
+    if (failed(verifyRowNormalizationCompute(computeOp))) {
+      hasInvalidCompute = true;
+    }
+  }
+  return failure(hasInvalidCompute);
+}
+
 struct TTLLowerToLoopsPass
     : public tt::ttl::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
   using tt::ttl::impl::TTLLowerToLoopsBase<
@@ -740,6 +795,9 @@ struct TTLLowerToLoopsPass
       if (capacityResult.wasInterrupted()) {
         return signalPassFailure();
       }
+    }
+    if (failed(validateRowNormalizationComputes(func))) {
+      return signalPassFailure();
     }
 
     // Step 1: Lower compute ops to scf.for tile loops.

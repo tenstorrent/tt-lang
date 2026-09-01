@@ -58,6 +58,24 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let assemblyFormat = "(`<` $kind^ `>`)?";
 }
 
+def TTL_ReceiveRequest : TTL_Type<"ReceiveRequest", "receive_request"> {
+  let summary = "Handle for one posted PipeNet receive";
+  let description = [{
+    Represents one posted PipeNet receive and its expected completion sequence.
+    The handle identifies a logical receive request; it does not expose a
+    physical semaphore, address, or dataflow-buffer index.
+  }];
+}
+
+def TTL_ReadyReceive : TTL_Type<"ReadyReceive", "ready_receive"> {
+  let summary = "Selected completed PipeNet receive";
+  let description = [{
+    Represents the request selected by `ttl.wait_any`. The selected tuple index
+    is available through `ttl.ready_receive_index`. Nonselected requests remain
+    pending.
+  }];
+}
+
 def TTL_PipeTransfer : TTL_Type<"PipeTransfer", "pipe_transfer"> {
   let summary = "Pipe transfer reference";
   let description = [{
@@ -99,13 +117,13 @@ def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 def TTL_AccumulationInitialModeAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationInitialMode,
                "accumulation_initial_mode">;
+def TTL_InputClampingAttr
+    : EnumAttr<TTL_Dialect, TTL_InputClamping, "input_clamping">;
 def TTL_AccumulationCombinerAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationCombiner,
                "accumulation_combiner">;
 def TTL_DFBTileStoreKindAttr
     : EnumAttr<TTL_Dialect, TTL_DFBTileStoreKind, "dfb_tile_store_kind">;
-def TTL_InputClampingAttr
-    : EnumAttr<TTL_Dialect, TTL_InputClamping, "input_clamping">;
 
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";

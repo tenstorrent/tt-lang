@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import yaml
+
 from conftest import REPO_ROOT
 
 CALL_BUILD = REPO_ROOT / ".github" / "workflows" / "call-build.yml"
@@ -13,6 +15,7 @@ CALL_BUILD_DOCKER = REPO_ROOT / ".github" / "workflows" / "call-build-docker.yml
 CALL_TEST_EXABOX = REPO_ROOT / ".github" / "workflows" / "call-test-exabox.yml"
 CALL_TEST_HARDWARE = REPO_ROOT / ".github" / "workflows" / "call-test-hardware.yml"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+DEBUG_HARDWARE = REPO_ROOT / ".github" / "workflows" / "debug-hardware.yml"
 MANUAL_TEST_EXABOX = REPO_ROOT / ".github" / "workflows" / "manual-test-exabox.yml"
 IRD_DOCKERFILE = REPO_ROOT / ".github" / "containers" / "Dockerfile"
 INSTALL_EXABOX_WORKER = (
@@ -23,11 +26,28 @@ UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
 
 def test_pull_request_ci_targets_main_only() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
+    ci_jobs = yaml.safe_load(ci_workflow)["jobs"]
+    pull_request_guard = (
+        "${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}"
+    )
 
     assert (
         '  pull_request:\n    branches: ["main"]\n'
         "    types: [opened, synchronize, reopened, ready_for_review, edited]"
         in ci_workflow
+    )
+    root_jobs = {
+        job_name: job for job_name, job in ci_jobs.items() if "needs" not in job
+    }
+    assert root_jobs["build-docs"]["if"].endswith(
+        "github.event_name != 'pull_request' }}"
+    )
+    for job_name, job in root_jobs.items():
+        if job_name != "build-docs":
+            assert job["if"] == pull_request_guard
+    assert ci_jobs["check-all-green"]["if"] == (
+        "${{ always() && (github.event_name != 'pull_request' || "
+        "github.base_ref == 'main') }}"
     )
 
 
@@ -36,20 +56,20 @@ def test_hardware_event_policy_and_manual_controls() -> None:
     call_build = CALL_BUILD.read_text()
 
     assert ci_workflow.count("run_galaxy_tests:") == 2
-    assert ci_workflow.count("run_loudbox_tests:") == 2
+    assert ci_workflow.count("run_quietbox_tests:") == 2
     assert (
         "run_galaxy_tests: ${{ github.event_name == 'schedule' || "
         "(github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}"
         in ci_workflow
     )
     assert (
-        "run_loudbox_tests: ${{ github.event_name == 'pull_request' || "
+        "run_quietbox_tests: ${{ github.event_name == 'pull_request' || "
         "(github.event_name == 'push' && github.ref == 'refs/heads/main') || "
-        "(github.event_name == 'workflow_dispatch' && inputs.run_loudbox_tests) }}"
+        "(github.event_name == 'workflow_dispatch' && inputs.run_quietbox_tests) }}"
         in ci_workflow
     )
     assert call_build.count("run_galaxy_tests:") == 2
-    assert call_build.count("run_loudbox_tests:") == 2
+    assert call_build.count("run_quietbox_tests:") == 2
 
 
 def test_exabox_configuration_remains_available() -> None:
@@ -64,25 +84,26 @@ def test_exabox_configuration_remains_available() -> None:
     assert "timeout: 90" in test_exabox
 
 
-def test_hardware_matrix_adds_manual_blackhole_loudbox() -> None:
+def test_hardware_matrix_adds_blackhole_quietbox_runner() -> None:
     call_build = CALL_BUILD.read_text()
+    debug_hardware = DEBUG_HARDWARE.read_text()
     hardware_workflow = CALL_TEST_HARDWARE.read_text()
 
-    assert "inputs.run_loudbox_tests && fromJSON" in call_build
-    assert '["n150","bh-loudbox-viommu"]' in call_build
-    assert "matrix.hardware == 'bh-loudbox-viommu'" in call_build
-    assert "tt-ubuntu-2204-bh-loudbox-viommu-stable" in call_build
+    assert "inputs.run_quietbox_tests && fromJSON" in call_build
+    assert '["n150","BH-Quietbox-2"]' in call_build
+    assert "matrix.hardware == 'BH-Quietbox-2'" in call_build
+    assert '["BH-Quietbox-2","in-service"]' in call_build
     assert "tt-ubuntu-2204-n150-stable" in call_build
-    assert (
-        "defer_result_check: ${{ matrix.hardware != 'bh-loudbox-viommu' }}"
-        in call_build
-    )
+    assert "defer_result_check: ${{ matrix.hardware != 'BH-Quietbox-2' }}" in call_build
     assert "--optional-runner" not in call_build
     assert "inputs.run_galaxy_tests && 3 || 2" in call_build
     assert "inputs.run_galaxy_tests && 2 || 1" in call_build
     assert 'name: "Hardware Tests (${{ inputs.hardware }})"' in hardware_workflow
-    assert "runs-on: ${{ inputs.runner_label }}" in hardware_workflow
+    assert "runs-on: ${{ fromJSON(inputs.runner_labels_json) }}" in hardware_workflow
     assert "RUNS_ON: ${{ inputs.hardware }}" in hardware_workflow
+    assert "default: 'BH-Quietbox-2'" in debug_hardware
+    assert '- "${{ inputs.runs-on }}"' in debug_hardware
+    assert '- "in-service"' in debug_hardware
 
 
 def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> None:
@@ -103,6 +124,7 @@ def test_exabox_workflow_dispatches_all_worker_operations_through_scripts() -> N
         "build",
         "install-dependencies",
         "reset",
+        "fabric-pytests",
         "smoketest",
         "simple-add",
         "simulator",

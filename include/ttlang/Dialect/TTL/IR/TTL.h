@@ -127,6 +127,17 @@ constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 /// kReductionLoopAttrName which marks compiler-generated reduction loops.
 constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 
+/// AccumulationInitialModeAttr on an L1 accumulation or reduction loop. The
+/// value determines whether iteration 0 overwrites L1 or accumulates onto an
+/// already materialized output value.
+constexpr llvm::StringLiteral kL1AccInitialAttrName("ttl.l1_acc_initial");
+
+/// Integer identifier shared by loops produced from one semantic accumulation
+/// scope. TTKernel lowering uses this to place packer L1 accumulation
+/// reconfiguration without rediscovering scope identity from neighboring
+/// operations.
+constexpr llvm::StringLiteral kL1AccScopeIdAttrName("ttl.l1_acc_scope_id");
+
 /// Output CB index for tile ops.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
@@ -146,6 +157,10 @@ constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 constexpr llvm::StringLiteral
     kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
 
+/// Module attribute containing physical DFB configuration-epoch metadata.
+constexpr llvm::StringLiteral
+    kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
@@ -163,6 +178,15 @@ constexpr llvm::StringLiteral kDFBResetCountAttrName("ttl.dfb_reset_count");
 /// passed after tensor buffer addresses as common runtime arguments.
 constexpr llvm::StringLiteral kPipeComputedAddressDFBIndicesAttrName(
     "ttl.pipe_computed_address_dfb_indices");
+
+/// Function attributes describing compiler-managed fabric target binding.
+constexpr llvm::StringLiteral kFabricRoutesAttrName("ttl.fabric_routes");
+constexpr llvm::StringLiteral
+    kFabricDeviceDomainAttrName("ttl.fabric_device_domain");
+constexpr llvm::StringLiteral kFabricRuntimeArgBaseCommonIndexAttrName(
+    "ttl.fabric_runtime_arg_base_common_index");
+constexpr llvm::StringLiteral
+    kFabricManagerIntervalsAttrName("ttl.fabric_manager_intervals");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.

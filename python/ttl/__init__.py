@@ -5,6 +5,19 @@
 # TT-Lang Python Package
 
 from ttl.version import __version__, build_info
+from ttl.domains import (
+    AllToAllTransfer,
+    AxisNeighborTransfer,
+    DeviceDomain,
+    DeviceRange,
+    DeviceRef,
+    DomainComponent,
+    GatherTransfer,
+    ScatterTransfer,
+    StencilTransfer,
+    TransferEdge,
+    TransferGraph,
+)
 
 # `ttl._sim_only_marker` is shipped by the tt-lang-sim wheel and absent from
 # the tt-lang wheel. Detection is marker-based, not try/except, so a broken
@@ -24,20 +37,39 @@ except ImportError:
 
 if _SIM_ONLY_INSTALL:
     _elementwise_all: list[str] = []
-    __all__ = ["__version__", "build_info"]
+    __all__ = [
+        "__version__",
+        "build_info",
+        "AllToAllTransfer",
+        "AxisNeighborTransfer",
+        "DeviceDomain",
+        "DeviceRange",
+        "DeviceRef",
+        "DomainComponent",
+        "GatherTransfer",
+        "ScatterTransfer",
+        "StencilTransfer",
+        "TransferEdge",
+        "TransferGraph",
+    ]
 else:
     from ttl.ttl import (
         operation,
         DFB,
         Kernel,
         KernelKind,
+        PIPE_SOURCE_KERNEL,
+        FabricManagerClaim,
         CoreRuntimeArgs,
+        FabricConnectionBinding,
+        FabricConnectionRequirement,
         KernelDefine,
         KernelRuntimeResources,
         ProgramRuntimeResources,
         DispatchCondition,
         DFBReset,
         DFBAllocationGroup,
+        DFBReconfiguration,
         ScalarType,
         compute,
         datamovement,
@@ -49,6 +81,7 @@ else:
         node,
         grid_size,
         math,
+        block,
         DFBAccess,
         DFBEffect,
         call_extern_func,
@@ -57,6 +90,8 @@ else:
         raw_addr,
         reset_all_dfbs,
         reset_dfbs,
+        reconfigure_dfbs,
+        wait_any,
     )
 
     from ttl._generated_elementwise import *  # noqa: F401,F403
@@ -68,6 +103,8 @@ else:
         CircularBuffer,  # Deprecated, superseded by DataflowBuffer
         DataflowBuffer,
         CopyTransferHandler,
+        ReadyReceive,
+        ReceiveRequest,
         TensorBlock,
     )
     from ttl.pipe import Pipe, PipeNet
@@ -79,13 +116,18 @@ else:
         "DFB",
         "Kernel",
         "KernelKind",
+        "PIPE_SOURCE_KERNEL",
+        "FabricManagerClaim",
         "CoreRuntimeArgs",
+        "FabricConnectionBinding",
+        "FabricConnectionRequirement",
         "KernelDefine",
         "KernelRuntimeResources",
         "ProgramRuntimeResources",
         "DispatchCondition",
         "DFBReset",
         "DFBAllocationGroup",
+        "DFBReconfiguration",
         "ScalarType",
         "compute",
         "datamovement",
@@ -94,8 +136,21 @@ else:
         "CompilerOptions",
         "TensorBlock",
         "CopyTransferHandler",
+        "ReceiveRequest",
+        "ReadyReceive",
         "Pipe",
         "PipeNet",
+        "AllToAllTransfer",
+        "AxisNeighborTransfer",
+        "DeviceDomain",
+        "DeviceRange",
+        "DeviceRef",
+        "DomainComponent",
+        "GatherTransfer",
+        "ScatterTransfer",
+        "StencilTransfer",
+        "TransferEdge",
+        "TransferGraph",
         "make_dataflow_buffer_like",
         "make_dfb",
         "make_tensor_backed_dfb",
@@ -104,6 +159,7 @@ else:
         "node",
         "grid_size",
         "math",
+        "block",
         "signpost",
         "DFBEffect",
         "DFBAccess",
@@ -113,5 +169,7 @@ else:
         "raw_addr",
         "reset_dfbs",
         "reset_all_dfbs",
+        "reconfigure_dfbs",
+        "wait_any",
         *_elementwise_all,
     ]

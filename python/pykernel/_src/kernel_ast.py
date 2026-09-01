@@ -280,6 +280,8 @@ def _is_attach_cb_block(value):
     """Block targets (`out_blk = cb.reserve()` / `cb.wait()`) wrap the
     result of `ttl.attach_cb` and lower `+=` via __iadd__ to an L1 acc
     store. They are not scf.for iter_arg / scf.if result candidates."""
+    if getattr(value, "_ttlang_guarded_dfb_block", False):
+        return True
     inner = _get_single_result(value)
     owner = getattr(inner, "owner", None)
     if owner is None or not hasattr(owner, "name"):
@@ -860,27 +862,27 @@ class TTCompilerBase(PyKernelAstBase):
         memref.StoreOp(result, target, [arith.ConstantOp(IndexType.get(self.ctx), 0)])
 
     # Function calls
-    def visit_Call(self, node):
-        def _format_expr(expr):
-            try:
-                return ast.unparse(expr)
-            except Exception:
-                return type(expr).__name__
+    @staticmethod
+    def _format_expr(expr):
+        try:
+            return ast.unparse(expr)
+        except Exception:
+            return type(expr).__name__
 
-        def _load_func_arg(func_arg, arg_node):
-            if func_arg is None:
-                raise ValueError(
-                    f"unable to resolve argument '{_format_expr(arg_node)}' "
-                    f"while compiling call '{_format_expr(node.func)}'; "
-                    "check that the value is defined in this scope"
-                )
-            if hasattr(func_arg, "type") and isinstance(
-                func_arg.type, memref.MemRefType
-            ):
-                func_arg = memref.LoadOp(
-                    func_arg, arith.ConstantOp(IndexType.get(self.ctx), 0)
-                )
-            return func_arg
+    def _load_func_arg(self, func_arg, arg_node, call_node):
+        if func_arg is None:
+            raise ValueError(
+                f"unable to resolve argument '{self._format_expr(arg_node)}' "
+                f"while compiling call '{self._format_expr(call_node.func)}'; "
+                "check that the value is defined in this scope"
+            )
+        if hasattr(func_arg, "type") and isinstance(func_arg.type, memref.MemRefType):
+            func_arg = memref.LoadOp(
+                func_arg, arith.ConstantOp(IndexType.get(self.ctx), 0)
+            )
+        return func_arg
+
+    def visit_Call(self, node):
 
         if not isinstance(node.func, ast.Attribute):
             # print is special case to handle string formatting
@@ -899,20 +901,24 @@ class TTCompilerBase(PyKernelAstBase):
             assert len(node.args) == len(args_as_attr)
             for arg, as_attr in zip(node.args, args_as_attr):
                 arg._ttkernel_as_attr = as_attr
-                func_arg = _load_func_arg(self.visit(arg), arg)
+                func_arg = self._load_func_arg(self.visit(arg), arg, node)
                 func_args.append(func_arg)
             kwargs = {}
             for kw in node.keywords:
-                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value), kw.value)
+                kwargs[kw.arg] = self._load_func_arg(
+                    self.visit(kw.value), kw.value, node
+                )
             return func(*func_args, **kwargs)  # type checking will occur downstream
         else:
             func_args = []
             for arg in node.args:
-                func_arg = _load_func_arg(self.visit(arg), arg)
+                func_arg = self._load_func_arg(self.visit(arg), arg, node)
                 func_args.append(func_arg)
             kwargs = {}
             for kw in node.keywords:
-                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value), kw.value)
+                kwargs[kw.arg] = self._load_func_arg(
+                    self.visit(kw.value), kw.value, node
+                )
             return self.visit(
                 node.func, func_args=func_args, kwargs=kwargs
             )  # visit_Attribute
@@ -1197,6 +1203,12 @@ class TTCompilerBase(PyKernelAstBase):
         assert len(node.ops) == 1, "Only single operators supported"
         assert len(node.comparators) == 1, "Only single comparators supported"
         lhs, rhs = self._visit_binary_operands(node.left, node.comparators[0])
+
+        if not hasattr(lhs, "type") or not hasattr(rhs, "type"):
+            raise TypeError(
+                "comparison operands must be compiler values, got "
+                f"{type(lhs).__name__} and {type(rhs).__name__}"
+            )
 
         lhs, rhs = self._coerce_binary_operands(
             lhs, rhs, node.left, node.comparators[0]

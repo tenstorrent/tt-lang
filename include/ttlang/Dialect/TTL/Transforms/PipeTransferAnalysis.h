@@ -47,10 +47,17 @@ public:
   /// Returns the defining pipe receive, or no value for a non-pipe wait.
   std::optional<CopyOp> getReceivePost(WaitOp waitOp) const;
 
+  /// Returns the possible defining pipe receives for each wait-any request.
+  ArrayRef<SmallVector<Operation *>> getReceivePosts(WaitAnyOp waitOp) const;
+
   /// Returns every receive post whose token may reach `waitOp`.
   /// Construction guarantees at least one post for every internal wait.
   ArrayRef<Operation *>
   getPossibleReceivePosts(PipeTransferWaitOp waitOp) const;
+
+  /// Returns the receive-post origins for each wait-any token operand.
+  ArrayRef<SmallVector<Operation *>>
+  getWaitAnyCandidatePosts(PipeTransferWaitAnyOp waitOp) const;
 
   /// Returns the transfer creation associated with an internal protocol op.
   /// `protocolOp` must be an indexed post, send, or wait operation.
@@ -62,7 +69,11 @@ private:
   LogicalResult build(ModuleOp module, ValueOriginAnalysis &valueOrigins);
 
   llvm::DenseMap<Operation *, Operation *> receivePostByWait;
+  llvm::DenseMap<Operation *, SmallVector<SmallVector<Operation *>>>
+      receivePostsByHighWaitAny;
   llvm::DenseMap<Operation *, SmallVector<Operation *>> receivePostsByWait;
+  llvm::DenseMap<Operation *, SmallVector<SmallVector<Operation *>>>
+      receivePostsByWaitAny;
   llvm::DenseMap<Operation *, Operation *> transferCreateByProtocolOp;
 };
 

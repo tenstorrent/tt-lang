@@ -1157,6 +1157,8 @@ def test_shape_offers_what_ttnn_shape_offers():
     assert ttnn.Shape([32, 64]).to_rank(2) == (32, 64)
     with pytest.raises(RuntimeError, match="Can't convert shape rank"):
         ttnn.Shape([2, 32, 64]).to_rank(2)
+    with pytest.raises(TypeError, match="non-negative"):
+        ttnn.Shape([1, 1]).to_rank(-1)
 
 
 @pytest.mark.parametrize(
@@ -1703,6 +1705,61 @@ def test_from_torch_all_parameters():
     ttnn.close_device(device)
 
 
+def test_device_returns_the_handle_the_tensor_was_created_with():
+    """A kernel routes a derived tensor to its input's device via device()."""
+    device = ttnn.open_device(device_id=0)
+    tensor = ttnn.from_torch(torch.randn((64, 64)), device=device)
+
+    assert tensor.device() is device
+    ttnn.close_device(device)
+
+
+@pytest.mark.parametrize("create", [ttnn.zeros, ttnn.rand, ttnn.empty])
+def test_creation_entry_points_carry_the_device(create):
+    """zeros / rand / empty record the device alongside from_torch."""
+    device = ttnn.open_device(device_id=0)
+
+    assert create((64, 64), device=device).device() is device
+    ttnn.close_device(device)
+
+
+@pytest.mark.parametrize("create", [ttnn.zeros, ttnn.rand, ttnn.empty])
+def test_creation_entry_points_carry_the_memory_config(create):
+    created = create((32, 32), memory_config=ttnn.L1_MEMORY_CONFIG)
+
+    assert created.memory_config == ttnn.L1_MEMORY_CONFIG
+
+
+def test_device_distinguishes_two_devices():
+    """The handle is the one that was passed, not a shared placeholder."""
+    first = ttnn.open_device(device_id=0)
+    second = ttnn.open_device(device_id=1)
+
+    a = ttnn.from_torch(torch.randn((32, 32)), device=first)
+    b = ttnn.from_torch(torch.randn((32, 32)), device=second)
+
+    assert a.device() is not b.device()
+    assert b.device().device_id == 1
+
+
+def test_device_rejects_a_tensor_created_without_one():
+    """A host tensor has no device, so device() names the gap instead."""
+    tensor = ttnn.from_torch(torch.randn((64, 64)))
+
+    with pytest.raises(RuntimeError, match="no device"):
+        tensor.device()
+
+
+def test_device_is_not_carried_through_an_operation():
+    """The simulator does not model residency, so a result claims no device."""
+    device = ttnn.open_device(device_id=0)
+    a = ttnn.from_torch(torch.randn((64, 64)), device=device)
+
+    with pytest.raises(RuntimeError, match="no device"):
+        ttnn.add(a, a).device()
+    ttnn.close_device(device)
+
+
 def test_from_torch_roundtrip_conversion():
     """Test that from_torch -> to_torch preserves data."""
     original = torch.randn((64, 64), dtype=torch.bfloat16)
@@ -2126,12 +2183,14 @@ def test_golden_wrapper_does_not_compute_over_padding():
     assert torch.allclose(softmax.to_torch()[0:3, 0:5], torch.softmax(source, dim=-1))
 
 
-def test_golden_wrapper_falls_back_to_the_padded_store_when_logical_extents_fail():
-    """An op that only accepts the padded extents still runs, on those extents.
+def test_an_op_that_moves_padding_into_its_result_is_refused_not_answered():
+    """A padded run that rearranges data is refused rather than served.
 
-    Computing on the logical data is preferable but not always possible -- an
-    argument can be derived from the padded shape, as this reshape is -- and a
-    call that the simulator used to serve must not start failing over it.
+    Neither run can answer such a call: the logical one is declined by the
+    golden, and the padded one returns a tensor whose values are largely the
+    padding it was supposed to hide -- here 1024 elements standing in for 15.
+    Serving it is worse than refusing, because nothing downstream can tell
+    which of the two runs produced the answer.
     """
 
     def golden_reshape(x: torch.Tensor) -> torch.Tensor:
@@ -2139,34 +2198,367 @@ def test_golden_wrapper_falls_back_to_the_padded_store_when_logical_extents_fail
 
     a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
 
-    result = _create_golden_wrapper("reshape", golden_reshape)(a)
+    with pytest.raises(NotImplementedError, match=r"carry tile padding"):
+        _create_golden_wrapper("reshape", golden_reshape)(a)
+
+
+def test_an_unpadded_operand_still_reaches_the_padded_run():
+    """The refusal is about padding, not about declining the logical extents.
+
+    With no padding to move, the two runs are the same computation, so an op
+    whose golden declines logical extents is still served.
+    """
+
+    def golden_flatten(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(-1)
+
+    a = ttnn.from_torch(torch.rand(32, 32), layout=ttnn.TILE_LAYOUT)
+    assert tuple(a.shape) == tuple(a.padded_shape)
+
+    result = _create_golden_wrapper("flatten", golden_flatten)(a)
 
     assert result.shape == (1024,)
-    assert torch.equal(result.to_torch(), a.to_torch().reshape(1024))
 
 
-def test_the_wrapping_exclusions_say_only_what_is_true() -> None:
-    """No excluded name is one this module implements.
+def test_a_wrapped_op_never_shadows_a_builtin_this_module_calls() -> None:
+    """Golden wrappers are reachable as attributes without entering globals().
 
-    The golden-function loop skips every name the module defines, so an
-    excluded name that is also defined tells the reader nothing except, once it
-    stops being true, something false.  The exclusions are for names that would
-    otherwise be bound: the builtins a wrapper would shadow, and the ops the
-    simulator leaves unavailable on purpose.
+    A module's globals are searched before the builtins, so binding a wrapper
+    for ``sum`` / ``min`` / ``max`` there would change what every function in
+    the module means by that name.  ``__getattr__`` serves them instead, which
+    the bytecode for a bare call never consults.
     """
     from sim import ttnnsim
 
     defined = vars(ttnnsim)
-    excluded = ttnnsim._EXCLUDE_FROM_WRAPPING  # type: ignore[reportPrivateUsage]
-    redundant = sorted(n for n in excluded if n in defined)
-    assert redundant == [], "these are implemented, so excluding them says nothing"
+    for name in ("sum", "min", "max"):
+        assert name not in defined
+    # Whatever ttnn offers, the module's own arithmetic still uses the builtin.
+    assert ttnnsim.all_reduce.__module__ == ttnnsim.__name__
 
-    # The builtins are still the builtins inside the module, which is what
-    # excluding them is for.
-    builtin_names = ttnnsim._SHADOWS_A_BUILTIN  # type: ignore[reportPrivateUsage]
-    assert all(n not in defined for n in builtin_names)
-    # And an unavailable op is absent rather than answered wrongly.
-    assert not hasattr(ttnnsim, "concat")
+
+def test_an_op_the_simulator_stores_itself_stays_unavailable() -> None:
+    """A name in _DECIDES_THE_STORE is absent rather than answered wrongly."""
+    from sim import ttnnsim
+
+    for name in ("pad", "bitcast", "to_device"):
+        assert not hasattr(ttnnsim, name)
+        assert name not in dir(ttnnsim)
+
+
+@requires_ttnn
+def test_an_op_served_by_its_logical_run_needs_no_exclusion() -> None:
+    """Ops excluded before _golden_logical_result existed are served by it now.
+
+    Each rearranges its operands' data, which is unreadable if computed on the
+    padded store, and correct if computed on the logical data and re-padded.
+    """
+    from sim import ttnnsim
+
+    for name in ("concat", "permute", "tilize"):
+        assert hasattr(ttnnsim, name)
+        assert name in dir(ttnnsim)
+
+
+@requires_ttnn
+def test_a_join_reads_its_operands_through_the_sequence_it_arrives_in() -> None:
+    """concat's operands are one list argument, and must still be unpadded.
+
+    Unwrapping only top-level arguments leaves a join's operands wrapped, which
+    its golden declines -- sending the op to the padded run, where the second
+    operand's rows land past the first operand's padding.
+    """
+    from sim import ttnnsim
+
+    first = torch.arange(15, dtype=torch.float32).reshape(3, 5)
+    second = torch.arange(10, dtype=torch.float32).reshape(2, 5)
+    joined = ttnnsim.concat(
+        [
+            ttnnsim.from_torch(first, layout=ttnnsim.TILE_LAYOUT),
+            ttnnsim.from_torch(second, layout=ttnnsim.TILE_LAYOUT),
+        ],
+        0,
+    )
+
+    assert joined.shape == (5, 5)
+    assert torch.equal(_logical_view(joined), torch.cat([first, second], 0))
+
+
+class TestHandWrittenStoreOps:
+    """to_layout, reshape and copy, which decide their own store.
+
+    A golden reads logical tensors and so cannot say what these store; each is
+    written against the store directly instead of being golden-served.
+    """
+
+    def test_to_layout_to_row_major_drops_tile_padding(self) -> None:
+        """A tile-padded tensor re-stored row-major keeps values, loses padding."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.arange(6, dtype=torch.float32).reshape(2, 3),
+            layout=ttnnsim.TILE_LAYOUT,
+        )
+        assert src.to_torch().shape == (32, 32)
+
+        result = ttnnsim.to_layout(src, ttnnsim.ROW_MAJOR_LAYOUT)
+
+        assert result.layout == ttnnsim.ROW_MAJOR_LAYOUT
+        assert result.to_torch().shape == (2, 3)
+        assert torch.equal(
+            result.to_torch(), torch.arange(6, dtype=torch.float32).reshape(2, 3)
+        )
+
+    def test_to_layout_to_tile_pads_and_preserves_logical_shape(self) -> None:
+        """Re-storing row-major data as tiles pads the store, not the shape."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.arange(6, dtype=torch.float32).reshape(2, 3),
+            layout=ttnnsim.ROW_MAJOR_LAYOUT,
+        )
+        result = ttnnsim.to_layout(src, ttnnsim.TILE_LAYOUT)
+
+        assert result.layout == ttnnsim.TILE_LAYOUT
+        assert tuple(result.shape) == (2, 3)
+        assert result.to_torch().shape == (32, 32)
+        assert torch.equal(
+            result.to_torch()[:2, :3],
+            torch.arange(6, dtype=torch.float32).reshape(2, 3),
+        )
+
+    def test_to_layout_does_not_alias_its_source(self) -> None:
+        """Writing to the result leaves the source alone, as ttnn's copy does."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.zeros(32, 32, dtype=torch.float32), layout=ttnnsim.TILE_LAYOUT
+        )
+        result = ttnnsim.to_layout(src, ttnnsim.ROW_MAJOR_LAYOUT)
+        result.to_torch()[0, 0] = 7.0
+
+        assert src.to_torch()[0, 0].item() == 0.0
+
+    def test_reshape_reorders_logical_data_not_padding(self) -> None:
+        """Reshaping a padded tensor indexes its logical elements only."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.arange(6, dtype=torch.float32).reshape(2, 3),
+            layout=ttnnsim.TILE_LAYOUT,
+        )
+        result = ttnnsim.reshape(src, (3, 2))
+
+        assert tuple(result.shape) == (3, 2)
+        assert torch.equal(
+            ttnnsim.to_torch(result), torch.arange(6, dtype=torch.float32).reshape(3, 2)
+        )
+
+    def test_reshape_accepts_minus_one(self) -> None:
+        """A single -1 is inferred, as torch and ttnn both allow."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.arange(6, dtype=torch.float32).reshape(2, 3),
+            layout=ttnnsim.ROW_MAJOR_LAYOUT,
+        )
+        assert tuple(ttnnsim.reshape(src, (1, -1)).shape) == (1, 6)
+
+    def test_copy_writes_through_to_the_destination(self) -> None:
+        """copy() mutates the destination the caller already holds."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.full((2, 3), 5.0), layout=ttnnsim.ROW_MAJOR_LAYOUT
+        )
+        dst = ttnnsim.from_torch(
+            torch.zeros(2, 3, dtype=torch.float32), layout=ttnnsim.TILE_LAYOUT
+        )
+        returned = ttnnsim.copy(src, dst)
+
+        assert returned is dst
+        assert torch.equal(ttnnsim.to_torch(dst), torch.full((2, 3), 5.0))
+
+    def test_copy_leaves_destination_padding_untouched(self) -> None:
+        """Only the logical extent is written; padding is not part of the data."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.full((2, 3), 5.0), layout=ttnnsim.ROW_MAJOR_LAYOUT
+        )
+        dst = ttnnsim.from_torch(
+            torch.zeros(2, 3, dtype=torch.float32), layout=ttnnsim.TILE_LAYOUT
+        )
+        dst.to_torch()[31, 31] = 9.0
+        ttnnsim.copy(src, dst)
+
+        assert dst.to_torch()[31, 31].item() == 9.0
+
+    def test_copy_rejects_a_shape_mismatch(self) -> None:
+        """Shapes must agree; ttnn.copy does not broadcast."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.zeros(2, 3, dtype=torch.float32), layout=ttnnsim.ROW_MAJOR_LAYOUT
+        )
+        dst = ttnnsim.from_torch(
+            torch.zeros(2, 4, dtype=torch.float32), layout=ttnnsim.ROW_MAJOR_LAYOUT
+        )
+        with pytest.raises(ValueError, match="copy shape mismatch"):
+            ttnnsim.copy(src, dst)
+
+    @pytest.mark.parametrize(
+        "name, parameters",
+        [
+            (
+                "to_layout",
+                ["tensor", "layout", "dtype", "memory_config", "sub_core_grids"],
+            ),
+            ("reshape", ["input_tensor", "shape", "memory_config"]),
+            ("copy", ["input_a", "input_b"]),
+        ],
+    )
+    def test_parameter_names_match_ttnn(self, name, parameters) -> None:
+        """Callers passing these by keyword must reach the same parameter.
+
+        A hand-written op is only a drop-in for its ttnn counterpart if the
+        names agree, and ttnn's are only discoverable from its bindings.
+        """
+        import inspect
+        from sim import ttnnsim
+
+        actual = inspect.signature(getattr(ttnnsim, name)).parameters
+        for parameter in parameters:
+            assert parameter in actual, f"{name} is missing {parameter}"
+
+    def test_reshape_takes_the_shape_as_one_sequence(self) -> None:
+        """ttnn.reshape takes a single shape argument, not separate extents."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.arange(6, dtype=torch.float32).reshape(2, 3),
+            layout=ttnnsim.ROW_MAJOR_LAYOUT,
+        )
+        with pytest.raises(TypeError):
+            ttnnsim.reshape(src, 3, 2)
+
+    @pytest.mark.parametrize("name", ["to_layout", "reshape"])
+    def test_a_non_zero_pad_value_is_refused(self, name) -> None:
+        """The simulator pads every store with zero, so it cannot honour this."""
+        from sim import ttnnsim
+
+        src = ttnnsim.from_torch(
+            torch.zeros(2, 3, dtype=torch.float32), layout=ttnnsim.ROW_MAJOR_LAYOUT
+        )
+        argument = ttnnsim.TILE_LAYOUT if name == "to_layout" else (3, 2)
+        with pytest.raises(ValueError, match="pads with zero"):
+            getattr(ttnnsim, name)(src, argument, pad_value=1.0)
+
+
+@requires_ttnn
+def test_a_created_tensor_is_stored_padded() -> None:
+    """A golden-wrapped creation op leaves the store every other tensor has.
+
+    Its golden returns the logical extent, which is the only one it is given,
+    so without re-padding the result would be the one tensor in the simulator
+    whose store is not tile-aligned.
+    """
+    result = ttnn.ones([3, 5])
+
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+    # The logical data sits in the top-left and the padding is zero.
+    assert torch.equal(ttnn.to_torch(result), torch.ones(3, 5))
+    assert result.to_torch().sum().item() == 15
+
+
+@requires_ttnn
+def test_a_created_tensor_takes_the_dtype_the_call_asked_for() -> None:
+    """The golden discards the dtype, so the wrapper records it instead."""
+    assert ttnn.ones([32, 32], dtype=ttnn.bfloat16).dtype == ttnn.bfloat16
+    # Said nothing about the dtype, so the result keeps the golden's.
+    assert ttnn.ones([32, 32]).dtype == torch.float32
+
+
+@requires_ttnn
+def test_a_created_tensor_takes_the_device_the_call_asked_for() -> None:
+    """A created tensor is routed to the device named positionally or by keyword."""
+    device = ttnn.open_device(device_id=0)
+
+    assert ttnn.ones([32, 32], device=device).device() is device
+
+
+@requires_ttnn
+def test_a_derived_tensor_keeps_its_operands_store() -> None:
+    """Re-padding applies to created tensors only.
+
+    A caller may build an operand straight from torch data, leaving it
+    unpadded; padding a result derived from one would change the extent the
+    caller is working in.
+    """
+    operand = ttnn.Tensor(torch.tensor([1.0, 2.0, 3.0]))
+
+    result = ttnn.isclose(operand, operand, rtol=1e-3, atol=1e-3)
+
+    assert result.to_torch().shape == (3,)
+    assert result.to_torch().all().item()
+
+
+@requires_ttnn
+def test_golden_derived_ops_inherit_unspecified_storage() -> None:
+    """Golden-backed derived ops preserve the operand metadata ttnn preserves."""
+    operand = ttnn.from_torch(
+        torch.arange(16, dtype=torch.float32).reshape(4, 4),
+        dtype=ttnn.bfloat8_b,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+    )
+
+    for result in (ttnn.clone(operand), ttnn.ones_like(operand)):
+        assert result.dtype == ttnn.bfloat8_b
+        assert result.layout == ttnn.ROW_MAJOR_LAYOUT
+        assert result.memory_config == ttnn.L1_MEMORY_CONFIG
+
+
+@requires_ttnn
+def test_golden_layout_changing_ops_override_inherited_layout() -> None:
+    """tilize names the result layout rather than inheriting it."""
+    row_major = ttnn.from_torch(torch.ones(32, 32), layout=ttnn.ROW_MAJOR_LAYOUT)
+    tiled = ttnn.tilize(row_major)
+
+    assert tiled.layout == ttnn.TILE_LAYOUT
+
+
+@requires_ttnn
+def test_a_like_op_leaves_the_padding_zero() -> None:
+    """ones_like fills the logical region, not the store.
+
+    Running it on the padded store would set the padding to one, which no
+    reader can distinguish from data.
+    """
+    operand = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+
+    result = ttnn.ones_like(operand)
+
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+    assert bool((result.to_torch()[3:, :] == 0).all())
+
+
+def test_a_defined_name_wins_over_a_golden_wrapper() -> None:
+    """__getattr__ runs only on lookup failure, so definitions take precedence."""
+    from sim import ttnnsim
+
+    assert ttnnsim.add is vars(ttnnsim)["add"]
+    assert ttnnsim.matmul is vars(ttnnsim)["matmul"]
+
+
+def test_an_unknown_name_is_refused_by_name() -> None:
+    """A name ttnn does not have raises rather than returning a broken wrapper."""
+    from sim import ttnnsim
+
+    with pytest.raises(AttributeError, match="not_a_ttnn_operation"):
+        ttnnsim.not_a_ttnn_operation
 
 
 class TestTensorTileIndexing:
@@ -4251,3 +4643,199 @@ class TestAllGather2DMesh:
         t = ttnn.Tensor(torch.ones(4, 4))
         with pytest.raises(ValueError, match="Mesh device is required"):
             ttnn.all_gather(t, dim=0)
+
+
+class TestSlice:
+    """ttnn.slice, which the simulator implements itself: ttnn ships no golden
+    function for it, so the golden path has nothing to serve it from."""
+
+    @staticmethod
+    def _tensor(rows: int = 3, cols: int = 5) -> Any:
+        """A tile-padded tensor holding consecutive values in its logical extent."""
+        return ttnn.from_torch(
+            torch.arange(rows * cols, dtype=torch.float32).reshape(rows, cols),
+            layout=ttnn.TILE_LAYOUT,
+        )
+
+    def test_a_strided_range_matches_torch(self) -> None:
+        """The range is taken from the logical data, not from the padded store."""
+        source = torch.arange(15, dtype=torch.float32).reshape(3, 5)
+        result = ttnn.slice(self._tensor(), [0, 0], [3, 5], [2, 2])
+        assert tuple(result.shape) == (2, 3)
+        assert torch.equal(ttnn.to_torch(result), source[0:3:2, 0:5:2])
+
+    def test_an_omitted_step_walks_every_element(self) -> None:
+        """slice_step defaults to 1 on every dimension, as ttnn documents."""
+        source = torch.arange(15, dtype=torch.float32).reshape(3, 5)
+        result = ttnn.slice(self._tensor(), [1, 2], [3, 5])
+        assert torch.equal(ttnn.to_torch(result), source[1:3, 2:5])
+
+    def test_padding_the_caller_did_not_ask_for_is_undefined(self) -> None:
+        """ttnn documents the result's tile padding as undefined by default, so
+        the simulator fills it with the one value that reports being read."""
+        stored = ttnn.slice(self._tensor(), [0, 0], [3, 5]).to_torch()
+        assert torch.isnan(stored[3:, :]).all()
+        assert torch.isnan(stored[:, 5:]).all()
+
+    def test_the_logical_extent_is_never_poisoned(self) -> None:
+        """Only the pad region is undefined; the data the caller asked for stands."""
+        result = ttnn.slice(self._tensor(), [0, 0], [3, 5])
+        assert not torch.isnan(ttnn.to_torch(result)).any()
+
+    def test_a_given_pad_value_is_honoured(self) -> None:
+        """pad_value names the fill, so the padding stops being undefined."""
+        stored = ttnn.slice(self._tensor(), [0, 0], [3, 5], pad_value=0.0).to_torch()
+        assert not torch.isnan(stored).any()
+        assert stored[3:, :].eq(0.0).all()
+
+    def test_an_index_list_must_have_one_entry_per_dimension(self) -> None:
+        with pytest.raises(ValueError, match="needs 2 indices per list"):
+            ttnn.slice(self._tensor(), [0], [3])
+
+    @pytest.mark.parametrize(
+        "start, end, message",
+        [
+            ([0, 0], [3, 9], "end 9 is outside dim 1"),
+            ([0, 7], [3, 5], "start 7 is outside dim 1"),
+            ([0, 0], [3, 0], "end 0 is outside dim 1"),
+        ],
+    )
+    def test_an_index_outside_its_dimension_is_refused(
+        self, start: list[int], end: list[int], message: str
+    ) -> None:
+        """ttnn bounds start on [0, extent) and end on (0, extent]."""
+        with pytest.raises(ValueError, match=message):
+            ttnn.slice(self._tensor(), start, end)
+
+    def test_a_non_positive_step_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="step must be positive"):
+            ttnn.slice(self._tensor(), [0, 0], [3, 5], [1, 0])
+
+    def test_a_preallocated_output_receives_the_result(self) -> None:
+        """output_tensor is written through and returned, as ttnn.copy is."""
+        destination = ttnn.from_torch(
+            torch.zeros(2, 3, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+        )
+        result = ttnn.slice(
+            self._tensor(), [0, 0], [3, 5], [2, 2], output_tensor=destination
+        )
+        assert result is destination
+        source = torch.arange(15, dtype=torch.float32).reshape(3, 5)
+        assert torch.equal(ttnn.to_torch(destination), source[0:3:2, 0:5:2])
+
+    def test_a_mismatched_output_is_refused(self) -> None:
+        destination = ttnn.from_torch(
+            torch.zeros(4, 4, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+        )
+        with pytest.raises(ValueError, match="output_tensor"):
+            ttnn.slice(self._tensor(), [0, 0], [3, 5], output_tensor=destination)
+
+    def test_slice_does_not_shadow_the_builtin(self) -> None:
+        """The implementation is held outside globals() so that the module's own
+        calls to the builtin slice keep reaching it."""
+        from sim import ttnnsim
+
+        assert "slice" not in vars(ttnnsim)
+        assert "slice" in dir(ttnnsim)
+        assert tuple(ttnnsim._logical_view(self._tensor()).shape) == (3, 5)
+
+
+class TestDeallocate:
+    """ttnn.deallocate, which the simulator models by invalidating the tensor:
+    a device releases the buffer, so reading it back must not appear to work."""
+
+    @staticmethod
+    def _tensor() -> Any:
+        return ttnn.from_torch(
+            torch.ones(3, 5, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+        )
+
+    def test_reading_the_logical_data_is_refused(self) -> None:
+        t = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            ttnn.to_torch(t)
+
+    def test_reading_the_padded_store_is_refused(self) -> None:
+        """to_torch is the chokepoint every read of the data reaches."""
+        t = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            t.to_torch()
+
+    def test_indexing_is_refused(self) -> None:
+        t = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            t[0, 0]
+
+    def test_writing_through_an_index_is_refused(self) -> None:
+        t = self._tensor()
+        value = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            t[0, 0] = value
+
+    def test_passing_it_to_an_operation_is_refused(self) -> None:
+        """An op reaches the data through the same guard, so it needs none."""
+        t = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            ttnn.slice(t, [0, 0], [3, 5])
+
+    @pytest.mark.parametrize(
+        "apply",
+        [
+            lambda released, live: released + 1.0,
+            lambda released, live: 1.0 + released,
+            lambda released, live: released + live,
+            lambda released, live: live + released,
+            lambda released, live: released @ live,
+        ],
+    )
+    def test_arithmetic_cannot_read_a_deallocated_operand(self, apply) -> None:
+        released = self._tensor()
+        live = self._tensor()
+        ttnn.deallocate(released)
+
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            apply(released, live)
+
+    def test_assignment_cannot_read_a_deallocated_value(self) -> None:
+        destination = self._tensor()
+        released = self._tensor()
+        ttnn.deallocate(released)
+
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            destination[0, 0] = released
+
+    def test_repr_does_not_expose_deallocated_data(self) -> None:
+        tensor = self._tensor()
+        ttnn.deallocate(tensor)
+
+        assert "data=<deallocated>" in repr(tensor)
+
+    def test_deallocating_twice_is_refused(self) -> None:
+        t = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match="was deallocated"):
+            ttnn.deallocate(t)
+
+    def test_an_unforced_deallocation_keeps_the_tensor(self) -> None:
+        """ttnn keeps a buffer that may have several references, and the
+        simulator cannot tell that it does not, so it keeps it too rather than
+        fail a kernel whose tensor ttnn would have left alone."""
+        t = self._tensor()
+        ttnn.deallocate(t, force=False)
+        assert torch.equal(ttnn.to_torch(t), torch.ones(3, 5))
+
+    def test_the_message_names_the_tensor(self) -> None:
+        t = self._tensor()
+        ttnn.deallocate(t)
+        with pytest.raises(RuntimeError, match=r"shape \(3, 5\)"):
+            ttnn.to_torch(t)
+
+    def test_a_live_tensor_is_unaffected(self) -> None:
+        t = self._tensor()
+        assert torch.equal(ttnn.to_torch(t), torch.ones(3, 5))
+        assert tuple(t[0, 0].shape) == (32, 32)

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith, ttl
@@ -16,6 +17,7 @@ from ttl.ir import (
     FloatAttr,
     IndexType,
     IntegerAttr,
+    IntegerType,
     RankedTensorType,
     Type,
 )
@@ -30,6 +32,12 @@ from .kernel import ExternalKernelSelection, ReleaseKernelSelection
 from .pipe import Pipe
 from .scalar import ScalarType
 from .dfb_reset import DFBReset
+from .dfb_reconfiguration import DFBReconfiguration
+
+
+def reconfigure_dfbs(boundary: DFBReconfiguration) -> None:
+    """Enter the next compiler-derived worker-local DFB configuration epoch."""
+    raise RuntimeError("ttl.reconfigure_dfbs() is valid only in a compiled kernel")
 
 
 def call_extern_func(
@@ -44,6 +52,7 @@ def call_extern_func(
     unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
+    fabric_manager_effects=(),
     result_type: Optional[ScalarType] = None,
     condition_result: Optional[DispatchCondition] = None,
 ) -> Optional[int]:
@@ -77,7 +86,8 @@ def call_extern_func(
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
-    removes the selector before AST lowering.
+    removes the selector before AST lowering. ``fabric_manager_effects``
+    declares external fabric-manager ownership at call entry and completion.
 
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
@@ -395,11 +405,11 @@ class TensorBlock:
                 "+= must be called on a block acquired from reserve() or wait()"
             )
         acquired_view = _get_acquired_view_from_block(ast_self)
-        acquisition = acquired_view.owner
-        if acquisition.name == "ttl.cb_wait":
+        acquire_op_name = _get_acquire_op_name_from_view(acquired_view)
+        if acquire_op_name == "ttl.cb_wait":
             ttl.store(ttl.add(ast_self, rhs), acquired_view)
             return ast_self
-        if acquisition.name != "ttl.cb_reserve":
+        if acquire_op_name != "ttl.cb_reserve":
             raise ValueError("block acquisition must be ttl.cb_reserve or ttl.cb_wait")
         ttl.store(rhs, acquired_view, accumulate=True)
         return ast_self
@@ -473,6 +483,53 @@ class CopyTransferHandler:
         return ttl.wait(ast_self)
 
 
+@syntax("!ttl.receive_request")
+class ReceiveRequest:
+    """Handle for one posted PipeNet receive."""
+
+    def wait(ast_self: ReceiveRequest):
+        """Block until this receive request completes."""
+        return ttl.wait(ast_self)
+
+
+@syntax("!ttl.ready_receive")
+class ReadyReceive:
+    """Completed receive selected by wait_any()."""
+
+    def index(ast_self: ReadyReceive):
+        """Return the selected request's tuple index."""
+        return ttl.ready_receive_index(ast_self)
+
+
+@syntax("wait_any")
+def wait_any(requests, start=0) -> ReadyReceive:
+    """Select the first completed receive in cyclic order from start."""
+    if not isinstance(requests, tuple):
+        raise TypeError("wait_any() requests must be an explicitly ordered tuple")
+    if not requests:
+        raise ValueError("wait_any() requires at least one receive request")
+    if any(
+        ttl.ReceiveRequestType.maybe_downcast(request.type) is None
+        for request in requests
+    ):
+        raise TypeError("wait_any() accepts only PipeNet receive requests")
+    if len({id(request) for request in requests}) != len(requests):
+        raise ValueError("wait_any() requires distinct receive requests")
+    context = requests[0].type.context
+    if isinstance(start, bool):
+        raise TypeError("wait_any() start must be an integer or index value")
+    if isinstance(start, int):
+        start = arith.ConstantOp(IndexType.get(context), start)
+    elif not hasattr(start, "type"):
+        raise TypeError("wait_any() start must be an integer or index value")
+    elif not isinstance(start.type, (IndexType, IntegerType)):
+        raise TypeError("wait_any() start must be an integer or index value")
+    elif not isinstance(start.type, IndexType):
+        start = arith.IndexCastOp(IndexType.get(context), start)
+    ready_type = ttl.ReadyReceiveType.get(context)
+    return ttl.wait_any(list(requests), start, results=[ready_type])
+
+
 def _make_tensor_slice(tensor, indices, slice_shape):
     """Create a ttl.tensor_slice from a tensor, tile indices, and shape.
 
@@ -531,6 +588,57 @@ def _is_block(value) -> bool:
     return value.owner.name == "ttl.attach_cb"
 
 
+def _is_inactive_guarded_dfb_value(value) -> bool:
+    owner = getattr(value, "owner", None)
+    return (
+        getattr(owner, "name", None) == "builtin.unrealized_conversion_cast"
+        and "ttl.inactive_guarded_dfb" in owner.attributes
+    )
+
+
+def _get_then_yielded_guarded_dfb_value(value):
+    owner = getattr(value, "owner", None)
+    if getattr(owner, "name", None) != "scf.if":
+        return None
+
+    result_number = getattr(value, "result_number", None)
+    if result_number is None:
+        return None
+
+    try:
+        then_block = owner.regions[0].blocks[0]
+        else_block = owner.regions[1].blocks[0]
+        then_yield = list(then_block.operations)[-1]
+        else_yield = list(else_block.operations)[-1]
+    except (IndexError, TypeError):
+        return None
+
+    if then_yield.name != "scf.yield" or else_yield.name != "scf.yield":
+        return None
+    if result_number >= len(then_yield.operands) or result_number >= len(
+        else_yield.operands
+    ):
+        return None
+    if not _is_inactive_guarded_dfb_value(else_yield.operands[result_number]):
+        return None
+    return then_yield.operands[result_number]
+
+
+def _get_acquire_op_name_from_view(value):
+    while True:
+        owner = getattr(value, "owner", None)
+        owner_name = getattr(owner, "name", None)
+        if owner_name in ("ttl.cb_reserve", "ttl.cb_wait"):
+            return owner_name
+        if owner_name == "ttl.attach_cb":
+            value = owner.operands[0]
+            continue
+        guarded_value = _get_then_yielded_guarded_dfb_value(value)
+        if guarded_value is None:
+            return None
+        value = guarded_value
+
+
 def _get_acquired_view_from_block(block):
     """Extract the reserve or wait view from a block.
 
@@ -540,7 +648,7 @@ def _get_acquired_view_from_block(block):
     if block.owner.name != "ttl.attach_cb":
         raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
     acquired_view = block.owner.operands[0]
-    if acquired_view.owner.name not in ("ttl.cb_reserve", "ttl.cb_wait"):
+    if _get_acquire_op_name_from_view(acquired_view) is None:
         raise ValueError(
             "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
         )
@@ -669,7 +777,7 @@ def _get_pipe_mlir_value(pipe):
 
 
 @syntax("copy")
-def copy(src, dst) -> CopyTransferHandler:
+def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
@@ -678,7 +786,7 @@ def copy(src, dst) -> CopyTransferHandler:
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
 
     Returns:
-        CopyTransferHandler handle that must be waited on for completion
+        ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
 
     For multi-tile CBs (shape > 1x1), use range syntax: tensor[0:2, 0:2]
     For single-tile CBs (shape 1x1), use index syntax: tensor[0, 0]
@@ -715,7 +823,7 @@ def copy(src, dst) -> CopyTransferHandler:
                 )
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst.type.context
-            xf_type = Type.parse("!ttl.transfer_handle", ctx)
+            xf_type = ttl.ReceiveRequestType.get(ctx)
             return ttl.copy(xf_type, pipe_val, dst)
 
     # Non-pipe transfers: tensor subscript <-> block
@@ -785,27 +893,37 @@ def node(*, dims):
     """
     Get the coordinates of the current core.
 
-    Currently only dims=2 is supported (temporary restriction).
+    Currently only dims=1 and dims=2 are supported (temporary restriction).
 
     Args:
-        dims: Number of dimensions to return (must be 2)
+        dims: Number of dimensions to return (must be 1 or 2)
 
     Returns:
         For dims=2: Tuple (x, y) where x is column coordinate and y is row coordinate
+        For dims=1: The node's index within the flattened grid
 
     Raises:
-        ValueError: If dims is not 2
+        ValueError: If dims is not 1 or 2
 
     Example:
         x, y = ttl.node(dims=2)
+        n = ttl.node(dims=1)
     """
     dims_val = _get_constant_int(dims)
-    if dims_val != 2:
+    if dims_val not in (1, 2):
         raise ValueError(
-            f"core() currently only supports dims=2, got dims={dims_val}. "
+            f"core() currently only supports dims=1 and dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
-    return (ttl.core_x(), ttl.core_y())
+    x = ttl.core_x()
+    if dims_val == 2:
+        return (x, ttl.core_y())
+    # The specification orders the second coordinate contiguously.
+    rows = _get_current_grid()[1]
+    ctx = x.type.context
+    stride = arith.ConstantOp(IndexType.get(ctx), rows).result
+    column_base = arith.MulIOp(x, stride).result
+    return arith.AddIOp(column_base, ttl.core_y()).result
 
 
 @syntax("grid_size")
@@ -813,28 +931,33 @@ def grid_size(*, dims):
     """
     Get the size of the grid.
 
-    Currently only dims=2 is supported (temporary restriction).
+    Currently only dims=1 and dims=2 are supported (temporary restriction).
 
     Args:
-        dims: Number of dimensions to return (must be 2)
+        dims: Number of dimensions to return (must be 1 or 2)
 
     Returns:
         For dims=2: Tuple (x_size, y_size) where x_size is columns and y_size is rows
+        For dims=1: The total number of nodes in the grid
 
     Raises:
-        ValueError: If dims is not 2
+        ValueError: If dims is not 1 or 2
 
     Example:
         x_size, y_size = ttl.grid_size(dims=2)
+        total = ttl.grid_size(dims=1)
     """
     dims_val = _get_constant_int(dims)
-    if dims_val != 2:
+    if dims_val not in (1, 2):
         raise ValueError(
-            f"grid_size() currently only supports dims=2, got dims={dims_val}. "
+            f"grid_size() currently only supports dims=1 and dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
     # grid is stored as (cols, rows) = (x, y), matching tt-metal convention
-    return _get_current_grid()
+    cols, rows = _get_current_grid()
+    if dims_val == 2:
+        return (cols, rows)
+    return cols * rows
 
 
 @syntax("signpost")
@@ -929,10 +1052,21 @@ def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
     return ttl.block_broadcast(result_type, input, dims_attr, shape_attr)
 
 
+def _warn_if_reduce_shape_omitted(shape) -> None:
+    if shape is not None:
+        return
+    warnings.warn(
+        "Omitting the reduce shape argument is deprecated; pass shape explicitly",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 def _reduce_impl(
     input: TensorBlock,
     dims: List[int],
     reduce_type: int,
+    shape=None,
 ) -> TensorBlock:
     """Shared implementation for reduce_sum and reduce_max."""
     from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
@@ -940,8 +1074,8 @@ def _reduce_impl(
     input_type = input.type
     input_shape = list(input_type.shape)
     rank = len(input_shape)
-    if rank != 2:
-        raise ValueError(f"reduce only supports 2D tensors, got rank {rank}")
+    if rank < 2:
+        raise ValueError(f"reduce requires rank 2 or greater, got rank {rank}")
     if not dims:
         raise ValueError("dims must be non-empty")
 
@@ -953,7 +1087,25 @@ def _reduce_impl(
             )
     norm_dims = sorted({d % rank for d in dims})
 
-    result_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    expected_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    if shape is None:
+        # Keep accepting the legacy compiler spelling while supporting the
+        # explicit result shape required by the language specification.
+        result_shape = expected_shape
+    else:
+        result_shape = [_get_constant_int(s) for s in shape]
+        if len(result_shape) != rank:
+            raise ValueError(
+                f"reduce shape {tuple(result_shape)} has {len(result_shape)} "
+                f"dimensions but input has rank {rank}"
+            )
+        if result_shape != expected_shape:
+            raise ValueError(
+                f"reduce shape {tuple(result_shape)} does not match expected "
+                f"result shape {tuple(expected_shape)} (input shape "
+                f"{tuple(input_shape)}, reducing dims {dims})"
+            )
+
     result_type = RankedTensorType.get(
         result_shape, input_type.element_type, input_type.encoding
     )
@@ -970,21 +1122,33 @@ def _reduce_impl(
 
 
 @syntax("reduce_sum")
-def reduce_sum(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+def reduce_sum(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBlock:
     """Sum reduction over specified dimensions.
+
+    ``shape`` is the result shape required by the language specification. It
+    must be 1 in reduced dimensions and match the input in all other
+    dimensions. Omitting it is deprecated; it is currently inferred for
+    backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_sum(x, dims=...)`.
     """
-    return _reduce_impl(input, dims, reduce_type=0)
+    _warn_if_reduce_shape_omitted(shape)
+    return _reduce_impl(input, dims, reduce_type=0, shape=shape)
 
 
 @syntax("reduce_max")
-def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+def reduce_max(input: TensorBlock, *, dims: List[int], shape=None) -> TensorBlock:
     """Max reduction over specified dimensions.
+
+    ``shape`` is the result shape required by the language specification. It
+    must be 1 in reduced dimensions and match the input in all other
+    dimensions. Omitting it is deprecated; it is currently inferred for
+    backward compatibility.
 
     To scale the result by a constant, multiply: `c * reduce_max(x, dims=...)`.
     """
-    return _reduce_impl(input, dims, reduce_type=1)
+    _warn_if_reduce_shape_omitted(shape)
+    return _reduce_impl(input, dims, reduce_type=1, shape=shape)
 
 
 def _resolve_transpose_flag(val) -> bool:
@@ -1041,9 +1205,14 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
         )
     lhs_dtype = ttcore.DataType(lhs_tile.data_type_as_int)
     rhs_dtype = ttcore.DataType(rhs_tile.data_type_as_int)
-    if lhs_dtype != rhs_dtype:
+    is_bfloat16_by_bfp = (
+        not transpose
+        and lhs_dtype == ttcore.DataType.BFloat16
+        and rhs_dtype in (ttcore.DataType.BFP_BFloat4, ttcore.DataType.BFP_BFloat8)
+    )
+    if lhs_dtype != rhs_dtype and not is_bfloat16_by_bfp:
         raise ValueError(
-            "matmul operand tile data types must match, got "
+            "unsupported matmul operand tile data type combination: "
             f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
         )
 
@@ -1399,7 +1568,10 @@ def raw_element_write(block, *args):
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
+    "ReceiveRequest",
+    "ReadyReceive",
     "copy",
+    "wait_any",
     "core",
     "grid_size",
     "signpost",

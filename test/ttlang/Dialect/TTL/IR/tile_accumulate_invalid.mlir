@@ -7,7 +7,7 @@ func.func @unsupported_combiner(
     %a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>)
     -> !ttcore.tile<32x32, bf16> {
   %c0 = arith.constant 0 : index
-  // expected-error @+1 {{expected accumulation combiner}}
+  // expected-error @+1 {{expected accumulation combiner `add` or `max`}}
   %r = ttl.tile_accumulate %a, %b mul into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
   return %r : !ttcore.tile<32x32, bf16>
 }

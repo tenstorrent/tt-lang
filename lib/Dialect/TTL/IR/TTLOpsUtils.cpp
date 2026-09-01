@@ -11,6 +11,74 @@
 
 namespace mlir::tt::ttl {
 
+std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
+  auto compare = predicate.getDefiningOp<arith::CmpIOp>();
+  if (!compare || (compare.getPredicate() != arith::CmpIPredicate::eq &&
+                   compare.getPredicate() != arith::CmpIPredicate::ne)) {
+    return std::nullopt;
+  }
+  Value selectedValue;
+  std::optional<int64_t> selectedIndex = getConstantIntValue(compare.getRhs());
+  if (selectedIndex) {
+    selectedValue = compare.getLhs();
+  } else {
+    selectedIndex = getConstantIntValue(compare.getLhs());
+    selectedValue = compare.getRhs();
+  }
+  if (!selectedIndex || *selectedIndex < 0) {
+    return std::nullopt;
+  }
+  auto indexOp = selectedValue.getDefiningOp<ReadyReceiveIndexOp>();
+  if (!indexOp) {
+    return std::nullopt;
+  }
+  Operation *waitAny = indexOp.getReady().getDefiningOp();
+  std::size_t candidateCount;
+  if (auto highWaitAny = dyn_cast_or_null<WaitAnyOp>(waitAny)) {
+    candidateCount = highWaitAny.getRequests().size();
+  } else if (auto internalWaitAny =
+                 dyn_cast_or_null<PipeTransferWaitAnyOp>(waitAny)) {
+    candidateCount = internalWaitAny.getTokens().size();
+  } else {
+    return std::nullopt;
+  }
+  if (static_cast<std::size_t>(*selectedIndex) >= candidateCount) {
+    return std::nullopt;
+  }
+  return ReadyReceiveSelection{waitAny, *selectedIndex,
+                               compare.getPredicate() ==
+                                   arith::CmpIPredicate::eq};
+}
+
+bool isInReadyReceiveSelectionRegion(
+    Operation *operation, Operation *waitAny, int64_t candidateIndex,
+    llvm::function_ref<bool(Operation *, Operation *)> isOrderedBefore) {
+  Operation *current = operation;
+  while (Block *block = current->getBlock()) {
+    auto ifOp = dyn_cast_or_null<scf::IfOp>(block->getParentOp());
+    if (ifOp) {
+      std::optional<ReadyReceiveSelection> selection =
+          getReadyReceiveSelection(ifOp.getCondition());
+      bool inSelectedRegion =
+          selection && ((selection->selectedWhenTrue &&
+                         block->getParent() == &ifOp.getThenRegion()) ||
+                        (!selection->selectedWhenTrue &&
+                         block->getParent() == &ifOp.getElseRegion()));
+      if (inSelectedRegion && selection->candidateIndex == candidateIndex &&
+          selection->waitAny == waitAny &&
+          isOrderedBefore(waitAny, ifOp.getOperation())) {
+        return true;
+      }
+    }
+    Operation *parent = block->getParentOp();
+    if (!parent || parent == waitAny) {
+      break;
+    }
+    current = parent;
+  }
+  return false;
+}
+
 FailureOr<ttcore::TileType> getTileType(Type type) {
   if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
     return tileType;
@@ -187,14 +255,20 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     std::string &failureReason) {
   failureReason.clear();
   llvm::raw_string_ostream diagnostic(failureReason);
-  if (lhsType.getDataType() != rhsType.getDataType()) {
-    diagnostic << "element data type mismatch: lhs has " << lhsType
-               << " but rhs has " << rhsType;
-    return failure();
-  }
-  if (resultType.getDataType() != lhsType.getDataType()) {
-    diagnostic << "result element data type " << resultType
-               << " must match input element data type " << lhsType;
+  ttcore::DataType lhsDataType = lhsType.getDataType();
+  ttcore::DataType rhsDataType = rhsType.getDataType();
+  ttcore::DataType resultDataType = resultType.getDataType();
+  bool hasMatchingDataTypes =
+      lhsDataType == rhsDataType && lhsDataType == resultDataType;
+  bool isBFloat16ByBFP = !transposeRhs &&
+                         lhsDataType == ttcore::DataType::BFloat16 &&
+                         (rhsDataType == ttcore::DataType::BFP_BFloat4 ||
+                          rhsDataType == ttcore::DataType::BFP_BFloat8) &&
+                         resultDataType == ttcore::DataType::BFloat16;
+  if (!hasMatchingDataTypes && !isBFloat16ByBFP) {
+    diagnostic << "unsupported matmul element data type combination: lhs has "
+               << lhsType << ", rhs has " << rhsType << ", and result has "
+               << resultType;
     return failure();
   }
 
@@ -269,6 +343,12 @@ getDefaultLegalTileExecutionStrategies(Operation *operation) {
   return strategies;
 }
 
+static bool hasDstBackedTileProducer(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  return definingOp &&
+         (isTileComputeOp(definingOp) || isa<DstIndexOp>(definingOp));
+}
+
 FailureOr<TileExecutionInfo>
 getDefaultTileExecutionInfo(Operation *operation,
                             std::optional<TileExecutionStrategy> strategy) {
@@ -329,6 +409,15 @@ getDefaultTileExecutionInfo(Operation *operation,
     }
     return info;
   }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
+    info.primitive = TilePrimitive::Reduce;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    if (normalization.getHasGamma()) {
+      info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    }
+    info.requiredDstSlots = normalization.getNumTiles();
+    return info;
+  }
   if (isa<TileTransposeOp>(operation)) {
     info.primitive = TilePrimitive::Transpose;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
@@ -350,10 +439,13 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.accumulatesIntoDst = true;
     return info;
   }
-  if (isa<TileAccumulateOp>(operation)) {
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(operation)) {
     info.primitive = TilePrimitive::ElementwiseBinary;
     info.operandRoutes[0] = TileOperandRoute::Dst;
-    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] =
+        hasDstBackedTileProducer(accumulate.getContribution())
+            ? TileOperandRoute::Dst
+            : TileOperandRoute::DataflowBuffer;
     info.accumulatesIntoDst = true;
     return info;
   }
@@ -402,6 +494,10 @@ LogicalResult verifyTileExecutionInfo(Operation *operation,
         << "defines " << info.dstOperandsMaterializedByOperation.size()
         << " DST operand materialization entries for "
         << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  if (info.requiredDstSlots == 0) {
+    operation->emitOpError("defines a zero-slot DST residency requirement");
     return failure();
   }
   return success();
@@ -546,21 +642,21 @@ std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
 
 FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
                                                   int64_t rank) {
-  if (rank != 2) {
+  if (rank < 2) {
     return failure();
   }
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
   // TTKernel names the surviving orientation: reducing height uses a column
   // reduction, while reducing width uses a row reduction.
-  bool reducesHeight = normalizedDims.contains(0);
-  bool reducesWidth = normalizedDims.contains(1);
-  if (reducesHeight && reducesWidth) {
+  bool reducesSecondInnermost = normalizedDims.contains(rank - 2);
+  bool reducesInnermost = normalizedDims.contains(rank - 1);
+  if (reducesSecondInnermost && reducesInnermost) {
     return ttkernel::ReduceDim::Scalar;
   }
-  if (reducesHeight) {
+  if (reducesSecondInnermost) {
     return ttkernel::ReduceDim::Col;
   }
-  if (reducesWidth) {
+  if (reducesInnermost) {
     return ttkernel::ReduceDim::Row;
   }
   return failure();
@@ -644,14 +740,18 @@ getDefaultDstReadFootprints(Operation *op) {
   return footprints;
 }
 
-/// Most tile ops write one explicit `dst_index`; block matmul is the current
-/// multi-slot writer and stores only read DST for packing.
+/// Most tile ops write one explicit `dst_index`; block operations may write a
+/// contiguous range, and stores only read DST for packing.
 SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   if (isa<TileStoreOp, DstIndexOp>(op)) {
     return {};
   }
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return {{matmul.getDstIndex(), getMatmulBlockOutputTileCount(matmul)}};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return {{normalization.getDstIndex(),
+             static_cast<int64_t>(normalization.getNumTiles())}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
@@ -672,6 +772,10 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return DstFootprint{matmul.getDstIndex(),
                         getMatmulBlockOutputTileCount(matmul)};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return DstFootprint{normalization.getDstIndex(),
+                        static_cast<int64_t>(normalization.getNumTiles())};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return DstFootprint{*dstIndex, 1};
@@ -774,8 +878,10 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileMatmulBlockOp>(op)) {
     return TileOpCategory::FPUBinary;
   }
-  if (isa<TileAccumulateOp>(op)) {
-    return TileOpCategory::FPUBinary;
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(op)) {
+    return hasDstBackedTileProducer(accumulate.getContribution())
+               ? TileOpCategory::SFPUBinary
+               : TileOpCategory::FPUBinary;
   }
   if (isa<TileTransposeOp>(op)) {
     return TileOpCategory::Transpose;
@@ -943,6 +1049,8 @@ namespace ttk = mlir::tt::ttkernel;
 llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop) {
   llvm::SmallDenseSet<Value, 2> cbs;
   loop->walk([&](ttk::PackTileOp packOp) { cbs.insert(packOp.getOutCb()); });
+  loop->walk(
+      [&](ttk::PackTileBlockOp packOp) { cbs.insert(packOp.getOutCb()); });
   return cbs;
 }
 
@@ -955,107 +1063,6 @@ bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
     }
   }
   return false;
-}
-
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop) {
-  // Find the outermost annotated ancestor of a loop.
-  auto findRoot = [](scf::ForOp loop) -> scf::ForOp {
-    scf::ForOp outermost = loop;
-    for (Operation *parent = loop->getParentOp(); parent;
-         parent = parent->getParentOp()) {
-      if (auto parentFor = dyn_cast<scf::ForOp>(parent)) {
-        if (parentFor->hasAttr(kL1AccLoopAttrName) ||
-            parentFor->hasAttr(kReductionLoopAttrName)) {
-          outermost = parentFor;
-        }
-      }
-    }
-    return outermost;
-  };
-
-  SmallVector<LoopGroup> groups;
-  llvm::SmallDenseSet<Operation *> assigned;
-
-  for (auto loop : l1AccLoops) {
-    if (!enablePointPerLoop.count(loop.getOperation())) {
-      continue;
-    }
-    if (assigned.contains(loop.getOperation())) {
-      continue;
-    }
-
-    scf::ForOp rootLoop = findRoot(loop);
-    auto groupPackCBs = getPackTileCBs(rootLoop);
-
-    // A bare non-annotated scf.for between siblings does not break the
-    // group unless its body packs to one of the group's pack CBs — such
-    // a pack runs with L1 acc disabled and would overwrite the shared
-    // L1 slot before the next sibling accumulates onto it.
-    auto bareForMutatesSharedCB = [&](scf::ForOp forOp) {
-      auto innerCBs = getPackTileCBs(forOp);
-      return llvm::any_of(innerCBs,
-                          [&](Value cb) { return groupPackCBs.contains(cb); });
-    };
-
-    LoopGroup group;
-    group.rootLoop = rootLoop;
-    group.loops.push_back(loop);
-    assigned.insert(loop.getOperation());
-
-    // Collect sibling annotated loops that share a pack CB target.
-    // sharePackCB walks recursively, so for nested loops (rootLoop
-    // wrapping loop), it finds pack_tile ops inside the inner loop.
-    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
-      if (isa<ttk::CBPushBackOp>(op)) {
-        break;
-      }
-      auto sibling = dyn_cast<scf::ForOp>(op);
-      if (!sibling) {
-        continue;
-      }
-      if (!sibling->hasAttr(kL1AccLoopAttrName) &&
-          !sibling->hasAttr(kReductionLoopAttrName)) {
-        if (bareForMutatesSharedCB(sibling)) {
-          break;
-        }
-        continue;
-      }
-      if (!sharePackCB(rootLoop, sibling)) {
-        break;
-      }
-      group.loops.push_back(sibling);
-      assigned.insert(sibling.getOperation());
-    }
-
-    // Find scope end: scan forward from rootLoop past grouped siblings,
-    // init ops between them, and trailing cb_push_back ops. Stop at a
-    // cb_reserve_back, any annotated scf.for that is not in this group
-    // (belongs to a different scope), or a bare scf.for that packs to
-    // one of the group's pack CBs.
-    group.scopeEnd = rootLoop;
-    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
-      if (isa<ttk::CBPushBackOp>(op)) {
-        group.scopeEnd = op;
-      } else if (isa<ttk::CBReserveBackOp>(op)) {
-        break;
-      } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-        if (assigned.contains(forOp)) {
-          continue;
-        }
-        bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
-                           forOp->hasAttr(kReductionLoopAttrName);
-        if (isAnnotated || bareForMutatesSharedCB(forOp)) {
-          break;
-        }
-      }
-    }
-
-    groups.push_back(std::move(group));
-  }
-
-  return groups;
 }
 
 } // namespace mlir::tt::ttl

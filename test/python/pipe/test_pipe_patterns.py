@@ -322,28 +322,21 @@ def posted_loopback_multicast_kernel(inp, out):
 
     @ttl.datamovement()
     def post_recv_then_send():
-        x, _ = ttl.node(dims=2)
-        if x == 0:
-            with send_cb.reserve() as send_blk, recv_cb.reserve() as recv_blk:
-                ttl.copy(inp[0, 0], send_blk).wait()
+        with recv_cb.reserve() as recv_blk:
 
-                def recv(pipe):
-                    recv_tx = ttl.copy(pipe, recv_blk)
+            def recv(pipe):
+                recv_tx = ttl.copy(pipe, recv_blk)
 
-                    def send(pipe):
-                        ttl.copy(send_blk, pipe).wait()
+                def send(pipe):
+                    with send_cb.reserve() as send_blk:
+                        ttl.copy(inp[0, 0], send_blk).wait()
+                        send_tx = ttl.copy(send_blk, pipe)
+                        recv_tx.wait()
+                        send_tx.wait()
 
-                    net.if_src(send)
-                    recv_tx.wait()
+                net.if_src(send)
 
-                net.if_dst(recv)
-        else:
-            with recv_cb.reserve() as recv_blk:
-
-                def recv(pipe):
-                    ttl.copy(pipe, recv_blk).wait()
-
-                net.if_dst(recv)
+            net.if_dst(recv)
 
     @ttl.datamovement()
     def write_output():
@@ -490,7 +483,7 @@ def test_forward_ring(device):
 
 
 def test_same_thread_receive_post_before_send_loopback(device):
-    """A same-thread loopback receive is valid when copy posts before send."""
+    """A collective completes on its source and receiver-only node."""
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)
     out_tt = to_dram(torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16), device)
