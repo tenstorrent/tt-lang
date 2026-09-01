@@ -1018,6 +1018,7 @@ def operation(
     coordinate tuples or inclusive ``ttl.MeshProgramPlacement`` ranges. When
     omitted, an operation with a device domain executes on the full domain.
     Explicit placements must include every graph-based PipeNet endpoint.
+    Placements must use one coordinate rank and must not overlap.
     """
 
     def _decorator(fn):

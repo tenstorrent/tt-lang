@@ -291,9 +291,9 @@ class TestMeshProgramPlacement:
         [
             ("0,0", TypeError, "must be a tuple or list"),
             ([object()], TypeError, "must be coordinate tuples"),
-            ([()], ValueError, "start must not be empty"),
-            ([(0, "1")], TypeError, "coordinates must be integers"),
-            ([(True, 0)], TypeError, "coordinates must be integers"),
+            ([()], ValueError, "start must have at least one component"),
+            ([(0, "1")], TypeError, "component must be an integer"),
+            ([(True, 0)], TypeError, "component must be an integer"),
         ],
     )
     def test_explicit_mesh_program_placements_reject_invalid_values(
@@ -337,7 +337,7 @@ class TestMeshProgramPlacement:
         ("start", "end", "error_type", "message"),
         [
             (0, None, TypeError, "start must be a coordinate tuple"),
-            ((-1, 0), None, ValueError, "coordinates must be non-negative"),
+            ((-1, 0), None, ValueError, "axis 0 must be non-negative"),
             ((0,), (0, 1), ValueError, "same rank"),
             ((0, 1), (0, 0), ValueError, "must not exceed"),
         ],
