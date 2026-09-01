@@ -6,7 +6,7 @@
 // are serialized, including the empty domain; the unresolved domain omits
 // allocation_nodes so the runtime remains conservative.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {allocation_nodes = [], block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}], ttl.launch_grid = array<i64: 2, 1>}
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}, {allocation_nodes = [], block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 1 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 2 : i32}], ttl.launch_grid = array<i64: 2, 1>}
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @allocation_nodes(%runtime_offset: index)
@@ -54,7 +54,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // Without a launch grid, the liveness proof uses one representative node but
 // runtime residency remains unknown and therefore omits allocation_nodes.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}]}
 
 module {
   func.func @unknown_runtime_grid()
@@ -76,7 +76,7 @@ module {
 // blocks. Dead-code state proves the first DFB's domain empty; the reachable
 // access retains the full launch domain.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = [], block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}], ttl.launch_grid = array<i64: 2, 1>}
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = [], block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}, {allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 1 : i32}], ttl.launch_grid = array<i64: 2, 1>}
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @unreachable_cfg_block()
