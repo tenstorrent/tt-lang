@@ -1599,13 +1599,6 @@ def _build_reconfiguration_descriptor_variants(
     return descriptor_variants
 
 
-def _core_coordinate_set(core_ranges: Any) -> set[tuple[int, int]]:
-    return {
-        (int(core.x), int(core.y))
-        for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
-    }
-
-
 def _validate_local_tensor_access(
     spec: KernelSpec, tensors: List[Any], kernel_ranges: Any
 ) -> None:
@@ -1622,7 +1615,9 @@ def _validate_local_tensor_access(
             f"missing {missing_runtime_addresses}"
         )
 
-    executing_cores = _core_coordinate_set(kernel_ranges)
+    executing_cores = _core_range_coordinates(
+        kernel_ranges, label=f"{spec.thread_type} kernel core ranges"
+    )
     sharded_layouts = {
         ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
         ttnn.TensorMemoryLayout.WIDTH_SHARDED,
@@ -1648,7 +1643,9 @@ def _validate_local_tensor_access(
         shard_spec = memory_config.shard_spec
         if shard_spec is None:
             raise ValueError(f"local tensor {tensor_index} has no shard specification")
-        shard_cores = _core_coordinate_set(shard_spec.grid)
+        shard_cores = _core_range_coordinates(
+            shard_spec.grid, label=f"local tensor {tensor_index} shard grid"
+        )
         missing_cores = sorted(executing_cores - shard_cores)
         if missing_cores:
             raise ValueError(
