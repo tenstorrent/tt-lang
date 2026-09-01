@@ -15,7 +15,6 @@ building and execution.
 
 from dataclasses import dataclass, field, replace
 import hashlib
-import itertools
 import json
 import math
 import operator
@@ -58,7 +57,7 @@ from .constants import (
     SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS,
 )
 from . import dtype_utils
-from .domains import DeviceRef
+from .domains import DeviceDomain, DeviceRef
 from .fabric import FabricManagerClaim
 from ._src.fabric_target import (
     FabricManagerIntervalKind,
@@ -588,12 +587,105 @@ def _synchronize_or_retain_runtime_resources(
         raise
 
 
+def _normalize_mesh_program_coordinate(
+    coordinate: Any, endpoint: str
+) -> Tuple[int, ...]:
+    if not isinstance(coordinate, (tuple, list)):
+        raise TypeError(f"mesh program placement {endpoint} must be a coordinate tuple")
+    if not coordinate:
+        raise ValueError(f"mesh program placement {endpoint} must not be empty")
+    if any(
+        isinstance(coordinate_value, bool) or not isinstance(coordinate_value, int)
+        for coordinate_value in coordinate
+    ):
+        raise TypeError(
+            f"mesh program placement {endpoint} coordinates must be integers"
+        )
+    return tuple(coordinate)
+
+
 @dataclass(frozen=True)
 class MeshProgramPlacement:
     """Inclusive device range for one program inside a mesh descriptor."""
 
-    start: Any
-    end: Optional[Any] = None
+    start: Tuple[int, ...]
+    end: Optional[Tuple[int, ...]] = None
+
+    def __post_init__(self) -> None:
+        start = _normalize_mesh_program_coordinate(self.start, "start")
+        end = (
+            None
+            if self.end is None
+            else _normalize_mesh_program_coordinate(self.end, "end")
+        )
+        if end is not None and len(start) != len(end):
+            raise ValueError(
+                "mesh program placement start and end must have the same rank"
+            )
+        if end is not None and any(
+            start_coordinate > end_coordinate
+            for start_coordinate, end_coordinate in zip(start, end)
+        ):
+            raise ValueError("mesh program placement start must not exceed its end")
+        object.__setattr__(self, "start", start)
+        object.__setattr__(self, "end", end)
+
+    def contains(self, coordinate: Sequence[int]) -> bool:
+        end = self.start if self.end is None else self.end
+        return len(coordinate) == len(self.start) and all(
+            start_value <= coordinate_value <= end_value
+            for coordinate_value, start_value, end_value in zip(
+                coordinate, self.start, end
+            )
+        )
+
+
+def normalize_mesh_program_placements(
+    mesh_program_placements: Optional[Sequence[Any]],
+    *,
+    extent: Optional[Sequence[int]] = None,
+    extent_name: str = "mesh",
+) -> Optional[Tuple[MeshProgramPlacement, ...]]:
+    """Return immutable placements validated against an optional extent."""
+    if mesh_program_placements is None:
+        return None
+    if not isinstance(mesh_program_placements, (tuple, list)):
+        raise TypeError("mesh_program_placements must be a tuple or list")
+    if not mesh_program_placements:
+        raise ValueError("mesh_program_placements must not be empty")
+
+    normalized: List[MeshProgramPlacement] = []
+    for placement in mesh_program_placements:
+        if isinstance(placement, MeshProgramPlacement):
+            normalized_placement = placement
+        elif isinstance(placement, (tuple, list)):
+            normalized_placement = MeshProgramPlacement(placement)
+        else:
+            raise TypeError(
+                "mesh program placements must be coordinate tuples or "
+                "MeshProgramPlacement values"
+            )
+        normalized.append(normalized_placement)
+
+    if extent is not None:
+        normalized_extent = tuple(extent)
+        for placement in normalized:
+            end = placement.start if placement.end is None else placement.end
+            if len(placement.start) != len(normalized_extent):
+                raise ValueError(
+                    f"mesh program placement rank must match {extent_name} rank"
+                )
+            if any(
+                start_value < 0 or end_value >= dimension
+                for start_value, end_value, dimension in zip(
+                    placement.start, end, normalized_extent
+                )
+            ):
+                raise ValueError(
+                    f"mesh program placement must be inside the {extent_name}"
+                )
+
+    return tuple(normalized)
 
 
 def _format_logical_kernel(kernel: LogicalKernelId) -> str:
@@ -3793,88 +3885,14 @@ def build_mesh_program_descriptor(
     return mesh_program_descriptor
 
 
-def _mesh_program_placement_bounds(placement: Any) -> tuple[tuple, tuple]:
-    if isinstance(placement, MeshProgramPlacement):
-        start = placement.start
-        end = placement.start if placement.end is None else placement.end
-    elif isinstance(placement, (tuple, list)):
-        start = placement
-        end = placement
-    else:
-        raise TypeError(
-            "mesh program placements must be coordinate tuples or "
-            "MeshProgramPlacement values"
-        )
-
-    def validate_coordinate(coordinate: Any, endpoint: str) -> tuple:
-        if not isinstance(coordinate, (tuple, list)):
-            raise TypeError(
-                f"mesh program placement {endpoint} must be a coordinate tuple"
-            )
-        if not coordinate:
-            raise ValueError(f"mesh program placement {endpoint} must not be empty")
-        if any(
-            isinstance(coordinate_value, bool) or not isinstance(coordinate_value, int)
-            for coordinate_value in coordinate
-        ):
-            raise TypeError(
-                f"mesh program placement {endpoint} coordinates must be integers"
-            )
-        return tuple(coordinate)
-
-    return validate_coordinate(start, "start"), validate_coordinate(end, "end")
-
-
 def _iter_device_domain_coordinates(device_domain, mesh_program_placements=None):
-    domain_extent = tuple(
-        dimension
-        for component in device_domain.components
-        for dimension in component.extent
-    )
-    domain_rank = len(domain_extent)
-    placement_bounds = None
-    if mesh_program_placements is not None:
-        placement_bounds = [
-            _mesh_program_placement_bounds(placement)
-            for placement in mesh_program_placements
-        ]
-        for start, end in placement_bounds:
-            if len(start) != domain_rank or len(end) != domain_rank:
-                raise ValueError(
-                    "mesh program placement rank must match device-domain rank"
-                )
-            if any(
-                start_value > end_value for start_value, end_value in zip(start, end)
-            ):
-                raise ValueError("mesh program placement start must not exceed its end")
-            if any(
-                start_value < 0 or end_value >= extent
-                for start_value, end_value, extent in zip(start, end, domain_extent)
-            ):
-                raise ValueError(
-                    "mesh program placement must be inside the device domain"
-                )
-    component_coordinates = []
-    for component in device_domain.components:
-        component_coordinates.append(
-            tuple(itertools.product(*(range(extent) for extent in component.extent)))
-        )
-    for coordinates in itertools.product(*component_coordinates):
-        runtime_coordinates = [
-            value for coordinate in coordinates for value in coordinate
-        ]
-        mesh_coordinate = tuple(runtime_coordinates)
-        if placement_bounds is not None and not any(
-            all(
-                start_value <= coordinate_value <= end_value
-                for coordinate_value, start_value, end_value in zip(
-                    mesh_coordinate, start, end
-                )
-            )
-            for start, end in placement_bounds
+    for device_ref in device_domain.iter_device_refs():
+        mesh_coordinate = device_domain.flattened_coordinates(device_ref)
+        if mesh_program_placements is not None and not any(
+            placement.contains(mesh_coordinate) for placement in mesh_program_placements
         ):
             continue
-        yield mesh_coordinate, runtime_coordinates
+        yield mesh_coordinate, list(mesh_coordinate)
 
 
 def build_device_mesh_program_descriptor(
@@ -4314,6 +4332,16 @@ def run_kernel_on_device(
     device: Optional[Any] = None,
 ) -> Any:
     """Execute a kernel, serializing use of persistent runtime resources."""
+    if device_domain is not None and not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got "
+            f"{type(device_domain).__name__}"
+        )
+    mesh_program_placements = normalize_mesh_program_placements(
+        mesh_program_placements,
+        extent=(None if device_domain is None else device_domain.flattened_extent),
+        extent_name="device domain",
+    )
     arguments = {
         "kernel_specs": kernel_specs,
         "tensors": tensors,
@@ -4948,6 +4976,7 @@ __all__ = [
     "get_cached_runtime_resources",
     "build_dfb_reconfiguration_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
+    "normalize_mesh_program_placements",
     "normalize_program_hash",
     "combine_program_hash_with_runtime_resources",
     "build_generic_op_io_tensors",
