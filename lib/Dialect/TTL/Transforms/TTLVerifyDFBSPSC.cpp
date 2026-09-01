@@ -6,11 +6,11 @@
 // TTL Verify DFB SPSC
 //===----------------------------------------------------------------------===//
 //
-// Rejects modules in which a logical dataflow buffer has more than one producer
-// or consumer kernel active on the same launched node. Logical identity
-// remains distinct when non-overlapping DFBs share a physical `cb_index`.
-// tt-metal CBs are single-producer single-consumer at the API level; see
-// `docs/development/DFBManagement.md` for the rationale.
+// Rejects waits without a push and modules in which a logical dataflow buffer
+// has more than one producer or consumer kernel active on the same launched
+// node. Logical identity remains distinct when non-overlapping DFBs share a
+// physical `cb_index`. tt-metal CBs are single-producer single-consumer at the
+// API level; see `docs/development/DFBManagement.md` for the rationale.
 //
 //===----------------------------------------------------------------------===//
 

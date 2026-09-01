@@ -10,6 +10,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %v = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -35,6 +36,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %r = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %w = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -54,6 +56,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %v = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
     func.return
   }
 
@@ -78,6 +81,16 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // CHECK-LABEL: func.func @kernel_consumer
 // CHECK-LABEL: func.func @untagged_helper
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @kernel_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 4 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
   func.func @kernel_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -112,6 +125,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %b = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
     func.return
   }
 
@@ -143,6 +157,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %b = ttl.cb_reserve %cb_b
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb_a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_push %cb_b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -237,6 +253,16 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // participant for each SPSC role.
 // CHECK-LABEL: func.func @same_thread_hidden_releases
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @consumer_source() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %consumer = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 33 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserved = ttl.cb_reserve %consumer
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %consumer : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
   func.func @same_thread_hidden_releases() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %producer = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 32 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -281,6 +307,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %slot = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -299,6 +326,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %slot = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -354,6 +382,16 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // CHECK-LABEL: func.func @consumer_dst
 // CHECK-LABEL: func.func @consumer_src
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 21 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
   func.func @consumer_dst() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
