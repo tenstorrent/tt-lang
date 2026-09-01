@@ -499,7 +499,7 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
             if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
               if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
                    prevFor->hasAttr(kReductionLoopAttrName)) &&
-                  sharePackCB(prevFor, forOp)) {
+                  shareProducerPackOutputDFB(prevFor, forOp)) {
                 useInitShort = true;
               }
               break;
