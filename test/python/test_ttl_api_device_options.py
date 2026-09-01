@@ -308,6 +308,7 @@ class TestMeshProgramPlacement:
         ("start", "end", "error_type", "message"),
         [
             (0, None, TypeError, "start must be a coordinate tuple"),
+            ((-1, 0), None, ValueError, "coordinates must be non-negative"),
             ((0,), (0, 1), ValueError, "same rank"),
             ((0, 1), (0, 0), ValueError, "must not exceed"),
         ],
