@@ -999,12 +999,14 @@ inline TileStoreOp createTileStoreWithPlaceholderDstIndex(
   return store;
 }
 
-/// Collect the dataflow buffer values targeted by pack operations inside a
-/// loop.
-llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
+/// Return the output DFB for a producer pack operation.
+FailureOr<Value> getProducerPackOutputDFB(Operation *operation);
 
-/// Returns true if two loops share any pack operation dataflow buffer target.
-bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
+/// Collect the output DFBs targeted by producer pack operations in a loop.
+llvm::SmallDenseSet<Value, 2> getProducerPackOutputDFBs(scf::ForOp loop);
+
+/// Return whether two loops contain producer packs to the same output DFB.
+bool shareProducerPackOutputDFB(scf::ForOp loopA, scf::ForOp loopB);
 
 } // namespace mlir::tt::ttl
 
