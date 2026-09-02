@@ -452,6 +452,32 @@ class TensorBlock:
         cb = _get_cb_from_block(ast_self)
         ttl.cb_push(cb)
 
+    def push_compute(ast_self: TensorBlock) -> None:
+        """Push a reserved block explicitly owned by the compute kernel.
+
+        This compatibility spelling is equivalent to
+        ``push(kernel=ttl.KernelKind.COMPUTE)``. It is useful when opaque
+        compute code filled the block and ordinary value flow cannot infer
+        ownership.
+        """
+        if not _is_block(ast_self):
+            raise ValueError(
+                "push_compute() must be called on a block acquired from "
+                "reserve(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_push(cb)
+
+    def push_ncrisc(ast_self: TensorBlock) -> None:
+        """Push a reserved block explicitly owned by data movement."""
+        if not _is_block(ast_self):
+            raise ValueError(
+                "push_ncrisc() must be called on a block acquired from "
+                "reserve(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_push(cb)
+
     def pop(
         ast_self: TensorBlock,
         *,
@@ -475,6 +501,16 @@ class TensorBlock:
         if not _is_block(ast_self):
             raise ValueError(
                 "pop() must be called on a block acquired from wait(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_pop(cb)
+
+    def pop_ncrisc(ast_self: TensorBlock) -> None:
+        """Pop a waited block explicitly owned by data movement."""
+        if not _is_block(ast_self):
+            raise ValueError(
+                "pop_ncrisc() must be called on a block acquired from wait(), "
+                "not a regular tensor"
             )
         cb = _get_cb_from_block(ast_self)
         ttl.cb_pop(cb)
