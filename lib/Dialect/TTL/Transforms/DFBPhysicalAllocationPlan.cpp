@@ -333,7 +333,31 @@ canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
 
+static bool
+requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
+  // The runtime gives changed descriptors hidden tensor backing, which cannot
+  // also provide static storage for a distinct physical descriptor.
+  auto lifetimeRequiresStorage = [](const DFBPerNodeLifetime &lifetime) {
+    return llvm::any_of(lifetime.epochs, [](const DFBLifecycleEpoch &epoch) {
+      return epoch.entryReconfigurationOrdinal.has_value();
+    });
+  };
+  return llvm::any_of(logicalDFB.nodeLifetimes, lifetimeRequiresStorage) ||
+         llvm::any_of(logicalDFB.possibleNodeLifetimes,
+                      lifetimeRequiresStorage);
+}
+
 } // namespace
+
+struct DFBPairConflictRequirements {
+  bool requireExactDescriptor = true;
+  bool requireMatchingElementType = true;
+  bool requireMatchingTransactions = true;
+  bool requireMatchingPointerOwners = true;
+  bool useAllocationGroupEpochs = false;
+  bool allowCapacityEnvelope = false;
+  bool requireStaticStorageOwnership = false;
+};
 
 class DFBPhysicalConflictModelBuilder {
 public:
@@ -351,9 +375,11 @@ public:
         bool sameAllocationGroup = logicalDFBs[lhsIndex].allocationGroup &&
                                    logicalDFBs[lhsIndex].allocationGroup ==
                                        logicalDFBs[rhsIndex].allocationGroup;
-        addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                         /*requireMatchingTransactions=*/!sameAllocationGroup,
-                         /*useAllocationGroupEpochs=*/sameAllocationGroup);
+        DFBPairConflictRequirements requirements;
+        requirements.requireMatchingTransactions = !sameAllocationGroup;
+        requirements.useAllocationGroupEpochs = sameAllocationGroup;
+        requirements.allowCapacityEnvelope = sameAllocationGroup;
+        addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
     addResetAllocationConflicts(model, liveness);
@@ -396,11 +422,35 @@ public:
                   lhs.declarations.front(), rhs.declarations.front());
       return model;
     }
-    addPairConflicts(model, liveness, lhsIndex, rhsIndex,
-                     /*requireMatchingTransactions=*/false,
-                     /*useAllocationGroupEpochs=*/true);
+    DFBPairConflictRequirements requirements;
+    requirements.requireMatchingTransactions = false;
+    requirements.useAllocationGroupEpochs = true;
+    requirements.allowCapacityEnvelope = true;
+    addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
     addResetAllocationConflicts(model, liveness,
                                 std::make_pair(lhsIndex, rhsIndex));
+    return model;
+  }
+
+  static DFBPhysicalConflictModel
+  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness) {
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+        liveness.getLogicalDFBLifecycles();
+    DFBPhysicalConflictModel model;
+    model.adjacency.assign(logicalDFBs.size(),
+                           llvm::BitVector(logicalDFBs.size()));
+    for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
+      for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
+           ++rhsIndex) {
+        DFBPairConflictRequirements requirements;
+        requirements.requireExactDescriptor = false;
+        requirements.requireMatchingElementType = false;
+        requirements.requireMatchingTransactions = false;
+        requirements.requireMatchingPointerOwners = false;
+        requirements.requireStaticStorageOwnership = true;
+        addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
+      }
+    }
     return model;
   }
 
@@ -454,18 +504,19 @@ private:
   addPairConflicts(DFBPhysicalConflictModel &model,
                    const DFBConcurrentKernelLivenessAnalysis &liveness,
                    unsigned lhsIndex, unsigned rhsIndex,
-                   bool requireMatchingTransactions = true,
-                   bool useAllocationGroupEpochs = false) {
+                   const DFBPairConflictRequirements &requirements) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
     const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
-    bool usesCapacityEnvelope = canUseCapacityEnvelope(lhs, rhs);
+    bool usesCapacityEnvelope =
+        requirements.allowCapacityEnvelope && canUseCapacityEnvelope(lhs, rhs);
     bool reconfiguresDescriptor =
         canReconfigureDescriptorAcrossEpochs(lhs, rhs);
-    if (!haveIdenticalPageFormat(lhs.type, rhs.type) ||
-        (lhs.type != rhs.type && !usesCapacityEnvelope &&
-         !reconfiguresDescriptor)) {
+    if ((requirements.requireMatchingElementType &&
+         !haveIdenticalPageFormat(lhs.type, rhs.type)) ||
+        (requirements.requireExactDescriptor && lhs.type != rhs.type &&
+         !usesCapacityEnvelope && !reconfiguresDescriptor)) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::DescriptorMismatch, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
@@ -505,6 +556,14 @@ private:
     if (sharedNodes.empty()) {
       return;
     }
+    if (requirements.requireStaticStorageOwnership &&
+        (requiresReconfigurationStorage(lhs) ||
+         requiresReconfigurationStorage(rhs))) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::StorageMismatch, sharedNodes.front(),
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
     if (!lhs.accessCompletionProven || !rhs.accessCompletionProven) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::AccessCompletionNotProven, std::nullopt,
@@ -536,10 +595,12 @@ private:
                     lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
-      if (useAllocationGroupEpochs &&
-          (!lhsLifetime->epochs.empty() || !rhsLifetime->epochs.empty())) {
-        SmallVector<AllocationGroupNodeEpoch> lhsEpochs;
-        SmallVector<AllocationGroupNodeEpoch> rhsEpochs;
+      bool compareAllocationGroupEpochs =
+          requirements.useAllocationGroupEpochs &&
+          (!lhsLifetime->epochs.empty() || !rhsLifetime->epochs.empty());
+      SmallVector<AllocationGroupNodeEpoch> lhsEpochs;
+      SmallVector<AllocationGroupNodeEpoch> rhsEpochs;
+      if (compareAllocationGroupEpochs) {
         appendAllocationGroupNodeEpochs(lhsEpochs, lhsIndex, *lhsLifetime,
                                         useConditionalProof);
         appendAllocationGroupNodeEpochs(rhsEpochs, rhsIndex, *rhsLifetime,
@@ -566,6 +627,33 @@ private:
                       getAllocationGroupEpochEvidence(rhsEvidence, rhs));
           continue;
         }
+      } else if (!lhsLifetime->completionProof.proven() ||
+                 !rhsLifetime->completionProof.proven()) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::AccessCompletionNotProven, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      bool disjointConfigurationEpochs =
+          haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime);
+      if (requirements.requireExactDescriptor && lhs.type != rhs.type &&
+          !usesCapacityEnvelope && !disjointConfigurationEpochs) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::DescriptorMismatch, node,
+                    lhs.declarations.front(), rhs.declarations.front());
+        continue;
+      }
+      if (disjointConfigurationEpochs) {
+        continue;
+      }
+      if (lhs.tensorBacking != rhs.tensorBacking) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::StorageMismatch, node,
+                    lhs.declarations.front(), rhs.declarations.front());
+        continue;
+      }
+      if (compareAllocationGroupEpochs) {
         for (const AllocationGroupNodeEpoch &lhsEpoch : lhsEpochs) {
           for (const AllocationGroupNodeEpoch &rhsEpoch : rhsEpochs) {
             bool lhsBeforeRhs = isAllocationGroupEpochOrderedBefore(
@@ -581,23 +669,6 @@ private:
                         getAllocationGroupEpochEvidence(rhsEpoch, rhs));
           }
         }
-        continue;
-      }
-      if (!lhsLifetime->completionProof.proven() ||
-          !rhsLifetime->completionProof.proven()) {
-        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                    DFBConflictReason::AccessCompletionNotProven, node,
-                    getLifetimeEvidence(lhsLifetime, lhs),
-                    getLifetimeEvidence(rhsLifetime, rhs));
-        continue;
-      }
-      if (haveDisjointConfigurationEpochs(*lhsLifetime, *rhsLifetime)) {
-        continue;
-      }
-      if (lhs.type != rhs.type && !usesCapacityEnvelope) {
-        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                    DFBConflictReason::DescriptorMismatch, node,
-                    lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
       bool lhsBeforeRhs =
@@ -619,9 +690,10 @@ private:
             before->inspectionOnly || after->inspectionOnly;
         terminalStateCompatible =
             hasIdentityTransition || before->terminalStateCanonical ||
-            !requireMatchingTransactions ||
+            !requirements.requireMatchingTransactions ||
             haveCompatibleCursorRuns(*before, *after, physicalTileCount);
         pointerOwnersCompatible =
+            !requirements.requireMatchingPointerOwners ||
             hasIdentityTransition || before->terminalStateCanonical ||
             (before->terminalWritePointerOwner == after->writePointerOwner &&
              before->terminalReadPointerOwner == after->readPointerOwner);
@@ -631,12 +703,14 @@ private:
         bool hasIdentityTransition =
             lhsLifetime->inspectionOnly || rhsLifetime->inspectionOnly;
         terminalStateCompatible =
-            hasIdentityTransition || !requireMatchingTransactions ||
+            hasIdentityTransition ||
+            !requirements.requireMatchingTransactions ||
             (haveCompatibleCursorRuns(*lhsLifetime, *rhsLifetime,
                                       physicalTileCount) &&
              haveCompatibleCursorRuns(*rhsLifetime, *lhsLifetime,
                                       physicalTileCount));
         pointerOwnersCompatible =
+            !requirements.requireMatchingPointerOwners ||
             hasIdentityTransition ||
             (lhsLifetime->writePointerOwner == rhsLifetime->writePointerOwner &&
              lhsLifetime->readPointerOwner == rhsLifetime->readPointerOwner);
@@ -1684,7 +1758,7 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     }
 
     allocation.assignments.push_back(
-        {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
+        {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
          logicalDFB.launchDomain, logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
@@ -1783,7 +1857,7 @@ computeReuseAllocation(ModuleOp moduleOp,
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
     allocation.assignments.push_back(
-        {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
+        {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
          logicalDFB.launchDomain, logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
@@ -1826,22 +1900,309 @@ static void setInvalidDFBPageSizeFailure(CircularBufferType dfbType,
 }
 
 /// Returns the L1 bytes required by the unique physical assignments.
-static FailureOr<uint64_t>
-computeAllocationBytes(ModuleOp moduleOp,
-                       ArrayRef<DFBPhysicalIndexAssignment> assignments,
-                       std::string &failureReason) {
-  DFBAllocationFootprint footprint;
+static FailureOr<uint64_t> computeAllocationBytes(
+    ModuleOp moduleOp, ArrayRef<DFBPhysicalIndexAssignment> assignments,
+    ArrayRef<LaunchNodeCoord> launchNodes, std::string &failureReason) {
+  SmallVector<DFBStorageFootprint> footprints(
+      launchNodes.empty() ? 1 : launchNodes.size());
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     if (assignment.tensorBacking) {
       continue;
     }
-    if (failed(footprint.add(moduleOp, assignment.physicalIndex,
-                             cast<CircularBufferType>(assignment.type),
-                             failureReason))) {
-      return failure();
+    for (auto indexedFootprint : llvm::enumerate(footprints)) {
+      bool active = launchNodes.empty();
+      if (!active) {
+        const std::set<LaunchNodeCoord> *possibleNodes =
+            assignment.launchDomain.getUpperBoundNodes();
+        active = !possibleNodes ||
+                 possibleNodes->find(launchNodes[indexedFootprint.index()]) !=
+                     possibleNodes->end();
+      }
+      if (!active) {
+        continue;
+      }
+      if (failed(indexedFootprint.value().add(
+              assignment.storageIndex,
+              cast<CircularBufferType>(assignment.type), failureReason))) {
+        return failure();
+      }
     }
   }
-  return footprint.getTotalBytes();
+  uint64_t peakBytes = 0;
+  for (const DFBStorageFootprint &footprint : footprints) {
+    FailureOr<uint64_t> nodeBytes = footprint.getL1AllocationBytes(moduleOp);
+    if (failed(nodeBytes)) {
+      failureReason = "DFB storage allocation size is not representable";
+      return failure();
+    }
+    peakBytes = std::max(peakBytes, *nodeBytes);
+  }
+  return peakBytes;
+}
+
+static LogicalResult assignPhysicalStorageIndices(
+    ModuleOp moduleOp, PhysicalAllocationCandidate &allocation,
+    const DFBPhysicalConflictModel &storageConflictModel,
+    ArrayRef<LaunchNodeCoord> launchNodes, DFBAnalysisFailure &analysisFailure,
+    bool reuseUserDFBs) {
+  if (!reuseUserDFBs) {
+    for (DFBPhysicalIndexAssignment &assignment : allocation.assignments) {
+      assignment.storageIndex = assignment.physicalIndex;
+    }
+    return success();
+  }
+
+  SmallVector<SmallVector<unsigned>> logicalIndicesByPhysicalIndex(
+      allocation.physicalDFBCount);
+  SmallVector<uint64_t> bytesByPhysicalIndex(allocation.physicalDFBCount, 0);
+  SmallVector<uint64_t> l1BytesByPhysicalIndex(allocation.physicalDFBCount, 0);
+  SmallVector<uint64_t> pageSizeByPhysicalIndex(allocation.physicalDFBCount, 1);
+  SmallVector<LaunchNodeDomain> domainByPhysicalIndex(
+      allocation.physicalDFBCount);
+  llvm::BitVector tensorBacked(allocation.physicalDFBCount);
+  for (auto indexedAssignment : llvm::enumerate(allocation.assignments)) {
+    const DFBPhysicalIndexAssignment &assignment = indexedAssignment.value();
+    logicalIndicesByPhysicalIndex[assignment.physicalIndex].push_back(
+        indexedAssignment.index());
+    domainByPhysicalIndex[assignment.physicalIndex] =
+        domainByPhysicalIndex[assignment.physicalIndex].unionWith(
+            assignment.launchDomain);
+    if (assignment.tensorBacking) {
+      tensorBacked.set(assignment.physicalIndex);
+      continue;
+    }
+    std::string failureReason;
+    FailureOr<uint64_t> assignmentBytes = getDFBAllocationSizeBytes(
+        cast<CircularBufferType>(assignment.type), failureReason);
+    FailureOr<uint64_t> pageSize =
+        getDFBPageSizeBytes(cast<CircularBufferType>(assignment.type));
+    if (failed(assignmentBytes) || failed(pageSize)) {
+      if (failureReason.empty()) {
+        failureReason = "DFB page size is not representable";
+      }
+      analysisFailure.set(assignment.declarations.front(), failureReason);
+      return failure();
+    }
+    bytesByPhysicalIndex[assignment.physicalIndex] = std::max(
+        bytesByPhysicalIndex[assignment.physicalIndex], *assignmentBytes);
+    pageSizeByPhysicalIndex[assignment.physicalIndex] = *pageSize;
+  }
+  auto failStorageAllocation = [&](unsigned physicalIndex) {
+    analysisFailure.set(
+        allocation
+            .assignments[logicalIndicesByPhysicalIndex[physicalIndex].front()]
+            .declarations.front(),
+        "DFB storage allocation size is not representable");
+    return failure();
+  };
+  auto replaceAllocationContribution =
+      [&](uint64_t totalBytes, uint64_t previousPayloadBytes,
+          uint64_t replacementPayloadBytes) -> FailureOr<uint64_t> {
+    FailureOr<uint64_t> previousAllocationBytes =
+        getL1AllocationSizeBytes(moduleOp, previousPayloadBytes);
+    FailureOr<uint64_t> replacementAllocationBytes =
+        getL1AllocationSizeBytes(moduleOp, replacementPayloadBytes);
+    if (failed(previousAllocationBytes) || failed(replacementAllocationBytes) ||
+        totalBytes < *previousAllocationBytes) {
+      return failure();
+    }
+    std::optional<uint64_t> updatedBytes = llvm::checkedAddUnsigned(
+        totalBytes - *previousAllocationBytes, *replacementAllocationBytes);
+    if (!updatedBytes) {
+      return failure();
+    }
+    return *updatedBytes;
+  };
+  for (int32_t physicalIndex = 0; physicalIndex < allocation.physicalDFBCount;
+       ++physicalIndex) {
+    FailureOr<uint64_t> allocationBytes =
+        getL1AllocationSizeBytes(moduleOp, bytesByPhysicalIndex[physicalIndex]);
+    if (failed(allocationBytes)) {
+      return failStorageAllocation(physicalIndex);
+    }
+    l1BytesByPhysicalIndex[physicalIndex] = *allocationBytes;
+  }
+
+  InterferenceGraph storageInterference(allocation.physicalDFBCount);
+  for (int32_t lhsPhysicalIndex = 0;
+       lhsPhysicalIndex < allocation.physicalDFBCount; ++lhsPhysicalIndex) {
+    for (int32_t rhsPhysicalIndex = lhsPhysicalIndex + 1;
+         rhsPhysicalIndex < allocation.physicalDFBCount; ++rhsPhysicalIndex) {
+      bool conflicts = tensorBacked.test(lhsPhysicalIndex) ||
+                       tensorBacked.test(rhsPhysicalIndex);
+      for (unsigned lhsLogicalIndex :
+           logicalIndicesByPhysicalIndex[lhsPhysicalIndex]) {
+        for (unsigned rhsLogicalIndex :
+             logicalIndicesByPhysicalIndex[rhsPhysicalIndex]) {
+          conflicts |=
+              storageConflictModel.conflicts(lhsLogicalIndex, rhsLogicalIndex);
+        }
+      }
+      if (conflicts) {
+        storageInterference.addInterference(lhsPhysicalIndex, rhsPhysicalIndex);
+      }
+    }
+  }
+
+  SmallVector<unsigned> physicalIndices;
+  llvm::append_range(physicalIndices,
+                     llvm::seq<unsigned>(0, allocation.physicalDFBCount));
+  llvm::sort(physicalIndices, [&](unsigned lhs, unsigned rhs) {
+    if (l1BytesByPhysicalIndex[lhs] != l1BytesByPhysicalIndex[rhs]) {
+      return l1BytesByPhysicalIndex[lhs] > l1BytesByPhysicalIndex[rhs];
+    }
+    if (bytesByPhysicalIndex[lhs] != bytesByPhysicalIndex[rhs]) {
+      return bytesByPhysicalIndex[lhs] > bytesByPhysicalIndex[rhs];
+    }
+    return lhs < rhs;
+  });
+
+  struct StorageSlot {
+    DFBStorageLayout layout;
+    SmallVector<DFBStorageLayout> layoutsByNode;
+    SmallVector<unsigned> physicalIndices;
+  };
+  SmallVector<StorageSlot> slots;
+  SmallVector<uint64_t> totalBytesByNode(launchNodes.size(), 0);
+  uint64_t totalGlobalBytes = 0;
+  SmallVector<int32_t> storageIndexByPhysicalIndex(allocation.physicalDFBCount,
+                                                   -1);
+  for (unsigned physicalIndex : physicalIndices) {
+    std::string standaloneFailureReason;
+    FailureOr<DFBStorageLayout> standaloneLayout = mergeDFBStorageLayout(
+        {}, bytesByPhysicalIndex[physicalIndex],
+        pageSizeByPhysicalIndex[physicalIndex], standaloneFailureReason);
+    if (failed(standaloneLayout)) {
+      analysisFailure.set(
+          allocation
+              .assignments[logicalIndicesByPhysicalIndex[physicalIndex].front()]
+              .declarations.front(),
+          standaloneFailureReason);
+      return failure();
+    }
+    struct StoragePlacement {
+      unsigned slotIndex = 0;
+      uint64_t peakNodeBytes = 0;
+      uint64_t globalBytes = 0;
+      bool createsSlot = false;
+      DFBStorageLayout layout;
+      SmallVector<DFBStorageLayout> layoutsByNode;
+      SmallVector<uint64_t> totalBytesByNode;
+    };
+    std::optional<StoragePlacement> selectedPlacement;
+    for (unsigned slotIndex = 0; slotIndex <= slots.size(); ++slotIndex) {
+      bool createsSlot = slotIndex == slots.size();
+      const StorageSlot *slot = createsSlot ? nullptr : &slots[slotIndex];
+      bool conflicts =
+          llvm::any_of(slot ? slot->physicalIndices : ArrayRef<unsigned>{},
+                       [&](unsigned existingPhysicalIndex) {
+                         return storageInterference.interferes(
+                             physicalIndex, existingPhysicalIndex);
+                       });
+      if (conflicts) {
+        continue;
+      }
+      std::string failureReason;
+      FailureOr<DFBStorageLayout> mergedLayout = mergeDFBStorageLayout(
+          slot ? slot->layout : DFBStorageLayout{},
+          bytesByPhysicalIndex[physicalIndex],
+          pageSizeByPhysicalIndex[physicalIndex], failureReason);
+      if (failed(mergedLayout)) {
+        continue;
+      }
+      SmallVector<DFBStorageLayout> candidateLayoutsByNode =
+          slot ? slot->layoutsByNode
+               : SmallVector<DFBStorageLayout>(launchNodes.size());
+      SmallVector<uint64_t> candidateTotalBytesByNode = totalBytesByNode;
+      uint64_t peakNodeBytes = 0;
+      const std::set<LaunchNodeCoord> *possibleNodes =
+          domainByPhysicalIndex[physicalIndex].getUpperBoundNodes();
+      for (auto indexedNode : llvm::enumerate(launchNodes)) {
+        DFBStorageLayout &nodeLayout =
+            candidateLayoutsByNode[indexedNode.index()];
+        uint64_t previousCapacity = nodeLayout.capacityBytes;
+        if (!possibleNodes ||
+            possibleNodes->find(indexedNode.value()) != possibleNodes->end()) {
+          FailureOr<DFBStorageLayout> mergedNodeLayout = mergeDFBStorageLayout(
+              nodeLayout, bytesByPhysicalIndex[physicalIndex],
+              pageSizeByPhysicalIndex[physicalIndex], failureReason);
+          if (failed(mergedNodeLayout)) {
+            candidateLayoutsByNode.clear();
+            break;
+          }
+          nodeLayout = *mergedNodeLayout;
+        }
+        FailureOr<uint64_t> candidateNodeBytes = replaceAllocationContribution(
+            totalBytesByNode[indexedNode.index()], previousCapacity,
+            nodeLayout.capacityBytes);
+        if (failed(candidateNodeBytes)) {
+          return failStorageAllocation(physicalIndex);
+        }
+        peakNodeBytes = std::max(peakNodeBytes, *candidateNodeBytes);
+        candidateTotalBytesByNode[indexedNode.index()] = *candidateNodeBytes;
+      }
+      if (candidateLayoutsByNode.empty() && !launchNodes.empty()) {
+        continue;
+      }
+      FailureOr<uint64_t> candidateGlobalBytes = replaceAllocationContribution(
+          totalGlobalBytes, slot ? slot->layout.capacityBytes : 0,
+          mergedLayout->capacityBytes);
+      if (failed(candidateGlobalBytes)) {
+        return failStorageAllocation(physicalIndex);
+      }
+      if (launchNodes.empty()) {
+        peakNodeBytes = *candidateGlobalBytes;
+      }
+      StoragePlacement placement{slotIndex,
+                                 peakNodeBytes,
+                                 *candidateGlobalBytes,
+                                 createsSlot,
+                                 *mergedLayout,
+                                 std::move(candidateLayoutsByNode),
+                                 std::move(candidateTotalBytesByNode)};
+      auto isBetterPlacement = [](const StoragePlacement &candidate,
+                                  const StoragePlacement &selected) {
+        if (candidate.peakNodeBytes != selected.peakNodeBytes) {
+          return candidate.peakNodeBytes < selected.peakNodeBytes;
+        }
+        if (candidate.globalBytes != selected.globalBytes) {
+          return candidate.globalBytes < selected.globalBytes;
+        }
+        if (candidate.createsSlot != selected.createsSlot) {
+          return !candidate.createsSlot;
+        }
+        return candidate.slotIndex < selected.slotIndex;
+      };
+      if (!selectedPlacement ||
+          isBetterPlacement(placement, *selectedPlacement)) {
+        selectedPlacement = std::move(placement);
+      }
+    }
+    if (!selectedPlacement) {
+      analysisFailure.set(
+          allocation
+              .assignments[logicalIndicesByPhysicalIndex[physicalIndex].front()]
+              .declarations.front(),
+          "DFB storage allocation size is not representable");
+      return failure();
+    }
+    if (selectedPlacement->createsSlot) {
+      slots.push_back({});
+    }
+    StorageSlot &slot = slots[selectedPlacement->slotIndex];
+    slot.layout = selectedPlacement->layout;
+    slot.layoutsByNode = std::move(selectedPlacement->layoutsByNode);
+    totalBytesByNode = std::move(selectedPlacement->totalBytesByNode);
+    slot.physicalIndices.push_back(physicalIndex);
+    storageIndexByPhysicalIndex[physicalIndex] = selectedPlacement->slotIndex;
+    totalGlobalBytes = selectedPlacement->globalBytes;
+  }
+
+  for (DFBPhysicalIndexAssignment &assignment : allocation.assignments) {
+    assignment.storageIndex =
+        storageIndexByPhysicalIndex[assignment.physicalIndex];
+  }
+  return success();
 }
 
 /// Selects an assignment that fits both the target index count and the L1
@@ -1853,6 +2214,8 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
     std::optional<uint64_t> l1BudgetOverride,
     DFBAnalysisFailure &analysisFailure,
+    const DFBPhysicalConflictModel &storageConflictModel,
+    ArrayRef<LaunchNodeCoord> launchNodes, bool reuseUserDFBs,
     llvm::function_ref<FailureOr<PhysicalAllocationCandidate>(
         std::optional<uint64_t>, std::optional<uint64_t>)>
         computeAllocation) {
@@ -1909,18 +2272,43 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
               : std::optional<uint64_t>(l1BudgetBytes - *fixedBytes);
     }
   }
+  std::optional<uint64_t> initialAllocationByteLimit =
+      reuseUserDFBs ? std::nullopt : std::optional<uint64_t>(dfbBudgetBytes);
   FailureOr<PhysicalAllocationCandidate> allocation =
-      computeAllocation(dfbBudgetBytes, minimumSearchTriggerBytes);
+      computeAllocation(initialAllocationByteLimit, minimumSearchTriggerBytes);
   if (failed(allocation)) {
     return failure();
   }
-  FailureOr<uint64_t> allocationBytes = computeAllocationBytes(
-      moduleOp, allocation->assignments, allocationSizeFailureReason);
+  if (failed(assignPhysicalStorageIndices(moduleOp, *allocation,
+                                          storageConflictModel, launchNodes,
+                                          analysisFailure, reuseUserDFBs))) {
+    return failure();
+  }
+  FailureOr<uint64_t> allocationBytes =
+      computeAllocationBytes(moduleOp, allocation->assignments, launchNodes,
+                             allocationSizeFailureReason);
   if (failed(allocationBytes)) {
     analysisFailure.set(moduleOp, allocationSizeFailureReason);
     return failure();
   }
-
+  if (*allocationBytes > dfbBudgetBytes && reuseUserDFBs) {
+    allocation = computeAllocation(dfbBudgetBytes, std::optional<uint64_t>(0));
+    if (failed(allocation)) {
+      return failure();
+    }
+    if (failed(assignPhysicalStorageIndices(moduleOp, *allocation,
+                                            storageConflictModel, launchNodes,
+                                            analysisFailure, reuseUserDFBs))) {
+      return failure();
+    }
+    allocationBytes =
+        computeAllocationBytes(moduleOp, allocation->assignments, launchNodes,
+                               allocationSizeFailureReason);
+    if (failed(allocationBytes)) {
+      analysisFailure.set(moduleOp, allocationSizeFailureReason);
+      return failure();
+    }
+  }
   if (allocation->exactSearchLimitReached &&
       *allocationBytes > dfbBudgetBytes) {
     setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
@@ -1940,9 +2328,9 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     }
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB and fixed-state allocation requires "
-                  << *combinedBytes << " L1 bytes but the budget is "
-                  << l1BudgetBytes << " (DFB=" << *allocationBytes
+    messageStream << "selected DFB and fixed-state allocation uses "
+                  << *combinedBytes << " L1 bytes, exceeding the "
+                  << l1BudgetBytes << "-byte budget (DFB=" << *allocationBytes
                   << ", reset scratch=" << *resetStateBytes
                   << ", reconfiguration state=" << *reconfigurationStateBytes
                   << ")";
@@ -2047,6 +2435,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     }
     DFBPhysicalAllocationDescriptor descriptor;
     descriptor.physicalIndex = physicalIndex;
+    descriptor.storageIndex = assignment->storageIndex;
     descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;
@@ -2381,8 +2770,12 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   }
   plan.conflictModel = DFBPhysicalConflictModelBuilder::build(
       liveness, staticConfigurationConflicts);
-  LLVM_DEBUG(printDFBAllocationDebugReport(llvm::dbgs(), liveness,
-                                           plan.conflictModel));
+  DFBPhysicalConflictModel storageConflictModel =
+      DFBPhysicalConflictModelBuilder::buildStorage(liveness);
+  LLVM_DEBUG({
+    printDFBAllocationDebugReport(llvm::dbgs(), liveness, plan.conflictModel);
+    printDFBStorageConflictDebugReport(llvm::dbgs(), storageConflictModel);
+  });
 
   SmallVector<uint64_t> allocationBytesByLogicalIndex;
   allocationBytesByLogicalIndex.reserve(
@@ -2424,7 +2817,8 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   };
   FailureOr<PhysicalAllocationCandidate> allocation = computeAllocationWithinL1(
       moduleOp, exactColoringSearchStateLimit, l1BudgetOverride,
-      analysisFailure, computeAllocation);
+      analysisFailure, storageConflictModel, liveness.getLaunchNodes(),
+      reuseUserDFBs, computeAllocation);
   if (failed(allocation)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);

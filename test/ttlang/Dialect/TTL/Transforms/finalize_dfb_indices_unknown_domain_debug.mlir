@@ -38,11 +38,15 @@
 // CHECK-SAME: transactions=[]
 // CHECK: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain node=none
 // CHECK: DFB allocation liveness report end
+// CHECK-NEXT: DFB storage conflict report
+// CHECK: DFB conflict lhs=0 rhs=1 reason=unknown-launch-node-domain
+// CHECK: DFB conflict lhs=2 rhs=3 reason=unknown-launch-node-domain
+// CHECK-NEXT: DFB storage conflict report end
 // CHECK-NEXT: Total DFB count: 4
-// CHECK-NEXT: DFB assignment: logical DFB 0 -> physical index 0 (unbounded)
-// CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1 (unbounded)
-// CHECK-NEXT: DFB assignment: logical DFB 2 -> physical index 2 (unbounded)
-// CHECK-NEXT: DFB assignment: logical DFB 3 -> physical index 3 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1 storage index 1 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 2 -> physical index 2 storage index 2 (unbounded)
+// CHECK-NEXT: DFB assignment: logical DFB 3 -> physical index 3 storage index 3 (unbounded)
 
 // NO-REPORT-NOT: DFB allocation liveness report
 
