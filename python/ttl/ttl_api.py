@@ -1321,6 +1321,8 @@ def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
 
 def _make_data_movement_config(noc_role: int, dynamic_noc: bool):
     """Build the TTNN descriptor for a compiler-assigned NOC thread."""
+    if noc_role not in (0, 1):
+        raise ValueError(f"Invalid ttl.noc_index {noc_role}; expected 0 or 1")
     if not dynamic_noc:
         if noc_role == 0:
             return ttnn.ReaderConfigDescriptor()
