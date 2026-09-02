@@ -594,6 +594,10 @@ struct TTLFinalizeDFBIndicesPass
         }
       };
 
+      // The bind anchors the interval; binds are hoisted to the function
+      // entry, so the start is refined to the first acquire below.
+      extendInterval(dfb, bindOp, func, *order);
+
       // Pipe destinations are slot-addressed (block_count == sender count)
       // and pipe sends read asynchronously, so pipe-attached DFBs keep
       // dedicated indices.
