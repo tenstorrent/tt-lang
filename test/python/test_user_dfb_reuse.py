@@ -46,6 +46,32 @@ def _count_final_dfb_allocations(final_mlir_path):
     return final_mlir_path.read_text().count("dfb_index =")
 
 
+def _get_final_dfb_storage_assignments(final_mlir_path):
+    return [
+        (int(physical_index), int(storage_index))
+        for physical_index, storage_index in re.findall(
+            r"\{[^{}]*dfb_index = (\d+)[^{}]*storage_index = (\d+)[^{}]*\}",
+            final_mlir_path.read_text(),
+        )
+    ]
+
+
+@ttl.operation(grid=(1, 1))
+def _mixed_dtype_storage_reuse_kernel(bf16_input, bf16_output, fp32_input, fp32_output):
+    bf16_dfb = ttl.make_dataflow_buffer_like(bf16_input, shape=(1, 1), block_count=2)
+    fp32_dfb = ttl.make_dataflow_buffer_like(fp32_input, shape=(1, 1), block_count=2)
+
+    with bf16_dfb.reserve() as bf16_destination:
+        ttl.copy(bf16_input[0, 0], bf16_destination).wait()
+    with bf16_dfb.wait() as bf16_source:
+        ttl.copy(bf16_source, bf16_output[0, 0]).wait()
+
+    with fp32_dfb.reserve() as fp32_destination:
+        ttl.copy(fp32_input[0, 0], fp32_destination).wait()
+    with fp32_dfb.wait() as fp32_source:
+        ttl.copy(fp32_source, fp32_output[0, 0]).wait()
+
+
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
     @ttl.operation()
     def exp_via_scratch(source: ttl.DFB, destination: ttl.DFB):
@@ -1672,6 +1698,50 @@ def _distinct_noc_owner_kernel(first, second, out):
 
         with out_dfb.wait() as out_block:
             ttl.copy(out_block, out[0, 0]).wait()
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_disjoint_mixed_dtype_dfbs_share_storage(
+    device, memory_config, to_device, monkeypatch, tmp_path
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    bf16_host = ((element_indices.remainder(257) - 128) / 64).to(torch.bfloat16)
+    fp32_host = ((element_indices.remainder(509) - 254) / 128).to(torch.float32)
+    bf16_input = to_device(bf16_host, device)
+    bf16_output = to_device(torch.zeros_like(bf16_host), device)
+    fp32_input = to_device(fp32_host, device)
+    fp32_output = to_device(torch.zeros_like(fp32_host), device)
+    final_mlir_path = tmp_path / f"mixed_dtype_storage_reuse_{memory_config}.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    _mixed_dtype_storage_reuse_kernel(
+        bf16_input,
+        bf16_output,
+        fp32_input,
+        fp32_output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    assignments = _get_final_dfb_storage_assignments(final_mlir_path)
+    assert len(assignments) == 2
+    assert len({physical_index for physical_index, _ in assignments}) == 2
+    assert len({storage_index for _, storage_index in assignments}) == 1
+    assert_allclose(
+        ttnn.to_torch(bf16_output).float(),
+        bf16_host.float(),
+        rtol=0.05,
+        atol=1.0,
+    )
+    assert_allclose(
+        ttnn.to_torch(fp32_output).float(),
+        fp32_host,
+        rtol=1e-5,
+        atol=1e-6,
+    )
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])

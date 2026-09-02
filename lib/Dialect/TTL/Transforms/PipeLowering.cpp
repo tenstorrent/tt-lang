@@ -5,6 +5,7 @@
 #include "PipeLowering.h"
 
 #include "CommonRuntimeArgLayout.h"
+#include "DFBAllocationLimits.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipePlanning.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -4563,10 +4564,10 @@ struct ComputedAddressPlan {
   llvm::MapVector<FuncOp, SmallVector<int32_t>> dfbIndices;
 };
 
-static ComputedAddressPlan
-buildComputedAddressPlan(ModuleOp module,
-                         MutableArrayRef<PipeTransferAllocationUnit> units,
-                         const PipeGraph &pipeGraph) {
+static ComputedAddressPlan buildComputedAddressPlan(
+    ModuleOp module, MutableArrayRef<PipeTransferAllocationUnit> units,
+    const PipeGraph &pipeGraph,
+    const llvm::DenseSet<int64_t> &sharedStorageDFBIndices) {
   ComputedAddressPlan plan;
 
   llvm::SmallSetVector<int64_t, 4> tensorBackedDFBIndices;
@@ -4601,9 +4602,10 @@ buildComputedAddressPlan(ModuleOp module,
       continue;
     }
     const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
-    // One common runtime argument supplies the physical DFB base. An index
-    // reused by tensor-backed storage can require a different base by epoch.
-    if (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex)) {
+    // One common runtime argument supplies the physical DFB base. Tensor-backed
+    // or shared storage does not provide one stable compiler-owned base.
+    if (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex) ||
+        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex)) {
       continue;
     }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =
@@ -4719,7 +4721,33 @@ LogicalResult buildPipeResourcePlan(
       assignLiveIntervalColors(units, dominanceInfo);
   ComputedAddressPlan computedAddressPlan;
   if (enableComputedAddresses) {
-    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph);
+    FailureOr<FinalizedDFBStorageFootprint> storageFootprint =
+        getFinalizedDFBStorageFootprint(mod);
+    if (failed(storageFootprint)) {
+      return failure();
+    }
+    llvm::DenseSet<int64_t> sharedStorageDFBIndices;
+    using MembersByStorageIndex =
+        FinalizedDFBStorageFootprint::MembersByStorageIndex;
+    auto recordSharedStorage =
+        [&](const MembersByStorageIndex &membersByStorage) {
+          for (const auto &physicalIndices :
+               llvm::make_second_range(membersByStorage)) {
+            if (physicalIndices.size() > 1) {
+              sharedStorageDFBIndices.insert(physicalIndices.begin(),
+                                             physicalIndices.end());
+            }
+          }
+        };
+    if (storageFootprint->usesPerNodeAccounting) {
+      for (const auto &membersByStorage : storageFootprint->membersByNode) {
+        recordSharedStorage(membersByStorage);
+      }
+    } else {
+      recordSharedStorage(storageFootprint->globalMembers);
+    }
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph,
+                                                   sharedStorageDFBIndices);
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
