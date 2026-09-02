@@ -90,7 +90,7 @@ _ROW_MAJOR_ELEMENT_BYTES = {
 
 @pytest.fixture(scope="module")
 def accessor_device():
-    """Open one device with storage reserved for L1Small tensor coverage."""
+    """Open one device with SRAM reserved for L1Small tensor coverage."""
 
     if not is_hardware_available():
         pytest.skip("No Tenstorrent device available")
@@ -619,7 +619,7 @@ def test_external_data_movement_tensor_accessor_matrix(
 
 
 def test_external_compute_tensor_accessor_rejects_dram(accessor_device):
-    """Compute tensor access rejects storage without a node-local L1 region."""
+    """Compute tensor access rejects storage without a node-local SRAM region."""
 
     host = torch.zeros((32, 32), dtype=torch.bfloat16)
     tensor = _to_configured_tensor(
@@ -640,7 +640,7 @@ def test_external_compute_tensor_accessor_rejects_dram(accessor_device):
     )
     with pytest.raises(
         RuntimeError,
-        match="compute kernel uses DRAM storage.*require sharded L1 or L1Small",
+        match="compute kernel uses DRAM storage.*require sharded SRAM",
     ):
         repeated_compute_tensor_accessor(tensor, device_anchor)
 
@@ -789,7 +789,7 @@ def test_external_compute_tensor_accessor_rejects_system_memory(accessor_device)
     )
     with pytest.raises(
         RuntimeError,
-        match="compute kernel uses SystemMemory storage.*require sharded L1 or L1Small",
+        match="compute kernel uses SystemMemory storage.*require sharded SRAM",
     ):
         repeated_compute_tensor_accessor(host_tensor, device_anchor)
 
@@ -810,7 +810,7 @@ def test_external_compute_tensor_accessor_rejects_interleaved_l1(
     )
     with pytest.raises(
         RuntimeError,
-        match="compute kernel uses a non-sharded memory layout.*require height-, width-, or block-sharded L1",
+        match="compute kernel uses a non-sharded memory layout.*require height-, width-, or block-sharded SRAM",
     ):
         repeated_compute_tensor_accessor(tensor, tensor)
 
@@ -1016,6 +1016,6 @@ def test_external_data_movement_tensor_accessor_rejects_system_memory(
     )
     with pytest.raises(
         RuntimeError,
-        match="data movement kernel uses SystemMemory storage.*require DRAM, L1, or L1Small",
+        match="data movement kernel uses SystemMemory storage.*require device DRAM or SRAM",
     ):
         invalid_data_movement_tensor_accessor(host_tensor, device_anchor)

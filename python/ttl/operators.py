@@ -65,9 +65,11 @@ def call_extern_func(
             template arguments.
         func_args: Scalars, DFBs, base tensors, or explicit raw tensor
             addresses emitted as C++ function arguments. A base tensor becomes
-            a data-movement `TensorAccessor` for DRAM, L1, or sharded L1Small,
-            or a compute-local `LocalTensorAccessor<uint8_t>` for sharded L1 or
-            L1Small. TILE supports FLOAT32, BFLOAT16, BFLOAT8_B, BFLOAT4_B,
+            a data-movement `TensorAccessor` for device DRAM or SRAM, or a
+            compute-local `LocalTensorAccessor<uint8_t>` for sharded SRAM.
+            `L1` and `L1Small` retain the corresponding TTNN buffer-type names;
+            `L1Small` requires sharded storage. TILE supports FLOAT32, BFLOAT16,
+            BFLOAT8_B, BFLOAT4_B,
             INT32, UINT32, UINT16, and UINT8. ROW_MAJOR supports FLOAT32,
             BFLOAT16, INT32, UINT32, UINT16, and UINT8. External functions must
             accept the accessor by `const&` and must not retain it after the

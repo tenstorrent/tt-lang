@@ -347,7 +347,7 @@ class KernelSpec:
         used_dfb_indices: Physical DFB slots referenced by the final kernel body.
             None means metadata is unavailable and conservatively uses every DFB;
             an empty list means this kernel uses no DFBs.
-        local_tensor_indices: Global tensor indices whose local L1 shards are
+        local_tensor_indices: Global tensor indices whose local SRAM shards are
             accessed directly by this kernel.
     """
 
@@ -1634,7 +1634,7 @@ def _validate_local_tensor_access(
         if memory_config.buffer_type not in local_buffer_types:
             raise ValueError(
                 f"local tensor {tensor_index} for {spec.thread_type} kernel "
-                "must use L1 or L1Small storage"
+                "must use sharded SRAM (L1 or L1Small buffer type)"
             )
         if memory_config.memory_layout not in sharded_layouts:
             raise ValueError(
