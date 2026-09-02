@@ -436,6 +436,55 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   return static_cast<int32_t>(*dfbIndex);
 }
 
+static void sortAndDeduplicateDFBIndices(SmallVectorImpl<int32_t> &indices) {
+  llvm::sort(indices);
+  indices.erase(llvm::unique(indices), indices.end());
+}
+
+static FailureOr<SmallVector<int32_t>>
+getValidatedDFBResourceIndices(ValueRange dfbs, Operation *op) {
+  SmallVector<int32_t> indices;
+  indices.reserve(dfbs.size());
+  for (Value dfb : dfbs) {
+    FailureOr<int32_t> index = getValidatedDFBIndex(dfb, op);
+    if (failed(index)) {
+      return failure();
+    }
+    indices.push_back(*index);
+  }
+  sortAndDeduplicateDFBIndices(indices);
+  return indices;
+}
+
+static FailureOr<SmallVector<int32_t>>
+collectUserManagedDFBResourceIndices(ModuleOp module) {
+  SmallVector<int32_t> indices;
+  WalkResult result = module.walk([&](BindCBOp bind) -> WalkResult {
+    if (bind->hasAttr(kCompilerAllocatedAttrName)) {
+      return WalkResult::advance();
+    }
+    FailureOr<int32_t> index = getValidatedDFBIndex(bind.getResult(), bind);
+    if (failed(index)) {
+      return WalkResult::interrupt();
+    }
+    indices.push_back(*index);
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+  sortAndDeduplicateDFBIndices(indices);
+  return indices;
+}
+
+static DenseI32ArrayAttr getDFBResourceIndicesAttr(ArrayRef<int32_t> indices,
+                                                   RewriterBase &rewriter) {
+  if (indices.empty()) {
+    return {};
+  }
+  return rewriter.getDenseI32ArrayAttr(indices);
+}
+
 /// Read one L1 address from the function's common runtime arguments.
 static Value getCommonRuntimeArg(unsigned argIdx, Location loc,
                                  ConversionPatternRewriter &rewriter) {
@@ -1579,12 +1628,19 @@ static LogicalResult lowerDFBReset(Operation *operation,
       rewriter, location, static_cast<uint32_t>(dfbMask), 32);
   Value highMask = arith::ConstantIntOp::create(
       rewriter, location, static_cast<uint32_t>(dfbMask >> 32), 32);
+  SmallVector<int32_t> resourceIndices;
+  for (unsigned index = 0; index < 64; ++index) {
+    if ((dfbMask & (uint64_t{1} << index)) != 0) {
+      resourceIndices.push_back(static_cast<int32_t>(index));
+    }
+  }
   ttk::OpaqueCallOp::create(
       rewriter, location, TypeRange{},
       rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
-      rewriter.getDenseI32ArrayAttr({0, 1, 2}));
+      rewriter.getDenseI32ArrayAttr({0, 1, 2}),
+      getDFBResourceIndicesAttr(resourceIndices, rewriter));
   rewriter.eraseOp(operation);
   return success();
 }
@@ -1681,7 +1737,7 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter, op.getLoc(), TypeRange{},
         rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
-        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}));
+        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
     rewriter.eraseOp(op);
     return success();
   }
@@ -1709,12 +1765,25 @@ using OpaqueArgumentPlan =
     std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
 
 struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
-  using OpConversionPattern::OpConversionPattern;
+  OpaqueCallLowering(TypeConverter &typeConverter, MLIRContext *context,
+                     ArrayRef<int32_t> userManagedDFBResourceIndices)
+      : OpConversionPattern(typeConverter, context),
+        userManagedDFBResourceIndices(userManagedDFBResourceIndices) {}
 
   LogicalResult
   matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location location = op.getLoc();
+
+    FailureOr<SmallVector<int32_t>> resourceIndices =
+        getValidatedDFBResourceIndices(op.getDFBDependencyOperands(), op);
+    if (failed(resourceIndices)) {
+      return failure();
+    }
+    if (op.hasUnknownDFBAccess()) {
+      llvm::append_range(*resourceIndices, userManagedDFBResourceIndices);
+      sortAndDeduplicateDFBIndices(*resourceIndices);
+    }
 
     SmallVector<Attribute> templateArgs;
     if (std::optional<ArrayAttr> sourceTemplateArgs = op.getTemplateArgs()) {
@@ -1833,12 +1902,15 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     }
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, location, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
-        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr());
+        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr(),
+        getDFBResourceIndicesAttr(*resourceIndices, rewriter));
     rewriter.replaceOp(op, newOp->getResults());
     return success();
   }
 
 private:
+  SmallVector<int32_t> userManagedDFBResourceIndices;
+
   /// Resolve DFB metadata before type conversion discards block geometry.
   static FailureOr<Attribute>
   convertTemplateArg(ExternalTemplateArgAttr templateArg,
@@ -2414,6 +2486,12 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(resetLoweringPlan)) {
     return failure();
   }
+
+  FailureOr<SmallVector<int32_t>> userManagedDFBResourceIndices =
+      collectUserManagedDFBResourceIndices(mod);
+  if (failed(userManagedDFBResourceIndices)) {
+    return failure();
+  }
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.counterAllocationPolicy =
@@ -2512,16 +2590,17 @@ static LogicalResult lowerTTLOpsToTTKernel(
       typeConverter, &ctx, pipeTransportPlan);
   patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
                                                         *resetLoweringPlan);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
-           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
-           ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           DFBReconfigurationLowering, OpaqueCallLowering, GetDfbIdLowering,
-           IsDeviceLowering, CurrentDeviceIndexLowering,
-           IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
-           SelectedPipeDestinationDeviceIndexLowering,
-           SelectedPipeSourceCoordinatesLowering,
-           SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<
+      BindCBLowering, TensorSliceLowering, TileStoreLowering, StoreLowering,
+      CoreXLowering, CoreYLowering, RawElementReadLowering, ReadIndexLowering,
+      RawElementWriteLowering, RawAddrLowering, DFBReconfigurationLowering,
+      GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+      IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
+      SelectedPipeDestinationDeviceIndexLowering,
+      SelectedPipeSourceCoordinatesLowering,
+      SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
+                                   *userManagedDFBResourceIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);

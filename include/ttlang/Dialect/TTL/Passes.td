@@ -1521,11 +1521,17 @@ def TTKernelAnnotateDFBUse
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
     `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
-    call-graph analysis so their uses propagate to kernel entries.
+    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
+    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
+    preserves resource requirements after lowering replaces DFB operands with
+    static values. Helpers stay in the call-graph analysis so their uses
+    propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
     every DFB before tensor-accessor arguments, including DFB ids passed to
     opaque externs as scalar values.
+
+    Resource indices must be within the enclosing function's DFB compile-time
+    argument range.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
