@@ -26,10 +26,10 @@
 // DEBUG-SAME: terminal_reconfiguration=none
 // DEBUG: DFB conflict lhs=0 rhs=3 reason=concurrent-lifetime
 // DEBUG: Total DFB count: 2
-// DEBUG: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// DEBUG: DFB assignment: logical DFB 1 -> physical index 1 (bounded)
-// DEBUG: DFB assignment: logical DFB 2 -> physical index 1 (bounded)
-// DEBUG: DFB assignment: logical DFB 3 -> physical index 1 (bounded)
+// DEBUG: DFB assignment: logical DFB 0 -> physical index 0 storage index 1 (bounded)
+// DEBUG: DFB assignment: logical DFB 1 -> physical index 1 storage index 0 (bounded)
+// DEBUG: DFB assignment: logical DFB 2 -> physical index 1 storage index 0 (bounded)
+// DEBUG: DFB assignment: logical DFB 3 -> physical index 1 storage index 0 (bounded)
 
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @compute() attributes {

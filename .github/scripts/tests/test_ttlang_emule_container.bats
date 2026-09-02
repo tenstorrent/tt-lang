@@ -190,6 +190,35 @@ EOF
     refute_log_line "-t"
 }
 
+@test "redirected stdin prevents tty allocation when stdout is a tty" {
+    cd "$TTLANG_REPO_ROOT"
+    run -0 env TTLANG_EMULE_DOCKER="$MOCK_DOCKER" python3 - "$RUNNER" <<'PY'
+import os
+import pty
+import subprocess
+import sys
+
+master, slave = pty.openpty()
+try:
+    result = subprocess.run(
+        [sys.argv[1], "examples/eltwise_add.py"],
+        stdin=subprocess.DEVNULL,
+        stdout=slave,
+        stderr=subprocess.PIPE,
+        env=os.environ,
+        check=False,
+    )
+finally:
+    os.close(master)
+    os.close(slave)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+PY
+
+    assert_log_line "-i"
+    refute_log_line "-t"
+}
+
 @test "missing image triggers a pinned image build before the run" {
     local emule_source="$BATS_TEST_TMPDIR/external-emule"
     local mock_bin="$BATS_TEST_TMPDIR/pinned-git-bin"

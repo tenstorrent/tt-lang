@@ -585,4 +585,12 @@ void printDFBAllocationDebugReport(
   output << "DFB allocation liveness report end\n";
 }
 
+void printDFBStorageConflictDebugReport(
+    llvm::raw_ostream &output,
+    const DFBPhysicalConflictModel &storageConflictModel) {
+  output << "DFB storage conflict report\n";
+  printConflictEvidence(output, storageConflictModel);
+  output << "DFB storage conflict report end\n";
+}
+
 } // namespace mlir::tt::ttl

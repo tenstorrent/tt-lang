@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -25,6 +26,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <numeric>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -306,6 +308,95 @@ FailureOr<uint64_t> getDFBL1AllocationSizeBytes(ModuleOp module,
   return *allocationBytes;
 }
 
+FailureOr<DFBStorageLayout>
+mergeDFBStorageLayout(const DFBStorageLayout &layout, uint64_t memberBytes,
+                      uint64_t memberPageSize, std::string &failureReason) {
+  if (memberPageSize == 0) {
+    failureReason = "DFB storage page size must be positive";
+    return failure();
+  }
+  uint64_t commonDivisor = std::gcd(layout.alignmentBytes, memberPageSize);
+  std::optional<uint64_t> mergedAlignment = llvm::checkedMulUnsigned(
+      layout.alignmentBytes / commonDivisor, memberPageSize);
+  if (!mergedAlignment) {
+    failureReason = "DFB storage alignment is not representable";
+    return failure();
+  }
+  uint64_t requiredCapacity = std::max(layout.capacityBytes, memberBytes);
+  std::optional<uint64_t> roundedNumerator =
+      llvm::checkedAddUnsigned(requiredCapacity, *mergedAlignment - 1);
+  if (!roundedNumerator) {
+    failureReason = "DFB storage allocation size is not representable";
+    return failure();
+  }
+  uint64_t pageCount = *roundedNumerator / *mergedAlignment;
+  std::optional<uint64_t> mergedCapacity =
+      llvm::checkedMulUnsigned(pageCount, *mergedAlignment);
+  if (!mergedCapacity) {
+    failureReason = "DFB storage allocation size is not representable";
+    return failure();
+  }
+  return DFBStorageLayout{*mergedCapacity, *mergedAlignment};
+}
+
+LogicalResult DFBStorageFootprint::add(int64_t storageIndex,
+                                       CircularBufferType type,
+                                       std::string &failureReason) {
+  FailureOr<uint64_t> allocationBytes =
+      getDFBAllocationSizeBytes(type, failureReason);
+  FailureOr<uint64_t> pageSize = getDFBPageSizeBytes(type);
+  if (failed(allocationBytes) || failed(pageSize)) {
+    if (failureReason.empty()) {
+      failureReason = "DFB page size is not representable";
+    }
+    return failure();
+  }
+  DFBStorageLayout &layout = layoutByIndex[storageIndex];
+  FailureOr<DFBStorageLayout> mergedLayout =
+      mergeDFBStorageLayout(layout, *allocationBytes, *pageSize, failureReason);
+  if (failed(mergedLayout)) {
+    return failure();
+  }
+  layout = *mergedLayout;
+  return success();
+}
+
+FailureOr<uint64_t>
+DFBStorageFootprint::getL1AllocationBytes(ModuleOp module) const {
+  uint64_t totalBytes = 0;
+  for (int64_t storageIndex : getSortedStorageIndices()) {
+    FailureOr<uint64_t> allocationBytes =
+        getL1AllocationSizeBytes(module, getBytes(storageIndex));
+    std::optional<uint64_t> updatedTotal =
+        succeeded(allocationBytes)
+            ? llvm::checkedAddUnsigned(totalBytes, *allocationBytes)
+            : std::nullopt;
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
+  }
+  return totalBytes;
+}
+
+uint64_t DFBStorageFootprint::getBytes(int64_t storageIndex) const {
+  auto indexIt = layoutByIndex.find(storageIndex);
+  assert(indexIt != layoutByIndex.end() &&
+         "storage index must be present in the footprint");
+  return indexIt->second.capacityBytes;
+}
+
+llvm::SmallVector<int64_t>
+DFBStorageFootprint::getSortedStorageIndices() const {
+  llvm::SmallVector<int64_t> storageIndices;
+  storageIndices.reserve(layoutByIndex.size());
+  for (int64_t storageIndex : llvm::make_first_range(layoutByIndex)) {
+    storageIndices.push_back(storageIndex);
+  }
+  llvm::sort(storageIndices);
+  return storageIndices;
+}
+
 FailureOr<bool> DFBAllocationFootprint::add(ModuleOp module,
                                             int64_t physicalIndex,
                                             CircularBufferType type,
@@ -380,22 +471,268 @@ DFBAllocationFootprint::getSortedPhysicalIndices() const {
   return physicalIndices;
 }
 
-FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
-  DFBAllocationFootprint footprint;
-  WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
+FailureOr<uint64_t> FinalizedDFBStorageFootprint::getPeakL1AllocationBytes(
+    ModuleOp module, std::optional<LaunchNodeCoord> *peakNode) const {
+  if (!usesPerNodeAccounting) {
+    return globalFootprint.getL1AllocationBytes(module);
+  }
+  uint64_t peakBytes = 0;
+  for (auto indexedFootprint : llvm::enumerate(footprintsByNode)) {
+    FailureOr<uint64_t> nodeBytes =
+        indexedFootprint.value().getL1AllocationBytes(module);
+    if (failed(nodeBytes)) {
+      return failure();
+    }
+    if (indexedFootprint.index() == 0 || *nodeBytes > peakBytes) {
+      peakBytes = *nodeBytes;
+      if (peakNode) {
+        *peakNode = launchNodes[indexedFootprint.index()];
+      }
+    }
+  }
+  return peakBytes;
+}
+
+static FailureOr<LaunchNodeDomain>
+parseDFBNodeDomain(ModuleOp module, ArrayAttr nodeEntries,
+                   size_t allocationIndex, llvm::StringRef fieldName) {
+  LaunchNodeDomain domain;
+  for (auto indexedNode : llvm::enumerate(nodeEntries)) {
+    auto coordinates = dyn_cast<ArrayAttr>(indexedNode.value());
+    if (!coordinates || coordinates.size() != 2 ||
+        !isa<IntegerAttr>(coordinates[0]) ||
+        !isa<IntegerAttr>(coordinates[1])) {
+      module.emitOpError() << kDFBAllocationsAttrName << " entry "
+                           << allocationIndex << " " << fieldName << " entry "
+                           << indexedNode.index()
+                           << " must contain two integer coordinates";
+      return failure();
+    }
+    int64_t coreX = cast<IntegerAttr>(coordinates[0]).getInt();
+    int64_t coreY = cast<IntegerAttr>(coordinates[1]).getInt();
+    if (coreX < 0 || coreY < 0) {
+      module.emitOpError() << kDFBAllocationsAttrName << " entry "
+                           << allocationIndex << " " << fieldName << " entry "
+                           << indexedNode.index()
+                           << " requires nonnegative coordinates";
+      return failure();
+    }
+    domain.nodes.insert({coreX, coreY});
+  }
+  return domain;
+}
+
+FailureOr<FinalizedDFBStorageFootprint>
+getFinalizedDFBStorageFootprint(ModuleOp module) {
+  FinalizedDFBStorageFootprint result;
+  DenseMap<int64_t, LaunchNodeDomain> domainByPhysicalIndex;
+  auto allocations = module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+  if (allocations) {
+    for (auto indexedEntry : llvm::enumerate(allocations)) {
+      auto entry = dyn_cast<DictionaryAttr>(indexedEntry.value());
+      if (!entry) {
+        module.emitOpError() << kDFBAllocationsAttrName << " entry "
+                             << indexedEntry.index() << " must be a dictionary";
+        return failure();
+      }
+      IntegerAttr physicalIndexAttr = entry.getAs<IntegerAttr>("dfb_index");
+      if (!physicalIndexAttr || physicalIndexAttr.getInt() < 0) {
+        module.emitOpError()
+            << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+            << " requires a nonnegative dfb_index";
+        return failure();
+      }
+      int64_t physicalIndex = physicalIndexAttr.getInt();
+      Attribute storageIndexValue = entry.get("storage_index");
+      IntegerAttr storageIndexAttr =
+          dyn_cast_or_null<IntegerAttr>(storageIndexValue);
+      if (storageIndexValue && !storageIndexAttr) {
+        module.emitOpError()
+            << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+            << " requires an integer storage_index";
+        return failure();
+      }
+      int64_t storageIndex =
+          storageIndexAttr ? storageIndexAttr.getInt() : physicalIndex;
+      if (storageIndex < 0) {
+        module.emitOpError()
+            << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+            << " requires a nonnegative storage_index";
+        return failure();
+      }
+      if (!result.storageIndexByPhysicalIndex
+               .try_emplace(physicalIndex, storageIndex)
+               .second) {
+        module.emitOpError()
+            << kDFBAllocationsAttrName << " contains duplicate dfb_index "
+            << physicalIndex;
+        return failure();
+      }
+      LaunchNodeDomain allocationDomain = LaunchNodeDomain::unknown();
+      if (Attribute allocationNodesValue = entry.get("allocation_nodes")) {
+        auto allocationNodes = dyn_cast<ArrayAttr>(allocationNodesValue);
+        if (!allocationNodes) {
+          module.emitOpError()
+              << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+              << " requires allocation_nodes to be an array";
+          return failure();
+        }
+        FailureOr<LaunchNodeDomain> parsedDomain = parseDFBNodeDomain(
+            module, allocationNodes, indexedEntry.index(), "allocation_nodes");
+        if (failed(parsedDomain)) {
+          return failure();
+        }
+        allocationDomain = std::move(*parsedDomain);
+      }
+      LaunchNodeDomain staticStorageDomain = allocationDomain;
+      if (Attribute storageSegmentsValue = entry.get("storage_segments")) {
+        auto storageSegments = dyn_cast<ArrayAttr>(storageSegmentsValue);
+        if (!storageSegments) {
+          module.emitOpError()
+              << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+              << " requires storage_segments to be an array";
+          return failure();
+        }
+        staticStorageDomain = LaunchNodeDomain{};
+        for (auto indexedSegment : llvm::enumerate(storageSegments)) {
+          auto segment = dyn_cast<DictionaryAttr>(indexedSegment.value());
+          if (!segment) {
+            module.emitOpError()
+                << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+                << " storage_segments entry " << indexedSegment.index()
+                << " must be a dictionary";
+            return failure();
+          }
+          auto segmentNodes = segment.getAs<ArrayAttr>("nodes");
+          if (!segmentNodes) {
+            module.emitOpError()
+                << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+                << " storage_segments entry " << indexedSegment.index()
+                << " requires a nodes array";
+            return failure();
+          }
+          std::string segmentNodeField =
+              (llvm::Twine("storage_segments entry ") +
+               llvm::Twine(indexedSegment.index()) + " nodes")
+                  .str();
+          FailureOr<LaunchNodeDomain> segmentDomain = parseDFBNodeDomain(
+              module, segmentNodes, indexedEntry.index(), segmentNodeField);
+          if (failed(segmentDomain)) {
+            return failure();
+          }
+          Attribute tensorBacking = segment.get("tensor_backing");
+          if (tensorBacking && !isa<TensorBackingAttr>(tensorBacking)) {
+            module.emitOpError()
+                << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
+                << " storage_segments entry " << indexedSegment.index()
+                << " has an invalid tensor_backing attribute";
+            return failure();
+          }
+          if (!tensorBacking) {
+            staticStorageDomain = staticStorageDomain.unionWith(*segmentDomain);
+          }
+        }
+      }
+      domainByPhysicalIndex.try_emplace(physicalIndex,
+                                        std::move(staticStorageDomain));
+    }
+  }
+
+  bool hasUnknownDomain = llvm::any_of(
+      llvm::make_second_range(domainByPhysicalIndex),
+      [](const LaunchNodeDomain &domain) { return !domain.known; });
+  std::set<LaunchNodeCoord> launchNodes;
+  if (hasUnknownDomain) {
+    SmallVector<int64_t> launchGrid;
+    if (auto dense =
+            module->getAttrOfType<DenseI64ArrayAttr>(kLaunchGridAttrName)) {
+      llvm::append_range(launchGrid, dense.asArrayRef());
+    } else if (auto array =
+                   module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName)) {
+      for (Attribute dimension : array) {
+        auto integer = dyn_cast<IntegerAttr>(dimension);
+        if (!integer) {
+          launchGrid.clear();
+          break;
+        }
+        launchGrid.push_back(integer.getInt());
+      }
+    }
+    if (launchGrid.size() == 2 && launchGrid[0] > 0 && launchGrid[1] > 0) {
+      launchNodes = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]).nodes;
+    }
+  } else {
+    for (const LaunchNodeDomain &domain :
+         llvm::make_second_range(domainByPhysicalIndex)) {
+      launchNodes.insert(domain.nodes.begin(), domain.nodes.end());
+    }
+  }
+  result.launchNodes.assign(launchNodes.begin(), launchNodes.end());
+  result.usesPerNodeAccounting =
+      static_cast<bool>(allocations) &&
+      (!result.launchNodes.empty() ||
+       llvm::all_of(
+           llvm::make_second_range(domainByPhysicalIndex),
+           [](const LaunchNodeDomain &domain) { return domain.known; }));
+  result.footprintsByNode.resize(result.launchNodes.size());
+  result.membersByNode.resize(result.launchNodes.size());
+
+  auto recordMember = [](FinalizedDFBStorageFootprint::MembersByStorageIndex
+                             &membersByStorageIndex,
+                         int64_t storageIndex, int64_t physicalIndex) {
+    SmallVector<int64_t> &members = membersByStorageIndex[storageIndex];
+    if (!llvm::is_contained(members, physicalIndex)) {
+      members.push_back(physicalIndex);
+    }
+  };
+
+  WalkResult walkResult = module.walk([&](BindCBOp bindOp) -> WalkResult {
     if (bindOp.getTensorBackingAttr()) {
       return WalkResult::advance();
     }
+    int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
+    auto storageIndexIt =
+        result.storageIndexByPhysicalIndex.find(physicalIndex);
+    if (allocations &&
+        storageIndexIt == result.storageIndexByPhysicalIndex.end()) {
+      bindOp.emitOpError() << "physical DFB index " << physicalIndex
+                           << " is missing from " << kDFBAllocationsAttrName;
+      return WalkResult::interrupt();
+    }
+    int64_t storageIndex =
+        storageIndexIt == result.storageIndexByPhysicalIndex.end()
+            ? physicalIndex
+            : storageIndexIt->second;
+    auto dfbType = cast<CircularBufferType>(bindOp.getResult().getType());
     std::string failureReason;
-    FailureOr<bool> increased = footprint.add(
-        module, bindOp.getCbIndex().getSExtValue(),
-        cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
-    return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
+    if (failed(
+            result.globalFootprint.add(storageIndex, dfbType, failureReason))) {
+      bindOp.emitOpError() << failureReason;
+      return WalkResult::interrupt();
+    }
+    recordMember(result.globalMembers, storageIndex, physicalIndex);
+    if (!result.usesPerNodeAccounting) {
+      return WalkResult::advance();
+    }
+    const LaunchNodeDomain &domain = domainByPhysicalIndex.at(physicalIndex);
+    for (auto indexedNode : llvm::enumerate(result.launchNodes)) {
+      if (domain.known &&
+          domain.nodes.find(indexedNode.value()) == domain.nodes.end()) {
+        continue;
+      }
+      if (failed(result.footprintsByNode[indexedNode.index()].add(
+              storageIndex, dfbType, failureReason))) {
+        bindOp.emitOpError() << failureReason;
+        return WalkResult::interrupt();
+      }
+      recordMember(result.membersByNode[indexedNode.index()], storageIndex,
+                   physicalIndex);
+    }
+    return WalkResult::advance();
   });
-  if (walkResult.wasInterrupted()) {
-    return failure();
-  }
-  return footprint;
+  return walkResult.wasInterrupted()
+             ? FailureOr<FinalizedDFBStorageFootprint>(failure())
+             : FailureOr<FinalizedDFBStorageFootprint>(std::move(result));
 }
 
 FailureOr<DFBAllocationFootprint>
@@ -437,10 +774,8 @@ FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(ModuleOp module,
 }
 
 LogicalResult validateCombinedDFBResourceL1Bytes(
-    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
-    uint64_t scratchBytes, int64_t globalSemaphoreCount,
-    std::optional<uint64_t> overrideBytes) {
-  FailureOr<uint64_t> dfbBytes = allocationFootprint.getTotalBytes();
+    ModuleOp module, uint64_t dfbBytes, uint64_t scratchBytes,
+    int64_t globalSemaphoreCount, std::optional<uint64_t> overrideBytes) {
   FailureOr<uint64_t> scratchAllocationBytes =
       getL1AllocationSizeBytes(module, scratchBytes);
   FailureOr<uint64_t> globalSemaphoreBytes =
@@ -448,8 +783,8 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
   FailureOr<uint64_t> reconfigurationStateBytes =
       getDFBReconfigurationStateAllocationBytes(module);
   std::optional<uint64_t> requiredBytes =
-      succeeded(dfbBytes) && succeeded(scratchAllocationBytes)
-          ? llvm::checkedAddUnsigned(*dfbBytes, *scratchAllocationBytes)
+      succeeded(scratchAllocationBytes)
+          ? llvm::checkedAddUnsigned(dfbBytes, *scratchAllocationBytes)
           : std::nullopt;
   if (requiredBytes && succeeded(globalSemaphoreBytes)) {
     requiredBytes =
@@ -473,7 +808,7 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
   }
   module.emitOpError() << "combined DFB and runtime resources require "
                        << *requiredBytes << " L1 bytes but the budget is "
-                       << budgetBytes << " (DFB=" << *dfbBytes
+                       << budgetBytes << " (DFB=" << dfbBytes
                        << ", scratch=" << *scratchAllocationBytes
                        << ", global semaphores=" << *globalSemaphoreBytes
                        << ", reconfiguration state="

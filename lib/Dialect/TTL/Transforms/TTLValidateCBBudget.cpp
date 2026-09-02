@@ -7,9 +7,10 @@
 // TTL Validate CB Budget
 //
 // Validates that the sum of static dataflow-buffer backing stores (per unique
-// cb_index) does not exceed a per-core L1 budget. Explicit tile elements retain
-// their dimensions. Scalar elements map to a ttcore data type and use default
-// tile dimensions; unmappable element types are errors. Python uses
+// compiler-selected storage index) does not exceed a per-core L1 budget.
+// Explicit tile elements retain their dimensions. Scalar elements map to a
+// ttcore data type and use default tile dimensions; unmappable element types
+// are errors. Python uses
 // python/ttl/kernel_runner.py:build_cb_descriptors; if those implementations
 // diverge, align them or share one implementation (see issue #511).
 //
@@ -46,15 +47,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
-  std::string formattedShape;
-  llvm::raw_string_ostream outputStream(formattedShape);
-  outputStream << "[";
-  llvm::interleaveComma(shape, outputStream);
-  outputStream << "]";
-  return outputStream.str();
-}
-
 /// Formats the integer DFB budget usage percentage without overflowing.
 static std::string formatDFBUsagePercentage(uint64_t allocationBytes,
                                             uint64_t budgetBytes) {
@@ -83,32 +75,23 @@ struct TTLValidateCBBudgetPass
                               : std::optional<uint64_t>(l1BudgetOverride);
     uint64_t budgetBytes = getUsableDFBL1Bytes(moduleOp, overrideBytes);
 
-    DFBAllocationFootprint footprint;
-    llvm::DenseMap<int64_t, BindCBOp> bindForIndex;
-
-    auto walkResult = moduleOp.walk([&](BindCBOp bindOp) -> WalkResult {
-      if (bindOp.getTensorBackingAttr()) {
-        return WalkResult::advance();
-      }
-      auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
-      int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
-      std::string failureReason;
-      FailureOr<bool> increased =
-          footprint.add(moduleOp, physicalIndex, cbType, failureReason);
-      if (failed(increased)) {
-        bindOp.emitOpError() << failureReason;
-        return WalkResult::interrupt();
-      }
-      if (*increased) {
-        bindForIndex[physicalIndex] = bindOp;
-      }
-      return WalkResult::advance();
-    });
-
-    if (walkResult.wasInterrupted()) {
+    FailureOr<FinalizedDFBStorageFootprint> finalizedFootprint =
+        getFinalizedDFBStorageFootprint(moduleOp);
+    if (failed(finalizedFootprint)) {
       signalPassFailure();
       return;
     }
+
+    DenseMap<int64_t, BindCBOp> bindForPhysicalIndex;
+    moduleOp.walk([&](BindCBOp bindOp) {
+      if (bindOp.getTensorBackingAttr()) {
+        return;
+      }
+      int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
+      if (!bindForPhysicalIndex.contains(physicalIndex)) {
+        bindForPhysicalIndex[physicalIndex] = bindOp;
+      }
+    });
 
     FailureOr<uint64_t> resetScratchBytes =
         getSynchronizedDFBResetStateAllocationBytes(moduleOp);
@@ -123,20 +106,22 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    if (footprint.empty() && *resetScratchBytes == 0 &&
-        *reconfigurationStateBytes == 0) {
+    if (finalizedFootprint->globalFootprint.empty() &&
+        *resetScratchBytes == 0 && *reconfigurationStateBytes == 0) {
       return;
     }
 
-    FailureOr<uint64_t> maybeTotalBytes = footprint.getTotalBytes();
-    if (failed(maybeTotalBytes)) {
+    std::optional<LaunchNodeCoord> peakNode;
+    FailureOr<uint64_t> allocationBytes =
+        finalizedFootprint->getPeakL1AllocationBytes(moduleOp, &peakNode);
+    if (failed(allocationBytes)) {
       moduleOp.emitOpError()
           << "total DFB allocation size is not representable as uint64_t";
       signalPassFailure();
       return;
     }
     std::optional<uint64_t> maybeDFBAndResetBytes =
-        llvm::checkedAddUnsigned(*maybeTotalBytes, *resetScratchBytes);
+        llvm::checkedAddUnsigned(*allocationBytes, *resetScratchBytes);
     if (!maybeDFBAndResetBytes) {
       moduleOp.emitOpError()
           << "total DFB and fixed-state allocation size is not "
@@ -154,20 +139,43 @@ struct TTLValidateCBBudgetPass
       return;
     }
     uint64_t totalBytes = *maybeCombinedBytes;
-    SmallVector<int64_t> sortedIndices = footprint.getSortedPhysicalIndices();
+    const DFBStorageFootprint *diagnosticFootprint =
+        &finalizedFootprint->globalFootprint;
+    const FinalizedDFBStorageFootprint::MembersByStorageIndex
+        *diagnosticMembers = &finalizedFootprint->globalMembers;
+    if (finalizedFootprint->usesPerNodeAccounting) {
+      diagnosticFootprint = nullptr;
+      diagnosticMembers = nullptr;
+      if (peakNode) {
+        auto nodeIt = llvm::find(finalizedFootprint->launchNodes, *peakNode);
+        assert(nodeIt != finalizedFootprint->launchNodes.end());
+        size_t nodeIndex = static_cast<size_t>(
+            nodeIt - finalizedFootprint->launchNodes.begin());
+        diagnosticFootprint = &finalizedFootprint->footprintsByNode[nodeIndex];
+        diagnosticMembers = &finalizedFootprint->membersByNode[nodeIndex];
+      }
+    }
+    SmallVector<int64_t> sortedIndices =
+        diagnosticFootprint ? diagnosticFootprint->getSortedStorageIndices()
+                            : SmallVector<int64_t>{};
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
-      for (int64_t idx : sortedIndices) {
-        BindCBOp bindOp = bindForIndex[idx];
-        auto cbTy =
-            mlir::cast<CircularBufferType>(bindOp.getResult().getType());
-        diag << "\n  CB[" << idx << "]: shape=" << formatShape(cbTy.getShape())
-             << ", element_type=" << cbTy.getElementType()
-             << ", block_count=" << cbTy.getBlockCount() << ", "
-             << footprint.getBytes(idx) << " bytes";
-        if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-          diag << " (compiler-allocated)";
+      for (int64_t storageIndex : sortedIndices) {
+        SmallVector<int64_t> physicalIndices =
+            diagnosticMembers->lookup(storageIndex);
+        llvm::sort(physicalIndices);
+        diag << "\n  storage[" << storageIndex << "] DFBs=[";
+        for (auto indexedPhysicalIndex : llvm::enumerate(physicalIndices)) {
+          if (indexedPhysicalIndex.index() != 0) {
+            diag << ", ";
+          }
+          diag << indexedPhysicalIndex.value();
         }
+        FailureOr<uint64_t> allocationBytes = getL1AllocationSizeBytes(
+            moduleOp, diagnosticFootprint->getBytes(storageIndex));
+        assert(succeeded(allocationBytes) &&
+               "validated storage allocation must remain representable");
+        diag << "]: " << *allocationBytes << " bytes";
       }
       if (*resetScratchBytes > 0) {
         diag << "\n  synchronized-reset scratch: " << *resetScratchBytes
@@ -181,6 +189,9 @@ struct TTLValidateCBBudgetPass
           formatDFBUsagePercentage(totalBytes, budgetBytes);
       diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
            << percentage << " percent)";
+      if (peakNode) {
+        diag << " on launch node (" << peakNode->x << "," << peakNode->y << ")";
+      }
       diag << "\n  hint: reduce DFB block shapes or block_count, reduce "
               "compiler-inserted buffers (fusion splits)";
       if (*resetScratchBytes > 0 || *reconfigurationStateBytes > 0) {
@@ -188,20 +199,33 @@ struct TTLValidateCBBudgetPass
       }
     };
 
-    // Anchor diagnostics on the bind for the largest per-index allocation so
-    // multi-CB cases (and lit expected-error @below) point at the dominant
-    // slot.
+    // Anchor diagnostics on one resident DFB from the largest storage
+    // allocation so expected diagnostics identify a contributing operation.
     auto bindForLargestAllocation = [&]() -> BindCBOp {
-      int64_t reportIdx = sortedIndices.front();
-      uint64_t reportMax = footprint.getBytes(reportIdx);
-      for (int64_t idx : sortedIndices) {
-        const uint64_t allocationBytes = footprint.getBytes(idx);
+      int64_t reportStorageIndex = sortedIndices.front();
+      FailureOr<uint64_t> initialBytes = getL1AllocationSizeBytes(
+          moduleOp, diagnosticFootprint->getBytes(reportStorageIndex));
+      assert(succeeded(initialBytes));
+      uint64_t reportMax = *initialBytes;
+      for (int64_t storageIndex : sortedIndices) {
+        FailureOr<uint64_t> maybeAllocationBytes = getL1AllocationSizeBytes(
+            moduleOp, diagnosticFootprint->getBytes(storageIndex));
+        assert(succeeded(maybeAllocationBytes));
+        const uint64_t allocationBytes = *maybeAllocationBytes;
         if (allocationBytes > reportMax) {
           reportMax = allocationBytes;
-          reportIdx = idx;
+          reportStorageIndex = storageIndex;
         }
       }
-      return bindForIndex[reportIdx];
+      SmallVector<int64_t> physicalIndices =
+          diagnosticMembers->lookup(reportStorageIndex);
+      assert(!physicalIndices.empty() &&
+             "reported storage allocation must contain one physical DFB");
+      llvm::sort(physicalIndices);
+      auto bindIt = bindForPhysicalIndex.find(physicalIndices.front());
+      assert(bindIt != bindForPhysicalIndex.end() &&
+             "reported physical DFB must have one declaration");
+      return bindIt->second;
     };
 
     if (totalBytes > budgetBytes) {

@@ -152,8 +152,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // REPORT-SAME: access_completion_proven=0
 // REPORT-SAME: domain={(1,0)}
 // REPORT-NOT: DFB conflict lhs=14 rhs=15
-// REPORT: DFB assignment: logical DFB 14 -> physical index 0 (unbounded)
-// REPORT-NEXT: DFB assignment: logical DFB 15 -> physical index 0 (unbounded)
+// REPORT: DFB assignment: logical DFB 14 -> physical index 0 storage index 0 (unbounded)
+// REPORT-NEXT: DFB assignment: logical DFB 15 -> physical index 0 storage index 0 (unbounded)
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @exact_disjoint_subsets_reuse(%runtime_offset: index)
