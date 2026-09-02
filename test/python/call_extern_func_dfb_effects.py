@@ -24,6 +24,21 @@ import ttnn
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
 EFFECT_TILES = 5
 reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+writer = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+
+@ttl.operation()
+def external_source(source: ttl.DFB):
+    ttl.call_extern_func(
+        FAKE_HEADER,
+        "external_source",
+        dfb_dependencies=[source],
+        dfb_effects=[
+            ttl.DFBEffect.reserve(source, tiles=EFFECT_TILES - 1),
+            ttl.DFBEffect.push(source, tiles=EFFECT_TILES - 1),
+        ],
+        kernel=writer,
+    )
 
 
 def make_external_stage(transaction_count):
@@ -67,6 +82,7 @@ external_stage = make_external_stage(2)
 def external_metadata_kernel(inp):
     source = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
     destination = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    external_source(source)
     core_x, _ = ttl.node(dims=2)
     if core_x == 0:
         external_stage(source, destination)

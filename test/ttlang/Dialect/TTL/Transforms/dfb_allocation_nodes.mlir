@@ -69,3 +69,37 @@ module {
     return
   }
 }
+
+// -----
+
+// Dense data-flow analysis omits operation lattices in unreachable CFG
+// blocks. Dead-code state proves the first DFB's domain empty; the reachable
+// access retains the full launch domain.
+
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = [], block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}], ttl.launch_grid = array<i64: 2, 1>}
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @unreachable_cfg_block()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %dead_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %live_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    cf.br ^live
+  ^dead:
+    ttl.opaque_call "dead_access" (%dead_dfb)
+        {header = "effects.hpp"}
+        : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    cf.br ^exit
+  ^live:
+    ttl.opaque_call "live_access" (%live_dfb)
+        {header = "effects.hpp"}
+        : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    cf.br ^exit
+  ^exit:
+    return
+  }
+}

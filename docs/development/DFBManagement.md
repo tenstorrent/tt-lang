@@ -610,15 +610,29 @@ assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
 role (producer or consumer), an overlapping launched node when available, the
 participating operation sites, and the originating `ttl.bind_cb`.
 
-Setting `TTL_RELAX_DFB_SPSC` skips only launch-node-domain proofs that require
-the program to provide synchronization absent from IR. It skips overlapping
-producer/consumer domain checks here and producer correspondence for DFB waits
-in `ttl-verify-pipenet-guards`. Finalized DFB identity, physical-index, and
-launch-grid preconditions remain mandatory. PipeNet endpoint guards, transfer
+The pass also rejects a logical DFB when a kernel thread waits on it and no
+producer is possible. A compiler-visible push proves a producer exists. An
+opaque external DFB dependency without an access contract may contain a push,
+and `unknown_dfb_access` may contain a push for any user-managed DFB. An
+explicit `inspect` contract excludes protocol actions. Reserving storage is
+insufficient: `ttl.cb_wait` observes pages published by a push. This structural
+check does not depend on launch-domain analysis and remains enabled under the
+diagnostic relaxation.
+
+Setting `TTL_RELAX_DFB_SPSC` skips only per-launch-node ownership and
+producer-correspondence checks that require synchronization absent from IR. It
+skips overlapping producer/consumer domain checks here and same-node producer
+correspondence for DFB waits in `ttl-verify-pipenet-guards`. A waited DFB still
+requires either a compiler-visible push or uncontracted external access that
+may contain one. Finalized DFB identity, physical-index, and launch-grid
+preconditions remain mandatory. PipeNet endpoint guards, transfer
 correspondence, and synchronization schedules also remain mandatory. Strict
 verification is the default.
 
-See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
+See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
+`verify_dfb_spsc_missing_producer_invalid.mlir` and
+`verify_dfb_spsc_unknown_access_invalid.mlir` for rejected patterns, and
+`verify_dfb_spsc.mlir` for accepted patterns.
 
 The compiler does not currently auto-split overlapping multi-consumer DFBs;
 users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in

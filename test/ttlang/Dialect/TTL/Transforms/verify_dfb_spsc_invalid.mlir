@@ -5,8 +5,18 @@
 // Two consumer threads overlap on core (0, 0), so the DFB is not SPSC.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @consumer_all_nodes() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @consumer_all_nodes() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 0 has multiple consumer kernels active on the same launched node}}
@@ -62,8 +72,15 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // Hidden wait effects in two overlapping kernels violate SPSC.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
-  func.func @first_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @hidden_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "produce" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @first_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 42 has multiple consumer kernels active on the same launched node}}
@@ -114,8 +131,18 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // A hidden pop is a consumer action and cannot run in a different thread from
 // the wait on the same DFB.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
-  func.func @waiter() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @waiter() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 44 has multiple consumer kernels active on the same launched node}}
@@ -176,8 +203,18 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // participate because the verifier cannot prove their domains are disjoint.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @unknown_consumer(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @unknown_consumer(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
@@ -286,6 +323,16 @@ module attributes {ttl.launch_grid = [0 : i64, 1 : i64]} {
 // participant set would otherwise be accepted.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 5 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
   func.func @malformed_pipenet_scope() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
