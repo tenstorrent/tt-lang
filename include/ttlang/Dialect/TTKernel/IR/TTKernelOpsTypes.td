@@ -117,7 +117,7 @@ def TTKernel_LocalTensorAccessor
   let summary = "LocalTensorAccessor byte-storage type";
   let description = [{
     Typed view of a tensor whose storage is directly addressable in the local
-    core's L1 memory. The element type is fixed to bytes so accessor formation
+    core's SRAM. The element type is fixed to bytes so accessor formation
     is independent of the tensor's logical dtype and layout.
   }];
 }

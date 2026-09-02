@@ -2303,11 +2303,12 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
 
     A base tensor argument is converted according to the enclosing logical
     kernel and its `ttl.layout`. Data-movement kernels receive a
-    `TensorAccessor` for device DRAM, L1, or sharded L1Small storage. Compute
-    kernels receive a byte-addressable `LocalTensorAccessor<uint8_t>` only for
-    height-, width-, or block-sharded L1 or L1Small storage. Tensor slices and
-    views are invalid. Repeated occurrences of one tensor share one accessor
-    object while remaining distinct positional C++ arguments. The callee
+    `TensorAccessor` for device DRAM or SRAM. `L1` and `L1Small` identify the
+    corresponding TTNN SRAM buffer types; `L1Small` requires sharded storage.
+    Compute kernels receive a byte-addressable `LocalTensorAccessor<uint8_t>`
+    only for height-, width-, or block-sharded SRAM. Tensor slices and views are
+    invalid. Repeated occurrences of one tensor share one accessor object while
+    remaining distinct positional C++ arguments. The callee
     accepts the accessor by `const&` and must not retain its address or
     reference after the enclosing kernel function returns.
 

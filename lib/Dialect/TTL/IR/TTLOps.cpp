@@ -3220,16 +3220,16 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
         return emitOpError("tensor operand ")
                << operandIndex
                << " in a data movement kernel uses SystemMemory storage; "
-                  "data movement tensor accessors require DRAM, L1, or "
-                  "L1Small storage";
+                  "data movement tensor accessors require device DRAM or "
+                  "SRAM";
       }
       if (bufferType == BufferType::L1Small &&
           !isShardedMemoryLayout(memoryLayout)) {
         return emitOpError("tensor operand ")
                << operandIndex
-               << " in a data movement kernel uses non-sharded L1Small "
-                  "storage; data movement L1Small tensor accessors require "
-                  "height-, width-, or block-sharded storage";
+               << " in a data movement kernel uses non-sharded SRAM with "
+                  "L1Small buffer type; L1Small requires height-, width-, or "
+                  "block-sharded storage";
       }
       continue;
     }
@@ -3237,15 +3237,15 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
       return emitOpError("tensor operand ")
              << operandIndex << " in a compute kernel uses "
              << (bufferType == BufferType::DRAM ? "DRAM" : "SystemMemory")
-             << " storage; compute tensor accessors require sharded L1 or "
-                "L1Small storage";
+             << " storage; compute tensor accessors require sharded SRAM "
+                "(L1 or L1Small buffer type)";
     }
     if (!isShardedMemoryLayout(memoryLayout)) {
       return emitOpError("tensor operand ")
              << operandIndex
              << " in a compute kernel uses a non-sharded memory layout; "
                 "compute tensor accessors require height-, width-, or "
-                "block-sharded L1 or L1Small storage";
+                "block-sharded SRAM";
     }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();

@@ -2243,7 +2243,7 @@ def test_local_tensor_access_rejects_out_of_range_tensor_index(monkeypatch):
 @pytest.mark.parametrize(
     ("buffer_type", "memory_layout", "shard_grid", "message"),
     [
-        ("dram", "height", _FakeExplicitCoreRanges((0, 0), (1, 0)), "L1 or L1Small"),
+        ("dram", "height", _FakeExplicitCoreRanges((0, 0), (1, 0)), "sharded SRAM"),
         (
             "l1",
             "interleaved",

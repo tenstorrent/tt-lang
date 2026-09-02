@@ -220,7 +220,7 @@ argument.
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
-| Base tensor in `func_args` | Typed tensor accessor | Data movement accepts DRAM/L1 and sharded L1Small; compute accepts height-, width-, or block-sharded L1/L1Small. |
+| Base tensor in `func_args` | Typed tensor accessor | Data movement accepts device DRAM or SRAM; compute accepts height-, width-, or block-sharded SRAM. |
 | `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Supports NOC and compute kernels; slices and derived tensor values are rejected. |
 | Captured `ttnn.GlobalSemaphore` | `uint32_t` address literal or parameter | The address is fixed for the compiled operation. |
 
@@ -442,10 +442,14 @@ C++ function argument.
 
 A base tensor in `func_args` preserves its TTL layout and storage. A data-
 movement kernel receives a `TensorAccessor` containing the runtime buffer
-address and compile-time accessor configuration for DRAM, L1, or sharded
-L1Small. A compute kernel receives a byte-addressable
-`LocalTensorAccessor<uint8_t>` only for height-, width-, or block-sharded L1 or
-L1Small storage. The runtime checks that each executing core has a local shard.
+address and compile-time accessor configuration for device DRAM or SRAM. A
+compute kernel receives a byte-addressable `LocalTensorAccessor<uint8_t>` only
+for height-, width-, or block-sharded SRAM. The runtime checks that each
+executing core has a local shard.
+
+TTL retains the `L1` and `L1Small` enum spellings to match TTNN buffer types.
+Both select worker SRAM. `L1Small` corresponds to TTNN `L1_SMALL`, a separately
+reserved SRAM region that supports only sharded allocations.
 Both accessor forms support TILE and ROW_MAJOR tensors. TILE accepts FLOAT32,
 BFLOAT16, BFLOAT8_B, BFLOAT4_B, INT32, UINT32, UINT16, and UINT8. ROW_MAJOR
 accepts FLOAT32, BFLOAT16, INT32, UINT32, UINT16, and UINT8. Ethernet tensor
