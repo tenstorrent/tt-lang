@@ -229,8 +229,12 @@ PY
     local emule_commit
     mkdir -p "$emule_source"
     git -C "$emule_source" init -q
+    mkdir -p "$emule_source/cluster_descriptors"
     touch "$emule_source/tracked-source"
-    git -C "$emule_source" add tracked-source
+    touch \
+        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    git -C "$emule_source" add \
+        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml
     git -C "$emule_source" \
         -c user.name=test -c user.email=test@example.com \
         commit -q -m "Pinned source"
@@ -256,6 +260,23 @@ PY
     refute_log_line "tt-emule-source=$emule_source"
     assert_log_line "${TTLANG_REPO_ROOT}/scripts"
     assert_log_line "run"
+}
+
+@test "P150 target rejects an incompatible pinned runtime before Docker build" {
+    local source_commit
+    source_commit="$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD)"
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$source_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "does not provide the required P150 descriptor"
+    assert_output --partial "TTLANG_EMULE_RUNTIME_SOURCE_DIR"
+    refute_log_line "build"
+    refute_log_line "run"
 }
 
 @test "an unpinned emulator checkout fails before the image build" {
