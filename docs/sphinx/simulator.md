@@ -70,10 +70,11 @@ script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
 By default, the launcher fetches its pinned emulator revision with the host's
-Git client and passes only the checkout to BuildKit. To use another compatible
-emulator revision, set `TTLANG_EMULE_RUNTIME_SOURCE_DIR`,
-`TTLANG_EMULE_RUNTIME_COMMIT`, and `TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The
-source must be a Git checkout at the selected revision. This keeps host Git
+Git client. To use another compatible emulator revision, set
+`TTLANG_EMULE_RUNTIME_SOURCE_DIR`, `TTLANG_EMULE_RUNTIME_COMMIT`, and
+`TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The source must be a Git checkout at the
+selected revision. The launcher exports that commit into a temporary build
+context, excluding Git metadata and local files. This keeps host Git
 credentials out of the Docker build.
 
 The backend requires a working Docker-compatible daemon. Its image is Linux
@@ -99,9 +100,15 @@ Set `TTLANG_EMULE_REBUILD=1` to rebuild the runtime image, or
 The initial supported target is a single emulated Blackhole P150 device with
 the full, unharvested 13x10 compute grid. The launcher selects the emulator's
 P150 descriptor and configures tt-metal's hybrid allocator before the device
-is opened. Options specific to the Python backend, such as `--grid`, `--trace`,
-and `--no-float32-promotion`, do not apply to compiler-backed emulation.
-Arguments after `--` are always passed to the user script:
+is opened. Select a compatible pinned emulator checkout and its matching
+tt-metal revision through `TTLANG_EMULE_RUNTIME_SOURCE_DIR`,
+`TTLANG_EMULE_RUNTIME_COMMIT`, and `TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The
+launcher rejects a runtime without the required P150 descriptor before the
+Docker build starts.
+
+Options specific to the Python backend, such as `--grid`, `--trace`, and
+`--no-float32-promotion`, do not apply to compiler-backed emulation. Arguments
+after `--` are always passed to the user script:
 
 ```bash
 ./bin/tt-lang-sim program.py --backend emule -- --program-option value

@@ -155,8 +155,9 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reuse_user_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Reuse physical DFB indices only for logical lifetimes proven "
-        "not to overlap across concurrent kernels (default: enabled).",
+        help="Reuse physical DFB indices and compiler-managed storage only "
+        "for lifetimes proven not to overlap across concurrent kernels "
+        "(default: enabled).",
     )
     p.add_argument(
         "--ttl-unsafe-assume-dfb-allocation-groups",

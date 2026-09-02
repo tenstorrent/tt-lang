@@ -24,26 +24,29 @@ case "${1:-}" in
     image)
         exit "${MOCK_DOCKER_IMAGE_STATUS:-0}"
         ;;
-    build|run)
+    build)
+        if [ "${MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT:-0}" = "1" ]; then
+            source_context=""
+            for argument in "$@"; do
+                case "$argument" in
+                    tt-emule-source=*)
+                        source_context="${argument#tt-emule-source=}"
+                        ;;
+                esac
+            done
+            [ -f "$source_context/tracked-source" ] || exit 97
+            [ ! -e "$source_context/.git" ] || exit 98
+            [ ! -e "$source_context/untracked-secret" ] || exit 99
+        fi
+        exit 0
+        ;;
+    run)
         exit 0
         ;;
     *)
         exit 99
         ;;
 esac
-EOF
-    chmod +x "$target"
-}
-
-make_mock_pinned_git() {
-    local target="$1"
-    cat > "$target" <<'EOF'
-#!/usr/bin/env bash
-if [[ "$*" == *"rev-parse HEAD"* ]]; then
-    printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    exit 0
-fi
-exit 99
 EOF
     chmod +x "$target"
 }
@@ -192,30 +195,88 @@ EOF
     refute_log_line "-t"
 }
 
-@test "missing image triggers a pinned image build before the run" {
-    local emule_source="$BATS_TEST_TMPDIR/external-emule"
-    local mock_bin="$BATS_TEST_TMPDIR/pinned-git-bin"
-    mkdir -p "$emule_source"
-    mkdir -p "$mock_bin"
-    emule_source="$(cd "$emule_source" && pwd -P)"
-    make_mock_pinned_git "$mock_bin/git"
+@test "redirected stdin prevents tty allocation when stdout is a tty" {
     cd "$TTLANG_REPO_ROOT"
-    PATH="$mock_bin:$PATH" \
-        MOCK_DOCKER_IMAGE_STATUS=1 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+    run -0 env TTLANG_EMULE_DOCKER="$MOCK_DOCKER" python3 - "$RUNNER" <<'PY'
+import os
+import pty
+import subprocess
+import sys
+
+master, slave = pty.openpty()
+try:
+    result = subprocess.run(
+        [sys.argv[1], "examples/eltwise_add.py"],
+        stdin=subprocess.DEVNULL,
+        stdout=slave,
+        stderr=subprocess.PIPE,
+        env=os.environ,
+        check=False,
+    )
+finally:
+    os.close(master)
+    os.close(slave)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+PY
+
+    assert_log_line "-i"
+    refute_log_line "-t"
+}
+
+@test "missing image exports pinned source before the build" {
+    local emule_source="$BATS_TEST_TMPDIR/external-emule"
+    local emule_commit
+    mkdir -p "$emule_source"
+    git -C "$emule_source" init -q
+    mkdir -p "$emule_source/cluster_descriptors"
+    touch "$emule_source/tracked-source"
+    touch \
+        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    git -C "$emule_source" add \
+        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml
+    git -C "$emule_source" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Pinned source"
+    touch "$emule_source/untracked-secret"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    emule_source="$(cd "$emule_source" && pwd -P)"
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
-        TTLANG_EMULE_RUNTIME_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
         TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
         run -0 "$RUNNER" examples/eltwise_add.py
 
     assert_log_line "build"
     assert_log_contains "Dockerfile.emule"
     assert_log_line \
-        "TT_EMULE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "TT_EMULE_COMMIT=$emule_commit"
     assert_log_line \
         "TT_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    assert_log_line "tt-emule-source=$emule_source"
+    assert_log_contains "tt-emule-source="
+    refute_log_line "tt-emule-source=$emule_source"
     assert_log_line "${TTLANG_REPO_ROOT}/scripts"
     assert_log_line "run"
+}
+
+@test "P150 target rejects an incompatible pinned runtime before Docker build" {
+    local source_commit
+    source_commit="$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD)"
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$source_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "does not provide the required P150 descriptor"
+    assert_output --partial "TTLANG_EMULE_RUNTIME_SOURCE_DIR"
+    refute_log_line "build"
+    refute_log_line "run"
 }
 
 @test "an unpinned emulator checkout fails before the image build" {

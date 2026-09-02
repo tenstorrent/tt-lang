@@ -14,6 +14,7 @@ readonly _DEFAULT_TT_METAL_COMMIT="d48d09dee19de51f694a52fdf75d569950d38ceb"
 readonly _TT_EMULE_COMMIT="${TTLANG_EMULE_RUNTIME_COMMIT:-$_DEFAULT_TT_EMULE_COMMIT}"
 readonly _TT_METAL_COMMIT="${TTLANG_EMULE_RUNTIME_METAL_COMMIT:-$_DEFAULT_TT_METAL_COMMIT}"
 readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-https://github.com/tenstorrent/tt-emule.git}"
+readonly _REQUIRED_EMULE_FILE="cluster_descriptors/blackhole_P150_unharvested.yaml"
 
 for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
     if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
@@ -40,14 +41,20 @@ _SOURCE_ID="$(printf '%s' "$_REPO_ROOT" | cksum | awk '{print $1}')"
 _BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}-${_SOURCE_ID}}"
 _CACHE_VOLUME="${TTLANG_EMULE_CACHE_VOLUME:-tt-lang-emule-cache-${_RUNTIME_ID}}"
 _TEMP_EMULE_SOURCE=""
+_TEMP_EMULE_CONTEXT=""
 
 cleanup() {
-    if [ -n "$_TEMP_EMULE_SOURCE" ] && [ -d "$_TEMP_EMULE_SOURCE" ]; then
-        rm -rf -- "$_TEMP_EMULE_SOURCE"
-    fi
+    for _TEMP_DIR in "$_TEMP_EMULE_SOURCE" "$_TEMP_EMULE_CONTEXT"; do
+        if [ -n "$_TEMP_DIR" ] && [ -d "$_TEMP_DIR" ]; then
+            rm -rf -- "$_TEMP_DIR"
+        fi
+    done
 }
 
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
     cat >&2 <<'EOF'
@@ -124,7 +131,7 @@ _RUN_ARGS+=(--workdir "$_CONTAINER_CWD")
 
 # Docker detaches stdin without -i, including when the caller supplies a pipe.
 _RUN_ARGS+=(-i)
-if [ -t 1 ]; then
+if [ -t 0 ] && [ -t 1 ]; then
     _RUN_ARGS+=(-t)
 fi
 
@@ -166,10 +173,20 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
         echo "  found:  ${_EMULE_SOURCE_COMMIT:-not a Git checkout}" >&2
         exit 1
     fi
+    _TEMP_EMULE_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-emule-context.XXXXXX")"
+    git -C "$_EMULE_SOURCE" archive --format=tar "$_TT_EMULE_COMMIT" |
+        tar -xf - -C "$_TEMP_EMULE_CONTEXT"
+    if [ ! -f "${_TEMP_EMULE_CONTEXT}/${_REQUIRED_EMULE_FILE}" ]; then
+        echo "tt-lang-sim: selected emulator does not provide the required P150 descriptor." >&2
+        echo "  missing: ${_REQUIRED_EMULE_FILE}" >&2
+        echo "  Select a compatible pinned runtime with TTLANG_EMULE_RUNTIME_SOURCE_DIR," >&2
+        echo "  TTLANG_EMULE_RUNTIME_COMMIT, and TTLANG_EMULE_RUNTIME_METAL_COMMIT." >&2
+        exit 1
+    fi
     echo "tt-lang-sim: building compiler + tt-emule image ${_IMAGE}" >&2
     "$_DOCKER" build \
         --platform "$_PLATFORM" \
-        --build-context "tt-emule-source=${_EMULE_SOURCE}" \
+        --build-context "tt-emule-source=${_TEMP_EMULE_CONTEXT}" \
         --file "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
         --build-arg "TT_EMULE_COMMIT=${_TT_EMULE_COMMIT}" \
         --build-arg "TT_METAL_COMMIT=${_TT_METAL_COMMIT}" \
