@@ -594,6 +594,15 @@ struct TTLFinalizeDFBIndicesPass
         }
       };
 
+      // A user DFB without an explicit acquire still has a live ring from
+      // bind onward (for example, a foreign operation may drive it). Anchor
+      // that interval here; the refinement below advances the start to the
+      // first acquire when one exists. Compiler DFB lifetimes are represented
+      // by their generated uses and need not be anchored.
+      if (!dfb.compilerAllocated) {
+        extendInterval(dfb, bindOp, func, *order);
+      }
+
       // Pipe destinations are slot-addressed (block_count == sender count)
       // and pipe sends read asynchronously, so pipe-attached DFBs keep
       // dedicated indices.
