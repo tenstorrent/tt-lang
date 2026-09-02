@@ -70,10 +70,11 @@ script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
 By default, the launcher fetches its pinned emulator revision with the host's
-Git client and passes only the checkout to BuildKit. To use another compatible
-emulator revision, set `TTLANG_EMULE_RUNTIME_SOURCE_DIR`,
-`TTLANG_EMULE_RUNTIME_COMMIT`, and `TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The
-source must be a Git checkout at the selected revision. This keeps host Git
+Git client. To use another compatible emulator revision, set
+`TTLANG_EMULE_RUNTIME_SOURCE_DIR`, `TTLANG_EMULE_RUNTIME_COMMIT`, and
+`TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The source must be a Git checkout at the
+selected revision. The launcher exports that commit into a temporary build
+context, excluding Git metadata and local files. This keeps host Git
 credentials out of the Docker build.
 
 The backend requires a working Docker-compatible daemon. Its image is Linux
