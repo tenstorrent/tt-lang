@@ -2729,6 +2729,58 @@ def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
     } == {(1, 0)}
 
 
+def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    scratch_allocations = []
+
+    def allocate_scratch(core_ranges, num_bytes, allocation_device):
+        scratch_allocations.append((core_ranges, num_bytes, allocation_device))
+        return _FakeTensor(allocation_device, address=0x8000)
+
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    reconfigured = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    unchanged = PhysicalDFBConfig(1, 1, "float32", 1, 4096, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, reconfigured),
+                DFBConfigurationEpoch(7, reconfigured),
+            ),
+            (DFBConfigurationEpoch(None, unchanged),),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
+        device=device,
+    )
+
+    assert set(resources.scratch_tensors) == {0}
+    assert len(scratch_allocations) == 1
+    assert scratch_allocations[0][1:] == (2048, device)
+
+
 def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     device = object()
@@ -5235,13 +5287,13 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
         plan=plan,
     )
 
-    assert len(scratch_addresses) == 33
+    assert len(scratch_addresses) == 1
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[256]) == 0
     assert int(encoded[257]) == 1
     assert tuple(int(value) for value in encoded[128:132]) == (
-        scratch_addresses[32],
+        scratch_addresses[0],
         12288,
         6,
         2048,
@@ -5462,6 +5514,112 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
 
     assert len(descriptors) == 1
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
+
+
+def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+def test_storage_group_uses_one_lcm_aligned_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    configs = [
+        PhysicalDFBConfig(0, 3, "bfloat16", 1, 3072, None, storage_index=4),
+        PhysicalDFBConfig(1, 2, "bfloat16", 1, 4096, None, storage_index=4),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 12288
+    assert [
+        descriptor.buffer_index for descriptor in descriptors[0].format_descriptors
+    ] == [0, 1]
+
+
+def test_storage_group_partitions_disjoint_residency_signatures(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+            storage_index=2,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "float32",
+            1,
+            4096,
+            (32, 32),
+            allocation_nodes=((1, 0),),
+            storage_index=2,
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert descriptors_by_index[0].total_size == 2048
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert descriptors_by_index[1].total_size == 4096
+    assert _descriptor_cores(descriptors_by_index[1]) == {(1, 0)}
 
 
 # An exact empty allocation domain installs no runtime descriptor.

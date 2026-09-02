@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -64,7 +65,37 @@ FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module);
 /// Verifies that the selected target implements DFB reconfiguration.
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
 
-/// Per-node L1 footprint aggregated by unique physical DFB index.
+/// Static storage capacity and page alignment shared by one or more DFBs.
+struct DFBStorageLayout {
+  uint64_t capacityBytes = 0;
+  uint64_t alignmentBytes = 1;
+};
+
+/// Extends a shared storage layout for one DFB allocation. The capacity is
+/// rounded to a multiple of every member's page size so each runtime format
+/// descriptor can use the same backing allocation.
+FailureOr<DFBStorageLayout>
+mergeDFBStorageLayout(const DFBStorageLayout &layout, uint64_t memberBytes,
+                      uint64_t memberPageSize, std::string &failureReason);
+
+/// Per-node L1 footprint aggregated by compiler-selected storage index.
+class DFBStorageFootprint {
+public:
+  /// Adds one DFB. On failure, `failureReason` describes the invalid type.
+  LogicalResult add(int64_t storageIndex, CircularBufferType type,
+                    std::string &failureReason);
+
+  bool empty() const { return layoutByIndex.empty(); }
+  /// Returns the sum after target allocation rounding is applied per storage.
+  FailureOr<uint64_t> getL1AllocationBytes(ModuleOp module) const;
+  uint64_t getBytes(int64_t storageIndex) const;
+  llvm::SmallVector<int64_t> getSortedStorageIndices() const;
+
+private:
+  llvm::DenseMap<int64_t, DFBStorageLayout> layoutByIndex;
+};
+
+/// L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:
   /// Adds one assignment and returns true when it increases the index size.
@@ -85,8 +116,29 @@ private:
   llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;
 };
 
-/// Returns the per-node DFB footprint of all declarations in `module`.
-FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
+/// Finalized static DFB storage, including launch-node residency metadata.
+struct FinalizedDFBStorageFootprint {
+  using MembersByStorageIndex =
+      llvm::DenseMap<int64_t, llvm::SmallVector<int64_t>>;
+
+  DFBStorageFootprint globalFootprint;
+  MembersByStorageIndex globalMembers;
+  llvm::SmallVector<LaunchNodeCoord> launchNodes;
+  llvm::SmallVector<DFBStorageFootprint> footprintsByNode;
+  llvm::SmallVector<MembersByStorageIndex> membersByNode;
+  llvm::DenseMap<int64_t, int64_t> storageIndexByPhysicalIndex;
+  bool usesPerNodeAccounting = false;
+
+  /// Returns the maximum target-rounded storage allocation on any launch node.
+  FailureOr<uint64_t> getPeakL1AllocationBytes(
+      ModuleOp module,
+      std::optional<LaunchNodeCoord> *peakNode = nullptr) const;
+};
+
+/// Reads finalized storage and node-residency metadata and aggregates all
+/// non-tensor-backed DFB declarations.
+FailureOr<FinalizedDFBStorageFootprint>
+getFinalizedDFBStorageFootprint(ModuleOp module);
 
 /// Returns a conservative footprint that assigns each logical DFB separate
 /// storage. Tensor-backed declarations do not allocate additional L1.
@@ -100,8 +152,8 @@ FailureOr<uint64_t> getGlobalSemaphoreL1Bytes(ModuleOp module,
 
 /// Validates finalized DFB storage plus hidden runtime allocations.
 LogicalResult validateCombinedDFBResourceL1Bytes(
-    ModuleOp module, const DFBAllocationFootprint &allocationFootprint,
-    uint64_t scratchBytes, int64_t globalSemaphoreCount,
+    ModuleOp module, uint64_t dfbBytes, uint64_t scratchBytes,
+    int64_t globalSemaphoreCount,
     std::optional<uint64_t> overrideBytes = std::nullopt);
 
 /// Verifies that the selected target implements synchronized DFB reset.

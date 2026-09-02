@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import itertools
 import json
+import math
 import operator
 import os
 import threading
@@ -128,6 +129,13 @@ def _validate_physical_dfb_config(
         raise ValueError(
             f"DFB config at physical index {physical_index} has dfb_index "
             f"{config.dfb_index}"
+        )
+    if config.storage_index is not None and (
+        type(config.storage_index) is not int or config.storage_index < 0
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] storage_index must be a nonnegative "
+            f"integer, got {config.storage_index!r}"
         )
     allocation_nodes = None
     if config.allocation_nodes is not None:
@@ -2353,6 +2361,8 @@ def build_dfb_reconfiguration_runtime_resources(
     scratch_bytes_by_index = {}
     scratch_nodes_by_index = {}
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
+        if not any(epoch.entry_reconfiguration_ordinal is not None for epoch in epochs):
+            continue
         scratch_bytes = 0
         scratch_nodes = set()
         for epoch in epochs:
@@ -3028,6 +3038,30 @@ def _order_static_dfb_descriptor_plans(
             break
         current_score, current_order, current_result = next_candidate
 
+    # A relocation can improve an ordering when no improving pairwise swap
+    # exists because it changes every intervening allocation position.
+    while current_score[0] > 0:
+        next_candidate = None
+        for source_position in range(len(current_order)):
+            shortened_order = list(current_order)
+            moved_plan_index = shortened_order.pop(source_position)
+            for destination_position in range(len(current_order)):
+                if destination_position == source_position:
+                    continue
+                candidate_order_list = list(shortened_order)
+                candidate_order_list.insert(destination_position, moved_plan_index)
+                candidate_order = tuple(candidate_order_list)
+                candidate_result = evaluate_order(candidate_order)
+                candidate_score = packing_score(candidate_result)
+                if candidate_score >= current_score:
+                    continue
+                candidate = (candidate_score, candidate_order, candidate_result)
+                if next_candidate is None or candidate < next_candidate:
+                    next_candidate = candidate
+        if next_candidate is None:
+            break
+        current_score, current_order, current_result = next_candidate
+
     def apply_order(order: Tuple[int, ...]) -> List[_DFBDescriptorPlan]:
         ordered_plans = list(descriptor_plans)
         for destination_index, source_index in zip(static_plan_indices, order):
@@ -3186,6 +3220,21 @@ def _order_static_dfb_descriptor_plans(
     )
 
 
+def _physical_dfb_storage_index(config: PhysicalDFBConfig) -> int:
+    return config.dfb_index if config.storage_index is None else config.storage_index
+
+
+def _shared_static_storage_size(
+    member_indices: Sequence[int],
+    allocations: Sequence[_DFBAllocation],
+) -> int:
+    page_alignment = math.lcm(
+        *(allocations[index].page_size for index in member_indices)
+    )
+    maximum_size = max(allocations[index].total_size for index in member_indices)
+    return _align_up(maximum_size, page_alignment)
+
+
 def _build_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -3195,6 +3244,15 @@ def _build_dfb_descriptors(
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
 ) -> List[Any]:
     """Build exact-source descriptors and order their static L1 storage."""
+
+    static_members_by_storage_by_core: Dict[int, Dict[Tuple[int, int], set[int]]] = {}
+    for dfb_index, placement in enumerate(placements):
+        for core, (storage_kind, _) in placement.items():
+            if storage_kind == "static":
+                storage_index = _physical_dfb_storage_index(cb_configs[dfb_index])
+                static_members_by_storage_by_core.setdefault(
+                    storage_index, {}
+                ).setdefault(core, set()).add(dfb_index)
 
     descriptor_plans = []
     for dfb_index, placement in enumerate(placements):
@@ -3211,6 +3269,8 @@ def _build_dfb_descriptors(
         for source in ordered_sources:
             source_cores = cores_by_source[source]
             kind, segment_index = source
+            if kind == "static":
+                continue
             allocation = allocations[dfb_index]
             format_descriptor = _cb_format_descriptor(dfb_index, allocation)
             source_ranges = _make_singleton_core_ranges(sorted(source_cores))
@@ -3227,6 +3287,7 @@ def _build_dfb_descriptors(
                     core_ranges=source_ranges,
                 )
             else:
+                assert kind in ("backing", "computed")
                 descriptor = ttnn.CBDescriptor(
                     total_size=allocation.total_size,
                     core_ranges=source_ranges,
@@ -3246,7 +3307,33 @@ def _build_dfb_descriptors(
                     physical_index=dfb_index,
                     total_size=allocation.total_size,
                     nodes=tuple(sorted(source_cores)),
-                    has_static_storage=kind == "static",
+                    has_static_storage=False,
+                )
+            )
+
+    for _, members_by_core in sorted(static_members_by_storage_by_core.items()):
+        cores_by_member_indices: Dict[Tuple[int, ...], set[Tuple[int, int]]] = {}
+        for core, member_set in members_by_core.items():
+            member_indices = tuple(sorted(member_set))
+            cores_by_member_indices.setdefault(member_indices, set()).add(core)
+        for member_indices, source_core_set in sorted(cores_by_member_indices.items()):
+            source_cores = tuple(sorted(source_core_set))
+            total_size = _shared_static_storage_size(member_indices, allocations)
+            descriptor = ttnn.CBDescriptor(
+                total_size=total_size,
+                core_ranges=_make_singleton_core_ranges(source_cores),
+                format_descriptors=[
+                    _cb_format_descriptor(index, allocations[index])
+                    for index in member_indices
+                ],
+            )
+            descriptor_plans.append(
+                _DFBDescriptorPlan(
+                    descriptor=descriptor,
+                    physical_index=min(member_indices),
+                    total_size=total_size,
+                    nodes=source_cores,
+                    has_static_storage=True,
                 )
             )
     descriptor_plans = _order_static_dfb_descriptor_plans(
@@ -3405,25 +3492,45 @@ def build_cb_descriptors(
     allocation_quantum_bytes = _get_l1_allocation_quantum_bytes(device)
 
     allocations = []
-    static_cb_bytes = 0
-    static_allocation_summaries = []
+    whole_static_members_by_storage: Dict[int, List[int]] = {}
+    separately_allocated_static_indices = []
     for physical_index, config in enumerate(cb_configs):
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, physical_index)
-        aligned_bytes = _align_up(allocation.total_size, allocation_quantum_bytes)
-        allocation_summary = (
-            f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
-            f"block_count={allocation.block_count} "
-            f"format={config.data_format} tile={allocation.tile} -> "
-            f"{aligned_bytes} bytes"
-        )
         allocations.append(allocation)
         has_static_storage = not config.storage_segments or any(
             not segment.is_tensor_backed for segment in config.storage_segments
         )
         if physical_index not in backing_tensors and has_static_storage:
-            static_cb_bytes += aligned_bytes
-            static_allocation_summaries.append(allocation_summary)
+            if not config.storage_segments:
+                whole_static_members_by_storage.setdefault(
+                    _physical_dfb_storage_index(config), []
+                ).append(physical_index)
+            else:
+                separately_allocated_static_indices.append(physical_index)
+
+    static_cb_bytes = sum(
+        _align_up(
+            _shared_static_storage_size(member_indices, allocations),
+            allocation_quantum_bytes,
+        )
+        for member_indices in whole_static_members_by_storage.values()
+    ) + sum(
+        _align_up(allocations[index].total_size, allocation_quantum_bytes)
+        for index in separately_allocated_static_indices
+    )
+    static_allocation_summaries = [
+        f"  storage[{storage_index}] DFBs={member_indices} -> "
+        f"{_align_up(_shared_static_storage_size(member_indices, allocations), allocation_quantum_bytes)} bytes"
+        for storage_index, member_indices in sorted(
+            whole_static_members_by_storage.items()
+        )
+    ]
+    static_allocation_summaries.extend(
+        f"  DFB[{index}] segmented static storage -> "
+        f"{_align_up(allocations[index].total_size, allocation_quantum_bytes)} bytes"
+        for index in separately_allocated_static_indices
+    )
 
     placements = _resolve_dfb_placements(
         cb_configs, core_ranges, backing_tensors, kernel_specs
@@ -3463,7 +3570,7 @@ def build_cb_descriptors(
             f"{static_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
             "This checks static DFB backing store only (not all L1 on core).\n"
             + breakdown
-            + "\n  hint: reduce DFB shapes or block_count."
+            + "\n  hint: reduce DFB shapes, block_count, or concurrently used DFB storage."
         )
 
     cb_descriptors = []
@@ -3471,13 +3578,13 @@ def build_cb_descriptors(
         config = cb_configs[cb_index]
         cb_format = _cb_format_descriptor(cb_index, allocation)
         if not config.storage_segments:
-            descriptor = ttnn.CBDescriptor(
-                total_size=allocation.total_size,
-                core_ranges=core_ranges,
-                format_descriptors=[cb_format],
-            )
             backing_tensor = backing_tensors.get(cb_index)
             if backing_tensor is not None:
+                descriptor = ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=core_ranges,
+                    format_descriptors=[cb_format],
+                )
                 backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                     cb_index,
                     backing_tensor,
@@ -3485,7 +3592,7 @@ def build_cb_descriptors(
                     core_ranges=core_ranges,
                 )
                 descriptor.set_buffer_from_cb(backing_descriptor)
-            cb_descriptors.append(descriptor)
+                cb_descriptors.append(descriptor)
             continue
 
         for segment in config.storage_segments:
@@ -3520,6 +3627,18 @@ def build_cb_descriptors(
                     core_ranges=segment_core_ranges,
                 )
             )
+
+    for member_indices in whole_static_members_by_storage.values():
+        cb_descriptors.append(
+            ttnn.CBDescriptor(
+                total_size=_shared_static_storage_size(member_indices, allocations),
+                core_ranges=core_ranges,
+                format_descriptors=[
+                    _cb_format_descriptor(index, allocations[index])
+                    for index in member_indices
+                ],
+            )
+        )
 
     return cb_descriptors
 
@@ -4238,6 +4357,8 @@ def _append_physical_dfb_config_source(
     lines.append(f"{indent}    block_count={config.block_count},")
     lines.append(f"{indent}    page_size={config.page_size},")
     lines.append(f"{indent}    tile={config.tile!r},")
+    if config.storage_index is not None:
+        lines.append(f"{indent}    storage_index={config.storage_index},")
     if config.allocation_nodes is not None:
         lines.append(f"{indent}    allocation_nodes={config.allocation_nodes!r},")
     if config.storage_segments:

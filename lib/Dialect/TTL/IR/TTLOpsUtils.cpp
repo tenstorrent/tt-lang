@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -124,6 +125,27 @@ FailureOr<int64_t> getDFBId(Value cb) {
     return failure();
   }
   return dfbId->getSExtValue();
+}
+
+SmallVector<unsigned> getOpaqueDFBDependencyIndices(OpaqueCallOp call) {
+  SmallVector<Value> dependencies = call.getDFBDependencyOperands();
+  llvm::BitVector describedDependencies(dependencies.size());
+  for (const DFBProtocolEffect &effect : call.getDFBProtocolEffects()) {
+    describedDependencies.set(effect.dependencyIndex);
+  }
+  for (const DFBNonTransactionalAccess &access :
+       call.getDFBNonTransactionalAccesses()) {
+    describedDependencies.set(access.dependencyIndex);
+  }
+
+  SmallVector<unsigned> opaqueDependencies;
+  for (unsigned dependencyIndex = 0;
+       dependencyIndex < describedDependencies.size(); ++dependencyIndex) {
+    if (!describedDependencies.test(dependencyIndex)) {
+      opaqueDependencies.push_back(dependencyIndex);
+    }
+  }
+  return opaqueDependencies;
 }
 
 FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type) {
