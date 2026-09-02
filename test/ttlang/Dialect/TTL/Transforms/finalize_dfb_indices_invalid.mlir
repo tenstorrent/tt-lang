@@ -1,9 +1,7 @@
 // Invalid control-flow and lifetime contracts for ttl-finalize-dfb-indices.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
 
-// A resident loop needs a forward phase cut and a cyclic return cut.
-
-// expected-error @below {{a cyclic resident loop requires at least two reset_dataflow_buffers calls}}
+// A single cyclic cut restores phase zero on every loop backedge.
 func.func @one_cyclic_cut()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %c0 = arith.constant 0 : index
