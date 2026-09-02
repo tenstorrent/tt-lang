@@ -2398,9 +2398,13 @@ static LogicalResult lowerTTLOpsToTTKernel(
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
   resetLoweringPlan->scratchBaseOffset =
       pipeModulePlan.getTrailingSramScratchOffset();
-  FailureOr<DFBAllocationFootprint> allocationFootprint =
-      getDFBAllocationFootprint(mod);
-  if (failed(allocationFootprint)) {
+  FailureOr<FinalizedDFBStorageFootprint> allocationFootprint =
+      getFinalizedDFBStorageFootprint(mod);
+  FailureOr<uint64_t> allocationBytes =
+      succeeded(allocationFootprint)
+          ? allocationFootprint->getPeakL1AllocationBytes(mod)
+          : FailureOr<uint64_t>(failure());
+  if (failed(allocationBytes)) {
     mod.emitOpError("failed to compute finalized DFB allocation sizes");
     return failure();
   }
@@ -2411,7 +2415,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   if (failed(validateCombinedDFBResourceL1Bytes(
-          mod, *allocationFootprint,
+          mod, *allocationBytes,
           static_cast<uint64_t>(resourceRequirements.sramScratchBytes),
           resourceRequirements.globalSemaphoreCount, l1BudgetOverride))) {
     return failure();

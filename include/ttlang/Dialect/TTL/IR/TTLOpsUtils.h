@@ -369,6 +369,12 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
 /// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
 FailureOr<int64_t> getDFBId(mlir::Value cb);
 
+/// Return DFB dependency occurrence indices without an access contract.
+///
+/// Each returned occurrence may perform arbitrary protocol actions inside the
+/// external callee and remains incomplete for lifecycle analysis.
+SmallVector<unsigned> getOpaqueDFBDependencyIndices(OpaqueCallOp call);
+
 /// Returns the number of pages in one DFB block.
 FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type);
 

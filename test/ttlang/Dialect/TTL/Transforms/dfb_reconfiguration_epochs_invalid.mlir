@@ -41,7 +41,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 #writer_l1 = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "l1_operation">
 #boundary_l1 = #ttl.dfb_reconfiguration<0, participants[#compute_l1, #reader_l1, #writer_l1]>
 
-// expected-error @below {{DFB and fixed-state allocation requires 3136 L1 bytes but the budget is 3000 (DFB=2048, reset scratch=0, reconfiguration state=1088)}}
+// expected-error @below {{selected DFB and fixed-state allocation uses 3136 L1 bytes, exceeding the 3000-byte budget (DFB=2048, reset scratch=0, reconfiguration state=1088)}}
 module attributes {
   ttl.launch_grid = [1, 1],
   ttcore.system_desc = #ttcore.system_desc<[{role = host, target_triple = "x86_64-pc-linux"}], [{arch = <blackhole>, grid = 8x8, coord_translation_offsets = 18x18, l1_size = 3000, num_dram_channels = 12, dram_channel_size = 1073741824, noc_l1_address_align_bytes = 16, pcie_address_align_bytes = 32, noc_dram_address_align_bytes = 32, l1_unreserved_base = 0, erisc_l1_unreserved_base = 0, dram_unreserved_base = 0, dram_unreserved_end = 1073741824, supported_data_types = [<f32>, <f16>, <bf16>], supported_tile_sizes = [32x32], dst_physical_size_tiles = 16, num_cbs = 64, num_compute_threads = 1, num_datamovement_threads = 2, dram_grid = 1x12, dram_bank_to_logical_worker_noc0 = [(0, 0)], dram_bank_to_logical_worker_noc1 = [(0, 0)]}], [0], [1 : i32], [ 0x0x0x0]>

@@ -394,16 +394,19 @@ replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.
 
 Per-core L1 accounting uses target allocation quanta rather than logical byte
-counts. It includes one aligned maximum allocation per non-tensor-backed
-physical DFB index, one aligned configuration tensor per boundary, aligned
-PipeNet scratch, and one allocation quantum per GlobalSemaphore. Transport
-formation uses a conservative upper bound that includes scalar, grouped,
-residual, and record-selected callback resources. Finalization minimizes
-weighted physical DFB allocation when authoritative capacity requires it and
-may also do so for the conservative PipeNet reservation. The budget pass checks
-finalized DFB plus configuration state; conversion performs the authoritative
-combined check from the exact PipeNet plan. Every pass uses the same resolved
-target budget or `l1-budget-override`.
+counts. On each launch node it includes one aligned maximum allocation per
+non-tensor-backed storage index resident on that node, allocator-rounded reset
+state, one aligned configuration tensor per boundary, aligned PipeNet scratch,
+and one allocation quantum per GlobalSemaphore. Unknown allocation domains are
+resident on every launch node. Missing finalized residency metadata uses the
+conservative global descriptor sum. Transport formation uses a conservative
+upper bound that includes scalar, grouped, residual, and record-selected
+callback resources. Finalization processes descriptors by decreasing aligned
+size. For each descriptor, it selects the legal storage index with the lowest
+current maximum node allocation, then the lowest global allocation. The budget
+pass checks finalized storage plus fixed state; conversion performs the
+authoritative combined check from the exact PipeNet plan. Every pass uses the
+same resolved target budget or `l1-budget-override`.
 
 ## DFB Lifecycle
 
@@ -610,15 +613,29 @@ assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
 role (producer or consumer), an overlapping launched node when available, the
 participating operation sites, and the originating `ttl.bind_cb`.
 
-Setting `TTL_RELAX_DFB_SPSC` skips only launch-node-domain proofs that require
-the program to provide synchronization absent from IR. It skips overlapping
-producer/consumer domain checks here and producer correspondence for DFB waits
-in `ttl-verify-pipenet-guards`. Finalized DFB identity, physical-index, and
-launch-grid preconditions remain mandatory. PipeNet endpoint guards, transfer
+The pass also rejects a logical DFB when a kernel thread waits on it and no
+producer is possible. A compiler-visible push proves a producer exists. An
+opaque external DFB dependency without an access contract may contain a push,
+and `unknown_dfb_access` may contain a push for any user-managed DFB. An
+explicit `inspect` contract excludes protocol actions. Reserving storage is
+insufficient: `ttl.cb_wait` observes pages published by a push. This structural
+check does not depend on launch-domain analysis and remains enabled under the
+diagnostic relaxation.
+
+Setting `TTL_RELAX_DFB_SPSC` skips only per-launch-node ownership and
+producer-correspondence checks that require synchronization absent from IR. It
+skips overlapping producer/consumer domain checks here and same-node producer
+correspondence for DFB waits in `ttl-verify-pipenet-guards`. A waited DFB still
+requires either a compiler-visible push or uncontracted external access that
+may contain one. Finalized DFB identity, physical-index, and launch-grid
+preconditions remain mandatory. PipeNet endpoint guards, transfer
 correspondence, and synchronization schedules also remain mandatory. Strict
 verification is the default.
 
-See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
+See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
+`verify_dfb_spsc_missing_producer_invalid.mlir` and
+`verify_dfb_spsc_unknown_access_invalid.mlir` for rejected patterns, and
+`verify_dfb_spsc.mlir` for accepted patterns.
 
 The compiler does not currently auto-split overlapping multi-consumer DFBs;
 users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
@@ -1494,6 +1511,22 @@ page format, sufficient storage, and legal ring-pointer progression.
 `CircularBufferType` is an MLIR-uniqued type, so exact ordinary compatibility
 is a pointer comparison.
 
+Physical-index reuse is separate from backing-storage reuse. Each physical
+index retains one descriptor and therefore keeps its own element type, page
+size, capacity, and protocol state. After physical-index assignment, the pass
+colors those descriptors into byte-addressed `storage_index` allocations.
+Distinct descriptors, including descriptors with different element types and
+page sizes, may share one storage allocation when every use of one descriptor
+completes before any use of the other begins on every launch node where both
+are resident. The allocation capacity is the
+largest member capacity rounded to an alignment divisible by every member page
+size. Tensor-backed descriptors and descriptors with unproven ordering use
+distinct storage allocations. Descriptors changed by synchronized
+reconfiguration also use distinct storage because the runtime retains their
+contents in hidden L1 tensors. PipeNet computed receiver addresses are used
+only when the receiver has a dedicated storage allocation on its launch nodes;
+otherwise the receiver publishes its TT-Metal-assigned address.
+
 ### Repeated synchronized reset intervals
 
 A synchronized reset declaration in an immutable sequential `scf.for` or
@@ -2126,7 +2159,10 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       pairwise-conflict lower bound exceeds the applicable limit
   verify every pair assigned one index against the typed conflict model
 
-  aggregate L1 bytes once per unique physical index
+  build a storage conflict graph from storage lifetime overlap
+  assign each physical descriptor a storage index
+  merge one byte-capacity and page-alignment requirement per storage index
+  aggregate L1 bytes once per unique storage index
   authoritativeDFBBudget = L1 limit - synchronized-reset scratch
       - reconfiguration state
   minimumWeightSearchTrigger = authoritativeDFBBudget
@@ -2141,11 +2177,11 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
       reject with an inconclusive-search diagnostic
     if minimumResult found an assignment:
       assignment = minimumResult.assignment
-      allocationBytes = minimumResult.minimumBytes
-    aggregate L1 bytes once per unique physical index
-  reject if allocationBytes exceeds authoritativeDFBBudget
+    rebuild storage indices for the new physical assignment
+    aggregate L1 bytes once per unique storage index
+  reject if the assignment exceeds authoritativeDFBBudget
   build one initial runtime descriptor and its ordered epoch configurations
-      for every physical index
+      for every physical index, including its selected storage index
   reject conflicting descriptors within one configuration epoch
   reject if the internal assignment is not a dense zero-based range
   record every existing kernel base-index attribute
@@ -2278,8 +2314,12 @@ the next argument for the caller runtime-argument count. `base_cta_index` is
 the first tensor-accessor argument index after these compiler-defined entries.
 
 The plan contains one `ttl.dfb_allocations` descriptor per physical index.
-Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
-and `block_count`. When the compiler proves the exact union of launch nodes
+Each descriptor contains `dfb_index`, `storage_index`, `num_tiles`,
+`element_type`, `page_size`, and `block_count`. The physical index selects the
+hardware descriptor; the storage index selects its byte-addressed backing
+allocation. Multiple descriptors may use one storage index only when the
+compiler proves their storage lifetimes are disjoint. When the compiler proves
+the exact union of launch nodes
 that access the physical index, the descriptor also contains
 `allocation_nodes`. An empty array records an unreachable allocation. Omitting
 the field retains conservative whole-grid allocation when the node domain is
@@ -2291,6 +2331,8 @@ initialization.
 
 ```text
 buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
+  assign storage indices by coloring physical descriptors whose storage
+      lifetimes overlap, choosing the best current per-node placement
   for physicalIndex in assignments grouped by index:
     allocationDomain = exactUnionOrUnknown(physicalIndex.launchDomains)
     for assignment in physicalIndex.assignments:
@@ -2307,7 +2349,8 @@ buildRuntimeDescriptors(assignments, lifecycles, boundaryOrder):
     copy the initial configuration into the physical descriptor fields
     if the initial configuration is tensor-backed:
       add scratch placeholder segments for cores first active in later epochs
-    emit the physical descriptor with allocation_nodes = allocationDomain
+    emit the physical descriptor with storage_index and
+        allocation_nodes = allocationDomain
     emit its ordered epoch configurations
 ```
 
@@ -2346,8 +2389,9 @@ the same physical configuration as direct execution.
 Setting `reuse-user-dfbs=false` retains physical sharing already expressed by
 equal provisional user indices but does not introduce new sharing between user
 DFBs. It compacts the distinct provisional values, then assigns only
-compiler-created DFBs. An allocation-group declaration is rejected in this
-mode because its required sharing cannot be honored. Both modes use the same
+compiler-created DFBs and gives every finalized physical descriptor a separate
+storage index. An allocation-group declaration is rejected in this mode
+because its required sharing cannot be honored. Both modes use the same
 concurrent lifetime proof and conflict relation for every DFB whose index they
 select. Both modes emit the complete `ttl.dfb_allocations` table and assign
 identities to compiler-created declarations.
@@ -2442,13 +2486,17 @@ with releases before finalization.
   pointer state between NOC0, NOC1, Pack, and Unpack. Reuse across different
   hardware pointer owners requires an explicit state transfer or reset.
 
-- **Storage compatibility.** Automatic reuse within one configuration epoch
+- **Physical-descriptor compatibility.** Automatic physical-index reuse still
   requires exact `CircularBufferType` equality. Typed allocation groups support
   a scratch-only capacity envelope across different block shapes and block
-  counts with one exact page format. Synchronized reconfiguration supports
-  different outer geometry, block counts, and storage in disjoint epochs.
-  Different element types, tile formats, or statically incompatible compute
-  configurations remain invalid.
+  counts with one exact page format. Different element types, tile formats,
+  tensor-backed capacities, or statically incompatible compute configurations
+  cannot share one physical descriptor. Distinct physical descriptors may
+  share byte-addressed backing storage across different formats when the
+  compiler proves their storage lifetimes are disjoint. Synchronized
+  reconfiguration may change descriptor geometry, block count, and storage in
+  disjoint configuration epochs while retaining one page format per physical
+  descriptor.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One
