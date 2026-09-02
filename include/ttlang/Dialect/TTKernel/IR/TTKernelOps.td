@@ -4843,10 +4843,10 @@ def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor", [Pure]> {
 
 def TTKernel_LocalTensorAccessorOp
     : TTKernel_Op<"LocalTensorAccessor", [Pure]> {
-  let summary = "Construct a local L1 byte accessor";
+  let summary = "Construct a local SRAM byte accessor";
   let description = [{
     Constructs `LocalTensorAccessor<uint8_t>` from the base address of a tensor
-    in the executing core's local L1 memory. The byte element type preserves
+    in the executing core's local SRAM. The byte element type preserves
     the tensor's raw storage independently of logical dtype and layout.
   }];
   let arguments = (ins I32:$bank_base_address_in);
