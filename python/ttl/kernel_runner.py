@@ -322,7 +322,8 @@ class KernelSpec:
             For DM kernels, these determine which buffer addresses go in
             common_runtime_args, in order.
         config: Kernel config descriptor (ComputeConfigDescriptor,
-            ReaderConfigDescriptor, WriterConfigDescriptor, or EthernetConfigDescriptor).
+            ReaderConfigDescriptor, WriterConfigDescriptor,
+            DataMovementConfigDescriptor, or EthernetConfigDescriptor).
         compiler_include_paths: Additional -I paths for the JIT compiler.
         pipe_computed_address_dfb_indices: Receiver DFB indices whose backing
             addresses are passed to this kernel.
@@ -4145,22 +4146,24 @@ def _serialize_logical_kernel(
     )
 
 
-def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
-    """Map KernelSpec.config to the ttl.noc_index role for the emitted runner.
-
-    Returns None for compute, 0 for reader, 1 for writer. The emitted file has
-    no MLIR module, so the role already resolved from ttl.noc_index in
-    _compile_ttnn_kernel is baked in here (same idea as KERNEL_CORE_RANGES).
-    """
+def _serialize_kernel_config(spec: KernelSpec) -> Tuple[str, ...]:
+    """Serialize a TTNN kernel config without losing dynamic-NOC settings."""
     if spec.thread_type == "compute":
-        return None
+        return ("compute",)
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
     if isinstance(spec.config, ttnn.ReaderConfigDescriptor):
-        return 0
+        return ("reader",)
     if isinstance(spec.config, ttnn.WriterConfigDescriptor):
-        return 1
+        return ("writer",)
+    if isinstance(spec.config, ttnn.DataMovementConfigDescriptor):
+        return (
+            "data_movement",
+            spec.config.processor.name,
+            spec.config.noc.name,
+            spec.config.noc_mode.name,
+        )
     raise TypeError(
         f"Unsupported NOC config on kernel '{spec.path}': {type(spec.config)!r}"
     )
@@ -4422,11 +4425,11 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
-    # Per-kernel NOC roles from KernelSpec.config (set from ttl.noc_index in
-    # _compile_ttnn_kernel). None = compute, 0 = reader, 1 = writer.
-    lines.append("KERNEL_NOC_INDICES = [")
+    # Preserve the exact TTNN config chosen by _compile_ttnn_kernel. Dynamic
+    # NOC descriptors carry processor, default NOC, and NOC mode explicitly.
+    lines.append("KERNEL_CONFIGS = [")
     for spec in kernel_specs:
-        lines.append(f"    {_serialize_noc_role(spec)!r},  # {spec.thread_type}")
+        lines.append(f"    {_serialize_kernel_config(spec)!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
 
@@ -4503,13 +4506,22 @@ def emit_runner_source(
     lines.append(
         "    for kernel_idx, (kernel_path, thread_type) in enumerate(KERNEL_PATHS):"
     )
-    lines.append("        noc_index = KERNEL_NOC_INDICES[kernel_idx]")
-    lines.append("        if thread_type == 'compute' or noc_index is None:")
+    lines.append("        config_spec = KERNEL_CONFIGS[kernel_idx]")
+    lines.append("        if config_spec[0] == 'compute':")
     lines.append("            config = ttnn.ComputeConfigDescriptor()")
-    lines.append("        elif noc_index == 0:")
+    lines.append("        elif config_spec[0] == 'reader':")
     lines.append("            config = ttnn.ReaderConfigDescriptor()")
-    lines.append("        else:")
+    lines.append("        elif config_spec[0] == 'writer':")
     lines.append("            config = ttnn.WriterConfigDescriptor()")
+    lines.append("        else:")
+    lines.append("            _, processor, noc, noc_mode = config_spec")
+    lines.append("            config = ttnn.DataMovementConfigDescriptor(")
+    lines.append(
+        "                processor=getattr(ttnn.DataMovementProcessor, processor),"
+    )
+    lines.append("                noc=getattr(ttnn.NOC, noc),")
+    lines.append("                noc_mode=getattr(ttnn.NOC_MODE, noc_mode),")
+    lines.append("            )")
     lines.append("")
     lines.append("        kernel_specs.append(")
     lines.append("            KernelSpec(")

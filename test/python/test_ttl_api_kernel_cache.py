@@ -8,6 +8,7 @@ import functools
 import gc
 import itertools
 import threading
+from types import SimpleNamespace
 import weakref
 
 import pytest
@@ -15,6 +16,57 @@ import pytest
 import ttl.atom as atom_module
 import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
+
+
+def test_data_movement_configs_are_opt_in_and_preserve_default_roles(monkeypatch):
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc, noc_mode):
+            self.processor = processor
+            self.noc = noc
+            self.noc_mode = noc_mode
+
+    riscv_0 = object()
+    riscv_1 = object()
+    noc_0 = object()
+    noc_1 = object()
+    dynamic_noc = object()
+    fake_ttnn = SimpleNamespace(
+        ReaderConfigDescriptor=ReaderConfigDescriptor,
+        WriterConfigDescriptor=WriterConfigDescriptor,
+        DataMovementConfigDescriptor=DataMovementConfigDescriptor,
+        DataMovementProcessor=SimpleNamespace(RISCV_0=riscv_0, RISCV_1=riscv_1),
+        NOC=SimpleNamespace(RISCV_0_default=noc_0, RISCV_1_default=noc_1),
+        NOC_MODE=SimpleNamespace(DM_DYNAMIC_NOC=dynamic_noc),
+    )
+    monkeypatch.setattr(ttl_api, "ttnn", fake_ttnn)
+
+    assert isinstance(
+        ttl_api._make_data_movement_config(0, dynamic_noc=False),
+        ReaderConfigDescriptor,
+    )
+    assert isinstance(
+        ttl_api._make_data_movement_config(1, dynamic_noc=False),
+        WriterConfigDescriptor,
+    )
+
+    ncrisc = ttl_api._make_data_movement_config(0, dynamic_noc=True)
+    assert (ncrisc.processor, ncrisc.noc, ncrisc.noc_mode) == (
+        riscv_1,
+        noc_0,
+        dynamic_noc,
+    )
+    brisc = ttl_api._make_data_movement_config(1, dynamic_noc=True)
+    assert (brisc.processor, brisc.noc, brisc.noc_mode) == (
+        riscv_0,
+        noc_1,
+        dynamic_noc,
+    )
 
 
 class _FakeMemoryConfig:
@@ -245,6 +297,28 @@ def test_cache_key_separates_math_fidelity(monkeypatch):
     hifi4_key = ttl_api._make_cache_key(math_fidelity="HiFi4", **common_options)
 
     assert hifi2_key != hifi4_key
+
+
+def test_operation_cache_separates_dynamic_noc_option(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    default_result = copy_kernel(_FakeTensor(), _FakeTensor())
+    dynamic_result = copy_kernel(
+        _FakeTensor(), _FakeTensor(), options="--ttl-dynamic-noc"
+    )
+    repeated_dynamic_result = copy_kernel(
+        _FakeTensor(), _FakeTensor(), options="--ttl-dynamic-noc"
+    )
+
+    assert len(compile_calls) == 2
+    assert default_result != dynamic_result
+    assert dynamic_result == repeated_dynamic_result
+    assert compile_calls[0]["compile_options"]["compiler_options"].dynamic_noc is False
+    assert compile_calls[1]["compile_options"]["compiler_options"].dynamic_noc is True
 
 
 def test_operation_rejects_invalid_math_fidelity():
