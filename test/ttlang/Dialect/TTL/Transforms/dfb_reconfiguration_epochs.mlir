@@ -26,9 +26,9 @@
 // DEBUG: DFB logical_id=2 bounded=1
 // DEBUG: entry_reconfiguration=0,active_configurations=[0],terminal_reset=none,terminal_reconfiguration=none
 // DEBUG: Total DFB count: 1
-// DEBUG: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// DEBUG: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
-// DEBUG: DFB assignment: logical DFB 2 -> physical index 0 (bounded)
+// DEBUG: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (bounded)
+// DEBUG: DFB assignment: logical DFB 1 -> physical index 0 storage index 0 (bounded)
+// DEBUG: DFB assignment: logical DFB 2 -> physical index 0 storage index 0 (bounded)
 
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @compute() attributes {
