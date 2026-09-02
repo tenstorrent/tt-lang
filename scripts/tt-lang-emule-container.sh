@@ -105,7 +105,7 @@ _RUN_ARGS+=(--workdir "$_CONTAINER_CWD")
 
 # Docker detaches stdin without -i, including when the caller supplies a pipe.
 _RUN_ARGS+=(-i)
-if [ -t 1 ]; then
+if [ -t 0 ] && [ -t 1 ]; then
     _RUN_ARGS+=(-t)
 fi
 
