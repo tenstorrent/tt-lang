@@ -40,6 +40,9 @@ DFB_LIVENESS_TEST_HEADER = os.path.join(
 INSPECT_DFB_ACCESS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "inspect_dfb_access.hpp"
 )
+TENSOR_ACCESSOR_READ_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "tensor_accessor_read.hpp"
+)
 
 
 def _count_final_dfb_allocations(final_mlir_path):
@@ -1534,6 +1537,37 @@ def _make_inspect_access_kernel(data_format):
     return inspect_access_kernel
 
 
+def _make_modify_access_kernel(data_format):
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def modify_access_kernel(input_tensor, output_tensor):
+        dataflow_buffer = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+        )
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with dataflow_buffer.reserve():
+                ttl.call_extern_func(
+                    TENSOR_ACCESSOR_READ_HEADER,
+                    "tensor_accessor_read_reserved",
+                    template_args=[ttl.dfb_descriptor(dataflow_buffer)],
+                    func_args=[input_tensor],
+                    dfb_accesses=[ttl.DFBAccess.modify(dataflow_buffer)],
+                )
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            with dataflow_buffer.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return modify_access_kernel
+
+
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
 _composed_control_resource_kernel = _make_composed_control_resource_kernel()
@@ -1581,6 +1615,8 @@ _allocation_group_bf16_kernel = _make_allocation_group_kernel("bf16")
 _allocation_group_f32_kernel = _make_allocation_group_kernel("float32")
 _inspect_bf16_kernel = _make_inspect_access_kernel("bf16")
 _inspect_f32_kernel = _make_inspect_access_kernel("float32")
+_modify_bf16_kernel = _make_modify_access_kernel("bf16")
+_modify_f32_kernel = _make_modify_access_kernel("float32")
 
 assert CAPACITY_TEST_LOGICAL_DFBS == 33
 
@@ -2377,6 +2413,37 @@ def test_inspect_access_reuses_allocation_group(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_modify_bf16_kernel, torch.bfloat16),
+        (_modify_f32_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_modify_access_preserves_native_queue_protocol(
+    device, operation, dtype, memory_config, to_device
+):
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
+    expected = ((element_indices.remainder(257) - 128) / 64).to(dtype)
+    input_tensor = to_device(expected, device)
+    output_tensor = to_device(torch.zeros_like(expected), device)
+
+    for _ in range(2):
+        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    actual = ttnn.to_torch(output_tensor).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected.float(), rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])

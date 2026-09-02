@@ -34,6 +34,16 @@ inline void tensor_accessor_read_page(const SourceAccessor &source) {
   destination.push_back(1);
 }
 
+template <typename Destination, typename SourceAccessor>
+inline void tensor_accessor_read_reserved(const SourceAccessor &source) {
+  static_assert(Destination::pages_per_block == 1);
+  CircularBuffer destination(get_compile_time_arg_val(Destination::index));
+  Noc noc0(0);
+  noc0.async_read(source, CoreLocalMem<uint32_t>(destination.get_write_ptr()),
+                  source.get_aligned_page_size(), {.page_id = 0}, {});
+  noc0.async_read_barrier();
+}
+
 template <typename FirstDestination, typename SecondDestination,
           typename FirstSourceAccessor, typename SecondSourceAccessor>
 inline void

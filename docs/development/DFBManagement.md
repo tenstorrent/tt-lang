@@ -1723,8 +1723,12 @@ whether reuse is valid.
 `dfb_accesses` describes typed synchronous accesses without queue transactions.
 `ttl.DFBAccess.inspect(dfb)` states that the callee may read the selected DFB's
 descriptor or contents but does not publish, consume, or leave that DFB changed.
-The call remains a storage access, so reuse still requires strict lifetime
-order; the summary establishes an identity queue-state transition. One
+`ttl.DFBAccess.modify(dfb)` permits the callee to read or write the contents and
+leave them changed. Both preserve queue position and complete before the call
+returns. Storage reuse requires the compiler to prove that the complete access
+occurs before the next logical DFB uses the allocation. Repeated `modify`
+accesses retain one lifetime from the first invocation through the last; the
+contract does not state that contents are dead between invocations. One
 dependency occurrence cannot declare both a protocol effect and a
 non-transactional access.
 

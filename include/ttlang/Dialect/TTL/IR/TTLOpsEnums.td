@@ -128,11 +128,14 @@ def TTL_DFBProtocolEffectKind : I32EnumAttr<
 
 def TTL_DFBNonTransactionalAccessKind_Inspect :
     I32EnumAttrCase<"Inspect", 0, "inspect">;
+def TTL_DFBNonTransactionalAccessKind_Modify :
+    I32EnumAttrCase<"Modify", 1, "modify">;
 
 def TTL_DFBNonTransactionalAccessKind : I32EnumAttr<
     "DFBNonTransactionalAccessKind",
     "Dataflow buffer non-transactional access kind",
-    [TTL_DFBNonTransactionalAccessKind_Inspect]> {
+    [TTL_DFBNonTransactionalAccessKind_Inspect,
+     TTL_DFBNonTransactionalAccessKind_Modify]> {
   let cppNamespace = "::mlir::tt::ttl";
   let genSpecializedAttr = 0;
 }

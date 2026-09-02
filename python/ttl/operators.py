@@ -81,8 +81,8 @@ def call_extern_func(
         dfb_effects: Optional call-wide sequence of synchronous DFB protocol
             actions performed on every call execution. A complete summary can
             permit physical-index reuse and does not emit protocol calls.
-        dfb_accesses: Optional synchronous DFB inspections performed by the
-            call without publishing, consuming, or changing DFB state.
+        dfb_accesses: Optional synchronous DFB reads or writes performed by the
+            call without publishing, consuming, or changing queue position.
         unknown_dfb_access: Whether external C++ may access unlisted
             user-managed DFBs, conservatively restricting physical-index reuse.
         include_paths: Compile-time directories added to external header
@@ -163,12 +163,17 @@ class DFBEffect:
 
 
 class DFBAccess:
-    """Typed synchronous DFB access by an external call."""
+    """Synchronous DFB storage access that preserves queue position."""
 
     @staticmethod
     def inspect(dfb):
         """Read a DFB without changing its contents or queue position."""
         raise RuntimeError("ttl.DFBAccess.inspect() is valid only in a compiled kernel")
+
+    @staticmethod
+    def modify(dfb):
+        """Read or write contents without changing the DFB queue position."""
+        raise RuntimeError("ttl.DFBAccess.modify() is valid only in a compiled kernel")
 
 
 def dfb_descriptor(dfb):

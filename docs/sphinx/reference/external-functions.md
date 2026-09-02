@@ -373,10 +373,12 @@ remain eligible for physical-index sharing. The reset implementation must
 complete earlier interface work before publishing arrival. This does not
 validate the external function's internal queue protocol.
 
-`dfb_accesses` is an ordered list of synchronous, non-transactional access
-summaries. `ttl.DFBAccess.inspect(dfb)` states that the external function may
-read the selected DFB's descriptor or contents but does not publish, consume,
-or leave that DFB changed when it returns:
+`dfb_accesses` is an ordered list of synchronous accesses that preserve queue
+position. `ttl.DFBAccess.inspect(dfb)` permits reading the selected DFB's
+descriptor or contents and requires its contents to remain unchanged.
+`ttl.DFBAccess.modify(dfb)` permits reading or writing the contents and leaving
+them changed. Neither access publishes or consumes data, and both complete
+before the call returns:
 
 ```python
 ttl.call_extern_func(
@@ -390,6 +392,10 @@ ttl.call_extern_func(
     kernel=ttl.KernelKind.COMPUTE,
 )
 ```
+
+A repeated `modify` access remains live from its first invocation through its
+last invocation. It does not state that the DFB contents are dead between
+invocations.
 
 The summary makes the call-duration storage access and identity state
 transition explicit. It does not establish ordering with another logical DFB;

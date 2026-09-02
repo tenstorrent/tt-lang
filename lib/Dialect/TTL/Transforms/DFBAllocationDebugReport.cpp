@@ -40,6 +40,8 @@ getNonTransactionalAccessName(DFBNonTransactionalAccessKind access) {
   switch (access) {
   case DFBNonTransactionalAccessKind::Inspect:
     return "inspect";
+  case DFBNonTransactionalAccessKind::Modify:
+    return "modify";
   }
   llvm_unreachable("unknown DFB non-transactional access");
 }
@@ -320,8 +322,8 @@ static void printLifecycleEpochs(llvm::raw_ostream &output,
         if (resetCompletesOpaqueAccess(logicalDFB, epoch)) {
           output << ",opaque_protocol_reset=1";
         }
-        if (epoch.inspectionOnly) {
-          output << ",inspection_only=1";
+        if (epoch.nonTransactionalOnly) {
+          output << ",non_transactional_only=1";
         }
         output << ",terminal_reconfiguration=";
         if (epoch.terminalReconfigurationOrdinal) {
@@ -360,7 +362,7 @@ static bool hasEqualLifecycleEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&
                lhsEpoch.terminalReconfigurationOrdinal ==
                    rhsEpoch.terminalReconfigurationOrdinal &&
-               lhsEpoch.inspectionOnly == rhsEpoch.inspectionOnly &&
+               lhsEpoch.nonTransactionalOnly == rhsEpoch.nonTransactionalOnly &&
                lhsEpoch.terminalStateCanonical ==
                    rhsEpoch.terminalStateCanonical &&
                lhsEpoch.completionProof.failure ==
@@ -389,7 +391,7 @@ hasEqualPossibleFacts(const DFBPerNodeLifetime &lhs,
       lhs.terminalReadCursorRuns != rhs.terminalReadCursorRuns ||
       lhs.terminalWritePointerOwner != rhs.terminalWritePointerOwner ||
       lhs.terminalReadPointerOwner != rhs.terminalReadPointerOwner ||
-      lhs.inspectionOnly != rhs.inspectionOnly ||
+      lhs.nonTransactionalOnly != rhs.nonTransactionalOnly ||
       lhs.terminalStateCanonical != rhs.terminalStateCanonical ||
       !hasEqualLifecycleEpochs(lhs.epochs, rhs.epochs) ||
       !(lhsDiagnostics == rhsDiagnostics)) {
@@ -470,8 +472,8 @@ static void printPossibleLifetimes(
     if (hasOpaqueAccessCompletedByReset(logicalDFB, lifetime)) {
       output << " opaque_protocol_reset=1";
     }
-    if (lifetime.inspectionOnly) {
-      output << " inspection_only=1";
+    if (lifetime.nonTransactionalOnly) {
+      output << " non_transactional_only=1";
     }
     output << " node_count=" << group.nodes.size();
     if (group.nodes.size() <= 8) {
@@ -513,8 +515,8 @@ static void printNodeLifetimes(llvm::raw_ostream &output,
     if (hasOpaqueAccessCompletedByReset(logicalDFB, lifetime)) {
       output << " opaque_protocol_reset=1";
     }
-    if (lifetime.inspectionOnly) {
-      output << " inspection_only=1";
+    if (lifetime.nonTransactionalOnly) {
+      output << " non_transactional_only=1";
     }
     printLifetimeFacts(output, logicalDFB, lifetime, diagnostics);
     output << '\n';

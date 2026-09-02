@@ -338,7 +338,7 @@ without exposing the operation's operand-segment representation to analyses:
 | --- | --- |
 | DFB dependencies | Every statically declared storage-access occurrence. |
 | Protocol effects | Synchronous reserve, push, wait, and pop actions in call execution order. |
-| Non-transactional accesses | Synchronous inspections that preserve DFB queue state. |
+| Non-transactional accesses | Synchronous reads or writes that preserve DFB queue position. |
 | DFB index operands | DFBs whose finalized physical indices reach external C++. |
 | Unknown access | The call may access unlisted user-managed DFBs. |
 

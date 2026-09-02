@@ -100,12 +100,6 @@ struct DFBAccessOccurrence {
     return std::get_if<DFBNonTransactionalAccessKind>(&kind);
   }
 
-  bool isNonTransactionalAccess(DFBNonTransactionalAccessKind access) const {
-    const DFBNonTransactionalAccessKind *nonTransactionalAccess =
-        getNonTransactionalAccess();
-    return nonTransactionalAccess && *nonTransactionalAccess == access;
-  }
-
   /// Positive for protocol effects and zero otherwise.
   int64_t numTiles = 0;
 
@@ -192,7 +186,7 @@ struct DFBLifecycleEpoch {
   std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
   std::optional<int64_t> terminalReconfigurationOrdinal;
-  bool inspectionOnly = false;
+  bool nonTransactionalOnly = false;
   bool terminalStateCanonical = false;
   DFBLifecycleCompletionProof completionProof;
 };
@@ -236,7 +230,7 @@ struct DFBPerNodeLifetime {
   SmallVector<DFBTransactionRun, 0> terminalReadCursorRuns;
   std::optional<DFBPointerOwner> terminalWritePointerOwner;
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
-  bool inspectionOnly = false;
+  bool nonTransactionalOnly = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> epochs;
   DFBLifecycleCompletionProof completionProof;

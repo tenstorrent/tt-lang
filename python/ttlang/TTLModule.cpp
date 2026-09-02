@@ -445,7 +445,8 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("num_tiles", &DFBProtocolEffectAttr::getNumTiles);
 
   nb::enum_<DFBNonTransactionalAccessKind>(m, "DFBNonTransactionalAccessKind")
-      .value("Inspect", DFBNonTransactionalAccessKind::Inspect);
+      .value("Inspect", DFBNonTransactionalAccessKind::Inspect)
+      .value("Modify", DFBNonTransactionalAccessKind::Modify);
 
   tt_attribute_class<DFBNonTransactionalAccessAttr>(
       m, "DFBNonTransactionalAccessAttr")

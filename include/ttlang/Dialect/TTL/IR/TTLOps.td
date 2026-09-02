@@ -2322,17 +2322,20 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     The ordered `dfb_accesses` list describes synchronous DFB accesses that do
     not perform queue transactions. `inspect` states that a callee may read the
     dependency's descriptor or contents but does not publish, consume, or leave
-    the DFB changed when it returns. One dependency occurrence cannot declare
-    both a protocol effect and an inspection because their relative execution
-    order would be unspecified. Effects and accesses omitted for a dependency
-    occurrence leave its access opaque and incomplete for reuse with another
-    logical DFB on a shared launch node unless a matching synchronized reset
-    proves lifecycle completion. If one DFB occupies multiple dependency
-    occurrences, every occurrence requires its own summary or the same reset-
-    completion proof. The `unknown_dfb_access` unit attribute declares that the
-    callee may also access unlisted user-managed DFBs and adds an opaque
-    occurrence to each affected DFB. Exact disjoint launch-node domains remain
-    eligible for physical-index sharing.
+    the DFB changed when it returns. `modify` permits the callee to read or
+    write the contents and leave them changed while preserving queue position.
+    Both access kinds complete before the call returns. One dependency
+    occurrence cannot declare both a protocol effect and a non-transactional
+    access because their relative execution order would be unspecified.
+    Effects and accesses omitted for a dependency occurrence leave its access
+    opaque and incomplete for reuse with another logical DFB on a shared launch
+    node unless a matching synchronized reset proves lifecycle completion. If
+    one DFB occupies multiple dependency occurrences, every occurrence requires
+    its own summary or the same reset-completion proof. The
+    `unknown_dfb_access` unit attribute declares that the callee may also access
+    unlisted user-managed DFBs and adds an opaque occurrence to each affected
+    DFB. Exact disjoint launch-node domains remain eligible for physical-index
+    sharing.
 
     A named DFB dependency occurrence without `dfb_effects` or `dfb_accesses`
     contributes an opaque storage access that begins at call entry. Its protocol

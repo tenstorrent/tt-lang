@@ -3494,6 +3494,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     auto unscopedOpaqueAccess =
         llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
           return !access->getProtocolEffect() &&
+                 !access->getNonTransactionalAccess() &&
                  isa<OpaqueCallOp>(access->operation) &&
                  !access->opaqueExternalAccess;
         });
@@ -3514,12 +3515,12 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
         return access->getProtocolEffect();
       });
   if (!hasProtocolAccess) {
-    bool inspectionOnly = !activeAccesses.empty() &&
-                          llvm::all_of(activeAccesses, [](const auto *access) {
-                            return access->isNonTransactionalAccess(
-                                DFBNonTransactionalAccessKind::Inspect);
-                          });
-    if (!inspectionOnly) {
+    bool nonTransactionalOnly =
+        !activeAccesses.empty() &&
+        llvm::all_of(activeAccesses, [](const auto *access) {
+          return access->getNonTransactionalAccess() != nullptr;
+        });
+    if (!nonTransactionalOnly) {
       return {DFBLifecycleCompletionFailureReason::MissingProtocolEffect,
               activeAccesses.empty() ? logicalDFB.declarations.front()
                                      : activeAccesses.front()->operation};
@@ -3529,7 +3530,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
               activeAccesses.front()->operation};
     }
     lifetime.conditionalExecutionProven = includeUnknownDomains;
-    lifetime.inspectionOnly = true;
+    lifetime.nonTransactionalOnly = true;
     return {};
   }
 
@@ -4157,7 +4158,7 @@ tryComputeRepeatedResetLifetime(
         entryReconfiguration->boundary.getOrdinal();
   }
   epoch.terminalResetOrdinal = terminator->reset.getOrdinal();
-  epoch.inspectionOnly = lifetime.inspectionOnly;
+  epoch.nonTransactionalOnly = lifetime.nonTransactionalOnly;
   epoch.terminalStateCanonical = true;
   epoch.completionProof = proof;
   lifetime.epochs.push_back(std::move(epoch));
@@ -4408,7 +4409,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epoch.writePointerOwner = epochLifetime.writePointerOwner;
     epoch.readPointerOwner = epochLifetime.readPointerOwner;
     epoch.completionProof = proof;
-    epoch.inspectionOnly = epochLifetime.inspectionOnly;
+    epoch.nonTransactionalOnly = epochLifetime.nonTransactionalOnly;
     assert(firstBoundaryInterval &&
            "active lifecycle must have a first boundary interval");
     const OrderedLifecycleBoundary *entryBoundary = nullptr;
@@ -4472,7 +4473,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       lifetime.readCursorRuns = epochLifetime.readCursorRuns;
       lifetime.writePointerOwner = epochLifetime.writePointerOwner;
       lifetime.readPointerOwner = epochLifetime.readPointerOwner;
-      lifetime.inspectionOnly = epochLifetime.inspectionOnly;
+      lifetime.nonTransactionalOnly = epochLifetime.nonTransactionalOnly;
       hasActiveEpoch = true;
     }
     lifetime.conditionalExecutionProven |=
@@ -4488,8 +4489,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     lifetime.terminalWritePointerOwner =
         epochLifetime.terminalWritePointerOwner;
     lifetime.terminalReadPointerOwner = epochLifetime.terminalReadPointerOwner;
-    lifetime.inspectionOnly =
-        lifetime.inspectionOnly && epochLifetime.inspectionOnly;
+    lifetime.nonTransactionalOnly =
+        lifetime.nonTransactionalOnly && epochLifetime.nonTransactionalOnly;
     lifetime.terminalStateCanonical = epochLifetime.terminalStateCanonical;
     lifecycleAccesses.clear();
     firstBoundaryInterval.reset();
