@@ -16,7 +16,9 @@
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 
@@ -726,6 +728,22 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
   if (failed(mlir::tt::utils::verifyOpaqueCallUnsignedArgIndices(
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
+  }
+  if (std::optional<ArrayRef<int32_t>> resourceIndices =
+          getDfbResourceIndices()) {
+    if (resourceIndices->empty()) {
+      return emitOpError("DFB resource indices must not be empty");
+    }
+    if (!llvm::all_of(*resourceIndices,
+                      [](int32_t index) { return index >= 0; })) {
+      return emitOpError("DFB resource indices must be nonnegative");
+    }
+    if (std::adjacent_find(resourceIndices->begin(), resourceIndices->end(),
+                           std::greater_equal<>()) != resourceIndices->end()) {
+      return emitOpError(
+          "DFB resource indices must be strictly increasing without "
+          "duplicates");
+    }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();
   if (!templateArgs) {

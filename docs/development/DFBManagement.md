@@ -146,10 +146,12 @@ an unknown domain retains conservative whole-grid allocation.
 
 Per-core kernel specialization can remove different DFB operations on
 different launch nodes. Each final TTKernel function records the physical
-indices still referenced by its compile-time arguments in
-`ttl.used_dfb_indices`. Direct helper calls contribute their transitive uses.
-An unresolved call or missing annotation is conservative and keeps every DFB
-available on the affected function's launch nodes.
+indices still required by its compile-time arguments, synchronized resets, and
+external calls in `ttl.used_dfb_indices`. Lowered `ttkernel.opaque_call`
+operations retain these requirements in `dfb_resource_indices` until DFB-use
+annotation runs after specialization. Direct helper calls contribute their
+transitive uses. An unresolved call or missing annotation is conservative and
+keeps every DFB available on the affected function's launch nodes.
 
 The runtime unions these sets for every kernel dispatched to a logical core,
 then intersects the result with the physical allocation domain and finalized
