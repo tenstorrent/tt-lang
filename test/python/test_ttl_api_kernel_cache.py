@@ -76,6 +76,14 @@ def test_data_movement_configs_are_opt_in_and_preserve_default_roles(monkeypatch
     )
 
 
+@pytest.mark.parametrize("dynamic_noc", [False, True])
+def test_data_movement_configs_reject_invalid_noc_roles(monkeypatch, dynamic_noc):
+    monkeypatch.setattr(ttl_api, "ttnn", SimpleNamespace())
+
+    with pytest.raises(ValueError, match=r"Invalid ttl\.noc_index 2"):
+        ttl_api._make_data_movement_config(2, dynamic_noc=dynamic_noc)
+
+
 class _FakeMemoryConfig:
     def __init__(self, memory_space, memory_layout, shard_spec=None):
         self.buffer_type = memory_space
