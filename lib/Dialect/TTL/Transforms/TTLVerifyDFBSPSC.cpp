@@ -6,11 +6,11 @@
 // TTL Verify DFB SPSC
 //===----------------------------------------------------------------------===//
 //
-// Rejects modules in which a logical dataflow buffer has more than one producer
-// or consumer kernel active on the same launched node. Logical identity
-// remains distinct when non-overlapping DFBs share a physical `cb_index`.
-// tt-metal CBs are single-producer single-consumer at the API level; see
-// `docs/development/DFBManagement.md` for the rationale.
+// Rejects waits without a push and modules in which a logical dataflow buffer
+// has more than one producer or consumer kernel active on the same launched
+// node. Logical identity remains distinct when non-overlapping DFBs share a
+// physical `cb_index`. tt-metal CBs are single-producer single-consumer at the
+// API level; see `docs/development/DFBManagement.md` for the rationale.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +25,7 @@
 #include "DFBVerification.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -99,6 +100,81 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
   if (bindSite) {
     diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
   }
+}
+
+struct DFBProtocolPresence {
+  bool hasAcquisitionAction = false;
+  bool hasUnknownUserDFBAccess = false;
+  llvm::DenseSet<int64_t> pushedDFBs;
+  llvm::DenseSet<int64_t> dfbsWithOpaqueAccess;
+  llvm::SmallMapVector<int64_t, Operation *, 4> firstWaitByDFB;
+};
+
+DFBProtocolPresence collectDFBProtocolPresence(ModuleOp module) {
+  DFBProtocolPresence presence;
+  module.walk([&](Operation *op) {
+    auto access = dyn_cast<DFBAccessOpInterface>(op);
+    if (!access || !getEnclosingKernelThread(op)) {
+      return;
+    }
+    if (auto opaqueCall = dyn_cast<OpaqueCallOp>(op)) {
+      SmallVector<Value> dependencies = opaqueCall.getDFBDependencyOperands();
+      for (unsigned dependencyIndex :
+           getOpaqueDFBDependencyIndices(opaqueCall)) {
+        FailureOr<int64_t> dfbId = getDFBId(dependencies[dependencyIndex]);
+        assert(succeeded(dfbId) && "DFB identities were verified");
+        presence.dfbsWithOpaqueAccess.insert(*dfbId);
+      }
+      presence.hasUnknownUserDFBAccess |= opaqueCall.hasUnknownDFBAccess();
+    }
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      FailureOr<int64_t> dfbId = getDFBId(effect.dfb);
+      assert(succeeded(dfbId) && "DFB identities were verified");
+      switch (effect.kind) {
+      case DFBProtocolEffectKind::Reserve:
+        presence.hasAcquisitionAction = true;
+        break;
+      case DFBProtocolEffectKind::Push:
+        presence.pushedDFBs.insert(*dfbId);
+        break;
+      case DFBProtocolEffectKind::Wait:
+        presence.hasAcquisitionAction = true;
+        presence.firstWaitByDFB.try_emplace(*dfbId, op);
+        break;
+      case DFBProtocolEffectKind::Pop:
+        break;
+      }
+    }
+  });
+  return presence;
+}
+
+LogicalResult verifyDFBWaitsHavePushes(
+    const DFBProtocolPresence &presence,
+    const llvm::DenseMap<int64_t, Operation *> &bindSites) {
+  bool sawError = false;
+  for (auto [dfbId, waitOp] : presence.firstWaitByDFB) {
+    Operation *bindSite = bindSites.lookup(dfbId);
+    auto bindOp = dyn_cast_or_null<BindCBOp>(bindSite);
+    bool hasPossibleExternalProducer =
+        presence.dfbsWithOpaqueAccess.contains(dfbId) ||
+        (presence.hasUnknownUserDFBAccess && bindOp &&
+         isUserManagedDFB(bindOp.getResult()));
+    if (presence.pushedDFBs.contains(dfbId) || hasPossibleExternalProducer) {
+      continue;
+    }
+    InFlightDiagnostic diag = waitOp->emitError()
+                              << "logical DFB " << dfbId
+                              << " is waited on but no kernel thread pushes "
+                                 "it";
+    diag.attachNote()
+        << "a DFB wait blocks until a matching push publishes data";
+    if (bindSite) {
+      diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
+    }
+    sawError = true;
+  }
+  return failure(sawError);
 }
 
 void emitOverlapError(int64_t logicalId, const DFBParticipant &lhs,
@@ -213,17 +289,8 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
-    bool hasAcquisitionAction = false;
-    module.walk([&](Operation *op) {
-      auto access = dyn_cast<DFBAccessOpInterface>(op);
-      hasAcquisitionAction |=
-          access && getEnclosingKernelThread(op) &&
-          llvm::any_of(access.getDFBProtocolEffects(), [](const auto &effect) {
-            return effect.kind == DFBProtocolEffectKind::Reserve ||
-                   effect.kind == DFBProtocolEffectKind::Wait;
-          });
-    });
-    if (!hasAcquisitionAction) {
+    DFBProtocolPresence protocolPresence = collectDFBProtocolPresence(module);
+    if (!protocolPresence.hasAcquisitionAction) {
       return;
     }
 
@@ -234,6 +301,11 @@ struct TTLVerifyDFBSPSCPass
           << "ttl-verify-dfb-spsc requires a `ttl.launch_grid` module "
              "attribute (an i64 array of length 2 with positive entries) "
              "when verifying DFB acquire actions";
+      signalPassFailure();
+      return;
+    }
+
+    if (failed(verifyDFBWaitsHavePushes(protocolPresence, bindSites))) {
       signalPassFailure();
       return;
     }
