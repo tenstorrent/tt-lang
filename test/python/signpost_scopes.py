@@ -85,11 +85,29 @@ def bcast_multitile_kernel(
 
     @ttl.datamovement()
     def demo_read():
-        pass
+        with c_dfb.reserve() as c_block:
+            ttl.copy(c[0, 0], c_block).wait()
+        for row in range(rows):
+            row_begin = row * row_tiles_per_block
+            row_end = row_begin + row_tiles_per_block
+            for col in range(cols):
+                col_begin = col * col_tiles_per_block
+                col_end = col_begin + col_tiles_per_block
+                with a_dfb.reserve() as a_block:
+                    ttl.copy(a[row_begin:row_end, 0:1], a_block).wait()
+                with b_dfb.reserve() as b_block:
+                    ttl.copy(b[0:1, col_begin:col_end], b_block).wait()
 
     @ttl.datamovement()
     def demo_write():
-        pass
+        for row in range(rows):
+            row_begin = row * row_tiles_per_block
+            row_end = row_begin + row_tiles_per_block
+            for col in range(cols):
+                col_begin = col * col_tiles_per_block
+                col_end = col_begin + col_tiles_per_block
+                with y_dfb.wait() as y_block:
+                    ttl.copy(y_block, y[row_begin:row_end, col_begin:col_end]).wait()
 
 
 # =============================================================================
@@ -137,6 +155,7 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 # CHECK-NOT:  DeviceZoneScopedN(
+# CHECK: === demo_read kernel written to {{.*}} ===
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
@@ -191,6 +210,7 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:   tile_regs_release();
 # CHECK-FPU-NEXT: }
 # CHECK-FPU-NOT:  DeviceZoneScopedN(
+# CHECK-FPU: === demo_read kernel written to {{.*}} ===
 
 
 if __name__ == "__main__":
