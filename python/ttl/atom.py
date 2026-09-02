@@ -99,6 +99,7 @@ from .dataflow_buffer import (
 from .dtype_utils import is_ttnn_tensor
 from .kernel import (
     Kernel,
+    KernelKind,
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
@@ -343,7 +344,7 @@ def _build_atom_spec(
     captured_names = sorted(loaded_names & captured_values.keys())
     for capture_name in captured_names:
         value = captured_values[capture_name]
-        if not isinstance(value, Kernel):
+        if not isinstance(value, Kernel) or _selector_implicit_role(value) is not None:
             continue
         if not any(value is kernel for kernel in logical_kernels.values()):
             captured_logical_kernels[capture_name] = value
@@ -358,7 +359,7 @@ def _build_atom_spec(
             )
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
-        elif isinstance(value, Kernel):
+        elif isinstance(value, (Kernel, KernelKind)):
             continue
         elif isinstance(value, FabricManagerClaim):
             if not any(value is claim for claim in fabric_manager_claims.values()):
