@@ -86,6 +86,8 @@ EOF
 printf 'emule=%s\n' "${TT_METAL_EMULE_MODE:-}"
 printf 'slow_dispatch=%s\n' "${TT_METAL_SLOW_DISPATCH_MODE:-}"
 printf 'cluster=%s\n' "${TT_METAL_MOCK_CLUSTER_DESC_PATH:-}"
+printf 'allocator_hybrid=%s\n' "${TT_METAL_ALLOCATOR_MODE_HYBRID:-}"
+printf 'fabric8=%s\n' "${EMULE_FABRIC8:-}"
 printf 'emule_cache=%s\n' "${TT_EMULE_JIT_CACHE_DIR:-}"
 printf 'mesh=%s\n' "${MESH_DEVICE:-}"
 printf 'compile_only=%s\n' "${TTLANG_COMPILE_ONLY:-}"
@@ -305,7 +307,7 @@ EOF
 @test "entrypoint configures, builds, and runs with emule runtime state" {
     local mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
     local build_dir="$BATS_TEST_TMPDIR/build"
-    local cluster="$BATS_TEST_TMPDIR/wormhole_N150.yaml"
+    local cluster="$BATS_TEST_TMPDIR/blackhole_P150_unharvested.yaml"
     local program="$BATS_TEST_TMPDIR/program.py"
     MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
     export MOCK_ENTRYPOINT_LOG
@@ -324,8 +326,10 @@ EOF
     assert_line "emule=1"
     assert_line "slow_dispatch=1"
     assert_line "cluster=$cluster"
+    assert_line "allocator_hybrid=1"
+    assert_line "fabric8=1"
     assert_line "emule_cache=/tt-metal-cache/emule-jit"
-    assert_line "mesh=N150"
+    assert_line "mesh=P150"
     assert_line "compile_only="
     assert_line "sim_only="
     assert_line "python=$program"
@@ -335,6 +339,14 @@ EOF
     run -0 grep -F -x -- \
         "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
         "$MOCK_ENTRYPOINT_LOG"
+}
+
+@test "entrypoint defaults to the runtime's full P150 descriptor" {
+    run -0 grep -F -x -- \
+        'readonly CLUSTER_DESCRIPTORS="${TT_EMULE_SOURCE_DIR}/cluster_descriptors"' \
+        "$ENTRYPOINT"
+    run -0 grep -F -- \
+        'blackhole_P150_unharvested.yaml' "$ENTRYPOINT"
 }
 
 @test "entrypoint rejects a missing script argument before configuring" {
