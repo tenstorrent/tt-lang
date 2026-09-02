@@ -287,6 +287,11 @@ C++ function arguments. DFBs in `func_args` and DFB descriptors in
 must identify distinct source occurrences and must not repeat an automatic
 dependency source.
 
+Lowering preserves each dependency as DFB resource metadata on the generated
+external call until core specialization removes unreachable calls. Per-core
+descriptor annotations include the dependencies that remain. The generated C++
+call still receives only its declared template and function arguments.
+
 The Python frontend accepts one DFB in multiple automatic dependency positions
 when every occurrence remains opaque. An effect or access summary names a DFB
 expression, not a C++ argument position, so a summarized occurrence must be
