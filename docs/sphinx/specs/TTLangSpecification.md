@@ -479,7 +479,7 @@ def elwise_compute():
         )
 
         # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
-        z_final = ttl.block.fill(0, shape=(1, M_TILES))
+        z_final = ttl.block.fill(0, shape=(1, M_TILES), dtype=ttnn.float32)
 
         for _ in range(N_BLOCKS):
 
