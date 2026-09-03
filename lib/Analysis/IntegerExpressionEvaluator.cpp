@@ -4,6 +4,7 @@
 
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
@@ -126,6 +127,19 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
 
     Operation *operation = task.value.getDefiningOp();
     assert(operation && "fold task requires a defining operation");
+
+    if (auto logicalNot = dyn_cast<emitc::LogicalNotOp>(operation)) {
+      std::optional<llvm::APInt> result;
+      auto operand = cache.find(logicalNot.getOperand());
+      std::optional<std::uint32_t> resultBitWidth =
+          getIntegerBitWidth(task.value.getType());
+      if (operand != cache.end() && operand->second && resultBitWidth) {
+        result = llvm::APInt(*resultBitWidth, operand->second->isZero());
+      }
+      activeValues.erase(task.value);
+      cache.try_emplace(task.value, result);
+      continue;
+    }
 
     // Fold a detached clone because a fold hook may modify its operation in
     // place. Repeat after a modification until the fold returns a constant or
