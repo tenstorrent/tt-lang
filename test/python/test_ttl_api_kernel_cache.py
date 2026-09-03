@@ -77,10 +77,17 @@ def test_data_movement_configs_reject_invalid_noc_roles(monkeypatch, dynamic_noc
         ttl_api._make_data_movement_config(2, dynamic_noc=dynamic_noc)
 
 
+@pytest.fixture(autouse=True)
+def _enable_fake_kernel_dispatch(monkeypatch):
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+
+
 class _FakeMemoryConfig:
-    def __init__(self, memory_space, memory_layout):
+    def __init__(self, memory_space, memory_layout, shard_spec=None):
         self.buffer_type = memory_space
         self.memory_layout = memory_layout
+        self.shard_spec = shard_spec
+        self.nd_shard_spec = None
 
 
 class _FakeTile:
@@ -104,15 +111,18 @@ class _FakeTensor:
         tile=(32, 32),
         allocation_capacity=1 << 20,
         device=None,
+        storage_type="DEVICE",
+        shard_spec=None,
     ):
         self.shape = shape
         self.padded_shape = padded_shape or shape
         self.dtype = dtype
         self.layout = layout
-        self._memory_config = _FakeMemoryConfig(memory_space, memory_layout)
+        self._memory_config = _FakeMemoryConfig(memory_space, memory_layout, shard_spec)
         self._tile = _FakeTile(tile)
         self.allocation_capacity = allocation_capacity
         self._device = device
+        self._storage_type = storage_type
 
     def memory_config(self):
         return self._memory_config
@@ -122,6 +132,9 @@ class _FakeTensor:
 
     def device(self):
         return self._device
+
+    def storage_type(self):
+        return self._storage_type
 
 
 class _RecordingCompiledKernel:
@@ -379,6 +392,10 @@ def test_operation_cache_separates_tensor_config_changes(monkeypatch):
     copy_kernel(_FakeTensor(), _FakeTensor())
     copy_kernel(_FakeTensor(shape=(64, 32)), _FakeTensor(shape=(64, 32)))
     copy_kernel(_FakeTensor(memory_space="DRAM"), _FakeTensor(memory_space="DRAM"))
+    copy_kernel(
+        _FakeTensor(memory_space="DRAM", storage_type="HOST"),
+        _FakeTensor(memory_space="DRAM", storage_type="HOST"),
+    )
     copy_kernel(_FakeTensor(layout="ROW_MAJOR"), _FakeTensor(layout="ROW_MAJOR"))
     copy_kernel(_FakeTensor(dtype="ttnn.float32"), _FakeTensor(dtype="ttnn.float32"))
     copy_kernel(
@@ -390,10 +407,14 @@ def test_operation_cache_separates_tensor_config_changes(monkeypatch):
         _FakeTensor(memory_layout="WIDTH_SHARDED"),
     )
     copy_kernel(_FakeTensor(tile=(16, 32)), _FakeTensor(tile=(16, 32)))
+    copy_kernel(
+        _FakeTensor(shard_spec=((0, 0), (1, 0))),
+        _FakeTensor(shard_spec=((0, 0), (1, 0))),
+    )
 
     program_hashes = {call["program_hash"] for call in compile_calls}
-    assert len(compile_calls) == 8
-    assert len(program_hashes) == 8
+    assert len(compile_calls) == 10
+    assert len(program_hashes) == 10
 
     runtime_caches = {
         id(call["compile_options"]["runtime_resource_cache"]) for call in compile_calls
@@ -580,6 +601,23 @@ def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypat
 
     assert compiled_reference() is None
     assert events == ["synchronize:device", "release"]
+
+
+def test_compiled_kernel_preserves_legacy_positional_optional_arguments():
+    kernel_core_ranges = ["legacy-core-range"]
+
+    compiled_kernel = ttl_api.CompiledTTNNKernel(
+        [("kernel.cpp", "compute")],
+        [object()],
+        [[]],
+        0,
+        None,
+        [[]],
+        kernel_core_ranges,
+    )
+
+    assert compiled_kernel.kernel_core_ranges is kernel_core_ranges
+    assert compiled_kernel.kernel_local_tensor_indices == [[]]
 
 
 @pytest.mark.parametrize(
