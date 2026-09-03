@@ -2,7 +2,7 @@
 
 TT-Lang includes a functional simulator that runs operations as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and iterate quickly during development.
 
-The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage.
+The simulator typically supports more language features than the compiler at any given point. See [implementation status](reference/implementation-status.md) for current coverage.
 
 ## Setup
 

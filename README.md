@@ -17,7 +17,7 @@
 ![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue.svg)
 ![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/ci.yml/badge.svg)
 
-A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
+A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development; see [implementation status](docs/sphinx/reference/implementation-status.md) for current simulator and compiler support.
 
 -----
 **Contents:** [Vision](#1-vision) · [Quick Start](#2-quick-start) · [Documentation](#3-documentation) · [Contributing](#4-contributing) · [Support](#5-support) · [License](#6-license)
@@ -195,7 +195,7 @@ tt-lang includes a functional simulator that runs kernels as pure Python, withou
 tt-lang-sim examples/eltwise_add.py
 ```
 
-The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.
+The simulator typically supports more language features than the compiler at any given point. See [implementation status](docs/sphinx/reference/implementation-status.md) for current coverage and the [simulator guide](docs/sphinx/simulator.md) for debugger setup and details.
 
 ## 3. Documentation
 
