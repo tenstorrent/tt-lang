@@ -17,7 +17,7 @@ from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
-from ttl.kernel import Kernel
+from ttl.kernel import Kernel, KernelKind, _selector_implicit_role
 from ttl.scalar import ScalarType
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
@@ -498,8 +498,11 @@ def _add_capture_bindings(
     suffix: str,
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
-    for name, value in spec.compile_time_captures.items():
-        if name in loaded_names and name not in bindings:
+    for name in sorted(loaded_names):
+        if name in bindings:
+            continue
+        if name in spec.compile_time_captures:
+            value = spec.compile_time_captures[name]
             bindings[name] = _literal_node(
                 value,
                 scope=scope,
@@ -507,6 +510,17 @@ def _add_capture_bindings(
                 suffix=suffix,
                 name_hint=name,
             )
+            continue
+        value = spec.frozen_scope.get(name)
+        if not (
+            isinstance(value, KernelKind)
+            or isinstance(value, Kernel)
+            and _selector_implicit_role(value) is not None
+        ):
+            continue
+        fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
+        scope[fresh_name] = value
+        bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
 
 
 def _add_external_pipenet_bindings(
