@@ -51,11 +51,12 @@ def _make_repeated_discarded_opaque_state_operation(data_format, iterations, gri
         def read():
             node_x, _node_y = ttl.node(dims=2)
             for iteration in range(iterations):
-                ttl.call_extern_func(
-                    DFB_RECONFIGURATION_TEST_HEADER,
-                    "publish_unread_tile",
-                    template_args=[ttl.dfb_descriptor(unread_dfb)],
-                )
+                if iteration == 1:
+                    ttl.call_extern_func(
+                        DFB_RECONFIGURATION_TEST_HEADER,
+                        "publish_unread_tile",
+                        template_args=[ttl.dfb_descriptor(unread_dfb)],
+                    )
                 ttl.reconfigure_dfbs(first_boundary)
                 with copied_dfb.reserve() as destination:
                     ttl.copy(
@@ -90,7 +91,7 @@ def _make_repeated_discarded_opaque_state_operation(data_format, iterations, gri
 def test_repeated_reconfiguration_discards_opaque_state_before_reuse(
     device, dtype, to_device, monkeypatch, tmp_path
 ):
-    """A repeated discarding boundary resets a reassigned physical DFB."""
+    """A boundary discards state from a conditional external DFB access."""
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole DFB reconfiguration support")
 

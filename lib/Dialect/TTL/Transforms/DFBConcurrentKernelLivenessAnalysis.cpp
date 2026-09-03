@@ -474,6 +474,21 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
+// Event spans can be partitioned per reconfiguration iteration only when the
+// access repeats within the participant loop nest and divides evenly across
+// boundary executions.
+static bool canPartitionRunPerReconfigurationIteration(
+    std::uint64_t accessExecutionCount,
+    const StaticIterationDomain &accessIterationDomain,
+    std::uint64_t reconfigurationExecutionCount,
+    const StaticIterationDomain &reconfigurationIterationDomain) {
+  assert(reconfigurationExecutionCount > 1 &&
+         "repeated reconfiguration must execute more than once");
+  return startsWithIterationDomain(accessIterationDomain,
+                                   reconfigurationIterationDomain) &&
+         accessExecutionCount % reconfigurationExecutionCount == 0;
+}
+
 // Per-iteration lifetime normalization and graph edges are sound only when each
 // reconfiguration-loop iteration contains the same fixed number of
 // unconditional access executions.
@@ -493,12 +508,18 @@ static bool hasFixedAccessCountPerReconfigurationIteration(
   if (accessRun.conditionalExecution) {
     return false;
   }
-  if (!startsWithIterationDomain(accessRun.iterationDomain,
-                                 reconfigurationIterationDomain)) {
-    return false;
-  }
-  return accessRun.executionCount % reconfigurationExecutionCount == 0;
+  return canPartitionRunPerReconfigurationIteration(
+      accessRun.executionCount, accessRun.iterationDomain,
+      reconfigurationExecutionCount,
+      reconfigurationIterationDomain);
 }
+
+// Conservative graph-construction envelope; it does not prove that a
+// conditional operation executes or performs a protocol transaction.
+struct StructuralIterationDomain {
+  std::uint64_t maximumExecutionCount = 0;
+  StaticIterationDomain iterationDomain;
+};
 
 // The listed operations execute each nested region at most once per
 // invocation, so only enclosing loops can repeat an access.
@@ -606,27 +627,122 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
   return domain;
 }
 
-// Proves an unresolved access cannot repeat. Treating the access as present
-// once preserves the conditional lifetime without assuming it executes.
-static bool structurallyExecutesAtMostOnce(Operation *operation) {
+// Returns an upper execution bound and enclosing static loops without assuming
+// that any conditional region executes.
+static std::optional<StructuralIterationDomain>
+getStructuralIterationDomain(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
       !function.getBody().hasOneBlock()) {
-    return false;
+    return std::nullopt;
   }
 
+  std::uint64_t maximumExecutionCount = 1;
+  StaticIterationDomain iterationDomain;
   Operation *nestedOperation = operation;
   while (nestedOperation->getParentRegion() != &function.getBody()) {
     Region *region = nestedOperation->getParentRegion();
     Operation *parent = region ? region->getParentOp() : nullptr;
+    auto loop = dyn_cast_or_null<LoopLikeOpInterface>(parent);
     if (!parent || !region->hasOneBlock() ||
-        nestedOperation->getBlock() != &region->front() ||
-        !executesRegionsAtMostOnce(parent)) {
-      return false;
+        nestedOperation->getBlock() != &region->front()) {
+      return std::nullopt;
     }
+    if (!loop) {
+      if (!executesRegionsAtMostOnce(parent)) {
+        return std::nullopt;
+      }
+      nestedOperation = parent;
+      continue;
+    }
+    if (!isa<affine::AffineForOp, scf::ForOp>(parent)) {
+      return std::nullopt;
+    }
+    SmallVector<Region *> loopRegions = loop.getLoopRegions();
+    std::optional<std::uint64_t> tripCount = tt::getLoopTripCount(loop);
+    if (loopRegions.size() != 1 || loopRegions.front() != region ||
+        !tripCount || *tripCount == 0) {
+      return std::nullopt;
+    }
+    std::optional<std::uint64_t> updatedMaximum =
+        llvm::checkedMulUnsigned(maximumExecutionCount, *tripCount);
+    if (!updatedMaximum) {
+      return std::nullopt;
+    }
+    maximumExecutionCount = *updatedMaximum;
+    iterationDomain.loops.push_back(parent);
+    iterationDomain.tripCounts.push_back(*tripCount);
     nestedOperation = parent;
   }
-  return nestedOperation->getBlock() == &function.getBody().front();
+  if (nestedOperation->getBlock() != &function.getBody().front()) {
+    return std::nullopt;
+  }
+  std::reverse(iterationDomain.loops.begin(), iterationDomain.loops.end());
+  std::reverse(iterationDomain.tripCounts.begin(),
+               iterationDomain.tripCounts.end());
+  return StructuralIterationDomain{maximumExecutionCount,
+                                   std::move(iterationDomain)};
+}
+
+// Proves an unresolved access cannot repeat. Treating the access as present
+// once preserves the conditional lifetime without assuming it executes.
+static bool structurallyExecutesAtMostOnce(Operation *operation) {
+  std::optional<StructuralIterationDomain> iterationDomain =
+      getStructuralIterationDomain(operation);
+  return iterationDomain && iterationDomain->maximumExecutionCount == 1;
+}
+
+// Loop identities are function-local, so compare an access only with the
+// boundary participant for the same logical kernel.
+struct BoundaryParticipantIteration {
+  Operation *operation = nullptr;
+  const StaticIterationDomain *domain = nullptr;
+};
+
+template <typename CollectiveBoundary>
+static std::optional<BoundaryParticipantIteration>
+getBoundaryParticipantIteration(const CollectiveBoundary &boundary,
+                                Operation *accessOperation) {
+  func::FuncOp accessFunction =
+      accessOperation->getParentOfType<func::FuncOp>();
+  if (!accessFunction) {
+    return std::nullopt;
+  }
+  for (auto [participant, iterationDomain] :
+       llvm::zip_equal(boundary.participantOperations,
+                       boundary.participantIterationDomains)) {
+    if (participant && participant->template getParentOfType<func::FuncOp>() ==
+                           accessFunction) {
+      return BoundaryParticipantIteration{participant, &iterationDomain};
+    }
+  }
+  return std::nullopt;
+}
+
+static bool hasFixedAccessCountForReconfiguration(
+    const DFBAccessOccurrence &access,
+    const ValidatedDFBReconfiguration &reconfiguration,
+    const AccessRuns &accessRuns) {
+  std::optional<BoundaryParticipantIteration> participant =
+      getBoundaryParticipantIteration(reconfiguration, access.operation);
+  return participant && hasFixedAccessCountPerReconfigurationIteration(
+                            access, reconfiguration.executionCount,
+                            *participant->domain, accessRuns);
+}
+
+// Structural runs position conditional external calls in the event graph but
+// do not establish their queue protocol effects.
+static bool hasPartitionableProgramOrderRun(
+    const DFBAccessOccurrence &access,
+    const ValidatedDFBReconfiguration &reconfiguration,
+    const AccessRuns &programOrderAccessRuns) {
+  auto runIt = programOrderAccessRuns.find(&access);
+  std::optional<BoundaryParticipantIteration> participant =
+      getBoundaryParticipantIteration(reconfiguration, access.operation);
+  return runIt != programOrderAccessRuns.end() && participant &&
+         canPartitionRunPerReconfigurationIteration(
+             runIt->second.executionCount, runIt->second.iterationDomain,
+             reconfiguration.executionCount, *participant->domain);
 }
 
 // Possible-domain analysis includes unknown membership while exact-domain
@@ -1585,6 +1701,73 @@ static AccessRuns collectAccessRuns(
     }
   }
   return runs;
+}
+
+// Adds source-level execution envelopes only for opaque external accesses
+// bounded by repeated reconfigurations that discard prior DFB state. These
+// runs establish event placement; protocol validation continues to use the
+// exact runs returned by collectAccessRuns.
+static AccessRuns collectProgramOrderAccessRuns(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
+    LaunchNodeCoord node, const AccessExecutionCounts &executionCounts,
+    const AccessRuns &exactAccessRuns, bool includeUnknownDomains) {
+  AccessRuns programOrderRuns = exactAccessRuns;
+  if (reconfigurations.empty() ||
+      reconfigurations.front().executionCount <= 1 ||
+      !llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
+        return reconfiguration.boundary.getDiscardDfbState();
+      })) {
+    return programOrderRuns;
+  }
+
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+      if (!access.opaqueExternalAccess ||
+          !mayAccessLaunchNode(access, node, executionCounts,
+                               includeUnknownDomains)) {
+        continue;
+      }
+      bool exactRunMatchesEveryBoundary =
+          llvm::all_of(reconfigurations, [&](const auto &reconfiguration) {
+            return hasFixedAccessCountForReconfiguration(
+                access, reconfiguration, exactAccessRuns);
+          });
+      if (exactRunMatchesEveryBoundary) {
+        continue;
+      }
+      std::optional<StructuralIterationDomain> structuralDomain =
+          getStructuralIterationDomain(access.operation);
+      if (!structuralDomain) {
+        continue;
+      }
+      auto executionCountIt = executionCounts.find(&access);
+      assert(executionCountIt != executionCounts.end() &&
+             "active DFB access must have an execution-count fact");
+      if (executionCountIt->second &&
+          *executionCountIt->second > structuralDomain->maximumExecutionCount) {
+        continue;
+      }
+      bool matchesEveryBoundary =
+          llvm::all_of(reconfigurations, [&](const auto &reconfiguration) {
+            std::optional<BoundaryParticipantIteration> participant =
+                getBoundaryParticipantIteration(reconfiguration,
+                                                access.operation);
+            return participant &&
+                   canPartitionRunPerReconfigurationIteration(
+                       structuralDomain->maximumExecutionCount,
+                       structuralDomain->iterationDomain,
+                       reconfiguration.executionCount, *participant->domain);
+          });
+      if (!matchesEveryBoundary) {
+        continue;
+      }
+      programOrderRuns[&access] =
+          AccessRun{&access, structuralDomain->maximumExecutionCount,
+                    std::move(structuralDomain->iterationDomain), true};
+    }
+  }
+  return programOrderRuns;
 }
 
 struct ProgramOrderTopologyAccess {
@@ -4056,28 +4239,6 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
   return {};
 }
 
-// Loop identities are function-local, so compare an access only with the
-// reconfiguration participant for the same logical kernel.
-template <typename CollectiveBoundary>
-static std::optional<std::pair<Operation *, const StaticIterationDomain *>>
-getParticipantIteration(const CollectiveBoundary &boundary,
-                        Operation *accessOperation) {
-  func::FuncOp accessFunction =
-      accessOperation->getParentOfType<func::FuncOp>();
-  if (!accessFunction) {
-    return std::nullopt;
-  }
-  for (auto [participant, iterationDomain] :
-       llvm::zip_equal(boundary.participantOperations,
-                       boundary.participantIterationDomains)) {
-    if (participant && participant->template getParentOfType<func::FuncOp>() ==
-                           accessFunction) {
-      return std::make_pair(participant, &iterationDomain);
-    }
-  }
-  return std::nullopt;
-}
-
 // Models one representative interval when every access and its terminating
 // collective reset execute once per iteration of the same sequential loop.
 // The reset restores canonical cursor state, so physical allocation validates
@@ -4129,16 +4290,16 @@ tryComputeRepeatedResetLifetime(
     bool terminatesEveryAccess =
         llvm::all_of(activeAccesses, [&](const DFBAccessOccurrence *access) {
           auto runIt = accessRuns.find(access);
-          std::optional<std::pair<Operation *, const StaticIterationDomain *>>
-              participant = getParticipantIteration(reset, access->operation);
+          std::optional<BoundaryParticipantIteration> participant =
+              getBoundaryParticipantIteration(reset, access->operation);
           std::optional<AccessEventSpan> events =
               getAccessEventSpan(*access, operationEvents, accessEvents);
           if (runIt == accessRuns.end() || !participant || !events ||
               runIt->second.conditionalExecution ||
               runIt->second.executionCount != reset.executionCount ||
-              !(runIt->second.iterationDomain == *participant->second) ||
+              !(runIt->second.iterationDomain == *participant->domain) ||
               !structuralOrder.precedes(access->operation,
-                                        participant->first)) {
+                                        participant->operation)) {
             return false;
           }
           const AccessEventSpan &resetEvents = resetEventsIt->second;
@@ -4365,6 +4526,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
+    const AccessRuns &programOrderAccessRuns,
     const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains = false) {
   if (std::optional<DFBLifecycleCompletionProof> repeatedResetProof =
@@ -4381,6 +4543,11 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   // lifecycles in every loop iteration. Reject accesses that cannot be reduced
   // from dispatch-wide execution counts to a fixed per-iteration count.
   std::optional<std::uint64_t> repeatedReconfigurationCount;
+  bool everyReconfigurationDiscardsState =
+      !reconfigurations.empty() &&
+      llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
+        return reconfiguration.boundary.getDiscardDfbState();
+      });
   if (!reconfigurations.empty() &&
       reconfigurations.front().executionCount > 1) {
     repeatedReconfigurationCount = reconfigurations.front().executionCount;
@@ -4404,14 +4571,13 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       if (executionCountIt->second && *executionCountIt->second == 0) {
         continue;
       }
-      auto participantIteration =
-          getParticipantIteration(reconfigurations.front(), access.operation);
-      bool hasProvableIterationPattern =
-          participantIteration &&
-          hasFixedAccessCountPerReconfigurationIteration(
-              access, *repeatedReconfigurationCount,
-              *participantIteration->second, accessRuns);
-      if (!hasProvableIterationPattern) {
+      bool exactRunMatches = hasFixedAccessCountForReconfiguration(
+          access, reconfigurations.front(), accessRuns);
+      bool discardedOpaqueRunMatches =
+          everyReconfigurationDiscardsState && access.opaqueExternalAccess &&
+          hasPartitionableProgramOrderRun(
+              access, reconfigurations.front(), programOrderAccessRuns);
+      if (!exactRunMatches && !discardedOpaqueRunMatches) {
         DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
         lifetime.node = node;
         if (lifetimeDiagnostics) {
@@ -5434,23 +5600,30 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     AccessRuns accessRuns =
         collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
                           /*includeUnknownDomains=*/false);
+    AccessRuns programOrderAccessRuns = collectProgramOrderAccessRuns(
+        logicalDFBs, validatedReconfigurations, node, executionCounts,
+        accessRuns, /*includeUnknownDomains=*/false);
     ProgramOrderTopologyInputs graphTopologyInputs =
         collectProgramOrderTopologyInputs(
             logicalDFBs, validatedResets, validatedReconfigurations, node,
-            executionCounts, accessRuns, structuralOrder,
+            executionCounts, programOrderAccessRuns, structuralOrder,
             /*includeUnknownDomains=*/false);
     ProgramOrderGraphState initialGraphState = graphTopologyCache.getOrBuild(
         module, graphTopologyInputs, structuralOrder);
     std::optional<AccessRuns> possibleAccessRuns;
+    std::optional<AccessRuns> possibleProgramOrderAccessRuns;
     std::optional<ProgramOrderGraphState> possibleGraphState;
     if (hasUnknownDFBLaunchDomain) {
       possibleAccessRuns.emplace(
           collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
                             /*includeUnknownDomains=*/true));
+      possibleProgramOrderAccessRuns.emplace(collectProgramOrderAccessRuns(
+          logicalDFBs, validatedReconfigurations, node, executionCounts,
+          *possibleAccessRuns, /*includeUnknownDomains=*/true));
       ProgramOrderTopologyInputs possibleGraphTopologyInputs =
           collectProgramOrderTopologyInputs(
               logicalDFBs, validatedResets, validatedReconfigurations, node,
-              executionCounts, *possibleAccessRuns, structuralOrder,
+              executionCounts, *possibleProgramOrderAccessRuns, structuralOrder,
               /*includeUnknownDomains=*/true);
       bool graphTopologiesMatch =
           graphTopologyInputs == possibleGraphTopologyInputs;
@@ -5490,7 +5663,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addDFBReconfigurationAccessEdges(
         logicalDFBs, validatedReconfigurations, node, graph, operationEvents,
         accessEvents, reconfigurationBoundaryEvents, executionCounts,
-        accessRuns, structuralOrder, /*includeUnknownDomains=*/false);
+        programOrderAccessRuns, structuralOrder,
+        /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(logicalDFBs, graph, operationEvents,
                                     accessEvents, executionCounts, accessRuns,
                                     node, domainState, structuralOrder,
@@ -5553,7 +5727,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedResets, resetBoundaryEvents, validatedReconfigurations,
           reconfigurationBoundaryEvents, graph, structuralOrder,
           operationEvents, accessEvents, executionCounts, accessRuns,
-          domainState);
+          programOrderAccessRuns, domainState);
       logicalDFB.nodeLifetimes.back().completionProof = proof;
       nodeLifetimes[logicalIndex] = &logicalDFB.nodeLifetimes.back();
     }
@@ -5585,7 +5759,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       continue;
     }
 
-    assert(possibleAccessRuns && possibleGraphState &&
+    assert(possibleAccessRuns && possibleProgramOrderAccessRuns &&
+           possibleGraphState &&
            "unknown domains must construct a possible graph");
     HappensBeforeGraph &possibleGraph = possibleGraphState->graph;
     DenseMap<Operation *, EventPair> &possibleOperationEvents =
@@ -5606,7 +5781,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         logicalDFBs, validatedReconfigurations, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
         possibleReconfigurationBoundaryEvents, executionCounts,
-        *possibleAccessRuns, structuralOrder, /*includeUnknownDomains=*/true);
+        *possibleProgramOrderAccessRuns, structuralOrder,
+        /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
         possibleAccessEvents, executionCounts, *possibleAccessRuns, node,
@@ -5628,7 +5804,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedReconfigurations, possibleReconfigurationBoundaryEvents,
           possibleGraph, structuralOrder, possibleOperationEvents,
           possibleAccessEvents, executionCounts, *possibleAccessRuns,
-          domainState,
+          *possibleProgramOrderAccessRuns, domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().completionProof = proof;
       possibleNodeLifetimes[logicalIndex] =
