@@ -234,7 +234,10 @@ class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
             if name not in _nested_binding_names(node)
         }
         try:
-            return self.generic_visit(node)
+            transformed = self.generic_visit(node)
+            if not transformed.body:
+                transformed.body = [ast.copy_location(ast.Pass(), transformed)]
+            return transformed
         finally:
             self.static_booleans = enclosing_booleans
 
