@@ -74,6 +74,8 @@ static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
                          valueOrEmpty(participant.getRole()));
 }
 
+// Tiled layouts encode their data format in TileType. Scalar layouts use the
+// exact element types accepted by TTNN row-major tensors.
 static bool isSupportedLayoutElementType(Type elementType) {
   if (isa<ttcore::TileType>(elementType)) {
     return true;
@@ -95,6 +97,7 @@ static bool isSupportedLayoutElementType(Type elementType) {
          integerType.getWidth() == 32;
 }
 
+// These layouts carry TTNN shard metadata over a core grid.
 static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
   return memoryLayout == TensorMemoryLayout::HeightSharded ||
          memoryLayout == TensorMemoryLayout::WidthSharded ||
@@ -102,6 +105,8 @@ static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
          memoryLayout == TensorMemoryLayout::NdSharded;
 }
 
+// LocalTensorAccessor represents one core-local bank base. ND sharding requires
+// the distributed metadata represented by TensorAccessor.
 static bool isComputeLocalMemoryLayout(TensorMemoryLayout memoryLayout) {
   return memoryLayout == TensorMemoryLayout::HeightSharded ||
          memoryLayout == TensorMemoryLayout::WidthSharded ||

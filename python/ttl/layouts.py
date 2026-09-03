@@ -44,7 +44,7 @@ class LayoutConfig:
     logical_shape: List[int]
     grid: List[int]
     dtype: Any
-    memory_layout: int = 0  # Default: TENSOR_MEMORY_LAYOUT_INTERLEAVED
+    memory_layout: int = TENSOR_MEMORY_LAYOUT_INTERLEAVED
     tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     buffer_type: int = BUFFER_TYPE_L1
     tensor_layout: str = TENSOR_LAYOUT_TILE

@@ -41,6 +41,7 @@ struct TensorAccessorArgsIndexUse {
   int64_t originalIndex;
 };
 
+// Verbatim C++ may read runtime arguments without an analyzable MLIR use.
 static bool containsHiddenCommonArgAccess(func::FuncOp function) {
   bool hiddenAccess = false;
   function.walk([&](emitc::VerbatimOp verbatim) {
@@ -66,6 +67,8 @@ readGlobalTensorIndices(func::FuncOp function, ArrayAttr indicesAttr,
   return success();
 }
 
+// Record every resolvable index for rewriting. An unresolved index requires the
+// complete tensor prefix to remain stable.
 static LogicalResult classifyCommonArgIndices(
     func::FuncOp function, int64_t tensorCount, BitVector &liveTensorSlots,
     SmallVectorImpl<CommonArgIndexUse> &uses, bool &hasUnresolvedIndex) {
@@ -103,6 +106,8 @@ static LogicalResult classifyCommonArgIndices(
   return walkResult.wasInterrupted() ? failure() : success();
 }
 
+// LocalTensorAccessor lowering derives its bank base directly from one tensor
+// common runtime argument.
 static FailureOr<int64_t>
 getLocalTensorSlot(ttk::LocalTensorAccessorOp accessor, int64_t tensorCount) {
   Value bankBase = traceUnrealizedCasts(accessor.getBankBaseAddressIn());
@@ -124,6 +129,8 @@ getLocalTensorSlot(ttk::LocalTensorAccessorOp accessor, int64_t tensorCount) {
   return slot;
 }
 
+// TensorAccessorArgs stores its common-argument base separately from direct
+// common-argument reads, so it participates in the same compaction analysis.
 static LogicalResult classifyTensorAccessorArgsIndices(
     func::FuncOp function, int64_t tensorCount, BitVector &liveTensorSlots,
     SmallVectorImpl<TensorAccessorArgsIndexUse> &uses,
@@ -154,6 +161,8 @@ static LogicalResult classifyTensorAccessorArgsIndices(
   return walkResult.wasInterrupted() ? failure() : success();
 }
 
+// Tensor addresses form a prefix. Removing prefix entries shifts every
+// following compiler-managed argument by the same count.
 static int64_t
 remapCommonArgIndex(int64_t originalIndex,
                     ArrayRef<std::optional<int64_t>> tensorSlotMap,
